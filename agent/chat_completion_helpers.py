@@ -2396,6 +2396,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # and every Hermes-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
                 api_msg.pop(schema_foreign, None)
+            # Fold the tool-result reference hint (sibling key, kept out of
+            # content to preserve the parseable-JSON contract) into the
+            # model-visible text, mirroring ChatCompletionsTransport.
+            _ref_hint = api_msg.get("_tool_result_hint")
+            if _ref_hint:
+                _rc = api_msg.get("content")
+                if isinstance(_rc, str):
+                    api_msg["content"] = _rc + _ref_hint
+                elif isinstance(_rc, list):
+                    api_msg["content"] = [*_rc, {"type": "text", "text": _ref_hint.strip()}]
+                api_msg.pop("_tool_result_hint", None)
             # api_content (the persist-what-you-send sidecar) carries the
             # exact bytes every main-loop call sent for this message —
             # substitute it before dropping the key (Hermes bookkeeping,

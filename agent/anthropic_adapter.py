@@ -2334,6 +2334,14 @@ def _convert_tool_message_to_result(
         result_content = json.dumps(content) if content else "(no output)"
     if not result_content:
         result_content = "(no output)"
+    # Fold the sibling-key tool-result reference hint into the model-visible
+    # text (kept out of ``content`` so it stays a parseable JSON string).
+    _ref_hint = m.get("_tool_result_hint")
+    if _ref_hint:
+        if isinstance(result_content, str):
+            result_content += _ref_hint
+        elif isinstance(result_content, list):
+            result_content = [*result_content, {"type": "text", "text": _ref_hint.strip()}]
     tool_result = {
         "type": "tool_result",
         "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),

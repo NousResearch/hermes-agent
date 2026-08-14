@@ -44,6 +44,124 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 
 logger = logging.getLogger(__name__)
 
+_TOOL_RESULT_REF_RE = re.compile(r"\{\{tool_result:([^{}]+)\}\}")
+_MAX_TOOL_RESULT_REF_BYTES = 20 * 1024 * 1024
+_MAX_TOOL_RESULT_REFS = 32
+
+
+def remember_tool_result(agent, tool_call_id: str, result: Any) -> None:
+    """Keep bounded structured results available for later tool arguments."""
+    if not tool_call_id:
+        return
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+        if len(json.dumps(payload, ensure_ascii=False)) > _MAX_TOOL_RESULT_REF_BYTES:
+            return
+    except (TypeError, ValueError):
+        return
+    refs = getattr(agent, "_tool_result_refs", None)
+    if refs is None:
+        refs = agent._tool_result_refs = {}
+    refs[tool_call_id] = payload
+    while len(refs) > _MAX_TOOL_RESULT_REFS:
+        refs.pop(next(iter(refs)))
+
+
+def tool_result_reference_hint(tool_call_id: str, result: Any) -> str:
+    """Return a compact hint for structured results reusable by later tools."""
+    if not tool_call_id:
+        return ""
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(payload, (dict, list)):
+        return ""
+    # Reveal a real path so the model can form a working reference. For an
+    # MCP wrapper {"result": ..., "structuredContent": ...} both values may
+    # be JSON strings (double-encoded) — prefer structuredContent, which is
+    # the machine-oriented branch and the only one that can hold a real
+    # container; fall back to result otherwise. Show a path that reaches a
+    # real container: dive through string leaves (double-encoding) so the
+    # advertised path is usable, not one that lands on a JSON blob string.
+    if isinstance(payload, dict) and payload:
+        top_key = ("structuredContent" if "structuredContent" in payload
+                   else next(iter(payload)))
+        top_value = payload[top_key]
+        if isinstance(top_value, str):
+            try:
+                top_value = json.loads(top_value)
+            except (TypeError, ValueError):
+                pass
+        # Dive one more level through a double-encoded container so the hint
+        # lands on a real structure, e.g. structuredContent.result.folders.
+        if isinstance(top_value, (dict, list)) and top_value:
+            if isinstance(top_value, dict):
+                inner_key = next(iter(top_value))
+                inner_value = top_value[inner_key]
+            else:
+                inner_key = 0
+                inner_value = top_value[0]
+            if isinstance(inner_value, str):
+                try:
+                    inner_value = json.loads(inner_value)
+                except (TypeError, ValueError):
+                    pass
+            ref = (f"{{{{tool_result:{tool_call_id}.{top_key}.{inner_key}.field}}}}"
+                   if isinstance(inner_value, (dict, list))
+                   else f"{{{{tool_result:{tool_call_id}.{top_key}.{inner_key}}}}}")
+        elif isinstance(top_value, (dict, list)):
+            ref = f"{{{{tool_result:{tool_call_id}.{top_key}.field}}}}"
+        else:
+            ref = f"{{{{tool_result:{tool_call_id}.{top_key}}}}}"
+    else:
+        ref = f"{{{{tool_result:{tool_call_id}.field}}}}"
+    return f"\n\n[Reusable tool result: {ref}]"
+
+
+def _resolve_tool_result_ref(agent, value: Any) -> Any:
+    if not isinstance(value, str) or "{{tool_result:" not in value:
+        return value
+    refs = getattr(agent, "_tool_result_refs", {})
+
+    def resolve(match):
+        call_id, _, path = match.group(1).partition(".")
+        if call_id not in refs:
+            return match.group(0)
+        current = refs[call_id]
+        for part in path.split(".") if path else []:
+            # MCP tool results are double-encoded: the wrapper stores
+            # {"result": "<json-string>", "structuredContent": ...}, so a
+            # walk may land on a string containing JSON. Re-parse it once
+            # so chained paths like .result.data resolve against the real
+            # payload; unresolvable refs pass through untouched (same
+            # contract as the walk below).
+            if isinstance(current, str):
+                try:
+                    current = json.loads(current)
+                except ValueError:
+                    return match.group(0)
+            try:
+                current = current[int(part)] if isinstance(current, list) else current[part]
+            except (KeyError, IndexError, TypeError, ValueError):
+                return match.group(0)
+        return current if isinstance(current, str) else json.dumps(current, ensure_ascii=False)
+
+    if value.startswith("{{tool_result:") and value.endswith("}}"):
+        match = _TOOL_RESULT_REF_RE.fullmatch(value)
+        return resolve(match) if match else value
+    return _TOOL_RESULT_REF_RE.sub(resolve, value)
+
+
+def resolve_tool_result_refs(agent, value: Any) -> Any:
+    """Resolve ``{{tool_result:call_id.field}}`` recursively in tool args."""
+    if isinstance(value, dict):
+        return {key: resolve_tool_result_refs(agent, item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_tool_result_refs(agent, item) for item in value]
+    return _resolve_tool_result_ref(agent, value)
+
+
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
 # on a persistent auth failure before we give up and let the fallback chain
@@ -2925,6 +3043,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     """
     if not isinstance(function_args, dict):
         function_args = {}
+    function_args = resolve_tool_result_refs(agent, function_args)
 
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:

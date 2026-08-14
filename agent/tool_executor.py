@@ -40,6 +40,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.agent_runtime_helpers import resolve_tool_result_refs
 from tools.terminal_tool import (
     get_active_env,
 )
@@ -1468,6 +1469,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
+        from agent.agent_runtime_helpers import remember_tool_result, tool_result_reference_hint
+        remember_tool_result(agent, tc.id, display_function_result)
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=name,
@@ -1475,6 +1478,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        # The ref hint is carried as a sibling key, NOT appended to content —
+        # tool result content must stay a parseable JSON string (see
+        # _extract_landed_file_mutation_paths, todo hydration, and the
+        # transport JSON contract). Transports inject it for the model.
+        _ref_hint = "" if _is_multimodal_tool_result(function_result) else tool_result_reference_hint(tc.id, display_function_result)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -1500,6 +1508,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tc.id,
             effect_disposition=effect_disposition,
         )
+        if _ref_hint:
+            tool_message["_tool_result_hint"] = _ref_hint
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
@@ -1682,6 +1692,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ):
                 return
             continue
+
+        # Resolve {{tool_result:<call_id>.<field>}} refs before dispatch —
+        # mirrors the concurrent path's resolution inside invoke_tool().
+        function_args = resolve_tool_result_refs(agent, function_args)
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
@@ -2270,6 +2284,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
+        from agent.agent_runtime_helpers import remember_tool_result, tool_result_reference_hint
+        remember_tool_result(agent, tool_call.id, display_function_result)
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=function_name,
@@ -2277,6 +2293,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        # Sibling key, not content append — see parallel path rationale.
+        _ref_hint = "" if _is_multimodal_tool_result(function_result) else tool_result_reference_hint(tool_call.id, display_function_result)
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -2290,6 +2308,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        if _ref_hint:
+            tool_message["_tool_result_hint"] = _ref_hint
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

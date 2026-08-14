@@ -1664,6 +1664,7 @@ export interface Translations {
       rename: string
       archive: string
       newWindow: string
+      openInTerminal: string
       hideTabBar: string
       openInNewTab: string
       openInSplit: string

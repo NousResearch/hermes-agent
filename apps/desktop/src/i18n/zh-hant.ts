@@ -1736,6 +1736,7 @@ export const zhHant = defineLocale({
       rename: '重新命名',
       archive: '封存',
       newWindow: '新視窗',
+      openInTerminal: '在終端機中開啟',
       copyIdFailed: '無法複製工作階段 ID',
 
       sessionActions: '工作階段動作',

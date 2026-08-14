@@ -1647,6 +1647,7 @@ export const ar = defineLocale({
       rename: 'إعادة تسمية',
       archive: 'أرشفة',
       newWindow: 'فتح في نافذة جديدة',
+      openInTerminal: 'فتح في الطرفية',
       copyIdFailed: 'فشل نسخ المعرف',
 
       sessionActions: 'إجراءات الجلسة',

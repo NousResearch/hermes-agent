@@ -1977,6 +1977,7 @@ export const en: Translations = {
       rename: 'Rename',
       archive: 'Archive',
       newWindow: 'New window',
+      openInTerminal: 'Open in terminal',
       hideTabBar: 'Hide tab bar',
       openInNewTab: 'Open in new tab',
       openInSplit: 'Open in split',

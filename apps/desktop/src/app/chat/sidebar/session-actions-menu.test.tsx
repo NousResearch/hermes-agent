@@ -65,6 +65,7 @@ vi.mock('@/store/projects', () => ({
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
+  $connection: atom<null | { mode: string }>(null),
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
   sessionMatchesStoredId: vi.fn(() => false),
@@ -80,8 +81,10 @@ vi.mock('@/store/session-states', () => ({
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
+  canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
-  openSessionInNewWindow: vi.fn()
+  openSessionInNewWindow: vi.fn(),
+  openSessionInTerminal: vi.fn()
 }))
 
 function renderMenu() {

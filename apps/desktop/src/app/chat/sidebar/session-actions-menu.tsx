@@ -33,6 +33,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
+  $connection,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -41,7 +42,7 @@ import {
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles } from '@/store/session-states'
-import { canOpenSessionWindow } from '@/store/windows'
+import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -199,6 +200,7 @@ function useSessionActions({
   const suppressCloseFocusRef = useRef(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const isRemote = useStore($connection)?.mode === 'remote'
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
@@ -234,6 +236,26 @@ function useSessionActions({
             onSelect: () => {
               triggerHaptic('selection')
               openSession(sessionId, () => undefined, 'window')
+            }
+          })
+        ]
+      : []),
+    // The user's OWN terminal, not the in-app pane: resumes the session in the
+    // TUI. Hidden on a remote connection — the emulator we'd open runs on this
+    // machine while the session (and its runtime) lives on the remote host.
+    ...(canOpenSessionInTerminal() && !isRemote
+      ? [
+          spec({
+            disabled: !sessionId,
+            icon: 'terminal',
+            label: r.openInTerminal,
+            onSelect: () => {
+              triggerHaptic('selection')
+              // Read the row lazily: subscribing every row's menu to $sessions
+              // would re-render the whole sidebar on each session update.
+              const cwd = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.cwd?.trim() || undefined
+
+              void openSessionInTerminal(sessionId, { cwd, profile })
             }
           })
         ]

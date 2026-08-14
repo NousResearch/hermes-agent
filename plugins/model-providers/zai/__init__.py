@@ -47,22 +47,28 @@ def _model_supports_thinking(model: str | None) -> bool:
 
 
 def _is_glm_5_2(model: str | None) -> bool:
-    """Detect GLM-5.2 across the alias spellings providers use.
+    """Detect GLM-5.2/5.3 (reasoning_effort-capable) across alias spellings.
 
-    Covers the canonical ``glm-5.2`` plus the ``glm-5-2`` / ``glm-5p2``
-    variants seen on relays (Fireworks ``glm-5p2``, etc.) and any
-    vendor-prefixed form (``z-ai/glm-5.2``, ``zai-org-glm-5-2``).
+    Covers the canonical ``glm-5.2``/``glm-5.3`` plus the ``glm-5-2`` /
+    ``glm-5p2`` variants seen on relays (Fireworks ``glm-5p2``, etc.) and any
+    vendor-prefixed form (``z-ai/glm-5.2``, ``zai-org-glm-5-2``).  GLM-5.3
+    uses the same base model as 5.2 (post-training gains only) and exposes
+    the same ``reasoning_effort`` knob (verified live 2026-08-14: the
+    coding-plan endpoint accepts ``reasoning_effort: high`` for glm-5.3).
     """
     m = (model or "").strip().lower()
     if not m:
         return False
-    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+    return any(
+        token in m
+        for token in ("glm-5.2", "glm-5-2", "glm-5p2", "glm-5.3", "glm-5-3", "glm-5p3")
+    )
 
 
 def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
-    """Map Hermes reasoning effort onto GLM-5.2's native ``high``/``max``.
+    """Map Hermes reasoning effort onto GLM-5.2/5.3's native ``high``/``max``.
 
-    GLM-5.2 only supports two enabled effort levels. ``xhigh``/``max``/``ultra``
+    These models only support two enabled effort levels. ``xhigh``/``max``/``ultra``
     request the top tier; everything else that is enabled requests ``high``
     (its minimum thinking level). When reasoning is explicitly disabled, or
     no effort preference is supplied, the server default is left untouched.

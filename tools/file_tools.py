@@ -1655,15 +1655,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         if _file_ops_uses_host_paths(file_ops):
             # macOS exposes /tmp through /private/tmp; compare canonical host
             # paths so that alias cannot bypass the expiry gate.
+            path_flavor = os.path
             persisted_dir = os.path.realpath(raw_persisted_dir)
             resolved_path = os.path.realpath(os.fspath(_resolved))
         else:
-            # Remote/container paths must not be resolved on the host.
-            persisted_dir = os.path.normpath(raw_persisted_dir)
-            resolved_path = os.path.normpath(os.fspath(_resolved))
+            # Remote/container paths are POSIX even when the Hermes host is
+            # Windows; never reinterpret them with the host path module.
+            path_flavor = posixpath
+            persisted_dir = posixpath.normpath(raw_persisted_dir)
+            resolved_path = posixpath.normpath(os.fspath(_resolved))
         if (
-            os.path.dirname(resolved_path) == persisted_dir
-            and os.path.basename(resolved_path).endswith(".txt")
+            path_flavor.dirname(resolved_path) == persisted_dir
+            and path_flavor.basename(resolved_path).endswith(".txt")
             and _expire_persisted_result_on_access(resolved_path, file_ops.env)
         ):
             return tool_error(

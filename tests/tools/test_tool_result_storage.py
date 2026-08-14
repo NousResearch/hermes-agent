@@ -1,6 +1,7 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
 import os
+import ntpath
 import stat
 import sys
 import time
@@ -272,6 +273,35 @@ class TestWriteToSandbox:
 
         assert "still here" in result
         expire.assert_not_called()
+
+    def test_remote_read_keeps_posix_result_path_on_windows_host(self):
+        from tools.file_tools import read_file_tool
+
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        remote_path = "/tmp/hermes-results/expired.txt"
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch("tools.file_tools._file_ops_uses_host_paths", return_value=False),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=Path(remote_path),
+            ),
+            patch("tools.file_tools.os.path", ntpath),
+            patch(
+                "tools.tool_result_storage._resolve_storage_dir",
+                return_value="/tmp/hermes-results",
+            ),
+            patch(
+                "tools.tool_result_storage._expire_persisted_result_on_access",
+                return_value=True,
+            ) as expire,
+        ):
+            result = read_file_tool(remote_path)
+
+        assert "expired after 7 days" in result
+        expire.assert_called_once_with(remote_path, env)
+        file_ops.read_file.assert_not_called()
 
 
 class TestResolveStorageDir:

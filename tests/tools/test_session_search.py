@@ -960,6 +960,29 @@ class TestNewResetLineageDiscovery:
         ))
         assert result["count"] == 0
 
+    def test_branched_parent_still_excluded(self, db):
+        """/branch verbatim-copies the transcript into the child, so the
+        parent's content IS the branch child's live context — it must not
+        surface as a same-lineage recall hit (unlike /new-reset parents)."""
+        db.create_session("s_p", source="cli")
+        db.append_message(
+            "s_p", role="user", content="zephyr crystal cache design",
+        )
+        db.end_session("s_p", "branched")
+        db.create_session(
+            "s_q", source="cli", parent_session_id="s_p",
+            model_config={"_branched_from": "s_p"},
+        )
+        # /branch copies history into the child
+        db.append_message(
+            "s_q", role="user", content="zephyr crystal cache design",
+        )
+        result = json.loads(session_search(
+            query="zephyr crystal", db=db, current_session_id="s_q",
+        ))
+        sids = [r["session_id"] for r in result.get("results", [])]
+        assert "s_p" not in sids
+
     def test_title_match_reset_parent_not_dropped(self, db):
         _seed_gateway_new_reset_chain(db)
         result = json.loads(session_search(
@@ -1010,4 +1033,23 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_delegate" not in sids
         assert "s_main" in sids
+
+    def test_browse_lists_legacy_premarker_reset_child(self, db):
+        """A pre-marker reset child (no _reset_from, admitted by the SQL
+        same-key heuristic because its parent ended at a reset boundary on
+        the same session_key) must not be re-hidden by a Python re-check.
+        Regression guard for the follow-up to #85756."""
+        db.create_session("s_old", source="telegram", session_key="tg:legacy:1")
+        db.append_message("s_old", role="user", content="legacy era chat")
+        db.end_session("s_old", "session_reset")
+        # Legacy child: parent link + same session_key, NO _reset_from marker,
+        # still live (end_reason=None).
+        db.create_session(
+            "s_legacy_child", source="telegram",
+            parent_session_id="s_old", session_key="tg:legacy:1",
+        )
+        db.append_message("s_legacy_child", role="user", content="current era chat")
+        result = json.loads(session_search(db=db, current_session_id="s_other"))
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_legacy_child" in sids
 

@@ -8,6 +8,7 @@ import pytest
 
 from tools.skill_manager_tool import (
     _create_skill,
+    _edit_skill,
     _patch_skill,
     _write_file,
     skill_manage,
@@ -164,3 +165,75 @@ word word word
 
         assert result["success"] is True
         assert stat.S_IMODE(reference.stat().st_mode) == 0o660
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_edit_rollback_preserves_existing_mode_when_scan_blocks(self, monkeypatch):
+        """Blocked full edits restore both content and the original mode."""
+        _create_skill("rollback-skill", SKILL_CONTENT)
+        skill_md = self.skills_dir / "rollback-skill" / "SKILL.md"
+        skill_md.chmod(0o660)
+        replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "blocked edit")
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._security_scan_skill",
+            lambda _skill_dir: "blocked",
+        )
+
+        result = _edit_skill("rollback-skill", replacement)
+
+        assert result["success"] is False
+        assert skill_md.read_text(encoding="utf-8") == SKILL_CONTENT
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o660
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_patch_rollback_preserves_existing_mode_when_scan_blocks(self, monkeypatch):
+        """Blocked patches restore both content and the original mode."""
+        _create_skill("rollback-skill", SKILL_CONTENT)
+        skill_md = self.skills_dir / "rollback-skill" / "SKILL.md"
+        skill_md.chmod(0o600)
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._security_scan_skill",
+            lambda _skill_dir: "blocked",
+        )
+
+        result = _patch_skill(
+            "rollback-skill", "Step 1: Do the thing.", "blocked patch"
+        )
+
+        assert result["success"] is False
+        assert skill_md.read_text(encoding="utf-8") == SKILL_CONTENT
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_supporting_file_rollback_preserves_existing_mode_when_scan_blocks(
+        self, monkeypatch
+    ):
+        """Blocked supporting-file overwrites restore content and mode."""
+        _create_skill("rollback-skill", SKILL_CONTENT)
+        reference = self.skills_dir / "rollback-skill" / "references/example.md"
+        reference.parent.mkdir()
+        reference.write_text("original\n", encoding="utf-8")
+        reference.chmod(0o660)
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._security_scan_skill",
+            lambda _skill_dir: "blocked",
+        )
+
+        result = _write_file("rollback-skill", "references/example.md", "blocked\n")
+
+        assert result["success"] is False
+        assert reference.read_text(encoding="utf-8") == "original\n"
+        assert stat.S_IMODE(reference.stat().st_mode) == 0o660
+
+    def test_new_supporting_file_rollback_removes_file_when_scan_blocks(self, monkeypatch):
+        """Blocked supporting-file creates remove the newly written file."""
+        _create_skill("rollback-skill", SKILL_CONTENT)
+        reference = self.skills_dir / "rollback-skill" / "references/example.md"
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._security_scan_skill",
+            lambda _skill_dir: "blocked",
+        )
+
+        result = _write_file("rollback-skill", "references/example.md", "blocked\n")
+
+        assert result["success"] is False
+        assert not reference.exists()

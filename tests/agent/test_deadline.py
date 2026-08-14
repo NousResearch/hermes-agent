@@ -476,3 +476,46 @@ class TestConcurrentToolTimeoutMigration:
         )
         monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 300.0
+
+
+class TestSequentialToolTimeoutResolver:
+    """_resolve_sequential_tool_timeout: own key, inherits concurrent default."""
+
+    def _resolver(self):
+        from agent import tool_executor
+
+        return tool_executor._resolve_sequential_tool_timeout
+
+    def test_inherits_concurrent_default(self, monkeypatch):
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.delenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", raising=False)
+        assert self._resolver()() == 420.0
+
+    def test_inherits_concurrent_env_bridge(self, monkeypatch):
+        # No sequential-specific setting -> concurrent env var flows through.
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
+        assert self._resolver()() == 60.0
+
+    def test_own_config_key_wins_over_concurrent(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {"tools": {"concurrent_batch": 300, "sequential_call": 90}},
+        )
+        assert self._resolver()() == 90.0
+
+    def test_zero_disables_independently(self, monkeypatch):
+        # Sequential bound can be disabled while the concurrent one stays on.
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {"tools": {"concurrent_batch": 300, "sequential_call": 0}},
+        )
+        assert self._resolver()() is None
+
+    def test_concurrent_disabled_flows_through(self, monkeypatch):
+        # concurrent disabled (None default) + no sequential key -> unbounded.
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {"tools": {"concurrent_batch": 0}},
+        )
+        assert self._resolver()() is None

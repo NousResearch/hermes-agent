@@ -181,6 +181,10 @@ model:
 #   tools:
 #     concurrent_batch: 420   # Deadline for a parallel tool-call batch
 #                             # (legacy env: HERMES_CONCURRENT_TOOL_TIMEOUT_S)
+#     sequential_call: 420    # Deadline for one sequentially-executed tool call.
+#                             # Defaults to concurrent_batch's value so the two
+#                             # executor paths stay in sync; human waits
+#                             # (approval prompts, clarify) never count against it.
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

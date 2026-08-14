@@ -206,7 +206,7 @@ def _(rid, params: dict) -> dict:
     # .env (only over the seeded comment-only stub — never clobber real
     # secrets a clone brought along) and auth.json (only when absent), then
     # inherit model.provider/model.default unless the caller pinned a model.
-    mirrored = {"env": False, "auth": False, "model_inherited": False}
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
     if is_truthy_value(params.get("mirror_credentials", True)):
         import shutil
 
@@ -241,6 +241,62 @@ def _(rid, params: dict) -> dict:
     model = str(params.get("model") or "").strip()
     provider = str(params.get("provider") or "").strip()
     model_set = False
+
+    def _mirror_voice_sections() -> bool:
+        """Copy voice config (stt/tts/voice) from the launch profile.
+
+        Desktop dictation and TTS are profile-scoped: /api/audio/transcribe
+        resolves the ``stt`` section inside the TARGET profile's home. A
+        freshly created profile has only a ``model`` section, so voice fell
+        back to defaults (local whisper, often not installed) and dictation
+        "didn't work in bot mode" while working on the primary profile.
+
+        Reads/writes go through the canonical loaders scoped to the target
+        profile via the context-local HERMES_HOME override — the same
+        mechanism as ``_write_profile_model`` (config-read-guard: no raw
+        yaml on config.yaml).
+        """
+        try:
+            from hermes_cli.config import (
+                load_config_readonly,
+                read_user_config_raw,
+                save_config,
+            )
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            src_cfg = load_config_readonly() or {}
+            sections = {
+                k: src_cfg[k] for k in ("stt", "tts", "voice") if src_cfg.get(k)
+            }
+            if not sections:
+                return False
+
+            token = set_hermes_home_override(str(path))
+            try:
+                # Write-back round-trip on the raw file: load_config() would
+                # merge DEFAULT_CONFIG, making every section look present and
+                # the mirror a no-op (and save_config would then persist the
+                # entire default tree into the fresh profile).
+                dst_cfg = read_user_config_raw() or {}
+                changed = False
+                for key, value in sections.items():
+                    if key not in dst_cfg:
+                        dst_cfg[key] = value
+                        changed = True
+                if changed:
+                    save_config(dst_cfg)
+            finally:
+                reset_hermes_home_override(token)
+            return changed
+        except Exception:
+            return False
+
+    if is_truthy_value(params.get("mirror_credentials", True)):
+        mirrored["voice"] = _mirror_voice_sections()
+
     if model and provider:
         try:
             from hermes_cli.web_routers.profiles import _write_profile_model

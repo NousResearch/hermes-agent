@@ -1522,10 +1522,14 @@ class TestDoctorDeprecatedConfigAndEnv:
 class TestMacOSTCCGrants:
     """macOS TCC grant persistence check (issue #86385)."""
 
-    def test_silent_on_non_macos(self, monkeypatch, capsys):
-        """Non-macOS: the check must produce no output."""
+    def test_silent_on_non_macos(self, monkeypatch, capsys, tmp_path):
+        """Non-macOS: the check must produce no output even with a bundle present."""
         monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
-        monkeypatch.setattr(doctor_mod, "_desktop_app_bundle", lambda: None)
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
         doctor_mod.check_macos_tcc_grants()
         assert capsys.readouterr().out == ""
 
@@ -1587,3 +1591,17 @@ class TestMacOSTCCGrants:
         doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
+
+    def test_warns_when_dr_empty_string(self, monkeypatch, capsys, tmp_path):
+        """Empty DR output must not false-positive as a stable identity."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: "")
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out

@@ -1066,7 +1066,7 @@ def check_macos_tcc_grants() -> None:
     if app is None:
         return
     dr = _macos_desktop_dr(app)
-    if dr is None:
+    if not dr:
         check_warn(
             "macOS TCC grant check",
             "(could not read code-signing requirement of the desktop bundle)",

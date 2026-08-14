@@ -1591,6 +1591,11 @@ class MoAChatCompletions:
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
         self._pending_trace: Any = None
+        # Per-advisor metrics for observability hooks. Unlike _pending_trace
+        # this is NOT consumed — post_api_request fires on a different branch
+        # than consume_and_save_trace, so a consuming read would race it. Holds
+        # until the next fan-out replaces it.
+        self._last_reference_metrics: Any = None
         # every_n fan-out cadence state. The iteration counter is scoped to a
         # single USER TURN (not the facade lifetime): it counts create() calls
         # since the last new user message and resets whenever the user-turn
@@ -1621,6 +1626,14 @@ class MoAChatCompletions:
             self._pending_reference_usage = CanonicalUsage()
             self._pending_reference_cost = None
         return usage, cost
+
+    def last_reference_metrics(self) -> Any:
+        """Per-advisor metrics from the most recent fan-out, or None.
+
+        Read-only: a MoA turn's post_api_request hook must not disturb the
+        accounting that consume_reference_usage and consume_and_save_trace own.
+        """
+        return self._last_reference_metrics
 
     def _record_late_reference_accounting(self, label: str, accounting: Any) -> None:
         """Fold a late-completing interrupted reference's real spend in.
@@ -2177,6 +2190,18 @@ class MoAChatCompletions:
                 "aggregator_slot": aggregator,
                 "aggregator_temperature": aggregator_temperature,
             }
+            # Derived from the same privacy-redacted _trace_refs, so an active
+            # privacy mode redacts the observability payload too.
+            try:
+                from agent.moa_trace import slot_metrics
+
+                self._last_reference_metrics = [
+                    slot_metrics(acct, label, output=text)
+                    for label, text, acct in _trace_refs
+                ]
+            except Exception as exc:  # pragma: no cover - never break a turn
+                logger.debug("MoA reference metrics render failed: %s", exc)
+                self._last_reference_metrics = None
 
             # Surface each reference model's answer to the display BEFORE the
             # aggregator acts — once per turn (only on the iteration that
@@ -2320,6 +2345,14 @@ class MoAClient:
         return self.chat.completions.consume_and_save_trace(
             session_id, aggregator_output_fallback=aggregator_output_fallback
         )
+
+    def last_reference_metrics(self) -> Any:
+        """Per-advisor metrics from the most recent fan-out, or None.
+
+        Read-only, unlike the two consume_* methods above: the observability
+        hook fires on a different branch than the accounting they own.
+        """
+        return self.chat.completions.last_reference_metrics()
 
 
 def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:

@@ -451,6 +451,7 @@ class CLIAgentSetupMixin:
                     )
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
                 self._restore_session_yolo(session_meta, quiet=_quiet_mode)
+                self._restore_session_model(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -463,11 +464,7 @@ class CLIAgentSetupMixin:
                     )
             # Re-open the session (clear ended_at so it's active again)
             try:
-                self._session_db._conn.execute(
-                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
-                    (self.session_id,),
-                )
-                self._session_db._conn.commit()
+                self._session_db.reopen_session(self.session_id)
             except Exception:
                 pass
         
@@ -721,6 +718,7 @@ class CLIAgentSetupMixin:
             )
             self._restore_session_cwd(session_meta)
             self._restore_session_yolo(session_meta)
+            self._restore_session_model(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
@@ -731,12 +729,7 @@ class CLIAgentSetupMixin:
 
         # Re-open the session (clear ended_at so it's active again)
         try:
-            self._session_db._conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
-                "WHERE id = ?",
-                (self.session_id,),
-            )
-            self._session_db._conn.commit()
+            self._session_db.reopen_session(self.session_id)
         except Exception:
             pass
 

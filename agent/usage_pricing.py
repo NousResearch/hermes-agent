@@ -18,6 +18,46 @@ _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
+# Sub-cent cost threshold: below $0.01, render at 4 decimal places so
+# the display is non-zero (e.g. $0.0046 instead of $0.00). See #79220.
+_SUBCENT_THRESHOLD = Decimal("0.01")
+
+# Attached to every CostResult with status="included" so consumers can
+# distinguish "free because subscription" from "free because $0 pricing".
+_INCLUDED_NOTE = "subscription-included; no provider invoice for usage"
+
+
+def format_cost_label(amount: Decimal) -> str:
+    """Format a cost amount as a display label.
+
+    Scales precision to magnitude:
+    - Zero → "$0.00"
+    - Sub-cent (< $0.01) → "~$0.0046" (4 dp; amounts that ROUND to
+      0.0000 at 4 dp — i.e. at or below $0.00005 under banker's
+      rounding — fall back to "~$<0.0001" so the label never reads
+      as zero)
+    - Normal → "~$1.23" (2 dp)
+
+    This fixes #79220 where sub-cent per-turn costs on cheap models
+    (DeepSeek, etc.) rendered as "$0.00" despite amount_usd carrying
+    full Decimal precision.
+
+    Shared by per-response cost labels (estimate_usage_cost) and the
+    insights cost-bucket formatters — keep both surfaces on this one
+    implementation so sub-cent honesty can't regress on one of them.
+    """
+    if amount == _ZERO:
+        return "$0.00"
+    if amount < _SUBCENT_THRESHOLD:
+        label = f"~${amount:.4f}"
+        # A positive amount that rounds to 0.0000 at 4 dp would render
+        # "~$0.0000" — a zero-looking label, the exact #79220 dishonesty.
+        # Comparing the rendered label checks the truth directly (a naive
+        # `< 0.00005` threshold misses the exact boundary under
+        # ROUND_HALF_EVEN).
+        return label if label != "~$0.0000" else "~$<0.0001"
+    return f"~${amount:.2f}"
+
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
     "provider_cost_api",
@@ -1334,6 +1374,7 @@ def estimate_usage_cost(
             source="none",
             label="included",
             pricing_version="included-route",
+            notes=(_INCLUDED_NOTE,),
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
@@ -1378,10 +1419,11 @@ def estimate_usage_cost(
         amount += Decimal(usage.request_count) * entry.request_cost
 
     status: CostStatus = "estimated"
-    label = f"~${amount:.2f}"
+    label = format_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
         status = "included"
         label = "included"
+        notes.append(_INCLUDED_NOTE)
 
     if route.provider == "openrouter":
         notes.append("OpenRouter cost is estimated from the models API until reconciled.")

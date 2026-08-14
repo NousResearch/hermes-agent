@@ -67,7 +67,9 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
 
       - name: Install dependencies
         # Same extras as the Linux test lane so an OS-marked test can import

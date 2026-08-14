@@ -318,6 +318,20 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
 
+    def test_retain_source_defaults_empty(self, provider):
+        # Opt-in per AGENTS.md: no attribution tag ships by default.
+        assert provider._retain_source == ""
+
+    def test_retain_source_absent_from_metadata_by_default(self, provider):
+        # metadata.source is stamped only when the user sets retain_source.
+        meta = provider._build_metadata(message_count=2, turn_index=1)
+        assert "source" not in meta
+
+    def test_retain_source_user_override_wins(self, provider_with_config):
+        # Users can still opt in explicitly (config key / env var).
+        p = provider_with_config(retain_source="cogoport")
+        assert p._retain_source == "cogoport"
+        assert p._build_metadata(message_count=2, turn_index=1)["source"] == "cogoport"
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
@@ -495,6 +509,43 @@ class TestPrefetch:
     def test_prefetch_returns_empty_when_no_result(self, provider):
         assert provider.prefetch("test") == ""
 
+
+    def test_recall_sync_defaults_off(self, provider):
+        assert provider._recall_sync is False
+
+    def test_recall_sync_recalls_current_query_synchronously(self, provider_with_config):
+        # recall_sync=True: prefetch() must do a live recall against the
+        # *current* query (not read a previously queued buffer). #5820
+        p = provider_with_config(recall_sync=True)
+        captured = {}
+
+        def _capture_recall(**kwargs):
+            captured["query"] = kwargs.get("query", "")
+            return SimpleNamespace(results=[SimpleNamespace(text="fresh memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_capture_recall)
+
+        # Nothing pre-buffered — proves the result comes from a live recall.
+        assert p._prefetch_result == ""
+        result = p.prefetch("fix tests")
+
+        assert captured["query"] == "fix tests"       # current query, not ignored
+        assert "fresh memory" in result
+        p._client.arecall.assert_called_once()
+
+    def test_recall_sync_skips_background_queue(self, provider_with_config):
+        # With sync recall there's nothing to prime in the background.
+        p = provider_with_config(recall_sync=True)
+        p.queue_prefetch("anything")
+        assert p._prefetch_thread is None
+
+    def test_async_default_ignores_current_query_and_reads_buffer(self, provider):
+        # Default (recall_sync off): prefetch returns the buffered result and
+        # does NOT issue a live recall for the current query.
+        provider._prefetch_result = "- buffered from previous turn"
+        result = provider.prefetch("a totally different current query")
+        assert "buffered from previous turn" in result
+        provider._client.arecall.assert_not_called()
 
     def test_queue_prefetch_skipped_in_tools_mode(self, provider_with_config):
         p = provider_with_config(memory_mode="tools")
@@ -707,6 +758,87 @@ class TestPrefetchServerRetainVisibility:
 
 
 # ---------------------------------------------------------------------------
+# recall_status (deterministic recall indicator) tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecallStatus:
+    def test_none_before_any_prefetch(self, provider):
+        # Nothing recalled yet → no indicator.
+        assert provider.recall_status() is None
+
+    def test_reports_count_after_recall(self, provider):
+        # Mock client returns 2 memories; prefetch consumes the block.
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch("test")
+
+        status = provider.recall_status()
+        assert status is not None
+        assert status.provider_label == "Hindsight"
+        assert status.count == 2
+
+    def test_reports_count_in_recall_sync_mode(self, provider_with_config):
+        # recall_sync path does a live recall inside prefetch() (no background
+        # prime) — the indicator must still report the count for that turn.
+        p = provider_with_config(recall_sync=True)
+        assert p.prefetch("test")  # live recall returns the 2 mock memories
+        status = p.recall_status()
+        assert status is not None
+        assert status.count == 2
+
+    def test_none_when_recall_returned_nothing(self, provider):
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[])
+        )
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        assert provider.prefetch("test") == ""
+        assert provider.recall_status() is None
+
+    def test_stale_count_cleared_on_empty_turn(self, provider):
+        # First turn recalls 2 memories.
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch("test")
+        assert provider.recall_status().count == 2
+
+        # Next turn recalls nothing — the prior count must not linger.
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[])
+        )
+        provider.queue_prefetch("test2")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch("test2")
+        assert provider.recall_status() is None
+
+    def test_suppressed_when_indicator_off(self, provider_with_config):
+        p = provider_with_config(recall_indicator=False)
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        p.prefetch("test")
+        # Memory was injected, but the indicator is turned off.
+        assert p._last_recall_returned is True
+        assert p.recall_status() is None
+
+    def test_reflect_mode_reports_generic_count(self, provider_with_config):
+        p = provider_with_config(recall_prefetch_method="reflect")
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        p.prefetch("test")
+        status = p.recall_status()
+        assert status is not None
+        # Reflect synthesizes across memories → no discrete count (0).
+        assert status.count == 0
+
+
+# ---------------------------------------------------------------------------
 # sync_turn tests
 # ---------------------------------------------------------------------------
 
@@ -789,6 +921,62 @@ class TestSyncTurn:
         assert p1._document_id != p2._document_id
         assert p1._document_id.startswith("resumed-session-")
         assert p2._document_id.startswith("resumed-session-")
+
+
+# ---------------------------------------------------------------------------
+# retain indicator ("saving to memory") tests
+# ---------------------------------------------------------------------------
+
+
+class TestRetainIndicator:
+    _SAVING = "👁️ Hindsight — saving to memory…"
+
+    def test_emits_saving_on_dispatch(self, provider_with_config):
+        calls = []
+        p = provider_with_config(retain_async=False)
+        p._status_callback = calls.append
+        p.sync_turn("hello", "hi")
+        p._retain_queue.join()
+        assert self._SAVING in calls
+
+    def test_suppressed_when_indicator_off(self, provider_with_config):
+        calls = []
+        p = provider_with_config(retain_indicator=False, retain_async=False)
+        p._status_callback = calls.append
+        p.sync_turn("hello", "hi")
+        p._retain_queue.join()
+        assert calls == []
+
+    def test_no_emit_when_auto_retain_off(self, provider_with_config):
+        calls = []
+        p = provider_with_config(auto_retain=False)
+        p._status_callback = calls.append
+        p.sync_turn("hello", "hi")  # returns early — nothing dispatched
+        assert calls == []
+
+    def test_no_emit_on_buffered_turn(self, provider_with_config):
+        # retain_every_n_turns=2: turn 1 buffers (no write, no line),
+        # turn 2 flushes (one line) — "saving" only fires on a real write.
+        calls = []
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        p._status_callback = calls.append
+        p.sync_turn("t1-u", "t1-a")
+        assert calls == []
+        p.sync_turn("t2-u", "t2-a")
+        p._retain_queue.join()
+        assert calls == [self._SAVING]
+
+    def test_no_crash_without_callback(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        assert p._status_callback is None
+        p.sync_turn("hello", "hi")  # must not raise
+        p._retain_queue.join()
+
+    def test_status_callback_wired_from_initialize(self, tmp_path, monkeypatch):
+        cb = lambda _m: None
+        p = _provider_for_mode(tmp_path, monkeypatch, "cloud")
+        p.initialize(session_id="s", hermes_home=str(tmp_path), status_callback=cb)
+        assert p._status_callback is cb
 
 
 # ---------------------------------------------------------------------------

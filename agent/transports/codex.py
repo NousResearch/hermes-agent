@@ -300,8 +300,13 @@ class ResponsesApiTransport(ProviderTransport):
             # Ultra is the Codex product tier; the Responses API wire value is max.
             _effort_clamp["ultra"] = "max"
         if params.get("is_xai_responses", False):
-            # xAI Responses tops out at high; keep generic stronger values usable.
-            _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
+            from agent.model_metadata import is_grok_46_family
+
+            # Grok 4.6 accepts xhigh as a wire value. Older Grok models top out
+            # at high, while max/ultra remain Hermes aliases for every xAI model.
+            if not is_grok_46_family(model):
+                _effort_clamp["xhigh"] = "high"
+            _effort_clamp.update({"max": "high", "ultra": "high"})
         if (params.get("provider") or "").strip().lower() == "actual":
             # Actual Computer relays to SGLang/vLLM backends that accept only
             # none/low/medium/high/max for reasoning effort — a forwarded
@@ -441,16 +446,18 @@ class ResponsesApiTransport(ProviderTransport):
             else:
                 kwargs.pop("prompt_cache_key", None)
 
-        # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
-        # supported: service_tier") — hit when ``/fast`` priority-processing
-        # mode lingers from a prior model in the same session, or when a
-        # user explicitly sets ``agent.service_tier`` in config.yaml.  The
-        # main-loop guard (``resolve_fast_mode_overrides`` only returns
-        # ``service_tier`` for OpenAI fast-eligible models) doesn't cover
-        # those leak paths, so strip defensively when targeting xAI.  See
-        # #28490 for the original report.
+        # Older xAI Responses models reject ``service_tier`` (HTTP 400
+        # "Argument not supported: service_tier"). Grok 4.6 accepts Priority
+        # Processing, but continue stripping stale or unsupported tier values
+        # on every other xAI path. See #28490 and #84799.
         if is_xai_responses:
-            kwargs.pop("service_tier", None)
+            from agent.model_metadata import is_grok_46_family
+
+            if not (
+                is_grok_46_family(model)
+                and kwargs.get("service_tier") == "priority"
+            ):
+                kwargs.pop("service_tier", None)
 
         # Forward per-request timeout to the SDK so OpenAI/Anthropic clients
         # honor it.  Without this, ``providers.<id>.request_timeout_seconds``

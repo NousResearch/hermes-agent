@@ -7,6 +7,7 @@ and backward compatibility with the legacy ``allow_*`` gates.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,6 +113,45 @@ class TestDeclarationParsing:
         )
         assert manifest is not None
         assert manifest.capabilities == []
+
+    def test_entrypoint_companion_metadata_declares_capabilities_without_import(
+        self, monkeypatch
+    ):
+        """Installed plugins can declare consent metadata in dist entry points."""
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        load = MagicMock(side_effect=AssertionError("plugin code must not be imported"))
+        plugin_ep = SimpleNamespace(
+            name="thread-namer",
+            value="thread_namer.plugin:register",
+            group="hermes_agent.plugins",
+            dist=SimpleNamespace(
+                version="1.2.3",
+                metadata={"Summary": "Names gateway threads"},
+            ),
+            load=load,
+        )
+        capability_ep = SimpleNamespace(
+            name="thread-namer.gateway.platform_actions",
+            value="thread_namer.plugin:register",
+            group="hermes_agent.plugin_capabilities",
+            load=load,
+        )
+        monkeypatch.setattr(
+            plugins_mod.importlib.metadata,
+            "entry_points",
+            lambda: [plugin_ep, capability_ep],
+        )
+
+        manifests = PluginManager()._scan_entry_points()
+
+        assert len(manifests) == 1
+        assert manifests[0].name == "thread-namer"
+        assert manifests[0].version == "1.2.3"
+        assert manifests[0].description == "Names gateway threads"
+        assert manifests[0].capabilities == ["gateway.platform_actions"]
+        load.assert_not_called()
 
 
 # ── Consent grant + persistence ──────────────────────────────────────────────

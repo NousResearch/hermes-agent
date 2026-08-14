@@ -3434,9 +3434,17 @@ def terminal_tool(
                 try:
                     _sp = Path(spill_file_path)
                     raw_spill = _sp.read_text(encoding="utf-8", errors="replace")
-                    _sp.write_text(
+                    from tools.spill_safety import write_text_exclusive
+
+                    # Rewrite in place via lstat-checked unlink + exclusive
+                    # create so the redacted copy can't be diverted through a
+                    # symlink planted between the collector's write and now.
+                    write_text_exclusive(
+                        _sp,
                         redact_terminal_output(strip_ansi(raw_spill), command),
-                        encoding="utf-8", errors="replace",
+                        private=True,
+                        overwrite=True,
+                        errors="replace",
                     )
                     result_dict["output_total_chars"] = spill_total_chars
                     result_dict["full_output_path"] = spill_file_path

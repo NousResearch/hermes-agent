@@ -1139,6 +1139,11 @@ class CLICommandsMixin:
         # --resume.
         self._restore_session_yolo(session_meta)
 
+        # Restore the target session's model/provider so a mid-chat /resume
+        # doesn't silently revert to the config default. Same contract as a
+        # startup --resume (_preload_resumed_session / _init_agent path).
+        self._restore_session_model(session_meta)
+
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
 

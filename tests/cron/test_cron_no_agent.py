@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -135,6 +136,82 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     assert str(loaded_homes[0]) == str(hermes_env)
 
 
+def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failure(
+    hermes_env, monkeypatch,
+):
+    """A watchdog timeout happens before any LLM/provider call.
+
+    The delivery summary must preserve that process-level failure taxonomy and
+    must not claim a provider fallback was attempted or exhausted.
+    """
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "slow.py").write_text("import time; time.sleep(999)\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="slow.py",
+        no_agent=True,
+        deliver="telegram",
+        name="slow watchdog",
+    )
+    delivered = []
+
+    def _timeout(*_args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="slow.py", timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(scheduler.subprocess, "run", _timeout)
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    assert "script timed out" in delivered[0].lower()
+    assert "provider" not in delivered[0].lower()
+    assert "fallback" not in delivered[0].lower()
+
+
+def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, monkeypatch):
+    """Provider timeout classification remains available to agent-backed jobs."""
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+
+    job = create_job(
+        prompt="Summarize the overnight logs.",
+        schedule="every 5m",
+        deliver="telegram",
+        name="provider-backed report",
+    )
+    delivered = []
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *_args, **_kwargs: (
+            False,
+            "# Cron Job: provider-backed report\n\nprovider request timed out\n",
+            "",
+            "ReadTimeout: provider request timed out after fallback attempts",
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_deliver_result",
+        lambda _job, content, **_kwargs: delivered.append(content),
+    )
+
+    assert scheduler.run_one_job(job) is True
+    assert len(delivered) == 1
+    assert "provider timeout" in delivered[0].lower()
+    # Chain wording is now honest (#85508): exhausted when configured,
+    # "no fallback chain configured" guidance otherwise.
+    assert "fallback chain" in delivered[0].lower()
+
+
 # ---------------------------------------------------------------------------
 # _run_job_script: shell-script support
 # ---------------------------------------------------------------------------
@@ -161,3 +238,59 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
     assert "Blocked" in output
+
+
+# ---------------------------------------------------------------------------
+# _summarize_cron_failure_for_delivery: mode-aware failure attribution
+# ---------------------------------------------------------------------------
+#
+# The summarizer classified failures by substring-matching the error prose and
+# mapped any hit onto a provider-shaped explanation. For a no_agent job that is
+# structurally impossible — run_job short-circuits before any model is reached —
+# so a script whose own text happened to contain "timed out", "429" or
+# "authentication" had its failure attributed to a provider it never called.
+#
+# Observed in practice: _run_job_script reports a timeout as "Script timed out
+# after {n}s: {path}", which was delivered to chat as "provider timeout. Fallback
+# chain was exhausted or unavailable." for a job that never opened a socket.
+#
+# The summarizer had no direct test coverage — the only test referencing it
+# mocks it out and asserts on its arguments — which is why this shipped.
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Script timed out after 900s: /home/u/.hermes/scripts/nightly.sh",
+        "Script failed: curl returned 429 from api.example.com",
+        "Script failed: gpg authentication failed for key",
+        "Script failed: ReadTimeout contacting localhost",
+    ],
+)
+def test_no_agent_failure_never_blamed_on_a_provider(error):
+    """A script job's failure must never be reported as a provider/fallback failure."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"name": "nightly-job", "no_agent": True, "script": "nightly.sh"}
+    msg = _summarize_cron_failure_for_delivery(job, error)
+
+    assert "provider" not in msg.lower()
+    assert "fallback chain" not in msg.lower()
+    # The operator must be pointed at what actually failed.
+    assert "script" in msg.lower()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("ReadTimeout: provider did not respond", "provider timeout"),
+        ("HTTP 429 rate limit exceeded", "provider rate limit"),
+        ("HTTP 401 authentication failed", "provider authentication error"),
+    ],
+)
+def test_agent_job_provider_classification_unchanged(error, expected):
+    """Regression guard: agent-mode jobs keep the provider-shaped summaries."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"name": "daily-digest", "no_agent": False}
+    assert expected in _summarize_cron_failure_for_delivery(job, error)

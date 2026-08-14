@@ -91,6 +91,21 @@ def relay_platform_identities() -> list[tuple[str, str]]:
     return out
 
 
+def relay_fronted_platforms() -> set[str]:
+    """The logical platform names the relay connector fronts for this gateway.
+
+    Thin, env-derived wrapper over :func:`relay_platform_identities` (the
+    ``GATEWAY_RELAY_PLATFORMS`` deploy stamp) minus the generic ``relay``
+    fallback. This is the SAME source ``ws_transport`` seeds the live
+    adapter's identity set from (``RelayAdapter.fronts_platform``), so
+    config-time validation (e.g. cron delivery preflight) and fire-time
+    routing can never disagree — and it needs no live adapter handle, so a
+    standalone scheduler process can consult it too. Empty set when the
+    relay fronts nothing.
+    """
+    return {p for p, _ in relay_platform_identities() if p != "relay"}
+
+
 def _relay_bot_ids_map() -> dict:
     """Parse ``GATEWAY_RELAY_BOT_IDS`` (JSON keyed map). Never raises — a malformed
     map yields ``{}`` so a bad config degrades to empty bot ids (the connector

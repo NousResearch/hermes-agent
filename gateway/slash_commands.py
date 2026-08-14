@@ -98,6 +98,31 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+def _home_thread_from_source(source) -> Optional[str]:
+    """The thread id /sethome should persist on the home target, or None.
+
+    Slack thread-per-message session keying stamps a top-level message's own
+    id as ``source.thread_id`` (a session KEY, not a durable location).
+    Persisting it would pin the HOME target itself to the ephemeral thread
+    spawned around the /sethome message — every bare-platform delivery
+    (``deliver="slack"``) would then land in that thread forever. Same
+    recognition as cron origin capture: a Slack thread id equal to the
+    message's own id is synthetic. A /sethome run inside a genuine thread
+    (thread id = the parent's id, not this message's own) keeps that thread
+    as the home target.
+    """
+    thread_id = getattr(source, "thread_id", None)
+    if not thread_id:
+        return None
+    if (
+        getattr(source, "platform", None) == Platform.SLACK
+        and getattr(source, "message_id", None)
+        and str(thread_id) == str(source.message_id)
+    ):
+        return None
+    return str(thread_id)
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -499,6 +524,11 @@ class GatewaySlashCommandsMixin:
                     chat_type = str(getattr(source, "chat_type", "") or "") or None
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
+                    # Persist the platform-specific stable alt id (Signal UUID,
+                    # Feishu union_id) too: build_session_key keys the participant
+                    # on ``user_id_alt or user_id``, so a replayed wake only rebuilds
+                    # the same session key when the alt id survives the round-trip.
+                    user_id_alt = str(getattr(source, "user_id_alt", "") or "") or None
                     delivery_metadata = self._thread_metadata_for_source(
                         source, self._reply_anchor_for_event(event)
                     ) or None
@@ -517,7 +547,11 @@ class GatewaySlashCommandsMixin:
                                     chat_type=chat_type,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
+                                    user_id_alt=user_id_alt,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    # Subscribing from chat: deliver the passive
+                                    # message and wake the destination agent.
+                                    delivery_mode="notify+wake",
                                     delivery_metadata=delivery_metadata,
                                 )
                             finally:
@@ -3020,7 +3054,7 @@ class GatewaySlashCommandsMixin:
                     error="Relay does not authenticate this logical home target",
                 )
 
-        thread_id = source.thread_id
+        thread_id = _home_thread_from_source(source)
         home = HomeChannel(
             platform=source.platform,
             chat_id=str(chat_id),

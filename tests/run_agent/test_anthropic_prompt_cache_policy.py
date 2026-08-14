@@ -161,6 +161,139 @@ class TestThirdPartyAnthropicGateway:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+    def test_bare_alias_with_explicit_prompt_caching_capability_caches(self):
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_explicit_prompt_caching_false_is_authoritative(self):
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="claude-fable-5",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"claude-fable-5": {"prompt_caching": False}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_bare_alias_without_capability_stays_conservative(self):
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"context_length": 1_000_000}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_capability_on_other_route_does_not_apply(self):
+        """prompt_caching declared for a DIFFERENT base_url must not enable
+        caching for this agent's route — route isolation at the policy level."""
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "other-proxy",
+                "base_url": "https://other.example.com/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_operator_cache_disable_beats_explicit_capability_true(self):
+        """prompt_caching.cache_ttl disable (agent._cache_disabled) is a
+        global operator kill-switch — it must win over a per-model
+        prompt_caching: true declaration (#33555 semantics)."""
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+        agent._cache_disabled = True
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_modern_providers_yaml_through_real_loader(self, tmp_path, monkeypatch):
+        """Production path: a real config.yaml in the modern ``providers:``
+        dict shape, loaded through the real normalizer chain — including the
+        init-order fallback where ``_custom_providers`` is NOT yet set on the
+        agent and the policy loads config itself."""
+        import textwrap
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            textwrap.dedent(
+                """
+                providers:
+                  anthropic-proxy:
+                    api: https://gateway.example.com/anthropic
+                    transport: anthropic_messages
+                    models:
+                      fable:
+                        context_length: 1000000
+                        prompt_caching: true
+                      opus:
+                        prompt_caching: false
+                """
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # load_config's cache is keyed by resolved config path, so pointing
+        # HERMES_HOME at a fresh tempdir needs no cache invalidation.
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        # No agent._custom_providers — exercises the config fallback the
+        # init-time call (agent_init before the snapshot assignment) hits.
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+        agent.model = "opus"
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestMiniMaxAnthropicWire:
     """MiniMax's own model family on its Anthropic-compatible endpoint.
 

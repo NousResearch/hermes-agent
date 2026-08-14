@@ -288,7 +288,27 @@ glance.
 
 ## Steering a Running Subagent
 
-Interrupting a child throws away its in-flight work; often you just want to redirect it. `steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+Interrupting a child throws away its in-flight work; often you just want to redirect it.
+
+### From the parent agent (model-facing)
+
+The parent agent orchestrates its own running children with the same `delegate_task` tool it spawned them with — no separate control tool:
+
+```json
+{"action": "list"}
+{"action": "steer", "subagent_id": "sa-0-1a2b3c4d", "message": "focus on pricing instead"}
+{"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
+```
+
+- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
+- **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
+
+Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
+
+### From the TUI / gateway (session-facing)
+
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}

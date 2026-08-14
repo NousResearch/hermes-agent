@@ -100,6 +100,34 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _fallback_chain_phrase() -> str:
+    """Wording for the fallback-chain clause of a provider-failure message.
+
+    "Fallback chain was exhausted or unavailable." used to fire
+    unconditionally on every provider failure, which implies a fallback was
+    attempted and failed. Most installs have fallback_providers: [] (no
+    chain configured at all), so that wording was actively misleading: it
+    sent the operator looking for why a fallback "failed" when none was
+    ever attempted. Distinguish the two cases explicitly.
+
+    Fails open to the original ambiguous-but-safe wording if config can't be
+    read (e.g. mid-shutdown, permissions) -- never let a lookup error crash
+    failure-message generation itself.
+    """
+    try:
+        cfg = load_config() or {}
+        chain = get_fallback_chain(cfg)
+    except Exception:
+        return "Fallback chain was exhausted or unavailable."
+    if chain:
+        return "Fallback chain was exhausted or unavailable."
+    return (
+        "No fallback chain configured — add one with `hermes fallback add`, "
+        "or set a cron fleet default via `cron.model` + `cron.model_provider` "
+        "in config.yaml."
+    )
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -111,8 +139,64 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    if "skipped to prevent unintended spend: global inference config drifted" in lower:
+        if "finite one-shot job is consumed" in lower:
+            remediation = (
+                "This finite one-shot is consumed; create a new one-shot job at "
+                "a future time with an explicit provider and model."
+            )
+        else:
+            job_id = job.get("id") or "<job_id>"
+            remediation = (
+                "Pin it explicitly: "
+                f"`cronjob action=update job_id={job_id} "
+                "provider=<provider> model=<model>`."
+            )
+        return (
+            f"⚠️ Cron '{job_name}' skipped before inference to prevent "
+            f"unintended spend. {remediation}"
+        )
+
+    # A no_agent job IS its script — run_job short-circuits it before any model
+    # is reached ("no LLM involvement", see the no_agent branch in run_job). So
+    # provider timeouts, rate limits, auth errors and fallback chains are not
+    # merely unlikely for these jobs, they are structurally impossible. Classify
+    # on the job's MODE before pattern-matching its prose.
+    #
+    # Without this gate the branches below classify by substring, so a script's
+    # own wording decides which subsystem gets blamed. _run_job_script reports a
+    # timeout as "Script timed out after {n}s: {path}" — that contains "timed
+    # out", so it matched the provider branch and the operator was told
+    # "provider timeout. Fallback chain was exhausted or unavailable." for a job
+    # that never opened a socket. "429" or "authentication" appearing anywhere
+    # in a script's output misfires the same way.
+    #
+    # A delivery line that names the wrong subsystem is worse than no line at
+    # all: it does not merely fail to inform, it sends the reader to the wrong
+    # place.
+    #
+    # Falling through leaves the generic cleaner below to report what actually
+    # happened, naming the script. No new message text is needed.
+    provider_reachable = not job.get("no_agent")
+
+    # Script execution happens outside the LLM/provider path (also for
+    # agent-backed jobs that run a context script). Check the script runner's
+    # explicit error contract ("Script timed out after {n}s: {path}") before
+    # generic timeout matching so a script timeout never claims a provider
+    # fallback was attempted (#82460 @jbagdonas, #78503 @daxro).
+    if lower.startswith("script timed out"):
+        return (
+            f"⚠️ Cron '{job_name}' failed: script timed out. "
+            "No model was invoked. Full details saved in cron output."
+        )
+
     # Provider/API failures are the common noisy path. Keep these short.
-    if "429" in text or "rate limit" in lower or "usage limit" in lower:
+    # Match 429 as a whole token (#83188 @cation98): bare substring matching
+    # let identifiers containing those digits (job ids, ports, hashes) trip
+    # a false "provider rate limit" alert.
+    if provider_reachable and (
+        re.search(r"\b429\b", text) or "rate limit" in lower or "usage limit" in lower
+    ):
         reason = "rate limit"
         if "weekly usage limit" in lower:
             reason = "weekly usage limit"
@@ -120,21 +204,63 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             reason = "quota limit"
         return (
             f"⚠️ Cron '{job_name}' failed: provider {reason}. "
-            "Fallback chain was exhausted or unavailable. "
+            f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
         )
 
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+    # The scheduler's own inactivity watchdog (see the TimeoutError raised
+    # above at "Cron job '{job_name}' idle for {secs}s (limit {limit}s) —
+    # last activity: {desc}") produces a message that contains the substring
+    # "timed out"/"timeout" nowhere, but DOES contain "idle for ... (limit
+    # ...)" — however older/other call sites can still phrase an inactivity
+    # abort using "timed out" wording, so match on the "idle for Ns (limit"
+    # shape specifically (case-insensitive) BEFORE the generic provider-
+    # timeout branch below. Without this, an inactivity timeout — the job's
+    # OWN tool call/turn going quiet, no provider or fallback chain ever
+    # involved — gets rewritten into a misleading "provider timeout /
+    # fallback chain exhausted" message, sending the operator to debug the
+    # wrong system entirely (field-reported: a stuck `terminal` tool call
+    # tripped the 600s inactivity limit and was reported as a
+    # provider/fallback failure). Mirrors the same reordering fix
+    # upstream issue #59549 applied for script timeouts vs provider timeouts
+    # — check the more specific, deterministic signature first.
+    if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: the job itself stalled — no tool/API "
+            "activity for the configured inactivity window. Not a provider or "
+            "fallback-chain issue; check what the job was doing when it went "
+            "quiet. Full details saved in cron output."
+        )
+
+    # Sibling scheduler-side timeout (#79768): the TERMINAL_CWD lock-wait
+    # abort also phrases itself with "Timed out ..." and would fall through
+    # to the generic provider-timeout branch below. Like the inactivity
+    # watchdog above, it is entirely scheduler-internal — no provider or
+    # fallback chain involved — so classify it before the generic match.
+    if "terminal_cwd" in lower and ("lock" in lower or "timed out" in lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: could not acquire the scheduler's "
+            "working-directory lock — another cron job (a workdir writer or "
+            "long-running readers) held it too long. Not a provider or "
+            "fallback-chain issue; stagger the holder's schedule or remove "
+            "its workdir. Full details saved in cron output."
+        )
+
+    if provider_reachable and (
+        "readtimeout" in lower or "timed out" in lower or "timeout" in lower
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            "Fallback chain was exhausted or unavailable. "
+            f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
         )
 
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
     # not trip a misleading auth message.
-    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+    if provider_reachable and (
+        re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text)
+    ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider authentication error. "
             "Full details saved in cron output."
@@ -169,19 +295,28 @@ class CronPromptInjectionBlocked(Exception):
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Four protected toolsets are always disabled in cron context:
-      - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
+    Three toolsets are always disabled in cron context regardless of config:
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
       - ``memory`` — cron agents are constructed with ``skip_memory=True``, so
         exposing this tool only gives the model an unbacked tool that fails
+
+    ``cronjob`` is policy-denied by default (loop prevention, not a security
+    boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
+    in config.yaml drops it from the base denylist so cron-spawned agents may
+    manage the user's cron table. The gate only removes the built-in policy
+    denial — it never overrides the user denylist below.
 
     User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
     so per-job ``enabled_toolsets`` cannot bypass policy that applies to
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
-    disabled = ["cronjob", "messaging", "clarify", "memory"]
+    cron_cfg = (cfg or {}).get("cron") or {}
+    if cron_cfg.get("allow_agent_scheduling"):
+        disabled = ["messaging", "clarify", "memory"]
+    else:
+        disabled = ["cronjob", "messaging", "clarify", "memory"]
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:
@@ -1288,6 +1423,30 @@ def _iter_home_target_platforms():
         pass
 
 
+def _relay_fronted_delivery_platforms(connected: set) -> set:
+    """Logical platforms deliverable through a connected relay connector.
+
+    ``get_connected_platforms()`` only sees NATIVELY configured platforms.
+    On a relay-fronted deployment (relay in ``config.platforms``, the real
+    platform credential living in the connector) the fronted platforms are
+    absent from that set although fire-time routing delivers to them via
+    ``resolve_delivery_transport`` + ``RelayAdapter.fronts_platform``. This
+    keeps validation symmetric with routing by consulting the same
+    env-derived deploy stamp (``GATEWAY_RELAY_PLATFORMS``) the live
+    adapter's identity set is seeded from. No relay connected -> empty set,
+    so native topologies keep the strict credential check unchanged.
+    """
+    if "relay" not in connected:
+        return set()
+    try:
+        from gateway.relay import relay_fronted_platforms
+
+        return relay_fronted_platforms()
+    except Exception:
+        logger.debug("relay fronted-platform lookup failed", exc_info=True)
+        return set()
+
+
 def cron_delivery_targets() -> list[dict]:
     """Return the platforms a cron job can auto-deliver to.
 
@@ -1308,6 +1467,7 @@ def cron_delivery_targets() -> list[dict]:
 
         gateway_config = load_gateway_config()
         connected = {p.value for p in gateway_config.get_connected_platforms()}
+        connected |= _relay_fronted_delivery_platforms(connected)
     except Exception:
         logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
         connected = set()
@@ -1329,6 +1489,36 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
+def _origin_thread_is_stale(origin: dict) -> bool:
+    """True when a Slack origin's thread is a stale creation-turn artifact.
+
+    Relay-fronted Slack in thread-per-message mode stamps each top-level
+    message's own id as the session thread (a session KEY, not a durable
+    location). Jobs persisted before origin capture learned to drop that
+    stamp carry it as ``origin.thread_id`` forever. Heuristic that repairs
+    them at fire time without touching genuine threads: when the origin
+    chat IS the configured Slack home chat (the ``/sethome`` conversation),
+    a pinned origin thread is the creation-message artifact — the user's
+    delivery expectation for their home conversation is top-level (or the
+    home target's own configured thread). Non-home chats keep their
+    threads: a job deliberately created inside a working thread stays there.
+    """
+    if str(origin.get("platform") or "").lower() != "slack":
+        return False
+    if not origin.get("thread_id"):
+        return False
+    home_chat = _get_home_target_chat_id("slack")
+    return bool(home_chat) and str(origin.get("chat_id")) == str(home_chat)
+
+
+def _origin_delivery_thread(origin: dict):
+    """The thread a deliver=origin job should use, stale stamps dropped."""
+    if _origin_thread_is_stale(origin):
+        home_thread = _get_home_target_thread_id("slack")
+        return home_thread if home_thread else None
+    return origin.get("thread_id")
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -1342,7 +1532,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
-                "thread_id": origin.get("thread_id"),
+                "thread_id": _origin_delivery_thread(origin),
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
@@ -1389,6 +1579,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             and str(origin.get("platform") or "").lower() == platform_key
             and str(origin.get("chat_id")) == str(chat_id)
             and origin.get("thread_id")
+            and not _origin_thread_is_stale(origin)
         ):
             thread_id = origin.get("thread_id")
 
@@ -3020,6 +3211,13 @@ def _guard_job_credential_exfil(job: dict) -> None:
 BLOCKED_CONFIG_MARKER = "[blocked_config]"
 BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
 
+# Marker prefix for a #44585 drift-guard skip. Same alert-once contract as
+# blocked_config: run_one_job keys off it to record last_status and the
+# ``:silent`` variant means "already alerted on a previous tick — do not
+# deliver again" (the drift_alerted bit on the job record, #73506 shape).
+DRIFT_SKIP_MARKER = "[drift_skip]"
+DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
+
 
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Whether cron pre-dispatch configuration validation is enabled.
@@ -3119,6 +3317,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 connected = {
                     p.value for p in gateway_config.get_connected_platforms()
                 }
+                connected |= _relay_fronted_delivery_platforms(connected)
             except Exception:
                 logger.debug(
                     "preflight: gateway config unavailable — skipping "
@@ -4066,22 +4265,59 @@ def run_job(
                 _drift.append(f"{_axis} '{_snapshot}' -> '{_current}'")
             if _drift:
                 _changes = "; ".join(_drift)
+                # Lifecycle-aware remediation (#72056, @sashmatash): a finite
+                # one-shot is consumed by this attempted dispatch — telling the
+                # operator to `cronjob action=update` a spent job is a dead
+                # end. Recurring/repeatable jobs get the pin command instead.
+                _repeat = job.get("repeat") if isinstance(job.get("repeat"), dict) else {}
+                _finite_oneshot = (
+                    isinstance(job.get("schedule"), dict)
+                    and job["schedule"].get("kind") == "once"
+                    and _repeat.get("times") == 1
+                )
+                if _finite_oneshot:
+                    _remediation = (
+                        "This finite one-shot job is consumed by this attempted run; "
+                        "create a new one-shot job at a future time with an explicit "
+                        "provider and model."
+                    )
+                else:
+                    _remediation = (
+                        "To run on the new config, pin it explicitly: "
+                        f"`cronjob action=update job_id={job_id} "
+                        "provider=<provider> model=<model>` (or pin the original "
+                        "values to keep them)."
+                    )
                 logger.warning(
                     "Job '%s': SKIPPED — global inference config drifted since "
                     "creation (%s) and this job is unpinned. Skipped to prevent "
-                    "unintended spend. Pin explicitly to proceed: "
-                    "`cronjob action=update job_id=%s provider=<p> model=<m>`.",
+                    "unintended spend. %s",
                     job_id,
                     _changes,
-                    job_id,
+                    _remediation,
+                )
+                # Alert-once (#73506 shape): persist the drift_alerted bit so
+                # only the FIRST drifted tick delivers; run_one_job suppresses
+                # delivery on the silent marker. mark_job_run clears the bit
+                # when a run succeeds (drift healed), re-arming the alert.
+                _drift_already_alerted = False
+                try:
+                    from cron.jobs import mark_drift_alerted
+
+                    _drift_already_alerted = mark_drift_alerted(job_id)
+                except Exception:
+                    pass  # fail open: better a duplicate alert than none
+                _drift_marker = (
+                    DRIFT_SKIP_SILENT_MARKER if _drift_already_alerted
+                    else DRIFT_SKIP_MARKER
                 )
                 raise RuntimeError(
-                    f"Skipped to prevent unintended spend: global inference config "
-                    f"drifted since this job was created ({_changes}), and this job "
-                    f"is unpinned. No inference call was made. To run on the new "
-                    f"config, pin it explicitly: `cronjob action=update "
-                    f"job_id={job_id} provider=<provider> model=<model>` "
-                    f"(or pin the original values to keep them). See #44585."
+                    f"{_drift_marker} Skipped to prevent unintended spend: global "
+                    f"inference config drifted since this job was created "
+                    f"({_changes}), and this job is unpinned. No inference call "
+                    f"was made. {_remediation} "
+                    f"This alert is sent once; the job stays skipped until the "
+                    f"config is pinned or restored. See #44585."
                 )
 
         fallback_model = get_fallback_chain(_cfg) or None
@@ -4709,6 +4945,15 @@ def run_one_job(
             blocked_config = blocked_config_silent or (
                 bool(error) and BLOCKED_CONFIG_MARKER in str(error)
             )
+            # Drift-guard skip (#44585): same alert-once contract as
+            # blocked_config — the silent marker means the operator already
+            # got the alert on a previous tick.
+            drift_skip_silent = (
+                bool(error) and DRIFT_SKIP_SILENT_MARKER in str(error)
+            )
+            drift_skip = drift_skip_silent or (
+                bool(error) and DRIFT_SKIP_MARKER in str(error)
+            )
             if blocked_config and not success:
                 # Blocked-config alert: bypass the generic failure summarizer
                 # (whose auth/timeout heuristics would mislabel this as a
@@ -4726,11 +4971,23 @@ def run_one_job(
                 )
             else:
                 deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+                if drift_skip and not success:
+                    # Drift-skip alert: bypass the generic summarizer's
+                    # 180-char truncation (it would eat the remediation
+                    # command) and strip the internal marker — deliver the
+                    # guard's own actionable message intact.
+                    _drift_text = re.sub(
+                        r"\[drift_skip[^\]]*\]\s*", "", str(error)
+                    ).strip()
+                    deliver_content = (
+                        f"⚠️ Cron '{job.get('name') or job['id']}' skipped: "
+                        f"{_drift_text}"
+                    )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
-            if blocked_config_silent:
+            if blocked_config_silent or drift_skip_silent:
                 should_deliver = False
             unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the

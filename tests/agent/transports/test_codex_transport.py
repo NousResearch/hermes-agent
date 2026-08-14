@@ -689,6 +689,47 @@ class TestCodexTransportTimeout:
 
 
 
+class TestCodexTransportXaiReasoningEffort:
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    def test_grok_46_preserves_xhigh(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_grok_46_clamps_hermes_aliases_to_high(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == "high"
+
+    def test_older_grok_clamps_xhigh_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw["reasoning"]["effort"] == "high"
+
+
 class TestCodexTransportXaiServiceTierStrip:
     """xAI Responses API rejects ``service_tier`` (#28490).
 
@@ -720,6 +761,28 @@ class TestCodexTransportXaiServiceTierStrip:
             f"service_tier must be stripped on xAI requests, "
             f"got {kw.get('service_tier')!r}"
         )
+
+    def test_grok_46_preserves_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+
+    def test_grok_46_strips_non_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "unsupported"},
+        )
+
+        assert "service_tier" not in kw
 
     def test_non_xai_codex_preserves_service_tier(self, transport):
         """The strip is xAI-only — native Codex DOES accept

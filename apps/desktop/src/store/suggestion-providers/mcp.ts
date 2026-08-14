@@ -84,11 +84,32 @@ export interface McpMatch {
 
 const MAX_MATCHES = 2
 
+// Whole-word (unicode-aware) keyword hit that the user has FINISHED typing:
+// at least one character must follow the match (the lookahead already
+// guarantees it's a boundary). A hit still under the caret — "figma" as the
+// last thing typed, debounce elapsed mid-thought — is not intent yet, it's
+// eavesdropping on a word in progress; the pill waits for the space/period.
+const keywordHit = (haystack: string, candidate: string): boolean => {
+  const pattern = new RegExp(
+    `(?<![\\p{L}\\p{N}])${candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
+    'gu'
+  )
+
+  for (const match of haystack.matchAll(pattern)) {
+    if (match.index + match[0].length < haystack.length) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** Pure matcher, exported for tests: pasted-link host hits (the strongest
- *  intent signal) and whole-word (unicode-aware) keyword hits against the
- *  draft, capped at MAX_MATCHES. */
+ *  intent signal) and completed whole-word keyword hits against the draft,
+ *  capped at MAX_MATCHES. Host hits skip the completed-word guard — a paste
+ *  is a deliberate act, and the URL routinely ends the draft. */
 export function matchSuggestions(text: string, index: KeywordEntry[]): McpMatch[] {
-  const haystack = ` ${text.toLowerCase()} `
+  const haystack = text.toLowerCase()
   const hosts = draftHosts(text)
   const matches: McpMatch[] = []
 
@@ -98,14 +119,7 @@ export function matchSuggestions(text: string, index: KeywordEntry[]): McpMatch[
 
     // Whole-word match so "linearly" doesn't suggest Linear. Directory
     // keywords are lowercase; multi-word keywords match as phrases.
-    const keyword =
-      host ??
-      entry.keywords.find(candidate =>
-        new RegExp(
-          `(?<![\\p{L}\\p{N}])${candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
-          'u'
-        ).test(haystack)
-      )
+    const keyword = host ?? entry.keywords.find(candidate => keywordHit(haystack, candidate))
 
     if (keyword) {
       matches.push({ keyword, server: entry.server })
@@ -172,7 +186,9 @@ function toSuggestion(match: McpMatch, sessionId: string | null): ComposerSugges
     doneLabel: copy('added', name),
     doneTip: copy('addedTip'),
     id: match.server,
-    invoke: context => connect(match.server, sessionId, context.cancelled),
+    // The pill's session wins over the one captured at sample time: the reload
+    // has to reach the session the user is actually looking at.
+    invoke: context => connect(match.server, context.sessionId ?? sessionId, context.cancelled),
     label: copy('label', name),
     provider: 'mcp',
     tip: copy('tip', match.keyword),

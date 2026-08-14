@@ -97,9 +97,13 @@ def _(rid, params: dict) -> dict:
         cap = 8_000_000
 
     try:
-        from tools.image_generation_tool import image_generate_tool
+        from tools.image_generation_tool import _handle_image_generate
 
-        raw = image_generate_tool(prompt=prompt, aspect_ratio=aspect)
+        # Full provider dispatcher — the same path the model tool takes:
+        # source-image confinement, plugin-registered providers, managed
+        # Krea routing, then the in-tree FAL fallback. Calling the FAL leaf
+        # (image_generate_tool) directly here bypassed configured providers.
+        raw = _handle_image_generate({"prompt": prompt, "aspect_ratio": aspect})
         result = json.loads(raw)
     except Exception as e:
         return _err(rid, 5071, str(e))

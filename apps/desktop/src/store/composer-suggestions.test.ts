@@ -80,4 +80,47 @@ describe('composer suggestion bus', () => {
 
     offerSuggestions('s6', 'test', [])
   })
+
+  it('replaces an offer whose rendered copy changed under the same key', () => {
+    offerSuggestions('s7', 'test', [{ ...suggestion('linear'), tip: 'because you mentioned “linear”' }])
+    offerSuggestions('s7', 'test', [{ ...suggestion('linear'), tip: 'because you pasted linear.app' }])
+
+    // Same key, new trigger — the strip must paint the new reason, not the
+    // first one it ever saw.
+    expect(($composerSuggestionsBySession.get().s7 ?? []).map(s => s.tip)).toEqual(['because you pasted linear.app'])
+
+    offerSuggestions('s7', 'test', [])
+  })
+
+  it('re-offering the same key swaps in the fresh invoke closure', async () => {
+    const calls: string[] = []
+
+    const offer = (tag: string) =>
+      offerSuggestions('s8', 'test', [
+        { ...suggestion('linear'), invoke: async () => void calls.push(tag), label: `Add linear ${tag}` }
+      ])
+
+    offer('first')
+    offer('second')
+
+    await ($composerSuggestionsBySession.get().s8 ?? [])[0]!.invoke({ cancelled: () => false, sessionId: 's8' })
+
+    // A pinned first object means the pill runs work built for a draft the
+    // user has since changed.
+    expect(calls).toEqual(['second'])
+
+    offerSuggestions('s8', 'test', [])
+  })
+
+  it('keeps the array reference when nothing the pill paints changed', () => {
+    offerSuggestions('s9', 'test', [suggestion('linear')])
+
+    const first = $composerSuggestionsBySession.get().s9
+
+    offerSuggestions('s9', 'test', [suggestion('linear')])
+
+    expect($composerSuggestionsBySession.get().s9).toBe(first)
+
+    offerSuggestions('s9', 'test', [])
+  })
 })

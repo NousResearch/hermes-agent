@@ -256,7 +256,9 @@ _LONG_HANDLERS = frozenset(
         "profiles.configure",
         "profiles.create",
         "profiles.describe",
+        "profiles.get_asset",
         "profiles.list",
+        "profiles.set_asset",
         # image.generate is a multi-second remote API round-trip.
         "image.generate",
         "projects.discover_repos",
@@ -274,6 +276,27 @@ _LONG_HANDLERS = frozenset(
         # the WS read loop and causing false "needs setup" (#50005 family).
         "setup.runtime_check",
         "setup.status",
+        # Voice RPCs can trigger check_voice_requirements() → STT provider
+        # auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
+        # subprocess with a 300s timeout). Inline they stall the WS reader
+        # loop (handle_ws awaits dispatch before reading the next frame), so
+        # prompt.submit / session.list queued behind a voice.toggle sit
+        # unread and the desktop "send message" appears dead for minutes
+        # (reproduced: voice.toggle → session.list 40s+ timeout). Route them
+        # to the pool so a slow lazy install can't block message handling.
+        "voice.toggle",
+        "voice.record",
+        "voice.tts",
+        # wake.start calls check_wake_word_requirements() → _stt_ready() →
+        # _get_provider() → _try_lazy_install_stt() → ensure("stt.faster_whisper")
+        # (same synchronous subprocess install chain as the voice RPCs above).
+        # It also calls start_listening() → _build_engine() whose constructors
+        # call lazy_deps.ensure("wake.openwakeword" / "wake.sherpa" / …).
+        # wake.status calls check_wake_word_requirements() too and is polled
+        # by the desktop on every gateway-ready, so it can re-trigger the
+        # same block on a fresh launch. Same bug class as #21123 / #50005.
+        "wake.start",
+        "wake.status",
         # Desktop also polls the in-memory live-session registry every 15s.
         # The handler is normally cheap, but under heavy agent GIL pressure it
         # can still stall for tens of seconds. Keep it off the WS reader thread
@@ -3743,9 +3766,16 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
-# Bare billing buckets are not routable provider identities (kept in parity with the
-# provider gate in agent_init). Restoring one as a session provider override breaks resume.
-_BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
+# Bare billing buckets are not routable provider identities; restoring one as a
+# session provider override breaks resume. (agent_init's fail-fast gate is a
+# DIFFERENT set that also skips "openrouter" — there it means "default route,
+# don't fail fast", not "unroutable".)
+# ``openrouter`` is deliberately excluded here — it is a fully routable provider
+# with its own API key and base_url. Sessions that used OpenRouter store
+# ``billing_provider="openrouter"``; dropping it forces resume to the current
+# global model (e.g. a custom endpoint), which is the wrong provider for the
+# stored model. See #57588.
+_BARE_BILLING_PROVIDERS = {"auto", "custom"}
 
 
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
@@ -9234,11 +9264,11 @@ def _collect_kanban_notifications(session: dict) -> list:
                     text = _format_kanban_event_text(sub, task, ev, slug)
                     if text:
                         texts.append(text)
-                # Unsubscribe only at a truly final status (done/archived);
-                # blocked/crashed subs stay live so a respawned task's next
-                # terminal event still reaches the user (same rule as the
-                # gateway notifier).
-                if task and getattr(task, "status", "") in {"done", "archived"}:
+                # Unsubscribe only on archive. ``done`` is reversible in
+                # review/controller flows, so retaining the subscription lets
+                # a later reopen notify the same originating TUI/Desktop
+                # session. The claimed cursor prevents historical replay.
+                if task and getattr(task, "status", "") == "archived":
                     try:
                         _kb.remove_notify_sub(
                             conn,

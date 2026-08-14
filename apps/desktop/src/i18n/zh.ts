@@ -2745,6 +2745,7 @@ export const zh: Translations = {
       gatewayTitle: '网关',
       customizeTitle: '在状态栏中显示',
       hideStatusbar: '隐藏状态栏',
+      resetStatusbar: '恢复默认设置',
       toggleApprovalMode: '审批',
       toggleBackendVersion: '后端版本',
       toggleCommandCenter: '命令中心',

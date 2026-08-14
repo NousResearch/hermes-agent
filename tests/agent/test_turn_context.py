@@ -318,6 +318,39 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
 
 
 
+def test_recall_indicator_emitted_when_memory_injected():
+    """When prefetch injects memory, the deterministic indicator is emitted."""
+    agent = _FakeAgent()
+    agent._emit_status = MagicMock()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = "- recalled fact"
+    mm.describe_recall.return_value = "👁️ Hindsight — recalled 2 memories"
+    agent._memory_manager = mm
+
+    # A substantive query — a trivial prompt ("hi", "hello") skips prefetch_all
+    # entirely, so there'd be nothing to indicate. See is_trivial_prompt.
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+
+    agent._emit_status.assert_any_call("👁️ Hindsight — recalled 2 memories")
+
+
+def test_recall_indicator_skipped_when_nothing_injected():
+    """No memory injected → describe_recall isn't consulted, nothing emitted."""
+    agent = _FakeAgent()
+    agent._emit_status = MagicMock()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = ""
+    agent._memory_manager = mm
+
+    # Substantive query so prefetch_all actually runs; it returns nothing, so the
+    # indicator path must stay silent (as opposed to being skipped as trivial).
+    _build(agent, user_message="what did we decide about the deploy pipeline?")
+
+    mm.describe_recall.assert_not_called()
+    for call in agent._emit_status.call_args_list:
+        assert "👁️" not in str(call)
+
+
 def test_ensure_db_session_runs_after_system_prompt_restore():
     """Regression for #45499.
 

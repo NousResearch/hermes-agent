@@ -112,8 +112,15 @@ class _BoundedOutputCollector:
             return
         try:
             if self._spill_fh is None:
-                self._spill_path.parent.mkdir(parents=True, exist_ok=True)
-                self._spill_fh = open(self._spill_path, "w", encoding="utf-8", errors="replace")
+                from tools.spill_safety import ensure_spill_dir, open_exclusive
+
+                # Raw pre-redaction output: private perms + symlink-refusing
+                # exclusive create (a planted link must fail the spill, never
+                # redirect the write).
+                ensure_spill_dir(self._spill_path.parent, private=True)
+                self._spill_fh = open_exclusive(
+                    self._spill_path, private=True, errors="replace"
+                )
                 # Backfill everything retained so far so the file holds the
                 # stream from byte 0, not just from the overflow point.
                 backlog = "".join(self._head) + "".join(self._tail)

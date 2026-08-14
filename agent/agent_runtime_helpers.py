@@ -2231,6 +2231,31 @@ def anthropic_prompt_cache_policy(
         and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")
     )
 
+    # A custom Anthropic-compatible route may use a bare model alias that is
+    # canonicalized only after Hermes sends the request. In that case model
+    # spelling cannot prove cache support. Honor an exact route+model
+    # capability declaration instead; explicit false is authoritative too.
+    # This preserves the runtime model id (and therefore request/cache keys)
+    # while avoiding unsafe alias-name guesses.
+    custom_prompt_caching = None
+    if is_anthropic_wire:
+        try:
+            from hermes_cli.config import get_custom_provider_model_capability
+
+            custom_prompt_caching = get_custom_provider_model_capability(
+                model=eff_model,
+                base_url=eff_base_url,
+                capability="prompt_caching",
+                custom_providers=getattr(agent, "_custom_providers", None),
+            )
+        except Exception as _cap_exc:
+            logger.debug(
+                "custom-provider prompt_caching capability lookup failed: %s",
+                _cap_exc,
+            )
+    if custom_prompt_caching is not None:
+        return custom_prompt_caching, custom_prompt_caching
+
     # MiniMax-M3 rides MiniMax's server-side automatic prefix cache on the
     # Anthropic wire (content-keyed, no marker needed); explicit cache_control
     # is documented for M2.7/M2.5/M2.1/M2 only, so markers on M3 are dead
@@ -2731,6 +2756,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     )
 
     # ── Re-evaluate prompt caching ──
+    # Refresh the custom-provider snapshot from the config just loaded above
+    # so the per-model ``prompt_caching`` capability lookup sees the same
+    # live list the context-length resolution used — without this, a flag
+    # added to config.yaml after session start is invisible to a /model
+    # switch (the policy would read the stale init-time snapshot).
+    if _sm_custom_providers is not None:
+        agent._custom_providers = _sm_custom_providers
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy(
             provider=new_provider,

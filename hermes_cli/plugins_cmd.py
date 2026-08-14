@@ -1354,6 +1354,13 @@ def _declared_capabilities_for_key(key: str) -> list:
     for entry in _discover_all_plugins():
         # entry = (name, version, description, source, dir_path, key)
         if entry[5] == key or entry[0] == key:
+            if entry[3] == "entrypoint":
+                from hermes_cli.plugins import discover_entrypoint_manifests
+
+                for manifest in discover_entrypoint_manifests():
+                    if key in (manifest.key, manifest.name):
+                        return list(manifest.capabilities)
+                return []
             dir_path = entry[4]
             if not dir_path:
                 return []

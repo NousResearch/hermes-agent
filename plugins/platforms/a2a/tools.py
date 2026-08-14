@@ -93,6 +93,34 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _http_post_sse(url: str, body: dict, headers: dict, timeout: int):
+    """POST with Accept: text/event-stream and yield decoded SSE data payloads.
+
+    Yields each ``data:`` frame's parsed JSON (or None when unparsable).
+    Comment lines (keepalives) are consumed silently. Raises urllib errors
+    for the caller to format.
+    """
+    data = json.dumps(body).encode("utf-8")
+    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION,
+            "User-Agent": "Hermes-A2A/1.0", "Accept": "text/event-stream", **headers}
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+        ctype = resp.headers.get("Content-Type", "")
+        if not ctype.startswith("text/event-stream"):
+            # Peer ignored the stream request; body is a plain JSON-RPC response.
+            yield json.loads(resp.read().decode("utf-8"))
+            return
+        for raw in resp:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue  # keepalive comments, event/id fields
+            payload = line[len("data:"):].strip()
+            try:
+                yield json.loads(payload)
+            except json.JSONDecodeError:
+                yield None
+
+
 def _card_url(base_url: str) -> str:
     # A2A v1.0 canonical discovery path. v0.2 used agent.json; servers may
     # still serve that as a legacy alias, but clients should prefer this.
@@ -147,6 +175,62 @@ def _short_state(state: str) -> str:
     return state.replace("TASK_STATE_", "").replace("_", "-").lower() if state else ""
 
 
+def _send_task_stream(agent_label: str, rpc_url: str, rpc_body: dict, headers: dict,
+                       timeout: int, ctx: str, task_id: str) -> tuple[str, str, str]:
+    """Send one SendStreamingMessage and collect the terminal StreamResponse.
+
+    Frames are JSON-RPC-wrapped StreamResponse objects (A2A v1.0 §9.4); the
+    stream closes on the terminal state. Returns (reply_text, context_id, state).
+    """
+    rpc_body = dict(rpc_body, method="SendStreamingMessage")
+    result = None
+    artifact = None
+    for frame in _http_post_sse(rpc_url, rpc_body, headers, timeout):
+        if not isinstance(frame, dict):
+            continue
+        if frame.get("error"):
+            raise ValueError(f"Peer '{agent_label}' returned an error: "
+                             f"{frame['error'].get('message', frame['error'])}")
+        candidate = frame.get("result")
+        if not isinstance(candidate, dict):
+            continue
+        # StreamResponse is member-discriminated (A2A v1.0): task snapshots,
+        # statusUpdate events, artifactUpdate events, bare messages.
+        if isinstance(candidate.get("artifactUpdate"), dict):
+            art = candidate["artifactUpdate"].get("artifact") or {}
+            if art.get("parts"):
+                artifact = art
+            continue
+        if isinstance(candidate.get("statusUpdate"), dict):
+            upd = candidate["statusUpdate"]
+            cand = {"status": upd.get("status") or {},
+                    "contextId": upd.get("contextId", ""),
+                    "taskId": upd.get("taskId", "")}
+        elif isinstance(candidate.get("task"), dict):
+            cand = candidate["task"]
+        elif isinstance(candidate.get("message"), dict):
+            cand = {"status": {"state": "", "message": candidate["message"]},
+                    "contextId": candidate["message"].get("contextId", "")}
+        else:
+            cand = candidate
+        result = cand
+        state = (cand.get("status") or {}).get("state", "")
+        if state in protocol.TERMINAL_STATES:
+            break
+    if result is None:
+        raise ValueError(f"Peer '{agent_label}' stream closed without a result")
+    if artifact is not None:
+        # Artifacts carry the final output; prefer them over status message,
+        # matching the message/send reply extraction order.
+        result = dict(result, artifacts=[artifact])
+    reply = _reply_text_from_result(result)
+    reply_ctx = result.get("contextId", ctx)
+    state = (result.get("status") or {}).get("state", "")
+    protocol.persist_message(reply_ctx, "agent", reply, task_id)
+    protocol.metrics.inbound_total += 1
+    return reply, reply_ctx, state
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """Send one message/send to a peer. Returns (reply_text, context_id, state).
 
@@ -184,7 +268,21 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
 
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    rpc_url = _rpc_url(base_url, card)
+
+    # Streaming path: if the peer advertises streaming, SendStreamingMessage
+    # keeps bytes flowing (SSE keepalives) so proxies with idle timeouts
+    # (e.g. Cloudflare's ~100s) do not kill long-running turns.
+    if isinstance(card, dict) and (card.get("capabilities") or {}).get("streaming"):
+        try:
+            return _send_task_stream(agent_label, rpc_url, rpc_body,
+                                     headers, timeout, ctx, rpc_body["id"])
+        except urllib.error.HTTPError:
+            raise
+        except ValueError:
+            logger.debug("A2A: streaming send failed for %s; falling back to message/send", agent_label)
+
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout)
     if "error" in resp:
         err = resp["error"]
         raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")

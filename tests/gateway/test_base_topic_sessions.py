@@ -135,6 +135,153 @@ class TestBasePlatformTopicSessions:
             ("complete", "1", ProcessingOutcome.SUCCESS),
         ]
 
+    @pytest.mark.asyncio
+    async def test_final_reply_uses_anchor_added_by_handler(self):
+        """A transcript echo created during handling becomes the final anchor."""
+        adapter = DummyTelegramAdapter()
+        adapter.config.typing_indicator = False
+
+        async def handler(event):
+            event._gateway_stt_reply_anchor = "transcript-echo-7"
+            return "ack"
+
+        adapter.set_message_handler(handler)
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+                thread_id="42",
+            ),
+            message_id="voice-note-6",
+        )
+
+        await adapter._process_message_background(
+            event,
+            build_session_key(event.source),
+        )
+
+        assert adapter.sent == [
+            {
+                "chat_id": "12345",
+                "content": "ack",
+                "reply_to": "transcript-echo-7",
+                "metadata": {
+                    "thread_id": "42",
+                    "telegram_dm_topic_reply_fallback": True,
+                    "direct_messages_topic_id": "42",
+                    "telegram_reply_to_message_id": "transcript-echo-7",
+                    "notify": True,
+                },
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_handler_error_replies_to_anchor_added_by_handler(self):
+        """A user-facing handler error replies to the successful transcript echo."""
+        adapter = DummyTelegramAdapter()
+        adapter.config.typing_indicator = False
+
+        async def handler(event):
+            event._gateway_stt_reply_anchor = "transcript-echo-7"
+            raise RuntimeError("provider failed")
+
+        adapter.set_message_handler(handler)
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            message_id="voice-note-6",
+        )
+
+        await adapter._process_message_background(
+            event,
+            build_session_key(event.source),
+        )
+
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["reply_to"] == "transcript-echo-7"
+        assert adapter.sent[0]["metadata"] is None
+        assert "provider failed" in adapter.sent[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_anchor_tombstone_does_not_restore_outer_message_id(self):
+        adapter = DummyTelegramAdapter()
+        adapter.config.typing_indicator = False
+
+        async def handler(event):
+            event._gateway_stt_reply_anchor = None
+            return "ack"
+
+        adapter.set_message_handler(handler)
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            message_id="outer-voice-note-6",
+        )
+
+        await adapter._process_message_background(
+            event,
+            build_session_key(event.source),
+        )
+
+        assert adapter.sent == [
+            {
+                "chat_id": "12345",
+                "content": "ack",
+                "reply_to": None,
+                "metadata": {"notify": True},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_media_follow_on_replies_to_transcript_echo_in_ordinary_dm(
+        self,
+        tmp_path,
+    ):
+        adapter = DummyTelegramAdapter()
+        adapter.config.typing_indicator = False
+        adapter.send_voice = AsyncMock(
+            return_value=SendResult(success=True, message_id="voice-8")
+        )
+        audio_path = tmp_path / "reply.mp3"
+        audio_path.write_bytes(b"audio")
+
+        async def handler(event):
+            event._gateway_stt_reply_anchor = "transcript-echo-7"
+            return f"answer\nMEDIA:{audio_path}"
+
+        adapter.set_message_handler(handler)
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            message_id="voice-note-6",
+        )
+
+        await adapter._process_message_background(
+            event,
+            build_session_key(event.source),
+        )
+
+        adapter.send_voice.assert_awaited_once()
+        assert adapter.send_voice.await_args.kwargs["reply_to"] == "transcript-echo-7"
+
 
 class TestTelegramAutoTtsCaptionDelivery:
     @staticmethod
@@ -198,4 +345,52 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_short_caption_replies_to_transcript_echo_in_ordinary_dm(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter.config.typing_indicator = False
+        adapter._should_auto_tts_for_chat = lambda chat_id: True
+        adapter.play_tts = AsyncMock(
+            return_value=SendResult(success=True, message_id="tts-1")
+        )
+
+        async def handler(event):
+            event._gateway_stt_reply_anchor = "transcript-echo-7"
+            return "short answer"
+
+        adapter.set_message_handler(handler)
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            message_id="voice-note-6",
+        )
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(
+                event,
+                build_session_key(event.source),
+            )
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args is not None
+        assert adapter.play_tts.await_args.kwargs == {
+            "chat_id": "12345",
+            "audio_path": str(tts_path),
+            "caption": "short answer",
+            "reply_to": "transcript-echo-7",
+            "metadata": {"notify": True},
+        }
+        # A successful Telegram caption is the only final answer in this lane.
+        assert adapter.sent == []
 

@@ -500,6 +500,77 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
     assert str(img) in sent_paths[0]
 
 
+@pytest.mark.asyncio
+async def test_streamed_media_replies_to_transcript_echo_in_ordinary_dm(
+    tmp_path,
+    monkeypatch,
+):
+    audio = _allowed_file(tmp_path, monkeypatch, "reply.mp3")
+    adapter = _stream_adapter()
+    event = MessageEvent(
+        text="voice follow-up",
+        message_type=MessageType.VOICE,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        ),
+        message_id="voice-note-6",
+    )
+    event._gateway_stt_reply_anchor = "transcript-echo-7"
+    runner = SimpleNamespace(
+        _thread_metadata_for_source=lambda source, anchor=None: {},
+        _reply_anchor_for_event=lambda current_event: current_event._gateway_stt_reply_anchor,
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        runner,
+        f"MEDIA:{audio}",
+        event,
+        adapter,
+    )
+
+    adapter.send_voice.assert_awaited_once()
+    assert adapter.send_voice.await_args.kwargs["reply_to"] == "transcript-echo-7"
+
+
+@pytest.mark.asyncio
+async def test_streamed_image_batch_replies_to_transcript_echo_in_ordinary_dm(
+    tmp_path,
+    monkeypatch,
+):
+    image = _allowed_file(tmp_path, monkeypatch, "reply.png")
+    adapter = _stream_adapter()
+    event = MessageEvent(
+        text="voice follow-up",
+        message_type=MessageType.VOICE,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        ),
+        message_id="voice-note-6",
+    )
+    event._gateway_stt_reply_anchor = "transcript-echo-7"
+    runner = SimpleNamespace(
+        _thread_metadata_for_source=lambda source, anchor=None: {},
+        _reply_anchor_for_event=lambda current_event: current_event._gateway_stt_reply_anchor,
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        runner,
+        f"MEDIA:{image}",
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    assert (
+        adapter.send_multiple_images.await_args.kwargs["reply_to"]
+        == "transcript-echo-7"
+    )
+
+
 def test_stream_rescan_accepts_no_history_dedup_input():
     """Contract pin for the run.py half of the fix: the explicit-only
     post-stream rescan must not accept a history-dedup set at all — with the

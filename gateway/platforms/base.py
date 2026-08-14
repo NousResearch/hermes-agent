@@ -113,6 +113,7 @@ _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
     _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
 )
+_REPLY_ANCHOR_UNSET = object()
 
 
 def _platform_name(platform) -> str:
@@ -131,7 +132,10 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(
+    source,
+    reply_to_message_id: object = _REPLY_ANCHOR_UNSET,
+) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
@@ -158,7 +162,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
             metadata["direct_messages_topic_id"] = tid
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        anchor = (
+            getattr(source, "message_id", None)
+            if reply_to_message_id is _REPLY_ANCHOR_UNSET
+            else reply_to_message_id
+        )
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
     # Routed Hermes profile for shared state.db namespaces (topic bindings
@@ -186,6 +194,15 @@ def _reply_anchor_for_event(event) -> str | None:
     stays attached to the active lane; synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` metadata when no message id is available.
     """
+    # Handlers may create a more useful platform message to anchor the final
+    # reply to while processing the turn. STT uses this for Telegram's visible
+    # transcript echo. Keep it on the event so streaming and non-streaming
+    # delivery resolve the same late-bound anchor.
+    handler_anchor_key = "_gateway_stt_reply_anchor"
+    if hasattr(event, handler_anchor_key):
+        handler_anchor = getattr(event, handler_anchor_key)
+        return str(handler_anchor) if handler_anchor is not None else None
+
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
@@ -4741,6 +4758,7 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
+        reply_to: Optional[str] = None,
     ) -> None:
         """Send a batch of images.
 
@@ -4771,6 +4789,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=chat_id,
                         image_path=_unquote(image_url[7:]),
                         caption=alt_text if alt_text else None,
+                        reply_to=reply_to,
                         metadata=metadata,
                     )
                 elif self._is_animation_url(image_url):
@@ -4778,6 +4797,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=chat_id,
                         animation_url=image_url,
                         caption=alt_text if alt_text else None,
+                        reply_to=reply_to,
                         metadata=metadata,
                     )
                 else:
@@ -4785,12 +4805,47 @@ class BasePlatformAdapter(ABC):
                         chat_id=chat_id,
                         image_url=image_url,
                         caption=alt_text if alt_text else None,
+                        reply_to=reply_to,
                         metadata=metadata,
                     )
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+
+    async def _send_multiple_images_with_optional_reply(
+        self,
+        *,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]],
+        human_delay: float,
+        reply_to: Optional[str],
+    ) -> None:
+        """Pass ``reply_to`` when an adapter's batch override supports it.
+
+        Older third-party adapters may override ``send_multiple_images`` with
+        the pre-reply-anchor signature. Keep those overrides working while
+        allowing first-party adapters to preserve ordinary-DM reply anchors.
+        """
+        send_images = self.send_multiple_images
+        kwargs: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "images": images,
+            "metadata": metadata,
+            "human_delay": human_delay,
+        }
+        try:
+            params = inspect.signature(send_images).parameters
+            accepts_reply_to = "reply_to" in params or any(
+                param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params.values()
+            )
+        except (TypeError, ValueError):
+            accepts_reply_to = False
+        if accepts_reply_to:
+            kwargs["reply_to"] = reply_to
+        await send_images(**kwargs)
 
     async def send_image(
         self,
@@ -5095,6 +5150,7 @@ class BasePlatformAdapter(ABC):
         media_path: str,
         *,
         is_voice: bool = False,
+        reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Send a user-visible notice when a MEDIA attachment could not be delivered.
@@ -5114,7 +5170,12 @@ class BasePlatformAdapter(ABC):
             file_name = os.path.basename(media_path)
             text = f"⚠️ Couldn't deliver the file attachment ({file_name})."
         try:
-            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
+            notice = await self.send(
+                chat_id=chat_id,
+                content=text,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
             if not notice.success:
                 logger.debug(
                     "[%s] Could not send media-delivery-failure notice: %s",
@@ -6789,7 +6850,17 @@ class BasePlatformAdapter(ABC):
                 # the existing notify=True marker. Clone once so typing/status
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                # The handler can create a late reply anchor (for example a
+                # Telegram transcript echo), so recompute final metadata after
+                # it returns instead of reusing the typing metadata captured
+                # before processing began.
+                _final_reply_anchor = _reply_anchor_for_event(event)
+                _final_thread_metadata = _mark_notify_metadata(
+                    _thread_metadata_for_source(
+                        event.source,
+                        _final_reply_anchor,
+                    )
+                )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -6867,6 +6938,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
+                            reply_to=_final_reply_anchor,
                             metadata=_final_thread_metadata,
                         )
                         _record_delivery(tts_result)
@@ -6901,7 +6973,7 @@ class BasePlatformAdapter(ABC):
                         len(text_content),
                         event.source.chat_id,
                     )
-                    _reply_anchor = _reply_anchor_for_event(event)
+                    _reply_anchor = _final_reply_anchor
                     # Delivery-obligation ledger: durably record the final
                     # response BEFORE the send attempt so a gateway crash
                     # between finalize and platform ACK can redeliver it on
@@ -7025,11 +7097,12 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        await self._send_multiple_images_with_optional_reply(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
+                            reply_to=_final_reply_anchor,
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
@@ -7067,11 +7140,12 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        await self._send_multiple_images_with_optional_reply(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
+                            reply_to=_final_reply_anchor,
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
@@ -7091,6 +7165,7 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                                 is_voice=is_voice,
                             )
@@ -7104,12 +7179,14 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )
 
@@ -7119,6 +7196,7 @@ class BasePlatformAdapter(ABC):
                                 event.source.chat_id,
                                 media_path,
                                 is_voice=is_voice,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as media_err:
@@ -7134,12 +7212,14 @@ class BasePlatformAdapter(ABC):
                             file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )
                         else:
                             file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )
                         if not file_result.success:
@@ -7152,6 +7232,7 @@ class BasePlatformAdapter(ABC):
                             await self._notify_media_delivery_failure(
                                 event.source.chat_id,
                                 file_path,
+                                reply_to=_final_reply_anchor,
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
@@ -7246,7 +7327,11 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                _error_reply_anchor = _reply_anchor_for_event(event)
+                _thread_metadata = _thread_metadata_for_source(
+                    event.source,
+                    _error_reply_anchor,
+                )
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
@@ -7254,6 +7339,7 @@ class BasePlatformAdapter(ABC):
                         f"{error_detail}\n"
                         "Try again or use /reset to start a fresh session."
                     ),
+                    reply_to=_error_reply_anchor,
                     metadata=_thread_metadata,
                 )
             except Exception as notify_err:

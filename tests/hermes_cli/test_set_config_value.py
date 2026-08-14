@@ -547,11 +547,19 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "telegram.reply_to_transcript",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
         is_known, _ = _validate_config_key(key)
         assert is_known, f"Expected {key!r} to validate as known"
+
+    def test_platform_specific_transcript_reply_is_not_an_stt_key(self):
+        from hermes_cli.config import _validate_config_key
+
+        is_known, _ = _validate_config_key("stt.reply_to_transcript")
+
+        assert not is_known
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion

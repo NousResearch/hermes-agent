@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from model_tools import (
     coerce_tool_args,
+    project_tool_args,
     _coerce_value,
     _coerce_number,
     _coerce_boolean,
@@ -246,3 +247,177 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+# ── project_tool_args: unknown-argument stripping (SECURITY-CLASS-227117ae016de6a5) ─
+
+
+class TestProjectToolArgs:
+    """Tests for project_tool_args — strips arguments not in the tool's schema."""
+
+    def _mock_schema(self, properties, additional_properties=None):
+        """Build a minimal tool schema with the given properties."""
+        schema = {
+            "name": "test_tool",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+            },
+        }
+        if additional_properties is not None:
+            schema["parameters"]["additionalProperties"] = additional_properties
+        return schema
+
+    def test_strips_unknown_arg(self):
+        """Unknown arguments are removed."""
+        schema = self._mock_schema({"command": {"type": "string"}}, additional_properties=False)
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"command": "ls", "force": True}
+            result = project_tool_args("test_tool", args)
+        assert "force" not in result
+        assert result["command"] == "ls"
+
+    def test_preserves_declared_args(self):
+        """All declared arguments are kept."""
+        schema = self._mock_schema({
+            "command": {"type": "string"},
+            "timeout": {"type": "integer"},
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"command": "ls", "timeout": 30}
+            result = project_tool_args("test_tool", args)
+        assert result == {"command": "ls", "timeout": 30}
+
+    def test_additional_properties_true_keeps_unknown(self):
+        """Schemas with additionalProperties: true preserve unknown args."""
+        schema = self._mock_schema(
+            {"method": {"type": "string"}},
+            additional_properties=True,
+        )
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"method": "Page.navigate", "extra": "kept"}
+            result = project_tool_args("test_tool", args)
+        assert result == {"method": "Page.navigate", "extra": "kept"}
+
+    def test_additional_properties_false_strips_unknown(self):
+        """Schemas with additionalProperties: false strip unknown args."""
+        schema = self._mock_schema(
+            {"prompt": {"type": "string"}},
+            additional_properties=False,
+        )
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"prompt": "hello", "sneaky": True}
+            result = project_tool_args("test_tool", args)
+        assert "sneaky" not in result
+        assert result == {"prompt": "hello"}
+
+    def test_empty_args(self):
+        assert project_tool_args("test_tool", {}) == {}
+
+    def test_no_schema_returns_args(self):
+        """When no schema is registered, args are returned unchanged."""
+        with patch("model_tools.registry.get_schema", return_value=None):
+            args = {"command": "ls", "force": True}
+            result = project_tool_args("unknown_tool", args)
+        assert result == args
+
+    def test_no_properties_returns_args(self):
+        """When schema has no properties dict, args are returned unchanged."""
+        schema = {"name": "test_tool", "parameters": {"type": "object"}}
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"command": "ls"}
+            result = project_tool_args("test_tool", args)
+        assert result == args
+
+    def test_real_terminal_force_is_stripped(self):
+        """The terminal tool's hidden ``force`` parameter is stripped.
+
+        Regression test for SECURITY-CLASS-227117ae016de6a5: the terminal
+        schema does not declare ``force``, so a model-injected ``force=true``
+        must not survive projection.
+        """
+        args = {"command": "rm -rf /", "force": True}
+        result = project_tool_args("terminal", args)
+        assert "force" not in result
+        assert result["command"] == "rm -rf /"
+
+    def test_real_terminal_declared_args_preserved(self):
+        """All declared terminal arguments survive projection."""
+        args = {
+            "command": "echo hi",
+            "background": True,
+            "timeout": 60,
+            "workdir": "/tmp",
+            "pty": False,
+            "notify_on_complete": True,
+        }
+        result = project_tool_args("terminal", args)
+        assert result == args
+
+
+class TestForceBypassIntegration:
+    """End-to-end: ``force=true`` cannot bypass dangerous-command approval.
+
+    Exercises the full dispatch path through ``handle_function_call`` to
+    verify that ``force`` is projected away before the terminal handler runs.
+    """
+
+    def test_force_stripped_before_handler(self):
+        """A model-injected ``force=true`` must not reach the terminal handler.
+
+        The handler receives the projected args dict (without ``force``), so
+        the dangerous-command check runs normally and the command is blocked
+        or sent to approval — never silently executed.
+        """
+        from unittest.mock import MagicMock
+        from model_tools import handle_function_call
+
+        captured_args = {}
+
+        def _capture_handler(args, **kwargs):
+            captured_args.update(args)
+            return '{"output": "", "exit_code": 0, "error": ""}'
+
+        mock_entry = MagicMock()
+        mock_entry.handler = _capture_handler
+        mock_entry.is_async = False
+        mock_entry.schema = {
+            "name": "terminal",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "background": {"type": "boolean"},
+                    "timeout": {"type": "integer"},
+                    "workdir": {"type": "string"},
+                    "pty": {"type": "boolean"},
+                    "notify_on_complete": {"type": "boolean"},
+                    "watch_patterns": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        }
+        mock_entry.max_result_size_chars = None
+        mock_entry.name = "terminal"
+        mock_entry.toolset = "terminal"
+
+        with patch("model_tools.registry.get_entry", return_value=mock_entry), \
+             patch("model_tools.registry.get_schema", return_value=mock_entry.schema), \
+             patch("model_tools._emit_post_tool_call_hook"), \
+             patch("hermes_cli.lifecycle.has_hook", return_value=False), \
+             patch("hermes_cli.middleware.run_tool_execution_middleware") as _mw_mock, \
+             patch("tools.file_tools.notify_other_tool_call"):
+            _mw_mock.side_effect = lambda name, args, dispatch, **kw: dispatch(args)
+            handle_function_call(
+                function_name="terminal",
+                function_args={"command": "rm -rf /", "force": True},
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+            )
+
+        assert "force" not in captured_args, (
+            "force=true survived projection and reached the handler — "
+            "dangerous-command bypass is possible"
+        )
+        assert captured_args.get("command") == "rm -rf /"

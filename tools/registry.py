@@ -1118,6 +1118,13 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        # Project arguments against the tool's registered schema at the final
+        # dispatch boundary. Middleware and hooks can still rewrite args above
+        # this point; hidden control-plane parameters (e.g. terminal's ``force``)
+        # are stripped just before the handler receives them.
+        from model_tools import project_tool_args
+
+        args = project_tool_args(name, args)
         try:
             if entry.is_async:
                 from model_tools import _run_async

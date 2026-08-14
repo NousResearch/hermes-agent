@@ -63,19 +63,22 @@ _TITLE_PROMPT_TEMPLATE = (
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."
 
-# Constrains the response to a single title field ("model answered instead of titling" failure class).
-_TITLE_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {"name": "session_title", "strict": True, "schema": {
-        "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"], "additionalProperties": False}},
-}
-
-# Control-tag wrappers around machine-authored content inside a nominal "user" message (Codex CLI's
-# RECOGNIZED_CONTROL_WRAPPERS): stripped, titling continues on what remains.
-_CONTROL_WRAPPERS = tuple(
-    (f"<{tag}>", f"</{tag}>")
-    for tag in ("command-message", "command-name", "command-args", "local-command-caveat", "local-command-stderr",
-                "local-command-stdout", "task-notification", "system-reminder", "ide_opened_file", "ide_selection")
+# Control-tag wrappers that surround machine-authored content inside what is
+# nominally a "user" message. Titling from these is what produces a session
+# named after a slash command or an injected reminder rather than the user's
+# actual request. Ported from Codex CLI's RECOGNIZED_CONTROL_WRAPPERS, which
+# strips them (and keeps titling) rather than refusing outright.
+_CONTROL_WRAPPERS = (
+    ("<command-message>", "</command-message>"),
+    ("<command-name>", "</command-name>"),
+    ("<command-args>", "</command-args>"),
+    ("<local-command-caveat>", "</local-command-caveat>"),
+    ("<local-command-stderr>", "</local-command-stderr>"),
+    ("<local-command-stdout>", "</local-command-stdout>"),
+    ("<task-notification>", "</task-notification>"),
+    ("<system-reminder>", "</system-reminder>"),
+    ("<ide_opened_file>", "</ide_opened_file>"),
+    ("<ide_selection>", "</ide_selection>"),
 )
 
 # Hermes' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.

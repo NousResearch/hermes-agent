@@ -1660,10 +1660,11 @@ def _run_post_setup(post_setup_key: str):
                 _find_agent_browser,
                 _resolve_npx_bin,
                 _is_npx_agent_browser_sentinel,
+                warm_agent_browser_npx_cache,
                 AGENT_BROWSER_NPX_SPEC,
             )
         except Exception as exc:  # pragma: no cover — defensive
-            _print_warning(f"    Could not check Chromium status: {exc}")
+            _print_warning(f"    Could not check browser dependency status: {exc}")
             return
 
         # Reuse the same resolution cascade browser tools use at runtime
@@ -1674,15 +1675,48 @@ def _run_post_setup(post_setup_key: str):
         try:
             browser_cmd = _find_agent_browser(validate=False)
         except FileNotFoundError:
+            if post_setup_key == "browserbase":
+                # Cloud providers still need the agent-browser CLI itself.
+                # If it's not resolvable at all, fail rather than silently
+                # reporting success (issue #86117).
+                raise RuntimeError(
+                    "agent-browser CLI not found and npx is unavailable. "
+                    "Install Node.js (https://nodejs.org) and re-run "
+                    "`hermes tools post-setup browserbase`."
+                )
             _print_warning(
                 "    npx not found - browser tools require Node.js: https://nodejs.org"
             )
             return
 
-        # Step 1: only the local browser provider actually needs Chromium on
-        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
-        # their own Chromium and don't need the local install.
+        # Cloud providers (Browserbase, Browser Use, Firecrawl) host their
+        # own Chromium and don't need the local install — but they still
+        # need the agent-browser CLI itself. Verify it's actually runnable
+        # so a dangling symlink or missing npx doesn't report success
+        # (issue #86117).
         if post_setup_key != "agent_browser":
+            if _is_npx_agent_browser_sentinel(browser_cmd):
+                # npx fallback: warm the cache so the first real browser
+                # call doesn't fail. This also verifies npx can resolve
+                # and execute the agent-browser package.
+                _print_info("    Verifying agent-browser via npx...")
+                if not warm_agent_browser_npx_cache():
+                    raise RuntimeError(
+                        "agent-browser could not be resolved via npx. "
+                        "Check your Node.js installation and network "
+                        "connectivity, then re-run "
+                        "`hermes tools post-setup browserbase`."
+                    )
+                _print_success("    agent-browser resolved via npx")
+            else:
+                from hermes_constants import agent_browser_runnable
+                if not agent_browser_runnable(browser_cmd):
+                    raise RuntimeError(
+                        f"agent-browser at {browser_cmd} is not runnable "
+                        "(exit code non-zero or binary missing). "
+                        "Re-install it: npm install -g agent-browser"
+                    )
+                _print_success("    agent-browser already installed")
             return
 
         # Step 2: ensure the Chromium / headless-shell build agent-browser

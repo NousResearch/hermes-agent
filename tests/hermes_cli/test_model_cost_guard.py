@@ -44,9 +44,13 @@ def test_warns_when_models_dev_input_price_exceeds_threshold():
 
 @pytest.mark.parametrize("provider", ["custom", "custom:routerai", "routerai"])
 def test_skips_foreign_models_dev_pricing_for_custom_or_unknown_providers(provider):
+    # NOTE: deliberately NOT openai/gpt-5.5-pro — that id carries an
+    # unconditional known-confusion warning (GPT55_PRO_OPENROUTER_ID) that is
+    # id-keyed and independent of pricing trust, so it would mask what this
+    # test asserts (foreign models.dev pricing being distrusted).
     info = ModelInfo(
-        id="openai/gpt-5.5-pro",
-        name="openai/gpt-5.5-pro",
+        id="vendor/priced-model",
+        name="vendor/priced-model",
         family="",
         provider_id="openrouter",
         cost_input=25.0,
@@ -55,7 +59,7 @@ def test_skips_foreign_models_dev_pricing_for_custom_or_unknown_providers(provid
 
     assert (
         expensive_model_warning(
-            "openai/gpt-5.5-pro",
+            "vendor/priced-model",
             provider=provider,
             model_info=info,
         )
@@ -78,13 +82,26 @@ def test_skips_untrusted_provider_pricing_lookup_for_custom_provider(monkeypatch
     monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", fake_get_pricing_entry)
 
     warning = expensive_model_warning(
-        "openai/gpt-5.5-pro",
+        "vendor/priced-model",
         provider="custom:routerai",
         base_url="https://routerai.example/v1",
     )
 
     assert warning is None
     assert pricing_calls == []
+
+
+def test_known_confusing_model_still_warns_on_custom_provider():
+    """The gpt-5.5-pro confusion nudge is id-keyed, not pricing-keyed: it must
+    survive the custom-provider pricing distrust (54cc39aa15 x 83d373aae6)."""
+    warning = expensive_model_warning(
+        "openai/gpt-5.5-pro",
+        provider="custom:routerai",
+        base_url="https://routerai.example/v1",
+    )
+
+    assert warning is not None
+    assert "did you mean to select openai/gpt-5.5?" in warning.message
 
 
 def test_warns_when_pricing_entry_output_price_exceeds_threshold(monkeypatch):

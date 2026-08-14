@@ -10,8 +10,10 @@ with no Approve/Deny UI.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,7 +89,7 @@ class TestCliApprovalSurvivesExecAskLeak:
 
 
 class TestGatewayRunImportDoesNotSetExecAsk:
-    def test_importing_gateway_run_does_not_set_exec_ask(self):
+    def test_importing_gateway_run_does_not_set_exec_ask(self, tmp_path):
         """Incidental imports must not poison CLI ask-mode process-wide."""
         script = r"""
 import os, sys
@@ -98,6 +100,7 @@ sys.path.insert(0, %r)
 import gateway.run  # noqa: F401
 print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
 """ % (str(REPO_ROOT),)
+        hermes_home = tmp_path / "import-test-home"
         proc = subprocess.run(
             [sys.executable, "-c", script],
             cwd=str(REPO_ROOT),
@@ -105,7 +108,7 @@ print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
             text=True,
             env={
                 **os.environ,
-                "HERMES_HOME": str(REPO_ROOT / ".tmp-hermes-exec-ask-import"),
+                "HERMES_HOME": str(hermes_home),
             },
             timeout=60,
         )

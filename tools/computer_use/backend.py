@@ -44,6 +44,9 @@ def image_dimensions_from_bytes(raw: bytes) -> Optional[tuple[int, int]]:
     return None
 
 
+ELEMENT_STATE_KEYS = ("value", "selected", "enabled")
+
+
 @dataclass
 class UIElement:
     """One interactable element on the current screen."""

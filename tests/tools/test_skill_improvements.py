@@ -109,18 +109,31 @@ word word word
         mode = stat.S_IMODE((self.skills_dir / "mode-skill" / "SKILL.md").stat().st_mode)
         assert mode == 0o644
 
+    def test_create_rollback_removes_skill_when_scan_blocks(self, monkeypatch):
+        """Blocked skill creation removes the newly created skill directory."""
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._security_scan_skill",
+            lambda _skill_dir: "blocked",
+        )
+
+        result = _create_skill("blocked-skill", SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert not (self.skills_dir / "blocked-skill").exists()
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-    def test_edit_preserves_group_readable_mode(self):
-        """Full skill edits must preserve the existing document mode."""
+    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    def test_edit_preserves_existing_mode(self, mode):
+        """Full skill edits must preserve private and shared document modes."""
         _create_skill("mode-skill", SKILL_CONTENT)
         skill_md = self.skills_dir / "mode-skill" / "SKILL.md"
-        skill_md.chmod(0o644)
+        skill_md.chmod(mode)
         replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "Step 1: Done!")
 
         result = _edit_skill("mode-skill", replacement)
 
         assert result["success"] is True
-        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
+        assert stat.S_IMODE(skill_md.stat().st_mode) == mode
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     @pytest.mark.parametrize("mode", [0o600, 0o660])

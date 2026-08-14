@@ -4393,7 +4393,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
-        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
+        # is streamed. Parsed through the shared truthy set so a hand-edited
+        # YAML `show_reasoning: "false"` (quoted) actually hides reasoning —
+        # bool("false") is True and would keep displaying it.
+        from utils import is_truthy_value
+
+        self.show_reasoning = is_truthy_value(
+            CLI_CONFIG["display"].get("show_reasoning"), default=True
+        )
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)

@@ -133,6 +133,16 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     db.get_session = locked_get_session
     agent = _agent_with_db(db)
 
+    # Simulate a contended wait so the resolve+reload path is exercised.
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        on_wait = kwargs.get("on_wait")
+        if on_wait is not None:
+            on_wait(0.0)
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+
     observed = {}
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
@@ -507,6 +517,16 @@ def test_run_conversation_exposes_holder_for_fenced_flush(monkeypatch):
     agent._db_flush_scan_prefix = None
     agent._pending_cli_user_message = None
     agent._session_persist_lock = None
+
+    # Simulate a contended wait so the resolve+reload path is exercised.
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        on_wait = kwargs.get("on_wait")
+        if on_wait is not None:
+            on_wait(0.0)
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
         captured["active"] = getattr(

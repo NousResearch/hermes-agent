@@ -2077,12 +2077,20 @@ def _terminate_scoped_lock_owner_once(
         clear_takeover_marker(target_home)
 
 
-def write_planned_stop_marker(target_pid: int) -> bool:
+def write_planned_stop_marker(
+    target_pid: int,
+    *,
+    trigger_watcher: bool = True,
+) -> bool:
     """Record that ``target_pid`` is being stopped intentionally.
 
     The gateway exits non-zero for unexpected SIGTERM so service managers can
     revive it. Service stop commands send the same SIGTERM, so the CLI writes
     this short-lived marker first to let the target process exit cleanly.
+
+    ``trigger_watcher=False`` reserves the marker for a real signal handler.
+    systemd's ``ExecStop=`` needs this because the cross-platform watcher could
+    otherwise consume the marker before systemd delivers its implicit SIGTERM.
     """
     try:
         target_start_time = _get_process_start_time(target_pid)
@@ -2090,6 +2098,7 @@ def write_planned_stop_marker(target_pid: int) -> bool:
             "target_pid": target_pid,
             "target_start_time": target_start_time,
             "stopper_pid": os.getpid(),
+            "trigger_watcher": trigger_watcher,
             "written_at": _utc_now_iso(),
         }
         _write_json_file(_get_planned_stop_marker_path(), record)
@@ -2119,10 +2128,11 @@ def planned_stop_marker_targets_self() -> bool:
 
     It *does* clean up markers that can never apply to this process:
     malformed markers and markers older than the TTL are unlinked so a
-    stale file left behind by a previous gateway instance cannot wedge
-    the new one. Markers naming a different PID/start_time are left in
-    place (they may still be consumed legitimately by the process they
-    name) but report False here.
+    stale file left behind by a previous gateway instance cannot wedge the
+    new one. Markers naming a different PID/start_time are left in place
+    (they may still be consumed legitimately by the process they name) but
+    report False here. Markers written with ``trigger_watcher=False`` are
+    likewise left intact for the POSIX signal handler and report False.
 
     Returns False (without raising) on any read/parse error.
     """
@@ -2150,6 +2160,12 @@ def planned_stop_marker_targets_self() -> bool:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+        return False
+
+    # systemd ExecStop writes the marker before systemd delivers SIGTERM. Do
+    # not let this polling bridge consume that marker first; the POSIX signal
+    # handler is the authoritative consumer for that path.
+    if record.get("trigger_watcher", True) is False:
         return False
 
     our_pid = os.getpid()

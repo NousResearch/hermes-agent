@@ -6123,8 +6123,9 @@ class SlackAdapter(BasePlatformAdapter):
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Detect mentions authored only inside Block Kit blocks too (#52387)
         routing_text = _slack_mention_detection_text(event) or original_text or ""
+        is_native_mentioned = bool(bot_uid and f"<@{bot_uid}>" in routing_text)
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            is_native_mentioned
             or self._slack_message_matches_mention_patterns(routing_text)
         )
         event_thread_ts = event.get("thread_ts")
@@ -6188,6 +6189,14 @@ class SlackAdapter(BasePlatformAdapter):
             if force_process:
                 pass  # Explicit internal routing path (reaction trigger).
             elif (
+                self._slack_strict_mention()
+                or channel_id in self._slack_strict_mention_channels()
+            ) and not is_native_mentioned:
+                # Strict mode means a fresh native Slack mention on this exact
+                # message. Wake-word patterns, free-response membership, thread
+                # history, and active sessions cannot satisfy it.
+                return
+            elif (
                 channel_id not in self._slack_require_mention_channels()
                 and (
                     channel_id in self._slack_free_response_channels()
@@ -6212,11 +6221,6 @@ class SlackAdapter(BasePlatformAdapter):
                         event_thread_ts,
                     )
                     return
-            elif (
-                self._slack_strict_mention()
-                or channel_id in self._slack_strict_mention_channels()
-            ) and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
             elif (
                 self._slack_thread_require_mention()
                 and is_thread_reply

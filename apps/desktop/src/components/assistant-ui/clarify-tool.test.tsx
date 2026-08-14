@@ -81,7 +81,9 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
     multiSelect,
     question: 'Which deployment target?',
     requestId: 'request-1',
-    sessionId: 'session-1'
+    sessionId: 'session-1',
+    receivedAt: 0,
+    timeoutSeconds: null
   })
   renderClarify(<ClarifyTool {...liveClarifyProps()} />)
 

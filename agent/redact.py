@@ -559,7 +559,7 @@ _URL_USERINFO_RE = re.compile(r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@")
 # Strict provider-egress URL redaction: delimiters stay in capture groups so the
 # query/fragment layout is preserved byte-for-byte; the key is decoded
 # separately for classification. Values stop at ``&``/``;`` (both valid).
-_STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]*)")
+_STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-\[\]]+)=([^#&;\s\"'<>]*)")
 
 # Userinfo in absolute and network-path (``//user:pass@host``) references; the
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
@@ -752,7 +752,8 @@ def _canonical_url_param_name(name: str) -> str:
         if next_value == decoded:
             break
         decoded = next_value
-    folded = decoded.casefold()
+    # Treat PHP/Rails-style array keys (``token[]``, ``key[0]``) as their base name.
+    folded = decoded.casefold().split("[", 1)[0]
     # Preserve policy names that are canonically hyphenated (for example
     # x-amz-signature) before accepting underscore-normalized aliases.
     return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")

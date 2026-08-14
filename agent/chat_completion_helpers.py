@@ -2225,6 +2225,18 @@ def cleanup_task_resources(agent, task_id: str) -> None:
                 logger.warning("Failed to cleanup %s for task %s: %s", label, task_id, e)
 
 
+def _chunk_server_timings(chunk):
+    """The server ``timings`` block off a stream chunk, or None. llama-server attaches ``timings`` to the final
+    SSE chunk (alongside usage); the OpenAI SDK parses unknown top-level fields into ``model_extra``. Never
+    raises on foreign chunk shapes."""
+    extra = getattr(chunk, "model_extra", None)
+    if isinstance(extra, dict):
+        timings = extra.get("timings")
+        if isinstance(timings, dict):
+            return timings
+    return None
+
+
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None):
     """Stub for an SSE stream that ended without ``finish_reason`` after
@@ -2791,7 +2803,7 @@ class _StreamingCall(StreamingWaitMonitor):
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
-        finish_reason = model_name = usage_obj = None
+        finish_reason = model_name = usage_obj = timings_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
         _diag = self._new_diag()
@@ -2845,6 +2857,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
+                timings_obj = _chunk_server_timings(chunk) or timings_obj
                 continue
 
             choice = chunk.choices[0]
@@ -2854,6 +2867,7 @@ class _StreamingCall(StreamingWaitMonitor):
             finish_reason = getattr(choice, "finish_reason", None) or finish_reason
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+            timings_obj = _chunk_server_timings(chunk) or timings_obj
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
@@ -2896,7 +2910,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+            finish_reason, model_name, usage_obj, timings_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider)
 
     def _adopt_final_response(self, final_response):
@@ -2946,7 +2960,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None):
+        model_name, usage_obj, timings_obj, *, flush_pending, response_id=None, upstream_provider=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -2982,10 +2996,13 @@ class _StreamingCall(StreamingWaitMonitor):
         flush_pending()
         message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
-        # look a request up. Fabricated only when the stream never sent one.
+        # look a request up. Fabricated only when the stream never sent one. Server ``timings`` from the
+        # final chunk ride the same attribute the OpenAI SDK uses for unknown fields, so the streaming and
+        # non-streaming paths read identically.
         return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
-            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)],
+            model_extra={"timings": timings_obj} if timings_obj else None)
 
     # ── anthropic_messages wire ─────────────────────────────────────────
 

@@ -120,6 +120,10 @@ def check_api_response(
         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
+    # Server-reported generation speed: re-assigned on every completed call, and only ever set when the
+    # resolved provider profile opts in via surfaces_server_timings. The status bar reads agent.last_server_tps.
+    agent._capture_server_timings(response)
+
     response_invalid, error_details = validate_response_shape(agent, response)
     if response_invalid:
         _iv = retry_invalid_response(

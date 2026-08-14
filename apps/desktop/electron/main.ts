@@ -184,6 +184,7 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
   buildSessionWindowUrl,
@@ -3566,10 +3567,39 @@ function resolveWebDist() {
 
 function resolveRendererIndex() {
   const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
-  const found = candidates.find(fileExists)
+  const present = candidates.filter(fileExists)
 
-  if (found) {
-    return found
+  // index.html and the hashed chunks it names are one generation. An update
+  // that replaces only one of the two shipped copies (app.asar vs
+  // app.asar.unpacked) leaves a TORN copy: the window loads, then dies on the
+  // first lazy import with "Failed to fetch dynamically imported module" and
+  // every restart reloads the same torn copy. Prefer a copy whose modules are
+  // all present, so the intact generation heals the boot by itself.
+  for (const candidate of present) {
+    const missing = missingRendererAssets(candidate)
+
+    if (missing.length === 0) {
+      return candidate
+    }
+
+    rememberLog(
+      `[renderer] skipping torn renderer bundle at ${candidate}: ` +
+        `${missing.length} module file(s) named by index.html are missing ` +
+        `(${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ', …' : ''})`
+    )
+  }
+
+  if (present.length > 0) {
+    // Every copy is torn. Load the first one anyway — the boundary's error is
+    // still better than a blank window — but say what is wrong and how to fix
+    // it, because no amount of restarting repairs a torn bundle.
+    rememberLog(
+      `[renderer] every renderer bundle is incomplete (${present.join(', ')}). ` +
+        `The last update replaced the app while its files were locked. ` +
+        `Repair with: hermes desktop --force-build`
+    )
+
+    return present[0]
   }
 
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with

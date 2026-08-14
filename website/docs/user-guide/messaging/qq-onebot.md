@@ -98,7 +98,9 @@ After enabling the plugin you **must also configure the bridge** — the plugin 
   - message post format: **array** is recommended (segment-array parsing first, CQ string only as fallback)
 - **forward mode (Hermes dials out)** — in NapCat's network settings enable the **WebSocket server** (default `0.0.0.0:3001`), then set the plugin's `url` to `ws://<napcat-host-ip>:3001` (`ws://127.0.0.1:3001` when same host) and keep tokens identical.
 
-The bridge must be on a network Hermes can reach (same LAN / routable); WS connection, image downloads and file resolution all depend on that path.
+The bridge must be on a network Hermes can reach (same LAN / routable); WS connection, image downloads and file resolution all depend on that path. This adapter is **LAN-only** — cross-internet deployments are not supported.
+
+> ⚠️ When NapCat runs on a **different machine than Hermes**, enable the **「文件转 URL」/ file-to-URL** switch in NapCat's network settings (`enableLocalFile2Url`). Without it `get_file` returns container-local paths that Hermes cannot access, and file messages degrade to a `[文件:name]` marker instead of being downloadable.
 
 ## dm / group access policy (choose at setup)
 

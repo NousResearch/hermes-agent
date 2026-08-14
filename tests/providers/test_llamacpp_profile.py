@@ -135,3 +135,56 @@ def test_installed_llamacpp_plugin_source_registers(tmp_path, monkeypatch):
     assert getattr(profile, "activates_on_requested_provider", False) is True
 
     _clear_provider_caches()
+
+
+@pytest.mark.skipif(
+    _installed_plugin_dir() is None,
+    reason="real llamacpp user plugin not installed on this machine",
+)
+def test_bundled_placement_registers_identical_profile(tmp_path, monkeypatch):
+    """Upstream portability: the plugin dir copied unchanged into a bundled
+    model-providers tree registers the identical profile. Only the
+    import module name may differ between placements."""
+    import dataclasses
+
+    real_dir = _installed_plugin_dir()
+
+    def _snapshot():
+        from providers import get_provider_profile
+
+        p = get_provider_profile("llamacpp")
+        assert p is not None
+        return (
+            type(p).__name__,
+            dataclasses.asdict(p),
+            getattr(p, "activates_on_requested_provider", False),
+        )
+
+    # Placement 1: user plugin dir under a sandboxed HERMES_HOME.
+    hermes_home = _fresh_hermes_home(tmp_path, monkeypatch)
+    user_dir = hermes_home / "plugins" / "model-providers" / "llamacpp"
+    user_dir.parent.mkdir(parents=True)
+    shutil.copytree(
+        real_dir, user_dir, ignore=shutil.ignore_patterns(".git", "__pycache__")
+    )
+    _clear_provider_caches()
+    user_snapshot = _snapshot()
+
+    # Placement 2: same source as a bundled plugin, user copy removed.
+    shutil.rmtree(user_dir)
+    bundled_root = tmp_path / "bundled-tree" / "model-providers"
+    bundled_root.mkdir(parents=True)
+    shutil.copytree(
+        real_dir,
+        bundled_root / "llamacpp",
+        ignore=shutil.ignore_patterns(".git", "__pycache__"),
+    )
+    import providers as _pkg
+
+    monkeypatch.setattr(_pkg, "_BUNDLED_PLUGINS_DIR", bundled_root)
+    _clear_provider_caches()
+    bundled_snapshot = _snapshot()
+
+    assert bundled_snapshot == user_snapshot
+
+    _clear_provider_caches()

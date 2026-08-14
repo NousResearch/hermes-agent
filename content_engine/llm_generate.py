@@ -836,6 +836,14 @@ def generate_drafts_llm(
                 draft["topic"] = topic.get("topic", "")
                 drafts.append(draft)
             else:
+                # ── sahil_twitter anti-scripted guardrail ──
+                # No static template fallback. Sahil personal X drafts MUST
+                # start from a current internal activity/live signal. If LLM
+                # generation failed and there's no activity_data, skip entirely.
+                if brand == "sahil_twitter":
+                    print(f"[llm_generate] sahil_twitter/{plat}: LLM failed, no activity signal; skipping (anti-scripted guard)")
+                    continue
+
                 # Fall back to static template if LLM path fails — but make the
                 # degradation loud, never silent.
                 _alert_static_fallback(brand, plat)

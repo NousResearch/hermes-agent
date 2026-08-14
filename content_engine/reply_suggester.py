@@ -156,9 +156,19 @@ def suggest_replies_for_post(post: Dict, account_handle: str) -> List[Dict]:
     Returns list of dicts with 'reply_text', 'pattern', 'category'.
     Empty list if post isn't worth replying to.
     """
-    # Skip posts from accounts we already follow heavily (avoid spam pattern)
+    # ── Anti-scripted guardrail ──
+    # Without actual source tweet context, return no suggestion. Canned
+    # facts/metrics in exemplars must not be used without real tweet content
+    # to contextualise against.
     text = post.get("text", "")
     if len(text) < 10:
+        return []
+
+    # Require actual source tweet context — not a placeholder or synthetic post.
+    # Real tweets from xurl carry an 'id' field; synthetic/placeholder posts don't.
+    # This rejects absent/placeholder source context without penalising genuine
+    # short posts (e.g. "Ship." from a real account).
+    if not post.get("id"):
         return []
     
     # Skip engagement bait / bot-looking content

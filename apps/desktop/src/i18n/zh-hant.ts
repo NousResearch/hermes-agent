@@ -1089,7 +1089,7 @@ export const zhHant = defineLocale({
     goToSession: '前往工作階段',
     branches: '分支',
     startInBranch: branch => `在 ${branch} 中開始新對話`,
-    commandCenter: '命令中心',
+    commandCenter: '控制室',
     appearance: '外觀',
     settings: '設定',
     changeTheme: '變更主題',
@@ -1153,8 +1153,9 @@ export const zhHant = defineLocale({
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
-    sections: { sessions: '工作階段', system: '系統', usage: '使用量' },
+    sections: { home: '控制室', sessions: '工作階段', system: '系統', usage: '使用量' },
     sectionDescriptions: {
+      home: '注意力優先的控制介面 — 需要你、代理、任務、訊息、系統',
       sessions: '搜尋和管理工作階段',
       system: '狀態、記錄和系統動作',
       usage: '一段時間內的詞元、費用和技能活動'
@@ -1821,6 +1822,7 @@ export const zhHant = defineLocale({
       'composer.sendNewline': '傳送 · Shift+Enter 換行',
       'composer.sendQueued': '傳送下一個排隊的回合',
       'keybinds.openPanel': '所有鍵盤快捷鍵',
+      'nav.controlRoom': '開啟控制室',
       'composer.cancel': '關閉彈出視窗 · 取消執行',
       'composer.history': '循環彈出視窗 / 歷史記錄'
     },

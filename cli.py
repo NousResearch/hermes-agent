@@ -5447,6 +5447,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
+        # KENSEI CUSTOM: Control Room attention segment (CR-301). Computed on
+        # the normal status refresh only — the service's bounded cache (2s)
+        # prevents a second high-frequency polling loop. Never breaks the bar:
+        # any failure yields an empty segment.
+        snapshot["control_room_segment"] = ""
+        try:
+            from control_room.service import ControlRoomService
+            from control_room.text import attention_status_line
+
+            context = {}
+            running = getattr(self, "_running_agents", None)
+            if isinstance(running, dict) and running:
+                context["running_agents"] = running
+            running_ts = getattr(self, "_running_agents_ts", None)
+            if isinstance(running_ts, dict):
+                context["running_agents_ts"] = running_ts
+            cr = getattr(self, "_control_room_service", None)
+            if cr is None:
+                cr = self._control_room_service = ControlRoomService()
+            cr_snap = cr.build_snapshot(
+                profile=self._get_control_room_profile(), context=context
+            )
+            snapshot["control_room_segment"] = attention_status_line(cr_snap)
+        except Exception:
+            snapshot["control_room_segment"] = ""
+
 
         if not agent:
             return snapshot
@@ -6096,6 +6122,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             }
             _mode_text = _MODE_BADGE_TEXT.get(snapshot.get("agent_mode", "auto"), "")
             goal_segment = self._status_bar_goal_segment(snapshot)
+            control_room_segment = snapshot.get("control_room_segment") or ""
             if width < 52:
                 effort = snapshot.get("reasoning_effort", "")
                 model_segment = f"⚕ {snapshot['model_short']}"
@@ -6135,6 +6162,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     parts.append(f"⛓ {bg_subagent_count}")
                 if goal_segment:
                     parts.append(goal_segment)
+                if control_room_segment:
+                    parts.append(control_room_segment)
                 parts.append(duration_label)
                 if focus_label:
                     parts.append(focus_label)
@@ -6175,6 +6204,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 parts.append(f"⛓ {bg_subagent_count}")
             if goal_segment:
                 parts.append(goal_segment)
+            if control_room_segment:
+                parts.append(control_room_segment)
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -10812,6 +10843,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "control":
+            self._handle_control_command(cmd_original)
         elif canonical == "journey":
             self._handle_journey_command(cmd_original)
         elif canonical == "background":
@@ -16344,6 +16377,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def handle_open_in_editor(event):
             """Ctrl+G (or Alt+G in VSCode/Cursor) opens the current draft in an external editor."""
             cli_ref._open_external_editor(event.current_buffer)
+
+        # --- Ctrl+P Control Room ------------------------------------------
+        # KENSEI CUSTOM (CR-302): open the Control Room home as plain text.
+        # Non-invasive: does not touch the draft buffer or hijack input — it
+        # prints the read-only home through _cprint, so any typed draft
+        # survives untouched. Suppressed while a modal prompt owns the
+        # composer (sudo / secret / approval / clarify / slash confirm) so
+        # Ctrl+P can't interrupt a sensitive prompt.
+        _control_room_filter = Condition(
+            lambda: not cli_ref._clarify_state
+            and not cli_ref._approval_state
+            and not cli_ref._sudo_state
+            and not cli_ref._secret_state
+            and not cli_ref._slash_confirm_state
+            and not cli_ref._model_picker_state
+        )
+
+        @kb.add('c-p', filter=_control_room_filter)
+        def handle_control_room(event):
+            """Ctrl+P: open Control Room home (read-only, draft-preserving)."""
+            cli_ref._handle_control_command("/control")
 
         # --- Ctrl+S prompt stash -------------------------------------------
         # Park a half-written draft, send something else, then bring the draft

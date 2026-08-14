@@ -594,6 +594,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ modelPicker: true })
     }
 
+    // KENSEI CUSTOM: Ctrl+P toggles the Control Room overlay. Draft text is
+    // preserved by the composer store — opening an overlay never clears input
+    // (same contract as Ctrl+O/Ctrl+X). The overlay owns arrow/Enter/Esc once
+    // open, matching the plan's navigation contract.
+    if (isCtrl(key, ch, 'p')) {
+      return patchOverlayState({ controlRoom: !overlay.controlRoom })
+    }
+
     if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({

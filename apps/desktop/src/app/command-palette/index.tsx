@@ -26,6 +26,7 @@ import {
   Archive,
   BarChart3,
   Check,
+  LayoutDashboard,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -843,6 +844,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       {
         heading: cc.commandCenter,
         items: [
+          {
+            icon: LayoutDashboard,
+            id: 'cc-home',
+            keywords: ['control room', 'home', 'attention', 'needs you', 'agents', 'tasks', 'messages', 'system'],
+            label: cc.sections.home,
+            run: go(`${COMMAND_CENTER_ROUTE}?section=home`)
+          },
           {
             icon: Archive,
             id: 'cc-sessions',

@@ -37,4 +37,55 @@ function resolveCommitLogSelection({ branch, isShallow }) {
   return isShallow ? { limit: 1, revision: remote } : { limit: 40, revision: `HEAD..${remote}` }
 }
 
-export { resolveBehindCount, resolveCommitLogSelection, shouldCountCommits }
+// When the local graph can't count (behind === null), the GitHub compare API
+// still can: `GET /repos/<owner>/<repo>/compare/<current>...<target>` returns
+// `ahead_by` — how many commits the remote tip is ahead of the local HEAD,
+// i.e. exactly the behind count the shallow clone lost. Unauthenticated, no
+// clone depth required. Pure URL builder + response parser here; the network
+// call lives with the caller.
+function compareApiUrl({ currentSha, originUrl, targetSha }) {
+  const sha = /^[0-9a-f]{40}$/i
+
+  if (!sha.test(currentSha || '') || !sha.test(targetSha || '')) {
+    return null
+  }
+
+  // Only GitHub remotes have a compare API. Reuse the canonical form the
+  // official-remote check produces: `github.com/<owner>/<repo>`.
+  const canonical = canonicalRemoteForCompare(originUrl)
+
+  if (!canonical) {
+    return null
+  }
+
+  return `https://api.github.com/repos/${canonical}/compare/${currentSha}...${targetSha}`
+}
+
+function canonicalRemoteForCompare(originUrl) {
+  const value = String(originUrl || '').trim()
+  const match =
+    /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(value) ||
+    /^(?:ssh:\/\/git@|https:\/\/|http:\/\/)github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(value)
+
+  return match ? match[1] : null
+}
+
+// `ahead_by` counts target commits not reachable from current — the behind
+// count. `status` is "ahead" / "behind" / "diverged" / "identical" relative to
+// current...target; any shape surprise returns null so the caller keeps the
+// honest "update available" fallback instead of trusting a partial answer.
+function parseCompareBehindCount(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  const ahead = payload.ahead_by
+
+  if (typeof ahead !== 'number' || !Number.isInteger(ahead) || ahead < 0) {
+    return null
+  }
+
+  return ahead
+}
+
+export { compareApiUrl, parseCompareBehindCount, resolveBehindCount, resolveCommitLogSelection, shouldCountCommits }

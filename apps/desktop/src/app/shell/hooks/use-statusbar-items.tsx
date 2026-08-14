@@ -282,6 +282,7 @@ export function useStatusbarItems({
       restarting: updateApply.stage === 'restart',
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
       target: 'client',
+      updateAvailable: updateStatus?.updateAvailable,
       version: desktopVersion?.appVersion
     })
 

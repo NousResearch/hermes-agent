@@ -2419,8 +2419,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         sys.exit(1)
 
     if is_shallow:
-        # No history to count across the shallow boundary. Compare tip SHAs and
-        # report presence-only (mirrors the banner's _check_via_local_git).
+        # No history to count across the shallow boundary. Compare tip SHAs
+        # (mirrors the banner's _check_via_local_git), then try to recover the
+        # exact count via the GitHub compare API — the remote graph is complete
+        # even when the local one is truncated.
         head_sha = subprocess.run(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -2432,9 +2434,19 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
         else:
-            print(f"⚕ Update available (behind {compare_branch}).")
+            from hermes_cli.banner import _github_compare_behind
             from hermes_cli.config import recommended_update_command
 
+            counted = _github_compare_behind(head_sha, target_sha)
+            if counted == 0:
+                # Local commits on top of the remote tip — not behind.
+                print("✓ Already up to date.")
+                return
+            if counted is not None:
+                commits_word = "commit" if counted == 1 else "commits"
+                print(f"⚕ Update available: {counted} {commits_word} behind {compare_branch}.")
+            else:
+                print(f"⚕ Update available (behind {compare_branch}).")
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 

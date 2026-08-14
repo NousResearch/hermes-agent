@@ -206,7 +206,7 @@ import {
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { resolveBehindCount, resolveCommitLogSelection, shouldCountCommits } from './update-count'
+import { compareApiUrl, parseCompareBehindCount, resolveBehindCount, resolveCommitLogSelection, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -2574,11 +2574,21 @@ async function checkUpdates() {
       }
     }
 
+    // Passive SSH-official checks only know tip SHAs (ls-remote) — never
+    // fabricate a "1 commit behind". Recover the exact count via the GitHub
+    // compare API when possible; otherwise behind stays null ("update
+    // available, count unknown") and updateAvailable carries the signal.
+    const upToDate = Boolean(currentSha && currentSha === targetSha)
+    const sshBehind = upToDate
+      ? 0
+      : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+
     return {
       supported: true,
       branch,
       currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      behind: sshBehind,
+      updateAvailable: !upToDate,
       currentSha,
       targetSha,
       commits: [],
@@ -2624,13 +2634,21 @@ async function checkUpdates() {
     currentSha !== targetSha &&
     (await runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
 
-  const behind = resolveBehindCount({
+  let behind = resolveBehindCount({
     countStr,
     currentSha,
     targetSha,
     isShallow,
     targetIsAncestorOfHead
   })
+
+  // Recover the exact count a shallow clone can't compute: the GitHub compare
+  // API knows the full graph regardless of local clone depth. Best-effort —
+  // offline, rate-limited, or non-GitHub origins keep the honest null
+  // ("update available", no fabricated number).
+  if (behind === null) {
+    behind = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
+  }
 
   // behind === null means "update available, exact count unknown" (shallow
   // clone): still list what origin offers — resolveCommitLogSelection keeps
@@ -2650,6 +2668,60 @@ async function checkUpdates() {
     dirty: dirtyStr.length > 0,
     hermesRoot: updateRoot,
     fetchedAt: Date.now()
+  }
+}
+
+// Best-effort exact behind-count for graphs the local clone can't measure.
+// Delegates URL building + response parsing to update-count.ts (pure, unit
+// tested); this wrapper only does the bounded network call. Any failure —
+// offline, 4xx/5xx, rate limit, shape surprise — returns null so callers keep
+// the honest "update available, count unknown" state.
+async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
+  const url = compareApiUrl({ currentSha, originUrl, targetSha })
+
+  if (!url) {
+    return null
+  }
+
+  try {
+    const payload = await new Promise((resolve, reject) => {
+      const req = https.get(
+        url,
+        {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            // GitHub requires a UA on api.github.com; requests without one 403.
+            'User-Agent': 'hermes-desktop-update-check'
+          },
+          timeout: 10_000
+        },
+        res => {
+          const chunks = []
+          res.on('error', reject)
+          res.on('data', chunk => chunks.push(chunk))
+          res.on('end', () => {
+            if ((res.statusCode || 500) >= 400) {
+              reject(new Error(`compare API ${res.statusCode}`))
+
+              return
+            }
+
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+            } catch (error) {
+              reject(error)
+            }
+          })
+        }
+      )
+
+      req.on('timeout', () => req.destroy(new Error('compare API timeout')))
+      req.on('error', reject)
+    })
+
+    return parseCompareBehindCount(payload)
+  } catch {
+    return null
   }
 }
 

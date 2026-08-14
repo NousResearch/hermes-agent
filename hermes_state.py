@@ -6132,7 +6132,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return {}
         runtime = raw.get("gateway_runtime")
         if isinstance(runtime, dict) and runtime.get("provider"):
-            return dict(runtime)
+            # Filter None values: the persist path writes or-None to trigger
+            # deletion in the top-level merge, but gateway_runtime is replaced
+            # as a whole dict (not deep-merged), so None values survive here.
+            return {k: v for k, v in runtime.items() if v is not None}
         top_level = {
             key: raw.get(key)
             for key in ("provider", "base_url", "api_mode")

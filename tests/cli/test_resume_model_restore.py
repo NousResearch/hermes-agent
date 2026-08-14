@@ -147,9 +147,10 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
     assert patch["provider"] == "custom:opencode-zen"
     assert patch["base_url"] == "https://oz/v1"
-    assert "api_mode" not in patch["gateway_runtime"]  # empty values dropped
-    # Absent top-level values are explicit None so the merge DELETES stale
-    # keys from a previous switch (merge only deletes on None).
+    # Both shapes use or-None so stale keys are deleted (not merely omitted)
+    # in BOTH gateway_runtime and top-level — the asymmetry that caused the
+    # original stale-key bug.
+    assert patch["gateway_runtime"]["api_mode"] is None
     assert patch["api_mode"] is None
 
 
@@ -183,8 +184,16 @@ def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
 
     meta = db.get_session("stale1")
     config = json.loads(meta["model_config"])
+    # Top-level keys: stale values deleted.
     assert config["provider"] == "openrouter"
     assert "api_mode" not in config, config  # stale anthropic_messages deleted
+    # Nested gateway_runtime: stale values replaced with None (the merge
+    # replaces the entire gateway_runtime dict, not deep-merging its keys).
+    # The reader's `or None` / `if v` filtering treats None the same as
+    # absent, so stale values are effectively erased.
+    gw = config.get("gateway_runtime", {})
+    assert gw.get("provider") == "openrouter"
+    assert gw.get("api_mode") is None  # stale anthropic_messages erased
     runtime = SessionDB.session_gateway_runtime(meta)
     assert runtime["provider"] == "openrouter"
     assert "api_mode" not in runtime
@@ -235,7 +244,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] is None
-    assert "provider" not in written["patch"]["gateway_runtime"]
+    assert written["patch"]["gateway_runtime"]["provider"] is None
 
 
 def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):

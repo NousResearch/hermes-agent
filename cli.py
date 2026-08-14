@@ -7781,28 +7781,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ) or None
             except Exception:
                 provider = None
+        # Both shapes use the same or-None discipline so stale keys from a
+        # previous switch are deleted (not merely omitted) in BOTH the
+        # nested gateway_runtime dict (CLI reader) and the top-level keys
+        # (TUI gateway reader). _merge_model_config_json only deletes on
+        # explicit None, so falsy values must be converted, not filtered.
+        # Deriving the top-level from **route guarantees the two shapes
+        # can never diverge — the asymmetry that caused the original
+        # stale-key bug (#85261 simplify-code review).
         route = {
-            k: v
-            for k, v in {
-                "provider": provider,
-                "base_url": result.base_url,
-                "api_mode": result.api_mode,
-            }.items()
-            if v
+            "provider": provider or None,
+            "base_url": result.base_url or None,
+            "api_mode": result.api_mode or None,
         }
         try:
             db.update_session_model(sid, result.new_model)
-            # Both shapes: nested for the CLI reader, top-level for the
-            # TUI gateway's resume path. Top-level keys are written as
-            # explicit None when absent — _merge_model_config_json only
-            # deletes on None, so omitting them would let a PREVIOUS
-            # switch's provider/api_mode survive this one (stale wire
-            # protocol / frankenroute on resume).
             db.patch_session_model_config(sid, {
                 "gateway_runtime": route,
-                "provider": provider or None,
-                "base_url": result.base_url or None,
-                "api_mode": result.api_mode or None,
+                **route,
             })
         except Exception:
             logger.debug(

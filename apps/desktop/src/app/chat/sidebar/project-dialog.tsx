@@ -28,6 +28,7 @@ import {
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
+import type { ProjectInfo } from '@/types/hermes'
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
@@ -50,7 +51,12 @@ export function ProjectDialog() {
   useEffect(() => {
     if (open) {
       setName(state?.name ?? '')
-      setFolders([])
+      // Create-mode prefill: when a caller (the session "Move to project"
+      // submenu, in practice) hands us a folder, seed the picker's primary
+      // folder so the user only has to name the project and confirm — the
+      // whole point of the submenu's affordance is to do the move in two
+      // clicks, and asking the user to repick the directory breaks that.
+      setFolders(mode === 'create' && state?.prefillFolder ? [state.prefillFolder] : [])
       setIdea('')
       setTemplates(randomIdeaTemplates())
       setGeneratingIdea(false)
@@ -60,7 +66,7 @@ export function ProjectDialog() {
         window.setTimeout(() => nameRef.current?.select(), 0)
       }
     }
-  }, [open, mode, state?.name])
+  }, [open, mode, state?.name, state?.prefillFolder])
 
   const onOpenChange = (next: boolean) => {
     if (!next) {
@@ -124,7 +130,23 @@ export function ProjectDialog() {
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
     if (mode === 'create' && trimmed && folders.length) {
-      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
+      let created: ProjectInfo | null = null
+
+      await runSubmit(async () => {
+        created = await createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true })
+      })
+
+      // Fire the create-then-move (or whatever) callback AFTER the dialog
+      // closes, so the user is back in the menu/submenu and the toast lands
+      // against the right surface. Errors here are toasted but never block
+      // the dialog's own success path — the project IS created either way.
+      if (created && state?.onCreated) {
+        try {
+          await state.onCreated(created)
+        } catch (err) {
+          notifyError(err, p.createFailed)
+        }
+      }
     }
   }
 

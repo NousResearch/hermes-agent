@@ -2389,11 +2389,42 @@ def _sess_nowait(params, rid):
 
 
 def _sess(params, rid):
+    s, err = _sess_building(params, rid)
+    if err:
+        return (None, err)
+    return (s, _wait_agent(s, rid))
+
+
+def _sess_building(params, rid):
+    """Resolve a session and warm its agent build WITHOUT waiting for it.
+
+    For handlers that need the session record but not the agent. The attach
+    RPCs are the whole reason this exists: ``image.attach``,
+    ``image.attach_bytes``, ``file.attach``, ``pdf.attach``,
+    ``clipboard.paste`` and ``image.detach`` only read ``cwd`` /
+    ``profile_home`` and mutate ``attached_images`` — every one of those
+    fields is populated when the session record is created, so ``_sess``'s
+    ``_wait_agent`` was buying nothing and charging up to 30 seconds for it.
+
+    That charge landed in the worst possible place. Attach runs BEFORE
+    ``prompt.submit``, none of these methods is in ``_LONG_HANDLERS``, and a
+    non-pooled handler runs inline on the socket reader thread — so pasting an
+    image into a session whose deferred build was still running (MCP
+    discovery, model metadata, skills scan: routinely tens of seconds on a
+    cold start) stalled the send AND every RPC queued behind it on the same
+    socket, with no spinner to explain it. Plain text was unaffected because
+    ``prompt.submit`` already resolves via ``_sess_nowait`` and waits later,
+    off the reader thread — which is exactly why the bug reads as "text is
+    instant, images hang."
+
+    The build is still kicked off (it warms the agent the following
+    ``prompt.submit`` needs); we simply stop blocking on it here.
+    """
     s, err = _sess_nowait(params, rid)
     if err:
         return (None, err)
     _start_agent_build(params.get("session_id") or "", s)
-    return (s, _wait_agent(s, rid))
+    return (s, None)
 
 
 def _normalize_completion_path(path_part: str) -> str:

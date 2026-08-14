@@ -717,7 +717,7 @@ def _(rid, params: dict) -> dict:
 
 @method("clipboard.paste")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     try:
@@ -757,7 +757,7 @@ def _(rid, params: dict) -> dict:
 
 @method("image.attach")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()
@@ -815,7 +815,7 @@ def _(rid, params: dict) -> dict:
       filename / ext (str, optional): extension hint. Without it, magic bytes
         identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
     """
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
 
@@ -875,7 +875,7 @@ def _(rid, params: dict) -> dict:
     import subprocess
     import tempfile
 
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
 
@@ -1004,7 +1004,7 @@ def _(rid, params: dict) -> dict:
         required when the path isn't visible to the gateway.
       name (str, optional): preferred filename.
     """
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()
@@ -1034,7 +1034,7 @@ def _(rid, params: dict) -> dict:
 
 @method("image.detach")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()

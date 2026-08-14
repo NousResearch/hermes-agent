@@ -157,20 +157,21 @@ class ReasoningParamsMixin:
     def _reasoning_replay_route(self):
         """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
 
-        Cached per (api_mode, provider, model, base_url, opt-in, rejected keys) — called many times
+        Cached per (api_mode, provider, requested provider, model, base_url, opt-in, rejected keys) — called many times
         per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
         field rejection, the only events allowed to change the replayed bytes mid-session.
         """
         from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
 
         rejected = rejected_reasoning_carriers(self)
-        key = (getattr(self, "api_mode", None), self.provider, self.model, getattr(self, "_base_url_lower", self.base_url),
-               self._reasoning_echo_opt_in(), rejected)
+        echo_opt_in = self._reasoning_echo_opt_in() or self._needs_profile_reasoning_echo()
+        key = (getattr(self, "api_mode", None), self.provider, getattr(self, "requested_provider", None), self.model,
+               getattr(self, "_base_url_lower", self.base_url), echo_opt_in, rejected)
         cached = getattr(self, "_reasoning_route_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
         route = reasoning_replay_route(key[0], self.provider, self.model, self.base_url,
-                                       echo_opt_in=key[4], rejected=rejected)
+                                       echo_opt_in=echo_opt_in, rejected=rejected)
         self._reasoning_route_cache = (key, route)
         return route
 
@@ -179,6 +180,16 @@ class ReasoningParamsMixin:
         without a non-empty ``reasoning_content`` (#15250, #17400), plus a ``model.reasoning_echo`` opt-in
         for gateways proxying them. Never true on a route that does not read the field."""
         return self._reasoning_replay_route().pad
+
+    def _needs_profile_reasoning_echo(self) -> bool:
+        """True when the resolved provider profile opts into reasoning_content echo-back
+        (``echo_reasoning_content``). Lets a provider profile (the llamacpp plugin, for llama-server
+        ``--reasoning-preserve`` prompt-cache reuse) join the echo families without a hardcoded row in
+        ``message_sanitization._REASONING_ECHO_RULES``. Resolution is requested-provider-first
+        (``providers.resolve_provider_profile``), matching the transport's profile activation."""
+        from providers import resolve_provider_profile
+        profile = resolve_provider_profile(self.provider, getattr(self, "requested_provider", None))
+        return bool(getattr(profile, "echo_reasoning_content", False))
 
     def _reasoning_echo_opt_in(self) -> bool:
         """``model.reasoning_echo``: treat the *current* provider as must-echo (pad tool-call turns) — for

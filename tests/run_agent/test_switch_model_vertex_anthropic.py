@@ -31,6 +31,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.agent_runtime_helpers import switch_model
 
 
@@ -212,3 +214,66 @@ class TestSwitchModelVertexAnthropic:
 
         assert build_native_mock.called
         assert not build_vertex_mock.called
+
+
+class TestSwitchModelEmptyBaseUrlGuard:
+    """The #47828 stale-base_url guard must not block Claude on Vertex/Bedrock.
+
+    That guard raises when a provider change resolves an empty ``base_url``, on
+    the premise that "empty means upstream resolution failed". The premise does
+    not hold for the Anthropic cloud partner SDKs: ``AnthropicVertex`` and
+    ``AnthropicBedrock`` derive their endpoint from project/region internally,
+    so ``switch_model()`` legitimately has no URL to pass. Without the
+    exemption, `/model anthropic/claude-*` on ``provider: vertex`` raises
+    instead of switching.
+    """
+
+    def test_vertex_anthropic_switch_survives_empty_base_url(self):
+        agent = _make_agent("openrouter", "openai/gpt-5")
+        with (
+            patch(
+                "agent.anthropic_vertex_adapter.get_anthropic_vertex_config",
+                return_value=("khala-498208", "global"),
+            ),
+            patch(
+                "agent.anthropic_vertex_adapter.build_anthropic_vertex_client",
+                return_value=MagicMock(),
+            ),
+            patch("agent.credential_pool.load_pool", return_value=None),
+        ):
+            # No base_url= argument at all: this is what switch_model() resolves
+            # for a cloud partner model.
+            switch_model(
+                agent,
+                new_model="anthropic/claude-opus-4-8",
+                new_provider="vertex",
+                api_mode="anthropic_messages",
+            )
+        assert agent.provider == "vertex"
+        assert agent.model == "anthropic/claude-opus-4-8"
+
+    def test_guard_still_fires_for_a_non_cloud_provider(self):
+        """The exemption must stay scoped — an ordinary provider change with no
+        resolved base_url is still the bug #47828 was written to catch."""
+        agent = _make_agent("openrouter", "openai/gpt-5")
+        with patch("agent.credential_pool.load_pool", return_value=None):
+            with pytest.raises(ValueError, match="no base_url resolved"):
+                switch_model(
+                    agent,
+                    new_model="minimax/minimax-m2",
+                    new_provider="minimax",
+                    api_mode="chat_completions",
+                )
+
+    def test_guard_still_fires_for_vertex_outside_anthropic_messages(self):
+        """Gemini-on-Vertex goes through the OpenAI-compat aggregator and DOES
+        need a real base_url, so the exemption must not cover it."""
+        agent = _make_agent("openrouter", "openai/gpt-5")
+        with patch("agent.credential_pool.load_pool", return_value=None):
+            with pytest.raises(ValueError, match="no base_url resolved"):
+                switch_model(
+                    agent,
+                    new_model="google/gemini-3.5-flash",
+                    new_provider="vertex",
+                    api_mode="chat_completions",
+                )

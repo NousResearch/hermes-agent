@@ -19743,6 +19743,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if persist_user_display_kind:
                     _user_entry["display_kind"] = persist_user_display_kind
+                if persist_user_display_metadata:
+                    _user_entry["display_metadata"] = persist_user_display_metadata
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
@@ -19787,6 +19789,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if persist_user_display_kind:
                         _user_entry["display_kind"] = persist_user_display_kind
+                    if persist_user_display_metadata:
+                        _user_entry["display_metadata"] = persist_user_display_metadata
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     await self.async_session_store.append_to_transcript(
@@ -19978,6 +19982,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         }
                         if 'persist_user_display_kind' in locals() and persist_user_display_kind:
                             _user_entry["display_kind"] = persist_user_display_kind
+                        if (
+                            'persist_user_display_metadata' in locals()
+                            and persist_user_display_metadata
+                        ):
+                            _user_entry["display_metadata"] = persist_user_display_metadata
                         if getattr(event, "message_id", None):
                             _user_entry["message_id"] = str(event.message_id)
                         await self.async_session_store.append_to_transcript(

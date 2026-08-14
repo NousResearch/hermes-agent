@@ -189,6 +189,14 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  // The rename item opens a Dialog. When a menu closes, Radix restores focus to
+  // its trigger — for a sidebar row that trigger is the row's own <button>, so
+  // focus lands there instead of the dialog's input: Space then activates the
+  // row (selecting the session) and the arrow keys move the list rather than
+  // the caret. Suppress that one restore so the dialog keeps focus; every other
+  // action leaves the restore alone (it's the correct behavior for them). Mirrors
+  // the project menu's appearance-popover guard.
+  const suppressCloseFocusRef = useRef(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
 
@@ -240,6 +248,8 @@ function useSessionActions({
       label: r.rename,
       onSelect: () => {
         triggerHaptic('selection')
+        // Keep focus off the row trigger so it lands in the dialog input.
+        suppressCloseFocusRef.current = true
         setRenameOpen(true)
       }
     }),
@@ -438,7 +448,16 @@ function useSessionActions({
     />
   )
 
-  return { renameDialog, renderItems }
+  // Consumed once per close: when rename was the action that closed the menu,
+  // block Radix's focus-restore to the trigger so the dialog input keeps focus.
+  const onCloseAutoFocus = (event: Event) => {
+    if (suppressCloseFocusRef.current) {
+      suppressCloseFocusRef.current = false
+      event.preventDefault()
+    }
+  }
+
+  return { onCloseAutoFocus, renameDialog, renderItems }
 }
 
 interface SessionActionsMenuProps
@@ -448,7 +467,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { renameDialog, renderItems } = useSessionActions(actions)
+  const { onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -457,6 +476,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         ariaLabel={t.sidebar.row.sessionActions}
         contentClassName="w-40"
         items={renderItems}
+        onCloseAutoFocus={onCloseAutoFocus}
         sideOffset={sideOffset}
       >
         {children}
@@ -472,11 +492,16 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { renameDialog, renderItems } = useSessionActions(actions)
+  const { onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
-      <ActionsContextMenu ariaLabel={t.sidebar.row.sessionActions} contentClassName="w-40" items={renderItems}>
+      <ActionsContextMenu
+        ariaLabel={t.sidebar.row.sessionActions}
+        contentClassName="w-40"
+        items={renderItems}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         {children}
       </ActionsContextMenu>
       {renameDialog}

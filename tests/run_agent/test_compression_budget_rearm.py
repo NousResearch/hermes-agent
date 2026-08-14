@@ -121,6 +121,8 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
     compressor.threshold_tokens = 100
     compressor.context_length = 1_000
     compressor.last_prompt_tokens = -1
+    compressor._verify_compaction_cleared_threshold = False
+    compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.side_effect = lambda tokens: tokens >= 100
     compressor.should_compress_info.return_value = (False, None)
     compressor.should_compress_preflight.return_value = False
@@ -128,14 +130,40 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
     compressor.get_active_compression_failure_cooldown.return_value = None
     compressor.select_context.return_value = None
     compressor.get_automatic_compaction_status_message.return_value = ""
+
+    def _update_from_response(usage):
+        # Mirror the real compressor: the next provider usage reading
+        # consumes the completed-compaction verification latch.
+        compressor.last_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        compressor._verify_compaction_cleared_threshold = False
+        compressor.awaiting_real_usage_after_compression = False
+
+    compressor.update_from_response.side_effect = _update_from_response
     agent.compression_enabled = True
     agent.context_compressor = compressor
 
     estimate_values = iter([200, 190, 200, 10])
+    _last_estimate = [10]
+
+    def _next_estimate(*_args, **_kwargs):
+        # The provider-recovery variant re-runs the pre-API preflight after
+        # fallback activation (#84733), consuming an extra estimate reading.
+        # Hold the final low-pressure value once the scripted sequence is
+        # exhausted instead of raising StopIteration.
+        try:
+            _last_estimate[0] = next(estimate_values)
+        except StopIteration:
+            pass
+        return _last_estimate[0]
+
     compress_calls = []
 
     def _fake_compress(messages, _system_message, **_kwargs):
         compress_calls.append(messages)
+        # Arm the same provider-verification boundary the real compression
+        # path arms after a completed compaction.
+        compressor._verify_compaction_cleared_threshold = True
+        compressor.awaiting_real_usage_after_compression = True
         return list(messages), "compressed prompt"
 
     def _fake_execute_tool_calls(assistant_message, messages, *_args):
@@ -161,7 +189,7 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
         ),
         patch(
             "agent.conversation_loop.estimate_messages_tokens_rough",
-            side_effect=lambda *_args, **_kwargs: next(estimate_values),
+            side_effect=_next_estimate,
         ),
         patch(
             "agent.conversation_loop._estimate_tools_tokens_rough",

@@ -3741,35 +3741,17 @@ def run_conversation(
                             max_compression_attempts,
                         )
                         compression_attempts = 0
-
-                    # ``compression_attempts`` bounds one *continuous pressure
-                    # episode*, not the lifetime of a tool-heavy user turn. A
-                    # successful provider call whose real prompt usage is back
-                    # below the compression threshold proves the previous
-                    # episode converged. Re-arm the budget and clear its
-                    # insufficient-progress blocker so later tool output in the
-                    # same turn can trigger a new episode.
-                    _compression_threshold = int(
-                        getattr(agent.context_compressor, "threshold_tokens", 0)
-                        or 0
-                    )
-                    if (
-                        (
-                            compression_attempts > 0
-                            or _preflight_compression_blocked
-                            or _last_preflight_pressure is not None
-                        )
-                        and prompt_tokens > 0
-                        and _compression_threshold > 0
-                        and prompt_tokens < _compression_threshold
-                    ):
-                        logger.info(
-                            "Compression pressure cleared at %s < %s tokens; "
-                            "re-arming same-turn compression budget",
-                            f"{prompt_tokens:,}",
-                            f"{_compression_threshold:,}",
-                        )
-                        compression_attempts = 0
+                        # Provider-confirmed recovery also invalidates the
+                        # insufficient-progress preflight state: with the
+                        # prompt proven back below the threshold, a prior
+                        # "insufficient progress" verdict (and the stale
+                        # pressure reading it would be compared against)
+                        # describes a request shape that no longer exists.
+                        # Left armed, _preflight_compression_blocked keeps the
+                        # pre-API gate dark for the rest of the turn even
+                        # though the attempt budget was just rearmed, so a
+                        # later pressure spike would grow unchecked until the
+                        # provider's overflow handler fired.
                         _preflight_compression_blocked = False
                         _last_preflight_pressure = None
 

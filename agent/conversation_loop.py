@@ -168,32 +168,28 @@ _HANDOFF_SKIP_FINAL_RESPONSE = (
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
-# Refund the per-turn compression budget only when the assembled request has
-# dropped this far below threshold_tokens. The gap between this margin and
-# 1.0 is the anti-thrash belt: a compaction that lands barely under threshold
-# keeps its burnt attempt, so borderline shrink/regrow cycles cannot recycle
-# the budget indefinitely.
-_COMPRESSION_BUDGET_REFUND_MARGIN = 0.8
 
-
-def _should_refund_compression_budget(
+def _should_rearm_compression_budget(
     compression_attempts: int,
-    request_pressure_tokens: int,
+    *,
+    completed_compaction_pending: bool,
+    prompt_tokens: int,
     threshold_tokens: int,
 ) -> bool:
-    """True when burnt compression attempts should be returned to the turn.
+    """Return True after a provider proves a completed compaction worked.
 
-    A compaction that brought the assembled request comfortably back under
-    threshold made real progress, so it must not permanently consume the
-    per-turn overflow-recovery backstop. No-progress passes never get here
-    below the margin, so they still exhaust the budget (#11529).
+    Rough estimates cannot safely rearm the anti-thrash budget: they can dip
+    below the threshold while the provider-visible prompt remains too large.
+    Require the completed-compaction latch plus a positive, normalized prompt
+    count below the threshold from the next successful provider response.
     """
     return bool(
         compression_attempts
+        and completed_compaction_pending
         and threshold_tokens > 0
-        and request_pressure_tokens
-        < threshold_tokens * _COMPRESSION_BUDGET_REFUND_MARGIN
+        and 0 < prompt_tokens < threshold_tokens
     )
+
 
 # Modules that indicate a deterministic local processing error when they
 # appear in an exception traceback WITHOUT any API-call module. Used by the
@@ -1655,7 +1651,10 @@ def run_conversation(
     compression_attempts = 0
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
-    # overflow/413 retry handlers, and the post-tool compaction gate.
+    # overflow/413 retry handlers, and the post-tool compaction gate. The
+    # counter is a consecutive unverified/ineffective-attempt backstop: a
+    # completed compaction rearms it only after a successful provider response
+    # reports a prompt below the threshold.
     # Config-driven via compression.max_attempts (parsed + validated in
     # agent_init); default 3 preserves the prior hardcoded behavior for
     # objects without the attribute (older pickles / minimal stubs).
@@ -2316,31 +2315,6 @@ def run_conversation(
                 f"{_previous_preflight_pressure:,}",
                 f"{request_pressure_tokens:,}",
             )
-        # Refund the shared overflow-recovery budget once the assembled
-        # request is comfortably back under threshold: a compaction that got
-        # us here made real progress, so it must not permanently consume the
-        # per-turn backstop. Without this, a long tool-heavy turn burns all
-        # attempts on *successful* pre-API compactions, the gate below goes
-        # permanently dark, and the context grows unchecked until the
-        # provider rejects the request terminally (root cause of the
-        # max-compression-attempts dead end on marathon turns). The
-        # compressor's own should_compress() must agree the pressure is gone —
-        # when it and the local estimate disagree (#36718 noise, runaway-
-        # compaction stubs), the budget stays burnt and the hard per-turn cap
-        # keeps its original meaning.
-        if _should_refund_compression_budget(
-            compression_attempts, request_pressure_tokens, _preflight_threshold
-        ) and not _compressor.should_compress(request_pressure_tokens):
-            logger.info(
-                "Compression budget refunded: ~%s request tokens < %s%% of "
-                "%s threshold (attempts were %s/%s)",
-                f"{request_pressure_tokens:,}",
-                int(_COMPRESSION_BUDGET_REFUND_MARGIN * 100),
-                f"{_preflight_threshold:,}",
-                compression_attempts,
-                max_compression_attempts,
-            )
-            compression_attempts = 0
         _defer_preflight = getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
         )
@@ -3736,7 +3710,37 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
+                    # Capture the boundary latch before update_from_response()
+                    # consumes it. Only a real provider prompt count for the
+                    # request immediately following a completed compaction can
+                    # prove that attempt effective and rearm the shared budget.
+                    _completed_compaction_pending = bool(
+                        getattr(
+                            agent.context_compressor,
+                            "_verify_compaction_cleared_threshold",
+                            False,
+                        )
+                    )
                     agent.context_compressor.update_from_response(usage_dict)
+                    _compression_threshold = int(
+                        getattr(agent.context_compressor, "threshold_tokens", 0)
+                        or 0
+                    )
+                    if _should_rearm_compression_budget(
+                        compression_attempts,
+                        completed_compaction_pending=_completed_compaction_pending,
+                        prompt_tokens=prompt_tokens,
+                        threshold_tokens=_compression_threshold,
+                    ):
+                        logger.info(
+                            "Compression budget rearmed after provider-confirmed "
+                            "recovery: prompt=%s < threshold=%s (attempts were %s/%s)",
+                            f"{prompt_tokens:,}",
+                            f"{_compression_threshold:,}",
+                            compression_attempts,
+                            max_compression_attempts,
+                        )
+                        compression_attempts = 0
 
                     # Stash this response's canonical usage so the post-turn
                     # on_turn_complete() observation hook can forward it (the

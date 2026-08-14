@@ -1,4 +1,4 @@
-"""Behavioral tests for the per-turn compression budget refund.
+"""Behavioral tests for provider-confirmed compression-budget rearming.
 
 ``compression_attempts`` is a shared per-turn backstop (pre-API gate,
 overflow/413 handlers, post-tool gate). Before the refund fix, *successful*
@@ -7,15 +7,9 @@ attempts on compactions that worked, the pre-API gate went dark for the rest
 of the turn, and the context grew unchecked until the provider rejected the
 request terminally ("max compression attempts (N) reached").
 
-The refund returns the budget when BOTH hold at the top of a loop pass:
-
-* the assembled request sits below ``threshold_tokens *
-  _COMPRESSION_BUDGET_REFUND_MARGIN`` (real progress, not a borderline
-  shrink), and
-* the compressor's own ``should_compress()`` agrees there is no pressure
-  (divergent-signal guard — a compressor that still demands compression
-  keeps the hard cap's original meaning, see
-  test_post_tool_compression_attempt_cap.py).
+The budget is rearmed only when a completed compaction is followed by a real
+provider prompt count below the configured threshold. Rough estimates and
+usage-less responses cannot reopen the anti-thrash cap.
 
 These tests drive ``run_conversation()`` through real tool iterations — no
 source inspection, only observable compaction counts.
@@ -29,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_loop import _should_refund_compression_budget
+from agent.conversation_loop import _should_rearm_compression_budget
 from run_agent import AIAgent
 
 
@@ -38,23 +32,35 @@ from run_agent import AIAgent
 # ---------------------------------------------------------------------------
 
 
-class TestRefundDecision:
-    def test_no_attempts_no_refund(self):
-        assert not _should_refund_compression_budget(0, 100, 10_000)
+class TestRearmDecision:
+    def test_provider_confirmed_recovery_rearms(self):
+        assert _should_rearm_compression_budget(
+            2,
+            completed_compaction_pending=True,
+            prompt_tokens=7_999,
+            threshold_tokens=10_000,
+        )
 
-    def test_zero_threshold_no_refund(self):
-        assert not _should_refund_compression_budget(2, 100, 0)
-
-    def test_barely_under_threshold_no_refund(self):
-        # 9,999 of 10,000 is inside the anti-thrash belt (margin 0.8).
-        assert not _should_refund_compression_budget(2, 9_999, 10_000)
-
-    def test_at_margin_no_refund(self):
-        assert not _should_refund_compression_budget(2, 8_000, 10_000)
-
-    def test_comfortably_under_margin_refunds(self):
-        assert _should_refund_compression_budget(2, 7_999, 10_000)
-        assert _should_refund_compression_budget(1, 100, 10_000)
+    @pytest.mark.parametrize(
+        ("attempts", "pending", "prompt_tokens", "threshold_tokens"),
+        [
+            (0, True, 7_999, 10_000),
+            (2, False, 7_999, 10_000),
+            (2, True, 0, 10_000),
+            (2, True, 10_000, 10_000),
+            (2, True, 10_001, 10_000),
+            (2, True, 7_999, 0),
+        ],
+    )
+    def test_unverified_or_pressured_response_keeps_budget_burned(
+        self, attempts, pending, prompt_tokens, threshold_tokens
+    ):
+        assert not _should_rearm_compression_budget(
+            attempts,
+            completed_compaction_pending=pending,
+            prompt_tokens=prompt_tokens,
+            threshold_tokens=threshold_tokens,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +76,17 @@ def _tool_call(i: int):
     )
 
 
-def _tool_response(i: int):
+def _usage(prompt_tokens: int | None):
+    if prompt_tokens is None:
+        return None
+    return SimpleNamespace(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=1,
+        total_tokens=prompt_tokens + 1,
+    )
+
+
+def _tool_response(i: int, prompt_tokens: int | None):
     msg = SimpleNamespace(
         content=None,
         reasoning_content=None,
@@ -78,10 +94,12 @@ def _tool_response(i: int):
         tool_calls=[_tool_call(i)],
     )
     choice = SimpleNamespace(message=msg, finish_reason="tool_calls")
-    return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+    return SimpleNamespace(
+        choices=[choice], model="test/model", usage=_usage(prompt_tokens)
+    )
 
 
-def _stop_response():
+def _stop_response(prompt_tokens: int | None):
     msg = SimpleNamespace(
         content="done",
         reasoning_content=None,
@@ -89,7 +107,9 @@ def _stop_response():
         tool_calls=None,
     )
     choice = SimpleNamespace(message=msg, finish_reason="stop")
-    return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+    return SimpleNamespace(
+        choices=[choice], model="test/model", usage=_usage(prompt_tokens)
+    )
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -129,9 +149,18 @@ def _coherent_compressor() -> MagicMock:
     compressor.threshold_tokens = THRESHOLD
     compressor.context_length = 200_000
     compressor.last_prompt_tokens = 0
+    compressor._verify_compaction_cleared_threshold = False
+    compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.side_effect = lambda t=None: (t or 0) >= THRESHOLD
     compressor.should_defer_preflight_to_real_usage.return_value = False
     compressor.get_active_compression_failure_cooldown.return_value = None
+
+    def _update_from_response(usage):
+        compressor.last_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        compressor._verify_compaction_cleared_threshold = False
+        compressor.awaiting_real_usage_after_compression = False
+
+    compressor.update_from_response.side_effect = _update_from_response
     return compressor
 
 
@@ -161,10 +190,14 @@ def agent():
     return a
 
 
-def _run_marathon_turn(agent, n_tool_iterations: int):
+def _run_marathon_turn(
+    agent, n_tool_iterations: int, *, provider_prompt_tokens: int | None
+):
     """Drive one turn of ``n_tool_iterations`` oversized tool results."""
-    responses = [_tool_response(i) for i in range(n_tool_iterations)]
-    responses.append(_stop_response())
+    responses = [
+        _tool_response(i, provider_prompt_tokens) for i in range(n_tool_iterations)
+    ]
+    responses.append(_stop_response(provider_prompt_tokens))
     agent.client.chat.completions.create.side_effect = responses
 
     compress_calls = []
@@ -172,8 +205,11 @@ def _run_marathon_turn(agent, n_tool_iterations: int):
     def _fake_compress(messages, system_message, **_kwargs):
         # Model a compaction that works: blank out every oversized payload,
         # keeping roles and tool-call pairing intact so sanitization is
-        # unaffected. Pressure drops far below the refund margin.
+        # unaffected. Arm the same provider-verification boundary as the real
+        # compression path.
         compress_calls.append(len(messages))
+        agent.context_compressor._verify_compaction_cleared_threshold = True
+        agent.context_compressor.awaiting_real_usage_after_compression = True
         compacted = [
             dict(m, content="[summarized]")
             if isinstance(m, dict) and len(str(m.get("content") or "")) > 5_000
@@ -209,7 +245,11 @@ class TestCompressionBudgetRefund:
         completes.
         """
         assert agent.max_compression_attempts == 3  # config default
-        result, compress_calls = _run_marathon_turn(agent, n_tool_iterations=8)
+        result, compress_calls = _run_marathon_turn(
+            agent,
+            n_tool_iterations=8,
+            provider_prompt_tokens=THRESHOLD - 1,
+        )
 
         assert result["completed"] is True
         assert len(compress_calls) > 3, (
@@ -217,19 +257,19 @@ class TestCompressionBudgetRefund:
             f"got only {len(compress_calls)} compactions for 8 pressure spikes"
         )
 
-    def test_no_refund_when_compressor_still_reports_pressure(self, agent):
-        """Divergent signals: compressor demands compression regardless of
-        the local estimate → budget stays burnt at the hard cap.
-
-        Mirrors the always-True stub of the attempt-cap regression tests —
-        the refund must not reopen that runaway."""
-        agent.context_compressor.should_compress.side_effect = None
-        agent.context_compressor.should_compress.return_value = True
-
-        result, compress_calls = _run_marathon_turn(agent, n_tool_iterations=8)
+    @pytest.mark.parametrize("provider_prompt_tokens", [None, THRESHOLD])
+    def test_unverified_or_pressured_compaction_stays_capped(
+        self, agent, provider_prompt_tokens
+    ):
+        """Missing usage or real usage at threshold cannot recycle the cap."""
+        result, compress_calls = _run_marathon_turn(
+            agent,
+            n_tool_iterations=8,
+            provider_prompt_tokens=provider_prompt_tokens,
+        )
 
         assert result["completed"] is True
         assert len(compress_calls) <= agent.max_compression_attempts, (
-            "with should_compress pinned True the per-turn cap must hold; "
+            "without provider-confirmed headroom the per-turn cap must hold; "
             f"got {len(compress_calls)} compactions"
         )

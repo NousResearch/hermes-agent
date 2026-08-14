@@ -29,7 +29,7 @@ User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
 |---|---|
 | Hermes | gateway with the onebot platform enabled |
 | OneBot 11 bridge | NapCat / Lagrange / LLOneBot / go-cqhttp (reverse or forward WebSocket) |
-| Optional deps | `ffmpeg` for voice transcription; CJK fonts for text-image cards (see below) |
+| Optional deps | `ffmpeg` on the Hermes host for voice transcription; an STT backend configured under `stt:` (local faster-whisper, auto-downloaded on first use, or an OpenAI-compatible API); CJK fonts for text-image cards (see below) |
 
 ## Configure Hermes
 
@@ -157,7 +157,10 @@ sudo apt install fonts-noto-cjk fonts-dejavu-core fonts-noto-color-emoji
 ## Markdown & voice
 
 - **Markdown is stripped** before delivery — QQ does not render it, so `**bold**`, headings, lists, and tables are converted to readable plain text (headings → `【…】`, lists → `•`, tables → spaced cells, fenced code blocks → bordered boxes). This runs before splitting and text-image rendering, so images are clean too.
-- **Inbound voice messages are transcribed**: the adapter downloads the clip and converts it with `ffmpeg` to 16 kHz mono WAV, then hands it to Hermes' STT pipeline (local whisper / Groq / OpenAI — same as other platforms). NapCat private voice messages often carry only a file hash (no URL): the adapter calls the OneBot `get_record` action to fetch the base64 audio before the download→ffmpeg→STT pipeline. Requires `ffmpeg` on the Hermes host; without it, voice clips degrade to a `[语音]` marker.
+- **Inbound voice messages are transcribed**: the adapter downloads the clip and converts it with `ffmpeg` to 16 kHz mono WAV, then hands it to Hermes' STT pipeline. NapCat private voice messages often carry only a file hash (no URL): the adapter calls the OneBot `get_record` action to fetch the base64 audio before the download→ffmpeg→STT pipeline.
+
+  STT itself uses the global `stt:` config (same pipeline as other platforms):
+  `provider: local` runs faster-whisper on the Hermes host (model = `stt.local.model`, default `small`, downloaded automatically on first use); `provider: openai` calls an OpenAI-compatible endpoint (configure `stt.openai.*` + API key). Requirements: `ffmpeg` must be installed; without it — or without a working STT backend — voice clips degrade to a `[语音]` marker.
 
 ## Images
 

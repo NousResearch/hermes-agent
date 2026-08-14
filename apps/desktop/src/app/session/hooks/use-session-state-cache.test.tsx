@@ -19,6 +19,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSelectedStoredSessionId,
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -38,12 +39,13 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     cleanup()
     setActiveSessionId(null)
     setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
   })
-
   it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
     let cache!: Cache
 
     setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
     render(
       <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
     )
@@ -68,6 +70,25 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     setActiveSessionId('runtime-B')
     render(
       <Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('does not steal the foreground route when a fast A -> B switch beats A\'s rotation (#86106)', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-B')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
     )
 
     act(() => {

@@ -229,6 +229,10 @@ class TestWriteToSandbox:
                 return_value=Path("/private/tmp/hermes-results/expired.txt"),
             ),
             patch(
+                "tools.file_tools.os.path.realpath",
+                side_effect=lambda value: str(value).removeprefix("/private"),
+            ),
+            patch(
                 "tools.tool_result_storage._resolve_storage_dir",
                 return_value="/tmp/hermes-results",
             ),
@@ -240,7 +244,7 @@ class TestWriteToSandbox:
             result = read_file_tool("/tmp/hermes-results/expired.txt")
 
         assert "expired after 7 days" in result
-        expire.assert_called_once_with("/private/tmp/hermes-results/expired.txt", env)
+        expire.assert_called_once_with("/tmp/hermes-results/expired.txt", env)
         file_ops.read_file.assert_not_called()
 
     def test_read_interface_does_not_expire_unrelated_old_file(self):

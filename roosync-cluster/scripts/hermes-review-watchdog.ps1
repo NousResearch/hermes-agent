@@ -108,8 +108,12 @@ function Send-Telegram {
     if (-not $token) { Write-Log "TELEGRAM_BOT_TOKEN missing from $HostEnvFile — cannot alert." "WARN"; return $false }
     try {
         $body = @{ chat_id = $ReviewChatId; text = $Text; disable_web_page_preview = $true } | ConvertTo-Json
+        # PS 5.1 re-encodes a string body to ANSI (cp1252) on send, which breaks
+        # any non-ASCII char ("Bad Request: strings must be encoded in UTF-8").
+        # Send pre-encoded UTF-8 bytes instead.
+        $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
         $null = Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" `
-            -Method Post -Body $body -ContentType "application/json" -TimeoutSec 15
+            -Method Post -Body $jsonBytes -ContentType "application/json; charset=utf-8" -TimeoutSec 15
         return $true
     }
     catch {

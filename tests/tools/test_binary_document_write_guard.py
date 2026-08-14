@@ -40,8 +40,10 @@ def _make_minimal_docx(path: Path) -> None:
 
 class TestExtensionHelpers:
     def test_opaque_document_extensions(self):
-        for p in ("a.docx", "b.XLSX", "c.pptx", "d.doc", "e.odt", "f.ods", "g.odp"):
-            assert has_opaque_document_extension(p) is True
+        for p in ("a.docx", "b.XLSX", "c.pptx", "d.doc", "e.odt", "f.ods", "g.odp",
+                  "h.docm", "i.xlsm", "j.xlsb", "k.pptm", "l.ppsx", "m.ppsm",
+                  "n.pps", "o.pot", "p.rtf", "q.epub"):
+            assert has_opaque_document_extension(p) is True, f"{p} should be opaque"
 
     def test_non_opaque_paths(self):
         for p in ("a.txt", "b.py", "c.pdf", "d.md", "noext", "e.csv"):
@@ -85,6 +87,20 @@ class TestWriteFileToolGuard:
         assert result.get("error"), "text write into .docx must be refused"
         assert docx.read_bytes() == original, "document bytes must be untouched"
         assert zipfile.is_zipfile(docx), "document must remain a valid container"
+
+    def test_write_file_rejects_docm(self, tmp_path: Path):
+        """Regression: .docm is extractable by read_file (anydoc) but was
+        missing from OPAQUE_DOCUMENT_EXTENSIONS in the original PR #82818.
+        Flagged by @egilewski — proven live: text write corrupted the zip."""
+        docm = tmp_path / "macro.docm"
+        _make_minimal_docx(docm)  # same OOXML zip structure
+        original = docm.read_bytes()
+
+        result = json.loads(write_file_tool(str(docm), "edited text"))
+
+        assert result.get("error"), "text write into .docm must be refused"
+        assert docm.read_bytes() == original, "document bytes must be untouched"
+        assert zipfile.is_zipfile(docm), "document must remain a valid container"
 
     def test_write_file_rejects_new_docx(self, tmp_path: Path):
         result = json.loads(write_file_tool(str(tmp_path / "new.docx"), "hello"))

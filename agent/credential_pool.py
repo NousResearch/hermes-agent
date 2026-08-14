@@ -46,8 +46,16 @@ from hermes_cli.auth import (
     read_credential_pool,
     write_credential_pool,
 )
-
 logger = logging.getLogger(__name__)
+
+# Process-level memo for _load_config_safe().  get_pool_strategy() calls this
+# once per CredentialPool.__init__(), and list_authenticated_providers() builds
+# one CredentialPool per provider row. The underlying load_config_readonly()
+# already has an in-process cache, but the repeated function calls and their
+# env-snapshot validation still show up in cProfile as ~70 load_config hits.
+# Cache on (config_path, mtime_ns, size) so external edits are observed on the
+# next call while a single picker invocation pays the cost once.
+_LOAD_CONFIG_SAFE_CACHE: Dict[str, Tuple[Tuple[int, int], Optional[dict]]] = {}
 
 
 def _load_config_safe() -> Optional[dict]:
@@ -56,11 +64,28 @@ def _load_config_safe() -> Optional[dict]:
     ``load_config_readonly()`` skips the deepcopy ``load_config()`` pays per
     call; the picker calls ``load_pool()`` once per provider row, which made
     that copy the dominant cost of ``model.options``.
+
+    This wrapper memoises on ``config.yaml`` (mtime, size) so the 60+ provider
+    rows in a single ``list_authenticated_providers()`` call share one load.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import get_config_path, load_config_readonly
 
-        return load_config_readonly()
+        config_path = get_config_path()
+        key = str(config_path)
+        try:
+            st = config_path.stat()
+            sig: Tuple[int, int] = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            sig = (0, 0)
+
+        cached = _LOAD_CONFIG_SAFE_CACHE.get(key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+
+        config = load_config_readonly()
+        _LOAD_CONFIG_SAFE_CACHE[key] = (sig, config)
+        return config
     except Exception:
         return None
 

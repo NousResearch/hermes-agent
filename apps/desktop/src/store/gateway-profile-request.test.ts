@@ -1,0 +1,182 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const secondaryGateways: Array<{
+  close: ReturnType<typeof vi.fn>
+  connect: ReturnType<typeof vi.fn>
+  connectionState: string
+  request: ReturnType<typeof vi.fn>
+}> = []
+
+let connectGate: Promise<void> | null = null
+
+vi.mock('@/hermes', () => ({
+  HermesGateway: class {
+    connectionState = 'closed'
+    connect = vi.fn(async () => {
+      if (this.connectionState === 'connecting') {
+        return
+      }
+
+      this.connectionState = 'connecting'
+
+      if (connectGate) {
+        await connectGate
+      }
+
+      this.connectionState = 'open'
+    })
+    request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (this.connectionState !== 'open') {
+        throw new Error('gateway is not connected')
+      }
+
+      return { method, params }
+    })
+    close = vi.fn()
+    onEvent = vi.fn(() => () => {})
+    onState = vi.fn(() => () => {})
+
+    constructor() {
+      secondaryGateways.push(this)
+    }
+  }
+}))
+vi.mock('@/store/session', () => ({ setGatewayState: vi.fn() }))
+vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+
+const {
+  $gateway,
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  ensureGatewayForProfile,
+  pruneSecondaryGateways,
+  requestGatewayForProfile,
+  setPrimaryGateway
+} = await import('./gateway')
+
+function installDesktop(getConnection: ReturnType<typeof vi.fn>): void {
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    getConnection,
+    touchBackend: vi.fn(async () => undefined)
+  }
+}
+
+function makePrimary() {
+  return {
+    connectionState: 'open',
+    request: vi.fn(async (method: string, params: Record<string, unknown>) => ({ method, params }))
+  }
+}
+
+beforeEach(async () => {
+  secondaryGateways.length = 0
+  connectGate = null
+  configureGatewayRegistry({ onEvent: vi.fn() })
+  closeSecondaryGateways()
+})
+
+afterEach(() => {
+  closeSecondaryGateways()
+  vi.clearAllMocks()
+  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+})
+
+describe('requestGatewayForProfile', () => {
+  it('requests through a pooled profile gateway without changing the active gateway', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(
+      vi.fn(async (profile: null | string) =>
+        profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+      )
+    )
+    await ensureGatewayForProfile('default')
+
+    const result = await requestGatewayForProfile('worker', 'profiles.list', { include_sessions: true })
+
+    expect(result).toEqual({ method: 'profiles.list', params: { include_sessions: true } })
+    expect(secondaryGateways).toHaveLength(1)
+    expect(secondaryGateways[0].request).toHaveBeenCalledWith('profiles.list', { include_sessions: true })
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('uses the primary socket and adds profile scope for a shared global remote route', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(
+      vi.fn(async (profile: null | string) => ({
+        port: 4242,
+        ...(profile ? { profile, sharedPrimary: true } : {}),
+        token: 'primary-token'
+      }))
+    )
+    await ensureGatewayForProfile('default')
+
+    const result = await requestGatewayForProfile('venture', 'session.list', { limit: 20, profile: 'wrong' })
+
+    expect(result).toEqual({ method: 'session.list', params: { limit: 20, profile: 'venture' } })
+    expect(primary.request).toHaveBeenCalledWith('session.list', { limit: 20, profile: 'venture' })
+    expect(secondaryGateways).toHaveLength(0)
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('serializes concurrent requests while a secondary gateway is connecting', async () => {
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(
+      vi.fn(async (profile: null | string) =>
+        profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+      )
+    )
+    await ensureGatewayForProfile('default')
+
+    const first = requestGatewayForProfile('worker', 'profiles.list')
+    await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
+    const second = requestGatewayForProfile('worker', 'profiles.list')
+    const guardedSecond = second.catch(error => error)
+
+    await Promise.resolve()
+    releaseConnect()
+
+    const [firstResult, secondResult] = await Promise.all([first, guardedSecond])
+
+    expect(firstResult).toEqual({ method: 'profiles.list', params: {} })
+    expect(secondResult).toEqual({ method: 'profiles.list', params: {} })
+    expect(secondaryGateways[0].connect).toHaveBeenCalledOnce()
+    expect(secondaryGateways[0].request).toHaveBeenCalledTimes(2)
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('prevents pruning while a background request is connecting or in flight', async () => {
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(
+      vi.fn(async (profile: null | string) =>
+        profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+      )
+    )
+    await ensureGatewayForProfile('default')
+
+    const request = requestGatewayForProfile('worker', 'profiles.list')
+    await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
+
+    pruneSecondaryGateways(new Set())
+    releaseConnect()
+
+    await expect(request).resolves.toEqual({ method: 'profiles.list', params: {} })
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+})

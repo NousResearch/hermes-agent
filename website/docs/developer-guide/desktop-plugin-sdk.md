@@ -411,11 +411,25 @@ host.onEvent(type, fn)                     // gateway event stream ('*' = all); 
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
-host.request<T>(method, params?)           // gateway JSON-RPC — the real power
+host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
+host.requestProfile<T>(profile, method, params?) // routed RPC; no foreground swap
+host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
-cron, kanban, …). Profile-shaped plugins get first-class methods too:
+cron, kanban, …). `host.requestProfile` routes that RPC through a named Desktop
+profile's local/SSH/URL/cloud backend without changing the active chat or gateway.
+Use `host.profileRoutes()` for connection-aware UI: `connectionId` is stable,
+installation-scoped, and derived inside Electron with installation-keyed hashing;
+profiles sharing one execution gateway receive the same id, while endpoint or
+credential fields never cross the plugin IPC boundary. Key persisted identity by
+`connectionId + targetProfile`, not by profile name alone. `profile` is the Desktop
+route to pass to `host.requestProfile()` or `host.openSession()`; `targetProfile` is
+the backend Hermes profile served by that route. They differ only when a Desktop
+route explicitly maps to another backend profile (for example an SSH
+`remoteProfile` override); profile names are bot identity, not connection secrets.
+
+Profile-shaped plugins get first-class methods too:
 `profiles.list` (each profile + its most recent conversation as
 `last_session`; pass `include_sessions: false` to skip the per-profile DB
 probe) and `profiles.create` (`name`, `description`, `clone_from`,

@@ -215,6 +215,7 @@ import {
   parentWatchdogEnv
 } from './parent-process-identity'
 import { selectPoolEvictions } from './pool-eviction'
+import { buildOpaqueProfileRoutes, type EffectiveSshRoute, type ProfileRouteConfig } from './plugin-profile-routes'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -8557,6 +8558,39 @@ function effectiveSshConfigFingerprint(sshConfig) {
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
+function effectiveSshRouteForPlugin(config: ProfileRouteConfig): Promise<EffectiveSshRoute> {
+  const ssh =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+      : 'ssh'
+
+  const args = ['-G']
+
+  if (config.sshPort) {
+    args.push('-p', String(config.sshPort))
+  }
+
+  args.push('--', config.sshUser ? `${config.sshUser}@${config.sshHost}` : config.sshHost)
+
+  return new Promise((resolve, reject) => {
+    execFile(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true }, (error, stdout) => {
+      if (error) {
+        reject(new Error('Could not resolve SSH route for profile.'))
+
+        return
+      }
+
+      const resolved = parseSshGOutput(stdout)
+
+      resolve({
+        hostname: resolved.hostname || config.sshHost,
+        port: resolved.port || config.sshPort || 22,
+        user: resolved.user || config.sshUser
+      })
+    })
+  })
+}
+
 async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
   const scope = sshScopeKey(profile)
   const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
@@ -11948,6 +11982,27 @@ ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
+ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
+  const profileNames = Array.isArray(rawProfileNames)
+    ? rawProfileNames
+        .filter(name => typeof name === 'string')
+        .map(name => name.trim())
+        .filter(Boolean)
+        .slice(0, 256)
+    : []
+
+  const config = readDesktopConnectionConfig()
+  const globalConfig = (await sanitizeDesktopConnectionConfig(config, null)) as ProfileRouteConfig
+
+  return buildOpaqueProfileRoutes({
+    getProfileConfig: async profile => (await sanitizeDesktopConnectionConfig(config, profile)) as ProfileRouteConfig,
+    globalConfig,
+    installationId: desktopInstallationId,
+    primaryProfile: primaryProfileKey(),
+    profileNames,
+    resolveSsh: effectiveSshRouteForPlugin
+  })
+})
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
   const value = String(host || '').trim()

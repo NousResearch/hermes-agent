@@ -34,6 +34,8 @@ interface Secondary {
   /** Registry connection serving this socket; null = the local/legacy path. */
   connectionId: null | string
   gateway: HermesGateway
+  activeRequests: number
+  connectPromise: Promise<void> | null
   offEvent: () => void
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -204,31 +206,54 @@ async function openSecondary(entry: Secondary): Promise<void> {
     return
   }
 
-  // Registry-scoped entries dial through getConnectionFor when the bridge has
-  // it (feature-detected: an older Electron main lacks the door and those
-  // entries simply can't exist yet — createSecondary guards creation).
-  const conn =
-    entry.connectionId && desktop.getConnectionFor
-      ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
-      : await desktop.getConnection(entry.profile)
+  if (entry.connectPromise) {
+    await entry.connectPromise
 
-  const wsUrl = await resolveGatewayWsUrl(
-    entry.connectionId && desktop.getGatewayWsUrlFor
-      ? {
-          getGatewayWsUrl: () =>
-            desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
-        }
-      : desktop,
-    conn
-  )
-
-  await entry.gateway.connect(wsUrl)
-
-  if (g.activeKey === entry.scope) {
-    setConnection(conn)
+    return
   }
 
-  void desktop.touchBackend?.(entry.scope).catch(() => undefined)
+  const pending = (async () => {
+    // Registry-scoped entries dial through getConnectionFor when the bridge has
+    // it. Local/legacy entries retain the existing getConnection path.
+    const conn =
+      entry.connectionId && desktop.getConnectionFor
+        ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
+        : await desktop.getConnection(entry.profile)
+
+    const wsUrl = await resolveGatewayWsUrl(
+      entry.connectionId && desktop.getGatewayWsUrlFor
+        ? {
+            getGatewayWsUrl: () =>
+              desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
+          }
+        : desktop,
+      conn
+    )
+
+    await entry.gateway.connect(wsUrl)
+
+    if (!entry.wantOpen) {
+      entry.gateway.close()
+
+      return
+    }
+
+    if (g.activeKey === entry.scope) {
+      setConnection(conn)
+    }
+
+    void desktop.touchBackend?.(entry.scope).catch(() => undefined)
+  })()
+
+  entry.connectPromise = pending
+
+  try {
+    await pending
+  } finally {
+    if (entry.connectPromise === pending) {
+      entry.connectPromise = null
+    }
+  }
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -295,6 +320,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     profile,
     connectionId,
     gateway,
+    activeRequests: 0,
+    connectPromise: null,
     offEvent: () => {},
     offState: () => {},
     reconnectTimer: null,
@@ -349,6 +376,83 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   }
 }
 
+// Resolve and open `profile`'s socket WITHOUT changing the active gateway.
+// Shared global-remote profiles intentionally return the primary socket plus a
+// request-scope flag; dedicated local/remote profiles use their pooled socket.
+async function gatewayForProfile(
+  profile: string,
+  leaseRequest = false
+): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
+  const key = normKey(profile)
+  const noRelease = () => undefined
+
+  if (key === g.primaryProfile) {
+    return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
+  }
+
+  if (await sharedPrimaryRoute(key)) {
+    return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
+  }
+
+  const entry = g.secondaries.get(key) ?? createSecondary(key)
+
+  // Existing dev-HMR entries predate the request lease field.
+  if (!Number.isFinite(entry.activeRequests)) {
+    entry.activeRequests = 0
+  }
+
+  entry.wantOpen = true
+
+  if (leaseRequest) {
+    entry.activeRequests += 1
+  }
+
+  let released = false
+
+  const release = () => {
+    if (!released && leaseRequest) {
+      released = true
+      entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+    }
+  }
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry)
+    }
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  return { gateway: entry.gateway, key, release, scopeProfile: false }
+}
+
+/**
+ * Send a gateway RPC through a named Desktop profile without foregrounding it.
+ * Global-remote routes share the primary socket and need an explicit profile
+ * param; dedicated pooled backends are already scoped by their descriptor.
+ */
+export async function requestGatewayForProfile<T>(
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  const route = await gatewayForProfile(profile, true)
+
+  try {
+    if (!route.gateway) {
+      throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
+    }
+
+    const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
+
+    return await route.gateway.request<T>(method, routedParams)
+  } finally {
+    route.release()
+  }
+}
+
 // Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
 // (store/profile). Runs the same spawn + connect chain as a real switch, so by
 // click time ensureGatewayForProfile finds an open socket and just activates
@@ -356,23 +460,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 // backend must not start a background retry loop — the real switch owns retry
 // and error UX. An already-open (or primary) profile is a no-op.
 export async function openGatewayForProfile(profile: string): Promise<void> {
-  const key = normKey(profile)
-
-  if (key === g.primaryProfile) {
-    return
-  }
-
-  if (await sharedPrimaryRoute(key)) {
-    // Served by the primary backend — there is no per-profile socket to warm.
-    return
-  }
-
-  const entry = g.secondaries.get(key) ?? createSecondary(key)
-  entry.wantOpen = true
-
-  if (!isOpen(entry.gateway)) {
-    await openSecondary(entry)
-  }
+  await gatewayForProfile(profile)
 }
 
 // ── Connection-scoped agents (multi-source roster) ─────────────────────────
@@ -555,7 +643,12 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // 'default' activity (and vice versa) — cross-connection attribution.
 export function pruneSecondaryGateways(keep: Set<string>): void {
   for (const [key, entry] of [...g.secondaries]) {
-    if (key === g.activeKey || keep.has(key) || (!entry.connectionId && keep.has(entry.profile))) {
+    if (
+      key === g.activeKey ||
+      keep.has(key) ||
+      (!entry.connectionId && keep.has(entry.profile)) ||
+      entry.activeRequests > 0
+    ) {
       continue
     }
 

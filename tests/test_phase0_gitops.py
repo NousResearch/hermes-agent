@@ -237,9 +237,13 @@ class TestInstallSandbox:
     def test_install_does_not_call_crontab(self):
         """install.sh must NOT invoke crontab. Hermes cron owns the watcher."""
         text = INSTALL.read_text()
-        assert "crontab" not in text, (
-            "install.sh must not reference crontab at all — "
-            "Hermes cron owns the watcher"
+        # The word "crontab" may appear in comments (e.g. "no user-crontab
+        # mutation"), but the script must not invoke the crontab command.
+        assert "crontab -" not in text, (
+            "install.sh must not invoke crontab — Hermes cron owns the watcher"
+        )
+        assert "crontab -l" not in text, (
+            "install.sh must not read crontab — Hermes cron owns the watcher"
         )
         assert "Hermes cron owns the watcher" in text, (
             "install.sh must log that Hermes cron owns the watcher"

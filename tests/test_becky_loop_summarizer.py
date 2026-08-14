@@ -266,6 +266,28 @@ def test_extract_visible_messages_drops_only_tool_result_json() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"structuredContent":{"flights":[]}}',
+        '{"approval":{"approved":true}}',
+        '{"result_type":"list"}',
+    ],
+)
+def test_extract_visible_messages_drops_standalone_tool_specific_json(
+    content: str,
+) -> None:
+    """Standalone tool-contract fields are never promoted as conversation text."""
+    timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+
+    visible = extract_visible_messages(
+        [{"role": "assistant", "content": content, "timestamp": timestamp}],
+        set(),
+    )
+
+    assert visible == []
+
+
 def test_extract_visible_messages_redacts_hidden_values_in_url_credentials() -> None:
     """Short or percent-encoded hidden values cannot leak through URL syntax."""
     timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)

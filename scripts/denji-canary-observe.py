@@ -40,7 +40,6 @@ from pathlib import Path
 for _root in (
     Path(__file__).resolve().parents[1],  # repo checkout layout
     Path.home() / "repos" / "KenseiAgent",  # canonical repo
-    Path.home() / "repos" / "KenseiAgent-runtime-20260802",  # runtime copy
 ):
     if (_root / "hermes_cli").is_dir() and str(_root) not in sys.path:
         sys.path.insert(0, str(_root))

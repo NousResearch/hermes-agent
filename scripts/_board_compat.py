@@ -53,7 +53,6 @@ def _kanban_db():
     candidates = [
         Path(__file__).resolve().parents[1],  # repo checkout layout
         Path.home() / "repos" / "KenseiAgent",  # canonical repo
-        Path.home() / "repos" / "KenseiAgent-runtime-20260802",  # runtime copy
     ]
     for root in candidates:
         if (root / "hermes_cli").is_dir() and str(root) not in sys.path:

@@ -411,3 +411,38 @@ def test_python_syntax_valid(py):
         timeout=15,
     )
     assert result.returncode == 0, f"py_compile failed for {py}: {result.stderr}"
+
+
+# ── Regression: deleted runtime fallback removed ───────────────────────────
+
+
+def test_board_compat_no_stale_runtime_fallback():
+    """_board_compat.py must NOT reference the deleted runtime path."""
+    src = (SCRIPTS / "_board_compat.py").read_text()
+    assert "KenseiAgent-runtime-20260802" not in src, (
+        "_board_compat.py still references deleted KenseiAgent-runtime-20260802"
+    )
+
+
+def test_board_compat_canonical_fallback_present():
+    """_board_compat.py must still resolve the canonical KenseiAgent repo."""
+    src = (SCRIPTS / "_board_compat.py").read_text()
+    assert 'Path.home() / "repos" / "KenseiAgent"' in src, (
+        "_board_compat.py missing canonical KenseiAgent fallback"
+    )
+
+
+def test_denji_canary_observe_no_stale_runtime_fallback():
+    """denji-canary-observe.py must NOT reference the deleted runtime path."""
+    src = (SCRIPTS / "denji-canary-observe.py").read_text()
+    assert "KenseiAgent-runtime-20260802" not in src, (
+        "denji-canary-observe.py still references deleted KenseiAgent-runtime-20260802"
+    )
+
+
+def test_denji_canary_observe_canonical_fallback_present():
+    """denji-canary-observe.py must still resolve the canonical KenseiAgent repo."""
+    src = (SCRIPTS / "denji-canary-observe.py").read_text()
+    assert 'Path.home() / "repos" / "KenseiAgent"' in src, (
+        "denji-canary-observe.py missing canonical KenseiAgent fallback"
+    )

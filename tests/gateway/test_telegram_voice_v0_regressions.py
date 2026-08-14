@@ -182,6 +182,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_PendingVoiceAgent))
 
     adapter = _PendingVoiceAdapter()
+    adapter.config.extra["reply_to_transcript"] = True
     runner = _run_agent_runner(adapter)
     source = _source()
     session_key = "telegram:dm:12345"
@@ -191,6 +192,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         source=source,
         media_urls=["/tmp/telegram-pending-voice.ogg"],
         media_types=["audio/ogg"],
+        message_id="voice-note-6",
     )
     adapter._pending_messages[session_key] = event
     adapter._active_sessions[session_key] = asyncio.Event()
@@ -215,6 +217,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         )
 
     assert result["final_response"] == "follow-up complete"
+    assert result["_gateway_stt_reply_anchor"] == "voice-echo"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]

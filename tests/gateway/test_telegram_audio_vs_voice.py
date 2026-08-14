@@ -12,12 +12,13 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.run import _propagate_pending_stt_reply_anchor
 from gateway.session import SessionSource
 
 
@@ -78,6 +79,87 @@ async def test_voice_message_still_transcribed():
     # The transcript passes through as a plain quoted line — no "voice message"
     # meta-commentary in the LLM-visible prompt.
     assert "hello world" in result
+
+
+@pytest.mark.asyncio
+async def test_telegram_reply_can_anchor_to_transcript_echo():
+    runner = _make_runner(stt_enabled=True)
+    transcript_adapter = AsyncMock()
+    transcript_adapter.config = PlatformConfig(
+        enabled=True,
+        token="test-token",
+        extra={"reply_to_transcript": True},
+    )
+    transcript_adapter.send.return_value = SendResult(
+        success=True,
+        message_id="transcript-echo-7",
+    )
+    runner.adapters = {Platform.TELEGRAM: transcript_adapter}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    event = _voice_event("/tmp/voice.ogg")
+    event.message_id = "voice-note-6"
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "hello world", "provider": "whisper"},
+    ):
+        await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    transcript_adapter.send.assert_awaited_once()
+    assert runner._reply_anchor_for_event(event) == "transcript-echo-7"
+
+
+def test_pending_voice_echo_metadata_keeps_telegram_dm_topic_lane():
+    runner = _make_runner(stt_enabled=True)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="1",
+        chat_type="dm",
+        thread_id="42",
+    )
+    event = _voice_event()
+    event.source = source
+    event.message_id = "voice-note-6"
+
+    metadata = runner._pending_voice_echo_metadata(event, source)
+
+    assert metadata == {
+        "thread_id": "42",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "42",
+        "telegram_reply_to_message_id": "voice-note-6",
+    }
+
+
+def test_latest_queued_transcript_anchor_propagates_to_outer_delivery():
+    pending_event = _voice_event()
+    setattr(pending_event, "_gateway_stt_reply_anchor", "transcript-echo-9")
+
+    result = _propagate_pending_stt_reply_anchor(
+        pending_event,
+        {"final_response": "queued answer"},
+    )
+
+    assert result["_gateway_stt_reply_anchor"] == "transcript-echo-9"
+
+
+def test_deeper_queued_transcript_anchor_wins_over_earlier_followup():
+    pending_event = _voice_event()
+    setattr(pending_event, "_gateway_stt_reply_anchor", "transcript-echo-8")
+
+    result = _propagate_pending_stt_reply_anchor(
+        pending_event,
+        {
+            "final_response": "latest queued answer",
+            "_gateway_stt_reply_anchor": "transcript-echo-9",
+        },
+    )
+
+    assert result["_gateway_stt_reply_anchor"] == "transcript-echo-9"
 
 
 # ---------------------------------------------------------------------------

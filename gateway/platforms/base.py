@@ -141,6 +141,14 @@ def _reply_anchor_for_event(event) -> str | None:
     stays attached to the active lane; synthetic/resumed sends fall back to
     ``direct_messages_topic_id`` metadata when no message id is available.
     """
+    # Handlers may create a more useful platform message to anchor the final
+    # reply to while processing the turn. STT uses this for Telegram's visible
+    # transcript echo. Keep it on the event so streaming and non-streaming
+    # delivery resolve the same late-bound anchor.
+    handler_anchor = getattr(event, "_gateway_stt_reply_anchor", None)
+    if handler_anchor:
+        return str(handler_anchor)
+
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
@@ -6454,7 +6462,17 @@ class BasePlatformAdapter(ABC):
                 # the existing notify=True marker. Clone once so typing/status
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                # The handler can create a late reply anchor (for example a
+                # Telegram transcript echo), so recompute final metadata after
+                # it returns instead of reusing the typing metadata captured
+                # before processing began.
+                _final_reply_anchor = _reply_anchor_for_event(event)
+                _final_thread_metadata = _mark_notify_metadata(
+                    _thread_metadata_for_source(
+                        event.source,
+                        _final_reply_anchor,
+                    )
+                )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -6566,7 +6584,7 @@ class BasePlatformAdapter(ABC):
                         len(text_content),
                         event.source.chat_id,
                     )
-                    _reply_anchor = _reply_anchor_for_event(event)
+                    _reply_anchor = _final_reply_anchor
                     # Delivery-obligation ledger: durably record the final
                     # response BEFORE the send attempt so a gateway crash
                     # between finalize and platform ACK can redeliver it on

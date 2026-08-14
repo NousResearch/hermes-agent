@@ -10860,9 +10860,56 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         # extras seed intentionally omitted (shared-key loop bridges group_allowed_chats).
         if not _skip_env_bridge and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
             os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in (
+        "guest_mode",
+        "disable_link_previews",
+        "observe_unmentioned_group_messages",
+        "free_response_topics",
+    ):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
+
+    # Resolve this platform-owned presentation option from every supported
+    # Telegram config location in the same precedence order as gateway/config:
+    # gateway.platforms < platforms < top-level telegram. The plugin hook may
+    # receive one of the nested blocks as a fallback, so blindly re-emitting
+    # that block would otherwise clobber the already merged winner.
+    _reply_to_transcript = None
+    _reply_to_transcript_set = False
+    _gateway: dict = {}
+    _gateway_raw = yaml_cfg.get("gateway")
+    if isinstance(_gateway_raw, dict):
+        _gateway = _gateway_raw
+    _gateway_platforms: dict = {}
+    _gateway_platforms_raw = _gateway.get("platforms")
+    if isinstance(_gateway_platforms_raw, dict):
+        _gateway_platforms = _gateway_platforms_raw
+    _platforms: dict = {}
+    _platforms_raw = yaml_cfg.get("platforms")
+    if isinstance(_platforms_raw, dict):
+        _platforms = _platforms_raw
+    for _candidate in (
+        _gateway_platforms.get("telegram"),
+        _platforms.get("telegram"),
+        yaml_cfg.get("telegram"),
+    ):
+        if not isinstance(_candidate, dict):
+            continue
+        _candidate_extra = _candidate.get("extra")
+        if "reply_to_transcript" in _candidate:
+            _reply_to_transcript = _candidate["reply_to_transcript"]
+            _reply_to_transcript_set = True
+        elif isinstance(_candidate_extra, dict) and "reply_to_transcript" in _candidate_extra:
+            _reply_to_transcript = _candidate_extra["reply_to_transcript"]
+            _reply_to_transcript_set = True
+    if _reply_to_transcript_set:
+        if isinstance(_reply_to_transcript, str):
+            _reply_to_transcript = _reply_to_transcript.strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        else:
+            _reply_to_transcript = bool(_reply_to_transcript)
+        extras["reply_to_transcript"] = _reply_to_transcript
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),
     # but EXCLUDE the generic shared-config keys that _merge_platform_map in
     # gateway/config.py already merges with correct top-level-over-nested

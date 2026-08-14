@@ -4193,6 +4193,20 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def _propagate_pending_stt_reply_anchor(pending_event, followup_result: dict) -> dict:
+    """Carry the latest queued transcript echo back to outer platform delivery."""
+    if not isinstance(followup_result, dict):
+        return followup_result
+    if followup_result.get("_gateway_stt_reply_anchor"):
+        return followup_result
+    anchor = getattr(pending_event, "_gateway_stt_reply_anchor", None)
+    if not anchor:
+        return followup_result
+    merged = dict(followup_result)
+    merged["_gateway_stt_reply_anchor"] = str(anchor)
+    return merged
+
+
 async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
     """Best-effort dispose for an adapter that never made it onto ``self.adapters``.
 
@@ -18245,10 +18259,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _echo_adapter:
                         for _tx in _successful_transcripts:
                             try:
-                                await _echo_adapter.send(
+                                _echo_result = await _echo_adapter.send(
                                     source.chat_id,
                                     f'🎙️ "{_tx}"',
                                     metadata=_echo_meta,
+                                )
+                                self._remember_stt_reply_anchor(
+                                    event,
+                                    source,
+                                    _echo_result,
                                 )
                             except Exception as _echo_exc:
                                 logger.debug(
@@ -20174,6 +20193,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
             )
+            if isinstance(agent_result, dict):
+                _queued_reply_anchor = agent_result.get("_gateway_stt_reply_anchor")
+                if _queued_reply_anchor:
+                    setattr(
+                        event,
+                        "_gateway_stt_reply_anchor",
+                        str(_queued_reply_anchor),
+                    )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # Stop persistent typing indicator now that the agent is done.
@@ -22085,6 +22112,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _should_echo_stt_transcripts(self) -> bool:
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
+
+    def _remember_stt_reply_anchor(self, event, source, send_result) -> None:
+        """Remember a Telegram transcript echo as this turn's reply anchor."""
+        adapter = self._adapter_for_source(source)
+        platform_extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+        if (
+            getattr(source, "platform", None) != Platform.TELEGRAM
+            or not bool(platform_extra.get("reply_to_transcript", False))
+            or not getattr(send_result, "success", False)
+            or not getattr(send_result, "message_id", None)
+        ):
+            return
+        setattr(
+            event,
+            "_gateway_stt_reply_anchor",
+            str(send_result.message_id),
+        )
+
+    def _pending_voice_echo_metadata(self, event, fallback_source):
+        """Build lane-safe metadata for a queued/interrupting transcript echo."""
+        pending_source = getattr(event, "source", None) or fallback_source
+        metadata = self._thread_metadata_for_source(
+            pending_source,
+            self._reply_anchor_for_event(event),
+        )
+        return metadata or None
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -24863,11 +24916,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         setattr(event, "_gateway_pending_stt_echoed", already_echoed + len(unsent))
         for tx in unsent:
             try:
-                await adapter.send(
+                echo_result = await adapter.send(
                     source.chat_id,
                     f'🎙️ "{tx}"',
                     metadata=metadata,
                 )
+                self._remember_stt_reply_anchor(event, source, echo_result)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
@@ -28763,7 +28817,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         source,
                                         pending_text,
                                         log_context="Voice-interrupt",
-                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                                        metadata=self._pending_voice_echo_metadata(
+                                            _peek_event,
+                                            source,
+                                        ),
                                     )
                                 elif not pending_text and _media_urls:
                                     pending_text = _build_media_placeholder(_peek_event)
@@ -29333,7 +29390,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source,
                             _pending_text,
                             log_context="Voice-drain",
-                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                            metadata=self._pending_voice_echo_metadata(
+                                pending_event,
+                                source,
+                            ),
                         )
                         if not pending:
                             pending = _build_media_placeholder(pending_event)
@@ -29602,6 +29662,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                )
+                followup_result = _propagate_pending_stt_reply_anchor(
+                    pending_event,
+                    followup_result,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

@@ -135,6 +135,49 @@ class TestBasePlatformTopicSessions:
             ("complete", "1", ProcessingOutcome.SUCCESS),
         ]
 
+    @pytest.mark.asyncio
+    async def test_final_reply_uses_anchor_added_by_handler(self):
+        """A transcript echo created during handling becomes the final anchor."""
+        adapter = DummyTelegramAdapter()
+        adapter.config.typing_indicator = False
+
+        async def handler(event):
+            event._gateway_stt_reply_anchor = "transcript-echo-7"
+            return "ack"
+
+        adapter.set_message_handler(handler)
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+                thread_id="42",
+            ),
+            message_id="voice-note-6",
+        )
+
+        await adapter._process_message_background(
+            event,
+            build_session_key(event.source),
+        )
+
+        assert adapter.sent == [
+            {
+                "chat_id": "12345",
+                "content": "ack",
+                "reply_to": "transcript-echo-7",
+                "metadata": {
+                    "thread_id": "42",
+                    "telegram_dm_topic_reply_fallback": True,
+                    "direct_messages_topic_id": "42",
+                    "telegram_reply_to_message_id": "transcript-echo-7",
+                    "notify": True,
+                },
+            }
+        ]
+
 
 class TestTelegramAutoTtsCaptionDelivery:
     @staticmethod

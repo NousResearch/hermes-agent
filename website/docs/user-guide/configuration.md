@@ -2038,6 +2038,8 @@ Language resolution is the same for **every** STT provider (local, groq, openai,
 
 Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
 
+On Telegram, set `telegram.reply_to_transcript: true` to anchor the agent's answer to the visible transcript echo instead of the original voice-note bubble. This makes the quoted reply show the recognized words, so the relationship is clearer at a glance. The option only takes effect when `stt.echo_transcripts` is enabled and the transcript echo was delivered successfully; otherwise Hermes keeps replying to the original voice note.
+
 Provider behavior:
 
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.

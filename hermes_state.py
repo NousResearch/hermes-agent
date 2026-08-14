@@ -8268,6 +8268,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         compression_lock_holder: Optional[str],
         turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> None:
         """Transcript-append admission checks, run INSIDE the write txn.
 
@@ -8295,14 +8296,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone()
-            if (
-                lease is None
-                or lease["holder"] != turn_lease_holder
-                or float(lease["expires_at"]) <= time.time()
-            ):
+            if lease is None or lease["holder"] != turn_lease_holder:
                 raise SessionTurnLeaseLostError(
                     f"Session turn lease lost; refusing transcript write "
                     f"for {session_id!r}"
+                )
+            now = time.time()
+            if float(lease["expires_at"]) <= now:
+                # Expiry makes the row reclaimable; it does not prove that a
+                # takeover occurred. BEGIN IMMEDIATE serializes this renewal
+                # with acquisition, so a still-matching owner can recover from
+                # a starved refresher without weakening the foreign-holder fence.
+                conn.execute(
+                    "UPDATE session_turn_leases SET expires_at = ? "
+                    "WHERE conversation_id = ? AND holder = ?",
+                    (
+                        now + max(0.1, float(turn_lease_ttl_seconds)),
+                        conversation_id,
+                        turn_lease_holder,
+                    ),
                 )
         session = conn.execute(
             "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
@@ -8384,6 +8396,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         display_metadata: Optional[Dict[str, Any]] = None,
         compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -8446,6 +8459,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 session_id,
                 compression_lock_holder,
                 turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -8509,6 +8523,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None,
         chunk_rows: Optional[int] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Append multiple messages atomically in ONE write transaction.
 
@@ -8548,6 +8563,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     messages[start:start + chunk_rows],
                     compression_lock_holder=compression_lock_holder,
                     turn_lease_holder=turn_lease_holder,
+                    turn_lease_ttl_seconds=turn_lease_ttl_seconds,
                 )
             return inserted_total
 
@@ -8557,6 +8573,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 session_id,
                 compression_lock_holder,
                 turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, messages

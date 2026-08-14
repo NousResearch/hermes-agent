@@ -2293,6 +2293,10 @@ class AIAgent:
                     turn_lease_holder=getattr(
                         self, "_active_session_turn_lease_holder", None
                     ),
+                    turn_lease_ttl_seconds=getattr(
+                        self, "_active_session_turn_lease_ttl_seconds", 300.0
+                    )
+                    or 300.0,
                 )
                 for _written in _batch_msgs:
                     _written[_DB_PERSISTED_MARKER] = True
@@ -8228,6 +8232,7 @@ class AIAgent:
                 # the same SQLite write transaction as the transcript insert.
                 durable_turn_lease = _durable_holder
                 self._active_session_turn_lease_holder = _durable_holder
+                self._active_session_turn_lease_ttl_seconds = _lease_ttl
                 if _lease_waited:
                     self._emit_status(
                         "Session is free; loading the latest transcript..."
@@ -8254,6 +8259,12 @@ class AIAgent:
                 )
 
                 def _refresh_durable_turn_lease() -> None:
+                    def _interrupt_turn(message: str) -> None:
+                        try:
+                            self.interrupt(message, hard_cancel=True)
+                        except Exception:
+                            self._interrupt_requested = True
+
                     while not durable_turn_lease_stop.wait(_lease_refresh_interval):
                         try:
                             if not _turn_db.refresh_session_turn_lease(
@@ -8270,21 +8281,24 @@ class AIAgent:
                                     "Lost session turn lease while turn is active: %s",
                                     getattr(self, "session_id", None) or session_id,
                                 )
-                                try:
-                                    self.interrupt(
-                                        "Session turn lease lost; stopping to "
-                                        "protect the transcript.",
-                                        hard_cancel=True,
-                                    )
-                                except Exception:
-                                    self._interrupt_requested = True
+                                _interrupt_turn(
+                                    "Session turn lease lost; stopping to protect "
+                                    "the transcript."
+                                )
                                 return
                         except Exception:
+                            if durable_turn_lease_stop.is_set():
+                                return
                             logger.warning(
                                 "Failed to refresh session turn lease: %s",
                                 getattr(self, "session_id", None) or session_id,
                                 exc_info=True,
                             )
+                            _interrupt_turn(
+                                "Session turn lease could not be refreshed; "
+                                "stopping to protect the transcript."
+                            )
+                            return
 
                 durable_turn_lease_thread = threading.Thread(
                     target=_refresh_durable_turn_lease,
@@ -8415,6 +8429,7 @@ class AIAgent:
                             == durable_turn_lease
                         ):
                             self._active_session_turn_lease_holder = None
+                            self._active_session_turn_lease_ttl_seconds = None
                     # Always clear mid-turn labels when the turn exits — including
                     # interrupted early returns that skip finalize_turn. Keep ts.
                     try:

@@ -339,6 +339,51 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     assert "lease lost" in str(interrupt_calls[0][0]).lower()
 
 
+def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._session_turn_lease_refresh_interval = 0.01
+    interrupt_calls = []
+
+    def track_interrupt(message=None, hard_cancel=False):
+        interrupt_calls.append((message, hard_cancel))
+        agent._interrupt_requested = True
+
+    agent.interrupt = track_interrupt
+
+    def refresh_error(session_id, holder, **kwargs):
+        raise OSError("database unavailable")
+
+    db.refresh_session_turn_lease = refresh_error
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if getattr(_agent, "_interrupt_requested", False):
+                return {
+                    "final_response": "",
+                    "messages": history,
+                    "api_calls": 0,
+                    "completed": False,
+                    "interrupted": True,
+                }
+            time.sleep(0.01)
+        raise AssertionError("refresh error did not interrupt the turn")
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "seed"}],
+    )
+
+    assert result.get("interrupted") is True
+    assert interrupt_calls
+    assert interrupt_calls[0][1] is True
+    assert "could not be refreshed" in str(interrupt_calls[0][0]).lower()
+
+
 def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db)

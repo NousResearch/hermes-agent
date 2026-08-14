@@ -490,21 +490,29 @@ def test_turn_lease_fences_stale_transcript_flush_after_reclaim(tmp_path):
     db.release_session_turn_lease("shared", next_holder)
 
 
-def test_turn_lease_fences_flush_when_row_is_absent_or_expired(tmp_path):
+def test_turn_lease_revives_expired_row_still_owned_by_writer(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")
     holder = f"pid={os.getpid()}:turn=owner"
 
     assert db.try_acquire_session_turn_lease("shared", holder, ttl_seconds=0.05)
     time.sleep(0.12)
-    with pytest.raises(SessionTurnLeaseLostError, match="turn lease lost"):
-        db.append_messages_batch(
-            "shared",
-            [{"role": "assistant", "content": "after ttl"}],
-            turn_lease_holder=holder,
-        )
+    assert db.append_messages_batch(
+        "shared",
+        [{"role": "assistant", "content": "after ttl"}],
+        turn_lease_holder=holder,
+        turn_lease_ttl_seconds=0.2,
+    ) == 1
+    assert not db.try_acquire_session_turn_lease(
+        "shared", f"pid={os.getpid()}:turn=contender", ttl_seconds=5
+    )
 
-    db.release_session_turn_lease("shared", holder)
+
+def test_turn_lease_fences_flush_when_row_is_absent(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+    holder = f"pid={os.getpid()}:turn=owner"
+
     with pytest.raises(SessionTurnLeaseLostError, match="turn lease lost"):
         db.append_messages_batch(
             "shared",

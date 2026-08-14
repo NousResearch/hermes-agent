@@ -63,7 +63,7 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   const acquiredAt = Math.floor(Date.now() / 1000) - 300
   const preservedResult = run(preserved.installRoot, String(acquiredAt))
 
-  assert.equal(preservedResult.status, 0, preservedResult.stderr || preservedResult.stdout)
+  assert.equal(preservedResult.status, 0, String(preservedResult.stderr || preservedResult.stdout))
   assert.equal(markerStartedAt(preserved.home), acquiredAt, 'the script must preserve the Desktop acquisition time')
 
   const refreshed = sandbox('refreshed')
@@ -72,7 +72,7 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   const refreshedResult = run(refreshed.installRoot, 'malformed')
   const after = Math.floor(Date.now() / 1000)
 
-  assert.equal(refreshedResult.status, 0, refreshedResult.stderr || refreshedResult.stdout)
+  assert.equal(refreshedResult.status, 0, String(refreshedResult.stderr || refreshedResult.stdout))
   assert.ok(
     markerStartedAt(refreshed.home) >= before && markerStartedAt(refreshed.home) <= after,
     'an invalid hand-off timestamp must start a fresh claim'

@@ -118,10 +118,10 @@ async function resolveAgentAvatar(handle: string): Promise<null | string> {
         return null
       }
 
-      const res = await gateway.request<{ profiles?: Array<{ has_avatar?: boolean; name: string }> }>(
-        'profiles.list',
-        { include_sessions: false }
-      )
+      const res = await gateway.request<{ profiles?: Array<{ has_avatar?: boolean; name: string }> }>('profiles.list', {
+        include_sessions: false
+      })
+
       const profiles = res?.profiles ?? []
       let profile = profiles.find(p => p.name.toLowerCase() === key)
 

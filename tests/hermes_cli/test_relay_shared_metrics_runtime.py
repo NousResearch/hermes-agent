@@ -218,7 +218,11 @@ def direct_runtime(tmp_path, monkeypatch):
     )
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
-    monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
+    _mgr = PluginManager()
+    # Pin as discovered: hook queries lazy-discover plugins (#64178), and
+    # this test's contract is a runtime with ZERO plugins loaded.
+    _mgr._discovered = True
+    monkeypatch.setattr(plugins, "_plugin_manager", _mgr)
     yield fake
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
@@ -236,7 +240,9 @@ def real_binding_runtime(tmp_path, monkeypatch):
     )
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
-    monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
+    _mgr = PluginManager()
+    _mgr._discovered = True  # see direct_runtime fixture (#64178)
+    monkeypatch.setattr(plugins, "_plugin_manager", _mgr)
     yield relay
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()

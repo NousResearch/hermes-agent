@@ -288,7 +288,27 @@ glance.
 
 ## Steering a Running Subagent
 
-Interrupting a child throws away its in-flight work; often you just want to redirect it. `steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+Interrupting a child throws away its in-flight work; often you just want to redirect it.
+
+### From the parent agent (model-facing)
+
+The parent agent orchestrates its own running children with the same `delegate_task` tool it spawned them with — no separate control tool:
+
+```json
+{"action": "list"}
+{"action": "steer", "subagent_id": "sa-0-1a2b3c4d", "message": "focus on pricing instead"}
+{"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
+```
+
+- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
+- **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
+
+Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
+
+### From the TUI / gateway (session-facing)
+
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -367,6 +387,37 @@ For **durable execution** that must survive session closure or process restart, 
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
 
+## Worktree Isolation
+
+By default, subagents share the parent's working directory — fine for research
+and read-heavy work, but parallel children editing the same repo can collide.
+Set `delegation.worktree_isolation: true` to give each child its own git
+worktree, branched from the repo's current `HEAD` (inspired by Muse Code's
+`--subagent-worktree-isolation`):
+
+```yaml
+delegation:
+  worktree_isolation: true   # default: false
+```
+
+With isolation on:
+
+- Each child starts its terminal in `<repo>/.worktrees/subagent-<id>` on its
+  own branch `hermes-subagent/subagent-<id>`, and its goal message tells it to
+  work and commit there.
+- The parent's checkout stays untouched; children can't clobber each other's
+  edits.
+- When a child finishes, its result entry gains a `worktree` field reporting
+  `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
+  reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
+- A worktree left with **no commits and a clean tree is pruned automatically**
+  (`pruned: true`); anything holding work is kept.
+
+Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
+directory, on docker/ssh/modal backends, or if worktree creation fails, the
+setting degrades silently to today's shared-workspace behavior — never an
+error.
+
 ## Delegation vs execute_code
 
 | Factor | delegate_task | execute_code |
@@ -388,6 +439,7 @@ For **durable execution** that must survive session closure or process restart, 
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

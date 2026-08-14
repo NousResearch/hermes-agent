@@ -249,6 +249,18 @@ _LONG_HANDLERS = frozenset(
         # reloads via _mcp_reload_lock.
         "reload.mcp",
         "process.list",
+        # profiles.list runs list_profiles() (recursive skill-tree walk per
+        # profile) and opens each profile's state.db for the last-session
+        # preview; profiles.create copies skill bundles. Both are seconds-
+        # scale on cold disks — keep them off the WS reader thread.
+        "profiles.configure",
+        "profiles.create",
+        "profiles.describe",
+        "profiles.get_asset",
+        "profiles.list",
+        "profiles.set_asset",
+        # image.generate is a multi-second remote API round-trip.
+        "image.generate",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
@@ -264,6 +276,27 @@ _LONG_HANDLERS = frozenset(
         # the WS read loop and causing false "needs setup" (#50005 family).
         "setup.runtime_check",
         "setup.status",
+        # Voice RPCs can trigger check_voice_requirements() → STT provider
+        # auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
+        # subprocess with a 300s timeout). Inline they stall the WS reader
+        # loop (handle_ws awaits dispatch before reading the next frame), so
+        # prompt.submit / session.list queued behind a voice.toggle sit
+        # unread and the desktop "send message" appears dead for minutes
+        # (reproduced: voice.toggle → session.list 40s+ timeout). Route them
+        # to the pool so a slow lazy install can't block message handling.
+        "voice.toggle",
+        "voice.record",
+        "voice.tts",
+        # wake.start calls check_wake_word_requirements() → _stt_ready() →
+        # _get_provider() → _try_lazy_install_stt() → ensure("stt.faster_whisper")
+        # (same synchronous subprocess install chain as the voice RPCs above).
+        # It also calls start_listening() → _build_engine() whose constructors
+        # call lazy_deps.ensure("wake.openwakeword" / "wake.sherpa" / …).
+        # wake.status calls check_wake_word_requirements() too and is polled
+        # by the desktop on every gateway-ready, so it can re-trigger the
+        # same block on a fresh launch. Same bug class as #21123 / #50005.
+        "wake.start",
+        "wake.status",
         # Desktop also polls the in-memory live-session registry every 15s.
         # The handler is normally cheap, but under heavy agent GIL pressure it
         # can still stall for tens of seconds. Keep it off the WS reader thread
@@ -3286,6 +3319,7 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "terminal.read.request",
         "preview.read.request",
         "window.read.request",
+        "mcp.setup.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -3732,9 +3766,16 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
-# Bare billing buckets are not routable provider identities (kept in parity with the
-# provider gate in agent_init). Restoring one as a session provider override breaks resume.
-_BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
+# Bare billing buckets are not routable provider identities; restoring one as a
+# session provider override breaks resume. (agent_init's fail-fast gate is a
+# DIFFERENT set that also skips "openrouter" — there it means "default route,
+# don't fail fast", not "unroutable".)
+# ``openrouter`` is deliberately excluded here — it is a fully routable provider
+# with its own API key and base_url. Sessions that used OpenRouter store
+# ``billing_provider="openrouter"``; dropping it forces resume to the current
+# global model (e.g. a custom endpoint), which is the wrong provider for the
+# stored model. See #57588.
+from hermes_state import _BARE_BILLING_PROVIDERS
 
 
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
@@ -4394,7 +4435,8 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
     # Desktop renders the clarify choices/question from the tool-call part, then
     # wires request_id from clarify.request. If tool progress is off, suppressing
     # clarify's lifecycle events leaves only the sidebar attention dot visible.
-    return name == "clarify"
+    # setup_mcp is the same shape: its consent card mounts on the tool part.
+    return name in ("clarify", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -4608,9 +4650,9 @@ def _apply_model_switch(
 
     if not confirm_expensive_model:
         try:
-            from hermes_cli.model_cost_guard import expensive_model_warning
+            from hermes_cli.model_selection_guards import combined_selection_warning
 
-            warning = expensive_model_warning(
+            warning = combined_selection_warning(
                 result.new_model,
                 provider=result.target_provider,
                 base_url=result.base_url or current_base_url,
@@ -5876,6 +5918,18 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {},
             timeout=30,
+        ),
+        # setup_mcp tool (desktop GUI): the renderer shows an inline consent
+        # card and walks the user through install/enable/OAuth via the REST
+        # endpoints, then answers mcp.setup.respond with the JSON outcome.
+        # Long timeout on purpose — the flow can include typing an API key or
+        # a browser OAuth round-trip. Same lifecycle as clarify: on timeout
+        # the tool returns "unanswered" and a late answer is tolerated.
+        "setup_mcp_callback": lambda server, action, reason: _block(
+            "mcp.setup.request",
+            sid,
+            {"server": server, "action": action, "reason": reason},
+            timeout=600,
         ),
     }
 
@@ -9210,11 +9264,11 @@ def _collect_kanban_notifications(session: dict) -> list:
                     text = _format_kanban_event_text(sub, task, ev, slug)
                     if text:
                         texts.append(text)
-                # Unsubscribe only at a truly final status (done/archived);
-                # blocked/crashed subs stay live so a respawned task's next
-                # terminal event still reaches the user (same rule as the
-                # gateway notifier).
-                if task and getattr(task, "status", "") in {"done", "archived"}:
+                # Unsubscribe only on archive. ``done`` is reversible in
+                # review/controller flows, so retaining the subscription lets
+                # a later reopen notify the same originating TUI/Desktop
+                # session. The claimed cursor prevents historical replay.
+                if task and getattr(task, "status", "") == "archived":
                     try:
                         _kb.remove_notify_sub(
                             conn,
@@ -14414,6 +14468,8 @@ def _browser_disconnect(rid) -> dict:
 from . import (  # noqa: E402
     methods_complete as _methods_complete,
     methods_config as _methods_config,
+    methods_images as _methods_images,
+    methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
     methods_tools as _methods_tools,
@@ -14425,6 +14481,8 @@ for _m in (
     _methods_config,
     _methods_complete,
     _methods_tools,
+    _methods_profiles,
+    _methods_images,
 ):
     _m.register(sys.modules[__name__])
 del _m

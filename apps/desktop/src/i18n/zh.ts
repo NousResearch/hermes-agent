@@ -897,6 +897,13 @@ export const zh: Translations = {
       existingToken: value => `现有 token ${value}`,
       savedToken: '已保存',
       pasteSessionToken: '粘贴会话 token',
+      plainTextConfirmTitle: '以明文存储网关 token？',
+      plainTextConfirmDesc:
+        '在此设备上未找到操作系统的密钥环服务，因此 token 将以未加密的明文保存在应用的连接设置文件中，以该用户身份运行的任何进程都可读取。请安装或启用 GNOME Keyring 或 KWallet 以进行加密存储。',
+      plainTextConfirmAction: '以明文保存',
+      plainTextStoredTitle: 'Token 以明文存储',
+      plainTextStoredDesc:
+        '安全存储不可用，因此已保存的 token 以未加密方式存储在此设备上应用的连接设置文件中。请安装或启用 GNOME Keyring 或 KWallet 以对其加密。',
       testRemote: '测试远程',
       saveForRestart: '保存到下次重启',
       saveAndReconnect: '保存并重连',
@@ -1851,6 +1858,13 @@ export const zh: Translations = {
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,
+    modelImpact: {
+      title: '定时任务需要检查',
+      message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
+      detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
+      review: '检查定时任务',
+      saveFailed: 'Hermes 未保存该模型更改。'
+    },
     search: '搜索定时任务…',
     loading: '正在加载定时任务…',
     states: {
@@ -2042,7 +2056,8 @@ export const zh: Translations = {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
-      artifacts: '产物'
+      artifacts: '产物',
+      cron: '定时任务'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2169,6 +2184,8 @@ export const zh: Translations = {
       renameDesc: '留空则清除。',
       untitledPlaceholder: '无标题会话',
       untitledChat: id => `会话 ${id}`,
+      messageCount: count => `${count} 条消息`,
+      todoProgress: '任务完成度',
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',
@@ -2275,6 +2292,7 @@ export const zh: Translations = {
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     queueEdit: '编辑',
     queueSendNext: '下一个',
+    queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
     queueResume: '继续',
@@ -2306,6 +2324,37 @@ export const zh: Translations = {
     snippetsDesc: '选择一个起始提示词放入输入框。',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
+    mcpSuggestions: {
+      label: server => `添加 ${server}`,
+      tip: keyword => `因为你提到了“${keyword}”而推荐 — 点击连接`,
+      connecting: server => `正在连接 ${server}…`,
+      cancelTip: '点击取消',
+      added: server => `已添加 ${server}`,
+      addedTip: '已连接 — 其工具已在此对话中可用',
+      connectFailed: server => `无法连接 ${server}`
+    },
+    skillSuggestions: {
+      label: skill => `使用技能: ${skill}`,
+      tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
+      done: skill => `已添加 /${skill}`,
+      doneTip: '发送时将加载该技能'
+    },
+    repairSuggestions: {
+      label: server => `重新连接 ${server}`,
+      tip: server => `${server} 调用刚因连接错误失败`,
+      working: server => `正在重新连接 ${server}…`,
+      workingTip: '点击取消',
+      done: server => `已重新连接 ${server}`,
+      doneTip: '新凭据已在此对话中生效',
+      failed: server => `无法重新连接 ${server}`
+    },
+    cronSuggestions: {
+      label: '定时执行',
+      tip: phrase => `“${phrase}”听起来是周期性任务 — 可以按计划运行`,
+      prefix: '将此设置为定时任务:',
+      done: '已标记为定时任务',
+      doneTip: '发送后由智能体创建任务'
+    },
     snippets: {
       codeReview: {
         label: '代码审查',
@@ -2690,6 +2739,7 @@ export const zh: Translations = {
       gatewayTitle: '网关',
       customizeTitle: '在状态栏中显示',
       hideStatusbar: '隐藏状态栏',
+      resetStatusbar: '恢复默认设置',
       toggleApprovalMode: '审批',
       toggleBackendVersion: '后端版本',
       toggleCommandCenter: '命令中心',
@@ -2978,6 +3028,28 @@ export const zh: Translations = {
       lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
       lateAnswerTip: '将此回答起草为后续消息',
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
+    },
+    mcpSetup: {
+      installTitle: server => `添加 ${server} MCP 服务器？`,
+      enableTitle: server => `启用 ${server} MCP 服务器？`,
+      authorizeTitle: server => `授权 ${server} MCP 服务器？`,
+      installAction: '安装',
+      enableAction: '启用',
+      authorizeAction: '授权',
+      decline: '暂不',
+      declined: '已拒绝',
+      installed: server => `已安装 ${server}`,
+      enabled: server => `已启用 ${server}`,
+      authorized: server => `已授权 ${server}`,
+      failed: server => `${server} 设置失败`,
+      unanswered: '未响应',
+      toolCount: count => `${count} 个工具`,
+      notInCatalog: server => `“${server}”不在 MCP 目录中`,
+      catalogSource: '来自 Nous 认证目录',
+      envRequired: '请先填写所需凭据',
+      sendFailed: '无法发送 MCP 设置响应',
+      reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',
+      gatewayDisconnected: 'Hermes 网关未连接'
     },
     tool: {
       copyCode: '复制代码',

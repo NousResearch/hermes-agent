@@ -77,7 +77,7 @@ python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
 
 **Inline**:
 ```bash
-python3 -c "
+python -c "
 import pymupdf
 doc = pymupdf.open('document.pdf')
 for page in doc:

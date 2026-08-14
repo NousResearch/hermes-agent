@@ -6,12 +6,14 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { desktopGit } from '@/lib/desktop-git'
 import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
   removeComposerAttachment,
-  setComposerTerminalSelection
+  setComposerTerminalSelection,
+  updateComposerAttachment
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -260,12 +262,14 @@ export function partitionDroppedFiles(candidates: DroppedFile[]): {
 interface ComposerActionsScope {
   add: (attachment: ComposerAttachment) => void
   remove: (id: string) => ComposerAttachment | null
+  update: (attachment: ComposerAttachment) => boolean
   target: string
 }
 
 const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
   add: addComposerAttachment,
   remove: removeComposerAttachment,
+  update: updateComposerAttachment,
   target: 'main'
 }
 
@@ -329,6 +333,51 @@ export function useComposerActions({
       })
     },
     [attachToMain]
+  )
+
+  // A pasted GitHub PR-comment deep link → structured `review` attachment.
+  // Optimistic: the card lands immediately with the URL as its ref, then the
+  // background gh resolve fills in author/anchor (label + detail). If gh can't
+  // answer — offline, unauthenticated, foreign repo, remote gateway — the card
+  // downgrades to a plain `url` attachment so the paste is never lost.
+  const attachPrCommentUrl = useCallback(
+    (url: string): boolean => {
+      const id = attachmentId('review', url)
+      const refText = `@url:${formatRefValue(url)}`
+
+      attachToMain({
+        id,
+        kind: 'review',
+        label: url.replace(/^https:\/\/github\.com\//, '').replace(/#.*$/, ''),
+        refText,
+        uploadState: 'uploading'
+      })
+
+      void (async () => {
+        const comment = currentCwd
+          ? await (desktopGit()
+              ?.review.fetchPrComment(currentCwd, url)
+              .catch(() => null) ?? null)
+          : null
+
+        if (comment) {
+          scope.update({
+            id,
+            kind: 'review',
+            label: comment.path
+              ? `${pathLabel(comment.path)}${comment.line ? `:${comment.line}` : ''} — @${comment.author}`
+              : `PR #${comment.prNumber} — @${comment.author}`,
+            detail: JSON.stringify(comment),
+            refText
+          })
+        } else {
+          scope.update({ id, kind: 'url', label: pathLabel(url), refText })
+        }
+      })()
+
+      return true
+    },
+    [attachToMain, currentCwd, scope]
   )
 
   const pickContextPaths = useCallback(
@@ -595,7 +644,14 @@ export function useComposerActions({
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
+          // Finder may expose a dropped screenshot through a short-lived
+          // TemporaryItems/NSIRD_screencaptureui path even when the visible
+          // file has already landed on Desktop. Reading that path for the
+          // preview can succeed, then image.attach fails after macOS removes
+          // it before submit. Persist the File bytes into Desktop's durable
+          // composer-image cache first; keep the native path as a compatibility
+          // fallback for older shells that cannot save the buffer.
+          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath)))) {
             attached = true
 
             continue
@@ -653,6 +709,7 @@ export function useComposerActions({
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
+    attachPrCommentUrl,
     insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,

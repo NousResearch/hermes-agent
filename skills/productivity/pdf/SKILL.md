@@ -29,8 +29,8 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 ## Prerequisites
 
 - Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`:
-  `python3 -m pip install pypdf reportlab pdfplumber`
-- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `python3 -m pip install pypdfium2`, or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
+  `python -m pip install pypdf reportlab pdfplumber`
+- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `python -m pip install pypdfium2`, or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
 - Each helper script checks imports lazily and prints an install hint if a dependency is missing.
 
 ## How to Run
@@ -38,27 +38,27 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 All helpers live in `scripts/` and are argparse CLIs — run them with the `terminal` tool; every one supports `--help`. They read/write JSON strictly as UTF-8, print JSON results to stdout, and exit non-zero on failure.
 
 ```bash
-python3 scripts/pdf_create.py spec.json -o out.pdf         # build PDF from JSON spec
-python3 scripts/pdf_make_form.py formspec.json -o form.pdf # build fillable AcroForm from JSON spec
-python3 scripts/pdf_form_layout.py formspec.json           # lint form layout BEFORE building
-python3 scripts/pdf_form_layout.py formspec.json --render-overlay boxes.png [--pdf form.pdf]
-python3 scripts/pdf_read.py doc.pdf --text                 # per-page text (JSON)
-python3 scripts/pdf_read.py doc.pdf --tables --csv-dir t/  # tables to JSON + CSV files
-python3 scripts/pdf_read.py doc.pdf --meta                 # metadata, page sizes, encrypted/scanned flags
-python3 scripts/pdf_read.py form.pdf --fields              # form fields: name, type, value
-python3 scripts/pdf_merge.py a.pdf b.pdf -o merged.pdf [--bookmarks]
-python3 scripts/pdf_split.py doc.pdf --pages 1-3,7 -o part.pdf [--rotate 90]
-python3 scripts/pdf_fill_form.py form.pdf --fields-json values.json -o filled.pdf [--flatten]
-python3 scripts/pdf_secure.py doc.pdf --encrypt -o enc.pdf --user-password your-password
-python3 scripts/pdf_secure.py enc.pdf --decrypt -o dec.pdf --password your-password
-python3 scripts/pdf_watermark.py doc.pdf --stamp mark.pdf -o stamped.pdf [--under]
-python3 scripts/pdf_stamp.py doc.pdf -o out.pdf --text "DRAFT" --x 150 --y 400 \
+python scripts/pdf_create.py spec.json -o out.pdf         # build PDF from JSON spec
+python scripts/pdf_make_form.py formspec.json -o form.pdf # build fillable AcroForm from JSON spec
+python scripts/pdf_form_layout.py formspec.json           # lint form layout BEFORE building
+python scripts/pdf_form_layout.py formspec.json --render-overlay boxes.png [--pdf form.pdf]
+python scripts/pdf_read.py doc.pdf --text                 # per-page text (JSON)
+python scripts/pdf_read.py doc.pdf --tables --csv-dir t/  # tables to JSON + CSV files
+python scripts/pdf_read.py doc.pdf --meta                 # metadata, page sizes, encrypted/scanned flags
+python scripts/pdf_read.py form.pdf --fields              # form fields: name, type, value
+python scripts/pdf_merge.py a.pdf b.pdf -o merged.pdf [--bookmarks]
+python scripts/pdf_split.py doc.pdf --pages 1-3,7 -o part.pdf [--rotate 90]
+python scripts/pdf_fill_form.py form.pdf --fields-json values.json -o filled.pdf [--flatten]
+python scripts/pdf_secure.py doc.pdf --encrypt -o enc.pdf --user-password your-password
+python scripts/pdf_secure.py enc.pdf --decrypt -o dec.pdf --password your-password
+python scripts/pdf_watermark.py doc.pdf --stamp mark.pdf -o stamped.pdf [--under]
+python scripts/pdf_stamp.py doc.pdf -o out.pdf --text "DRAFT" --x 150 --y 400 \
     --font-size 60 --rotation 45 --opacity 0.3 --color "#cc0000" [--pages 1-3]
-python3 scripts/pdf_stamp.py doc.pdf -o out.pdf --image sig.png --x 400 --y 60 --width 120
-python3 scripts/pdf_page_image.py doc.pdf --pages 1-3 --dpi 150 --out-dir imgs/
-python3 scripts/pdf_meta.py doc.pdf --set-meta --title "T" --author "A" -o out.pdf
-python3 scripts/pdf_meta.py doc.pdf --attach data.csv -o out.pdf
-python3 scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments dir/
+python scripts/pdf_stamp.py doc.pdf -o out.pdf --image sig.png --x 400 --y 60 --width 120
+python scripts/pdf_page_image.py doc.pdf --pages 1-3 --dpi 150 --out-dir imgs/
+python scripts/pdf_meta.py doc.pdf --set-meta --title "T" --author "A" -o out.pdf
+python scripts/pdf_meta.py doc.pdf --attach data.csv -o out.pdf
+python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments dir/
 ```
 
 ## Quick Reference

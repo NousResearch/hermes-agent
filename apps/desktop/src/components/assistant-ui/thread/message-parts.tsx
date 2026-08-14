@@ -8,6 +8,8 @@ import { type ComponentProps, type FC, type ReactNode, useEffect, useLayoutEffec
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
+import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import {
   useReportThreadMessagePartCommit,
   useThreadMessagePartCommitCallback,
@@ -61,6 +63,18 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
     return null
   }
 
+  // An inter-agent delivery run through the terminal tool renders as the
+  // compact "Messaged X" / "Message from X" notices, not a transcript row
+  // (Grok-bots parity; the receiving side already renders notices via
+  // AGENT_MESSAGE_RE). Non-delivery terminal calls fall through unchanged.
+  if (props.toolName === 'terminal' && !props.isError) {
+    const command = typeof props.args?.command === 'string' ? props.args.command : ''
+
+    if (deliveryTargetFromCommand(command)) {
+      return <AgentDeliveryNotice {...props} />
+    }
+  }
+
   // A reaction's UI is the emoji landing on the bubble (message.reaction
   // event) — a "React To Message" tool block next to it would be the agent
   // narrating its own tapback. Failures still render so they're debuggable.
@@ -78,6 +92,10 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
 
   if (props.toolName === 'clarify') {
     return <ClarifyTool {...props} />
+  }
+
+  if (props.toolName === 'setup_mcp') {
+    return <McpSetupTool {...props} />
   }
 
   return <ToolFallback {...props} />

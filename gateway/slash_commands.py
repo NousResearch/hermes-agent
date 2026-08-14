@@ -98,6 +98,31 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+def _home_thread_from_source(source) -> Optional[str]:
+    """The thread id /sethome should persist on the home target, or None.
+
+    Slack thread-per-message session keying stamps a top-level message's own
+    id as ``source.thread_id`` (a session KEY, not a durable location).
+    Persisting it would pin the HOME target itself to the ephemeral thread
+    spawned around the /sethome message — every bare-platform delivery
+    (``deliver="slack"``) would then land in that thread forever. Same
+    recognition as cron origin capture: a Slack thread id equal to the
+    message's own id is synthetic. A /sethome run inside a genuine thread
+    (thread id = the parent's id, not this message's own) keeps that thread
+    as the home target.
+    """
+    thread_id = getattr(source, "thread_id", None)
+    if not thread_id:
+        return None
+    if (
+        getattr(source, "platform", None) == Platform.SLACK
+        and getattr(source, "message_id", None)
+        and str(thread_id) == str(source.message_id)
+    ):
+        return None
+    return str(thread_id)
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -499,6 +524,11 @@ class GatewaySlashCommandsMixin:
                     chat_type = str(getattr(source, "chat_type", "") or "") or None
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
+                    # Persist the platform-specific stable alt id (Signal UUID,
+                    # Feishu union_id) too: build_session_key keys the participant
+                    # on ``user_id_alt or user_id``, so a replayed wake only rebuilds
+                    # the same session key when the alt id survives the round-trip.
+                    user_id_alt = str(getattr(source, "user_id_alt", "") or "") or None
                     delivery_metadata = self._thread_metadata_for_source(
                         source, self._reply_anchor_for_event(event)
                     ) or None
@@ -517,7 +547,11 @@ class GatewaySlashCommandsMixin:
                                     chat_type=chat_type,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
+                                    user_id_alt=user_id_alt,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    # Subscribing from chat: deliver the passive
+                                    # message and wake the destination agent.
+                                    delivery_mode="notify+wake",
                                     delivery_metadata=delivery_metadata,
                                 )
                             finally:
@@ -1578,7 +1612,8 @@ class GatewaySlashCommandsMixin:
                     )
                 except Exception:
                     self._restart_command_source = event.source
-            atomic_json_write(
+            await asyncio.to_thread(
+                atomic_json_write,
                 _hermes_home / ".restart_notify.json",
                 notify_data,
                 indent=None,
@@ -1598,7 +1633,8 @@ class GatewaySlashCommandsMixin:
             }
             if event.platform_update_id is not None:
                 dedup_data["update_id"] = event.platform_update_id
-            atomic_json_write(
+            await asyncio.to_thread(
+                atomic_json_write,
                 _hermes_home / ".restart_last_processed.json",
                 dedup_data,
                 indent=None,
@@ -1901,7 +1937,8 @@ class GatewaySlashCommandsMixin:
                                     event.source
                                 )
                                 await _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
+                                    _sess_entry.session_id, result.new_model,
+                                    provider=result.target_provider,
                                 )
                             except Exception as exc:
                                 logger.debug(
@@ -2211,7 +2248,8 @@ class GatewaySlashCommandsMixin:
                     if getattr(_sess_entry, "was_auto_reset", False):
                         _sess_entry.was_auto_reset = False
                     await _sess_db.update_session_model(
-                        _sess_entry.session_id, result.new_model
+                        _sess_entry.session_id, result.new_model,
+                        provider=result.target_provider,
                     )
                 except Exception as exc:
                     logger.debug(
@@ -2397,18 +2435,19 @@ class GatewaySlashCommandsMixin:
 
             return "\n".join(lines)
 
-        # Expensive-model confirmation gate (typed /model <name> path).
+        # Selection-guard confirmation gate (typed /model <name> path).
         # The pickers (Telegram/Discord inline keyboards, TUI, dashboard)
         # already confirm via their own UI affordances; this covers the
         # direct text command, which previously bypassed the guard.
-        # expensive_model_warning() may hit models.dev or a /models endpoint
-        # on a cache miss, so run it off the event loop.
+        # Runs the unified registry (cost + data-policy + future guards).
+        # Pricing lookups may hit models.dev or a /models endpoint on a
+        # cache miss, so run it off the event loop.
         _cost_warning = None
         try:
-            from hermes_cli.model_cost_guard import expensive_model_warning
+            from hermes_cli.model_selection_guards import combined_selection_warning
 
             _cost_warning = await asyncio.to_thread(
-                expensive_model_warning,
+                combined_selection_warning,
                 result.new_model,
                 provider=result.target_provider,
                 base_url=result.base_url or current_base_url or "",
@@ -2425,7 +2464,7 @@ class GatewaySlashCommandsMixin:
                         f"({current_model or 'unknown'})."
                     )
                 # "once" and "always" both proceed — there is no persistent
-                # opt-out for the cost guard (each expensive switch should be
+                # opt-out for selection guards (each guarded switch should be
                 # an explicit decision).
                 return await _finish_switch()
 
@@ -2433,9 +2472,9 @@ class GatewaySlashCommandsMixin:
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
-                title="Expensive Model Warning",
+                title=_cost_warning.title,
                 message=(
-                    f"⚠️ **Expensive Model Warning**\n\n{_cost_warning.message}\n\n"
+                    f"⚠️ **{_cost_warning.title}**\n\n{_cost_warning.message}\n\n"
                     f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),
@@ -3018,7 +3057,7 @@ class GatewaySlashCommandsMixin:
                     error="Relay does not authenticate this logical home target",
                 )
 
-        thread_id = source.thread_id
+        thread_id = _home_thread_from_source(source)
         home = HomeChannel(
             platform=source.platform,
             chat_id=str(chat_id),

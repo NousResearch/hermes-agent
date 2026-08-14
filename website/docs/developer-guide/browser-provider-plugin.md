@@ -126,7 +126,7 @@ def get_setup_schema(self) -> dict:
              "prompt": "My Backend API key",
              "url": "https://mybackend.example"},
         ],
-        "post_setup": "agent_browser",   # auto-installs the agent-browser npm dep
+        "post_setup": "agent_browser",   # ensures local Chromium is installed (agent-browser itself resolves via npx)
     }
 ```
 

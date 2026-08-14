@@ -22,23 +22,23 @@ This skill includes `scripts/domain_intel.py` — a complete CLI tool for all do
 
 ```bash
 # Subdomain discovery via Certificate Transparency logs
-python3 SKILL_DIR/scripts/domain_intel.py subdomains example.com
+python SKILL_DIR/scripts/domain_intel.py subdomains example.com
 
 # SSL certificate inspection (expiry, cipher, SANs, issuer)
-python3 SKILL_DIR/scripts/domain_intel.py ssl example.com
+python SKILL_DIR/scripts/domain_intel.py ssl example.com
 
 # WHOIS lookup (registrar, dates, name servers — 100+ TLDs)
-python3 SKILL_DIR/scripts/domain_intel.py whois example.com
+python SKILL_DIR/scripts/domain_intel.py whois example.com
 
 # DNS records (A, AAAA, MX, NS, TXT, CNAME)
-python3 SKILL_DIR/scripts/domain_intel.py dns example.com
+python SKILL_DIR/scripts/domain_intel.py dns example.com
 
 # Domain availability check (passive: DNS + WHOIS + SSL signals)
-python3 SKILL_DIR/scripts/domain_intel.py available coolstartup.io
+python SKILL_DIR/scripts/domain_intel.py available coolstartup.io
 
 # Bulk analysis — multiple domains, multiple checks in parallel
-python3 SKILL_DIR/scripts/domain_intel.py bulk example.com github.com google.com
-python3 SKILL_DIR/scripts/domain_intel.py bulk example.com github.com --checks ssl,dns
+python SKILL_DIR/scripts/domain_intel.py bulk example.com github.com google.com
+python SKILL_DIR/scripts/domain_intel.py bulk example.com github.com --checks ssl,dns
 ```
 
 `SKILL_DIR` is the directory containing this SKILL.md file. All output is structured JSON.

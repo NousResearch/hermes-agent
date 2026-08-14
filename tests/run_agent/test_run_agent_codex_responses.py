@@ -77,6 +77,31 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+AZURE_FOUNDRY_BASE_URL = (
+    "https://placeholder.services.ai.azure.com/api/projects/placeholder/openai/v1"
+)
+
+
+def _build_azure_foundry_agent(monkeypatch, *, model="gpt-5.4"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="azure-foundry",
+        api_mode="codex_responses",
+        base_url=AZURE_FOUNDRY_BASE_URL,
+        api_key="foundry-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -323,6 +348,110 @@ def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatc
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
 
     assert kwargs["prompt_cache_retention"] == "24h"
+
+
+def _azure_reasoning_item():
+    return {"type": "reasoning", "encrypted_content": "sealed", "summary": []}
+
+
+def _azure_post_tool_messages():
+    return [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Create a marker"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [_azure_reasoning_item()],
+            "tool_calls": [
+                {
+                    "id": "call_marker",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_marker", "content": "marker written"},
+    ]
+
+
+def test_build_api_kwargs_azure_foundry_post_tool_suppresses_reasoning(monkeypatch):
+    """Live agent path reaches Azure Foundry detection and scopes suppression.
+
+    Exercises ``chat_completion_helpers.build_api_kwargs`` end-to-end rather
+    than the transport in isolation: the agent must forward ``provider`` and
+    ``base_url`` into ``build_kwargs`` for the Foundry detection to fire at
+    all. On the post-tool follow-up shape the encrypted reasoning item is
+    dropped while function_call / function_call_output continuity is kept.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+    assert agent._codex_reasoning_replay_enabled is True
+
+    kwargs = agent._build_api_kwargs(_azure_post_tool_messages())
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" not in item_types
+    assert "function_call" in item_types
+    assert "function_call_output" in item_types
+    assert kwargs.get("include") == []
+
+
+def test_build_api_kwargs_azure_foundry_non_tool_preserves_reasoning(monkeypatch):
+    """Ordinary (non-tool) Azure Foundry continuity is unchanged via the live path.
+
+    Without the post-tool follow-up shape there is no evidence Foundry rejects
+    the payload, so the encrypted reasoning item must still be replayed even
+    though the agent forwards the Foundry identity fields.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Explain recursion"},
+        {
+            "role": "assistant",
+            "content": "Recursion is when a function calls itself.",
+            "codex_reasoning_items": [_azure_reasoning_item()],
+        },
+        {"role": "user", "content": "Give an example"},
+    ]
+
+    kwargs = agent._build_api_kwargs(messages)
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" in item_types
+    assert "function_call" not in item_types
+    assert "function_call_output" not in item_types
+    assert kwargs.get("include") == ["reasoning.encrypted_content"]
+
+
+def test_build_api_kwargs_azure_foundry_user_turn_after_tool_call_keeps_reasoning(
+    monkeypatch,
+):
+    """Suppression does not stick once the tool call is answered.
+
+    Regression guard for the sticky-history shape: after the assistant has
+    replied to the tool result, a plain user follow-up is a payload Foundry
+    accepts, so reasoning replay must come back on rather than stay off for
+    the remainder of the conversation.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+
+    messages = _azure_post_tool_messages() + [
+        {
+            "role": "assistant",
+            "content": "Marker created.",
+            "codex_reasoning_items": [_azure_reasoning_item()],
+        },
+        {"role": "user", "content": "Now explain recursion"},
+    ]
+
+    kwargs = agent._build_api_kwargs(messages)
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" in item_types
+    assert "function_call" in item_types
+    assert "function_call_output" in item_types
+    assert kwargs.get("include") == ["reasoning.encrypted_content"]
 
 
 

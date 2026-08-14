@@ -279,6 +279,7 @@ TOOLSETS = {
             "open_preview", "read_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
+            "setup_mcp",
         ],
         "includes": []
     },
@@ -810,7 +811,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
                     try:
                         from tools.registry import registry
                         plugin_tools.update(
-                            e.name for e in registry._tools.values()
+                            e.name for e in registry.get_all_entries()
                             if e.toolset == platform_name
                         )
                     except Exception:

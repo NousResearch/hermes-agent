@@ -260,6 +260,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-box',
                     'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
@@ -271,6 +272,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/productivity/productivity-pdf',
                     'user-guide/skills/bundled/productivity/productivity-powerpoint',
                     'user-guide/skills/bundled/productivity/productivity-product-price-monitor',
+                    'user-guide/skills/bundled/productivity/productivity-session-librarian',
                     'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
                     'user-guide/skills/bundled/productivity/productivity-weekly-review-planning',
                     'user-guide/skills/bundled/productivity/productivity-xlsx',
@@ -283,6 +285,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
+                    'user-guide/skills/bundled/research/research-blocked-page-recovery',
                     'user-guide/skills/bundled/research/research-blogwatcher',
                     'user-guide/skills/bundled/research/research-competitor-news-monitor',
                     'user-guide/skills/bundled/research/research-grounded-citations',

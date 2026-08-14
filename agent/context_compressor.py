@@ -177,6 +177,7 @@ MAX_ITERATIONS_SUMMARY_REQUEST = (
     "Please provide a final response summarizing what you've found and accomplished so far, "
     "without calling any more tools."
 )
+_BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
 
 
 def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -4582,7 +4583,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         """Recognize internal user-role rows after SessionDB projection.
 
         SessionDB preserves role/content but not underscore-prefixed metadata,
-        so the stable todo and continuation content markers are authoritative.
+        so stable runtime-notification, todo, and continuation content markers
+        are authoritative.
         """
         if not isinstance(message, dict) or message.get("role") != "user":
             return False
@@ -4618,6 +4620,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith(
+            _BACKGROUND_PROCESS_NOTIFICATION_PREFIX
+        ) or text.startswith(
             TODO_INJECTION_HEADER + "\n"
         ) or text.startswith(
             _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX

@@ -4,9 +4,9 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { CornerDownLeft, iconSize, Pencil, Trash2 } from '@/lib/icons'
+import { CornerDownLeft, iconSize, Pencil, SteeringWheel, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import type { QueuedPromptEntry } from '@/store/composer-queue'
+import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
 
 interface QueuePanelProps {
   busy: boolean
@@ -17,6 +17,9 @@ interface QueuePanelProps {
   /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
   onResume: () => void
   onSendNow: (id: string) => void
+  /** Deliver an entry as a mid-turn redirect (no interrupt). Absent when the
+   *  host has no steer path — the affordance hides rather than dead-clicks. */
+  onSteerNow?: (id: string) => void
   /** True after an explicit halt: entries wait until resumed / sent / edited. */
   parked: boolean
 }
@@ -32,6 +35,7 @@ export function QueuePanel({
   onEdit,
   onResume,
   onSendNow,
+  onSteerNow,
   parked
 }: QueuePanelProps) {
   const { t } = useI18n()
@@ -70,6 +74,9 @@ export function QueuePanel({
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length
+        // Steer only surfaces where it can actually deliver: a live turn to
+        // redirect and an entry the redirect can carry (text-only, no slash).
+        const canSteer = busy && Boolean(onSteerNow) && isSteerableEntry(entry)
 
         return (
           <StatusRow
@@ -93,6 +100,21 @@ export function QueuePanel({
                     <Pencil className={iconSize.xs} />
                   </Button>
                 </Tip>
+                {canSteer && (
+                  <Tip label={c.queueSteer}>
+                    <Button
+                      aria-label={c.queueSteer}
+                      className="size-5 rounded-md"
+                      disabled={isEditing}
+                      onClick={() => onSteerNow?.(entry.id)}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <SteeringWheel className={iconSize.xs} />
+                    </Button>
+                  </Tip>
+                )}
                 <Tip label={busy ? c.queueSendNext : c.queueSend}>
                   <Button
                     aria-label={busy ? c.queueSendNext : c.queueSend}

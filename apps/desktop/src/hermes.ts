@@ -1151,6 +1151,16 @@ export function getMcpOAuthFlow(flowId: string): Promise<McpOAuthFlow> {
   })
 }
 
+/** Cancel an in-flight MCP OAuth flow server-side, freeing the per-server
+ *  "already in progress" slot so a retry doesn't 409. */
+export function cancelMcpOAuthFlow(flowId: string): Promise<{ ok: boolean; status: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; status: string }>({
+    ...profileScoped(),
+    path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
+    method: 'DELETE'
+  })
+}
+
 export function getToolsets(): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
     ...profileScoped(),
@@ -1823,6 +1833,34 @@ export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
   return window.hermesDesktop.api<{ servers: McpServerSummary[] }>({
     ...profileScoped(),
     path: '/api/mcp/servers'
+  })
+}
+
+/** Add one server to `mcp_servers` (validated + name-collision-checked
+ *  server-side — the same endpoint the dashboard's add form uses). */
+export function addMcpServer(body: {
+  name: string
+  url?: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  auth?: string
+}): Promise<McpServerSummary> {
+  return window.hermesDesktop.api<McpServerSummary>({
+    ...profileScoped(),
+    path: '/api/mcp/servers',
+    method: 'POST',
+    body
+  })
+}
+
+/** Remove one server from `mcp_servers` (the inline setup card's rollback
+ *  when a directory install is cancelled after the config write). */
+export function removeMcpServer(name: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}`,
+    method: 'DELETE'
   })
 }
 

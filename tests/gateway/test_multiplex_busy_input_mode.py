@@ -1,7 +1,8 @@
 """Profile-specific busy-input behavior for multiplexed gateways."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -336,7 +337,20 @@ def test_profile_route_and_nonmultiplexed_resolution_preserve_boundaries():
     ]
     source = _event(profile=None).source
 
-    assert runner._effective_busy_input_mode(source) == "steer"
+    # `_profile_name_for_source` rejects a route whose target profile is not in
+    # the served set (`profiles_to_serve`). Without this patch the test reads
+    # the runner's real on-disk profiles, so "research" is unserved on any
+    # machine that does not happen to have it — and the route is rejected
+    # before the busy-mode snapshot is consulted. Sibling coverage in
+    # tests/gateway/test_profile_resolution.py patches the same seam.
+    with patch(
+        "hermes_cli.profiles.profiles_to_serve",
+        return_value=[
+            ("default", Path("/profiles/default")),
+            ("research", Path("/profiles/research")),
+        ],
+    ):
+        assert runner._effective_busy_input_mode(source) == "steer"
 
     runner.config.multiplex_profiles = False
     source.profile = "research"

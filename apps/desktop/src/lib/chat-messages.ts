@@ -73,6 +73,10 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  // mcp.setup.request (setup_mcp tool — inline MCP consent card)
+  server?: string
+  action?: string
+  reason?: string
   // approval.request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
@@ -512,7 +516,8 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  const query = firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path'])
+  // `server` is setup_mcp's identifying arg, for the identical reason.
+  const query = firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path'])
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
   const preview = typeof payload?.preview === 'string' ? payload.preview.trim() : ''
 
@@ -525,7 +530,7 @@ function toolPartMatchValues(part: ChatMessagePart): string[] {
   }
 
   const args = part.args as Record<string, unknown>
-  const query = firstStringField(args, ['search_term', 'query', 'question', 'command', 'code', 'path'])
+  const query = firstStringField(args, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path'])
   const context = typeof args.context === 'string' ? args.context.trim() : ''
   const preview = typeof args.preview === 'string' ? args.preview.trim() : ''
 

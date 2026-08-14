@@ -178,3 +178,67 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert out[0]["role"] == "system"
         assert out[1]["role"] == "user"
         assert out[1]["content"] == "u1\n\nu2"
+
+
+# ---------------------------------------------------------------------------
+# Native compaction checkpoints ride the same sidecar
+# ---------------------------------------------------------------------------
+
+
+class TestCompactionCheckpointCarrier:
+    """``type: "compaction"`` items are cumulative context, not per-turn
+    reasoning: they stand in for history the server already pruned, and they
+    exist in exactly one place. Compaction pruning filters the sidecar rather
+    than popping it so they survive on every retained message; dropping the
+    carrier message defeats that from the other direction.
+    """
+
+    CHECKPOINT = {"type": "compaction", "encrypted_content": "ckpt"}
+    REASONING = {"type": "reasoning", "encrypted_content": "per-turn"}
+
+    def _carrier(self, items):
+        return {"role": "assistant", "content": "", "codex_reasoning_items": list(items)}
+
+    def test_reasoning_only_carrier_is_still_thinking_only(self):
+        """The existing contract is unchanged for ordinary reasoning turns."""
+        assert AIAgent._is_thinking_only_assistant(self._carrier([self.REASONING]))
+
+    def test_checkpoint_alongside_reasoning_is_not_thinking_only(self):
+        msg = self._carrier([self.REASONING, self.CHECKPOINT])
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_checkpoint_order_does_not_matter(self):
+        msg = self._carrier([self.CHECKPOINT, self.REASONING])
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_checkpoint_survives_the_sanitizer_pass(self):
+        msgs = [
+            {"role": "user", "content": "u1"},
+            self._carrier([self.REASONING, self.CHECKPOINT]),
+            {"role": "user", "content": "u2"},
+        ]
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+        surviving = [
+            item
+            for m in out
+            for item in (m.get("codex_reasoning_items") or [])
+            if item.get("type") == "compaction"
+        ]
+        assert surviving == [self.CHECKPOINT]
+
+    def test_reasoning_text_carrier_is_not_thinking_only(self):
+        """codex_responses adapter surfaces commentary via msg['reasoning'];
+        the string branch must not drop a checkpoint carrier (#82108 review:
+        the original guard sat below this branch and never fired)."""
+        msg = self._carrier([self.CHECKPOINT])
+        msg["reasoning"] = "some commentary the adapter joined in"
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_reasoning_text_carrier_survives_even_when_codex_items_kept(self):
+        """codex_responses mode passes drop_codex_reasoning_items=False; the
+        guard must still protect the carrier through the reasoning branch."""
+        msg = self._carrier([self.REASONING, self.CHECKPOINT])
+        msg["reasoning"] = "commentary"
+        assert not AIAgent._is_thinking_only_assistant(
+            msg, drop_codex_reasoning_items=False
+        )

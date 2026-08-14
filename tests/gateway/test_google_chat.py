@@ -1311,6 +1311,49 @@ class TestOutboundThreadRouting:
         )
         assert result == "spaces/X/threads/CACHED"
 
+    def test_resolve_cron_delivery_does_not_fall_back_to_cached_thread(self, adapter):
+        """A cron delivery carries job_id in its metadata and must post as a
+        new top-level message, never as a reply to the last inbound thread."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/CACHED"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"job_id": "cron_123"},
+            chat_id="spaces/X",
+        )
+        assert result is None
+
+    def test_resolve_cron_delivery_with_explicit_thread_still_uses_it(self, adapter):
+        """An explicit thread in cron metadata wins over the no-fallback rule;
+        only the implicit _last_inbound_thread cache is bypassed for cron."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/STALE"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"job_id": "cron_123", "thread_id": "spaces/X/threads/EXPLICIT"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/EXPLICIT"
+
+    def test_resolve_cron_delivery_with_reply_to_thread_still_uses_it(self, adapter):
+        """A reply_to thread resource name still routes a cron delivery there."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/STALE"
+        result = adapter._resolve_thread_id(
+            reply_to="spaces/X/threads/EXPLICIT",
+            metadata={"job_id": "cron_123"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/EXPLICIT"
+
+    def test_resolve_interactive_dm_with_metadata_still_falls_back(self, adapter):
+        """Non-cron metadata (e.g. platform event routing) keeps the DM
+        fallback — job_id is the only marker that means 'automated delivery'."""
+        adapter._last_inbound_thread["spaces/X"] = "spaces/X/threads/CACHED"
+        result = adapter._resolve_thread_id(
+            reply_to=None,
+            metadata={"user_id": "u1"},
+            chat_id="spaces/X",
+        )
+        assert result == "spaces/X/threads/CACHED"
+
 
 # ===========================================================================
 # Send file delegation (voice/video/animation route through send_document)
@@ -1567,8 +1610,13 @@ class TestAuthorizationEmailMatch:
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource
+        from hermes_cli.plugins import discover_plugins
 
         monkeypatch.setenv("GOOGLE_CHAT_ALLOWED_USERS", "alice@example.com")
+        # Plugin platforms become available during the normal gateway startup
+        # discovery pass.  This unit test constructs GatewayRunner directly,
+        # so perform that lifecycle step explicitly before testing auth.
+        discover_plugins()
         cfg = GatewayConfig()
         runner = GatewayRunner(cfg)
         runner.pairing_store = MagicMock()
@@ -1738,5 +1786,4 @@ class TestGoogleChatStandaloneSend:
         assert url == "https://chat.googleapis.com/v1/spaces/AAAA-BBBB/messages"
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
-
 

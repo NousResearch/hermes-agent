@@ -911,6 +911,7 @@ class SessionSchemaMixin:
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
+                # The shared predicate excludes user-visible reset children.
                 try:
                     cursor.execute(
                         "UPDATE sessions SET model_config = json_set("

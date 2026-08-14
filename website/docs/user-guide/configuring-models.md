@@ -67,7 +67,7 @@ Every auxiliary task defaults to `auto` — meaning Hermes tries your main model
 
 | Task | When to override |
 |---|---|
-| **Title Gen** | Almost always. A $0.10/M flash model writes session titles as well as Opus. Default config sets this to `google/gemini-3-flash-preview` on OpenRouter. |
+| **Title Gen** | When title latency or cost matters more than matching the main model. Pin a known-good flash model, or set `auxiliary.title_generation.prefer_fast_model: true` to let Hermes choose the provider's fast tier. |
 | **Vision** | When your main model lacks vision support. Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
 | **Compression** | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost. |
 | **Approval** | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
@@ -184,6 +184,26 @@ providers:
 ```
 
 With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe.
+
+For an Anthropic-compatible gateway that resolves a bare model alias only
+after receiving the request, opt the alias into native prompt-cache markers
+with the per-model `prompt_caching` capability:
+
+```yaml
+providers:
+  anthropic-proxy:
+    api: https://gateway.example.com/anthropic
+    transport: anthropic_messages
+    models:
+      fable:
+        context_length: 1000000
+        prompt_caching: true
+```
+
+Hermes matches this declaration to the exact provider route and runtime model
+id, without rewriting the alias. Set `prompt_caching: false` to explicitly
+disable cache markers for a model; when omitted, Hermes keeps its normal
+provider and model capability detection.
 
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).

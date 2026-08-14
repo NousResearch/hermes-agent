@@ -197,6 +197,15 @@ export const hermesDirectiveFormatter: Unstable_DirectiveFormatter = {
         return rawText
       }
 
+      // Colon-less completions (`@diff`, `@staged`, agent mentions like
+      // `@researcher`) are plain inline text, not typed references. classify()
+      // gives them `insertId = text`, and the typed-reference branch below
+      // would mint a bogus `@simple:` kind around them — the composer showed
+      // "@simple:`@mr-tester`" for a picked agent mention.
+      if (!rawText.includes(':')) {
+        return rawText
+      }
+
       // Typed references with a value — quote when needed.
       const kindMatch = rawText.match(/^@([^:]+):/)
       const kind = kindMatch?.[1] ?? item.type

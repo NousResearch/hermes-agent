@@ -1665,7 +1665,10 @@ class LocalEnvironment(BaseEnvironment):
             else:
                 # Stale / non-existent path — keep previous cwd; _run_bash
                 # will resolve a safe fallback on the next call if needed.
+                # The rollback restores a value this command did not observe,
+                # so it is not attributable to this command's session either.
                 self.cwd = prev_cwd
+                result.pop("cwd_observed", None)
 
     def cleanup(self):
         """Clean up temp files."""

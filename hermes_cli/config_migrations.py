@@ -718,6 +718,42 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
                 )
 
 
+def _migrate_to_35(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 34 → 35: background process notifications → concise ──
+    # The old default mode 'all' pushed the raw output tail of every finished
+    # background process into the chat ("[Background process proc_x finished
+    # with exit code 0~ Here's the final output: ...]" walls). The new
+    # 'concise' mode renders a one-line status message instead (with a short
+    # output tail on failures) and is the new default. Move users still on
+    # 'all' — the old implicit default, almost never chosen on purpose — to
+    # 'concise'. Explicit non-default choices (result / error / off) are the
+    # user's own and are preserved. Users with the key unset inherit the new
+    # default automatically at read time (no write needed).
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_display = config.get("display")
+    if isinstance(raw_display, dict):
+        raw_val = raw_display.get("background_process_notifications")
+        if isinstance(raw_val, str) and raw_val.strip().lower() == "all":
+            raw_display["background_process_notifications"] = "concise"
+            config["display"] = raw_display
+            _persist_migration(config)
+            results["config_added"].append(
+                "display.background_process_notifications=concise (was: all)"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Background process notifications switched from 'all' to "
+                    "'concise' — completions now show a one-line status message "
+                    "instead of the raw output dump. Set "
+                    "display.background_process_notifications: all to restore "
+                    "the old behavior."
+                )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: version captured before the ladder started. Order matters: later steps may
@@ -740,6 +776,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (32, _migrate_to_32),
     (33, _migrate_to_33),
     (34, _migrate_to_34),
+    (35, _migrate_to_35),
 )
 
 

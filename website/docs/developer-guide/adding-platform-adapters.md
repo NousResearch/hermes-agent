@@ -206,6 +206,64 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |
 
+## Standalone send-path extensions
+
+A standalone platform can participate in host-driven outbound delivery through
+direct `hermes send --to ...` and cron `deliver=platform:...` by declaring send
+behavior on the same `PlatformEntry` created by `ctx.register_platform()`.
+`send_message` is intentionally not an agent-callable model tool; plugins must
+not register an equivalent model surface that lets the agent initiate outbound
+messages on its own.
+
+```python
+async def _send_request(args, chat_id, platform_name, pconfig):
+    # `args` contains the host-driven send request fields.
+    message_id = await client.send(
+        address=chat_id,
+        body=args["message"],
+        subject=args.get("subject"),
+    )
+    return {"success": True, "platform": platform_name,
+            "chat_id": chat_id, "message_id": message_id}
+
+
+def _parse_address(raw):
+    normalized = raw.strip().lower()
+    if normalized.startswith("@") and "@" in normalized[1:]:
+        return normalized, None  # (chat_id, optional thread_id)
+    return None                 # continue to channel-directory resolution
+
+
+def _validate_address(address):
+    # True accepts; False rejects; a string rejects with that diagnostic.
+    return True if address.endswith("@example.com") else "unsupported domain"
+
+
+def register(ctx):
+    ctx.register_platform(
+        name="fmsg",
+        label="Fixture Message",
+        adapter_factory=lambda cfg: FmsgAdapter(cfg),
+        check_fn=check_requirements,
+        parse_target_ref_fn=_parse_address,
+        validate_target_ref_fn=_validate_address,
+        # May be a regular function or async def. Hermes awaits any awaitable
+        # result, including callable objects and functools.partial wrappers.
+        send_message_handler=_send_request,
+        # Prefer this lower-level hook when cron must send from a process
+        # without the live gateway.
+        standalone_sender_fn=_standalone_send,
+    )
+```
+
+Target resolution is shared across all three outbound surfaces. Parser output
+is normalized first and channel-directory IDs are trusted. A plugin parser must
+explicitly accept native target syntax; unresolved strings are never passed
+through opaquely. Unknown platforms and validator failures return a diagnostic
+instead of silently attempting delivery. Plugin force-reload/profile
+transitions unregister owned entries, so parsers and handlers cannot leak into
+the next profile.
+
 ## Env-Driven Auto-Configuration
 
 Most users set up a platform by dropping env vars into `~/.hermes/.env` rather than editing `config.yaml`. The `env_enablement_fn` hook lets your plugin pick those env vars up **before** the adapter is constructed, so `hermes gateway status`, `get_connected_platforms()`, and cron delivery see the correct state without instantiating the platform SDK.

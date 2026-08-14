@@ -1753,11 +1753,29 @@ def write_credential_pool(
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
-    """Mark a credential source as suppressed so it won't be re-seeded."""
+    """Mark a credential source as suppressed so it won't be re-seeded.
+
+    Older auth stores may represent a provider's suppressed sources as a
+    mapping.  Treat its keys as source names and migrate the value to the
+    canonical list form before appending the requested source.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        suppressed = auth_store.setdefault("suppressed_sources", {})
-        provider_list = suppressed.setdefault(provider_id, [])
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            suppressed = {}
+            auth_store["suppressed_sources"] = suppressed
+
+        raw_sources = suppressed.get(provider_id)
+        if isinstance(raw_sources, list):
+            provider_list = raw_sources
+        elif isinstance(raw_sources, dict):
+            provider_list = [str(name) for name in raw_sources]
+            suppressed[provider_id] = provider_list
+        else:
+            provider_list = []
+            suppressed[provider_id] = provider_list
+
         if source not in provider_list:
             provider_list.append(source)
         _save_auth_store(auth_store)
@@ -1783,8 +1801,15 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
         suppressed = auth_store.get("suppressed_sources")
         if not isinstance(suppressed, dict):
             return False
-        provider_list = suppressed.get(provider_id)
-        if not isinstance(provider_list, list) or source not in provider_list:
+        raw_sources = suppressed.get(provider_id)
+        if isinstance(raw_sources, dict):
+            provider_list = [str(name) for name in raw_sources]
+            suppressed[provider_id] = provider_list
+        elif isinstance(raw_sources, list):
+            provider_list = raw_sources
+        else:
+            return False
+        if source not in provider_list:
             return False
         provider_list.remove(source)
         if not provider_list:
@@ -7436,31 +7461,41 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _confirm_expensive_model_selection(
+def _confirm_selection_guards(
     model_id: str,
     *,
     provider: str = "",
     base_url: str = "",
     api_key: str = "",
+    include_kinds: Optional[List[str]] = None,
 ) -> bool:
-    """Prompt before saving a model whose known pricing exceeds guardrails."""
-    try:
-        from hermes_cli.model_cost_guard import expensive_model_warning
+    """Prompt before saving a model that trips any selection guard.
 
-        warning = expensive_model_warning(
+    Runs the unified guard registry (cost + data-policy + future guards) via
+    :mod:`hermes_cli.model_selection_guards` and shows one [y/N] confirm with
+    every warning that fired. Returns True to proceed, False to cancel.
+    """
+    try:
+        from hermes_cli.model_selection_guards import (
+            combined_message,
+            selection_warnings,
+        )
+
+        warnings = selection_warnings(
             model_id,
             provider=provider,
             base_url=base_url,
             api_key=api_key,
+            include_kinds=include_kinds,
         )
     except Exception:
-        warning = None
-    if warning is None:
+        warnings = []
+    if not warnings:
         return True
 
     print()
     print("=" * 72)
-    print(warning.message)
+    print(combined_message(warnings))
     print("=" * 72)
     try:
         response = input("Switch anyway? [y/N]: ").strip().lower()
@@ -7502,11 +7537,17 @@ def _prompt_model_selection(
     def _confirmed_selection(mid: str) -> Optional[str]:
         if not mid:
             return None
-        if confirm_provider and not _confirm_expensive_model_selection(
+        # Unified guard registry (hermes_cli.model_selection_guards): the cost
+        # guard only runs when a provider is known (pricing lookups need one);
+        # id-keyed guards like the data-policy guard always run — they must
+        # fire even via a custom endpoint or gateway.
+        _kinds = None if confirm_provider else ["data_policy"]
+        if not _confirm_selection_guards(
             mid,
             provider=confirm_provider,
             base_url=confirm_base_url,
             api_key=confirm_api_key,
+            include_kinds=_kinds,
         ):
             return None
         return mid

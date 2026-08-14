@@ -393,6 +393,11 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
+    # Session-db id of the conversation that spawned this process. Lets the
+    # gateway's completion pre-flight (_classify_completion_target) drop
+    # notifications whose spawning session was closed at an explicit user
+    # boundary (/new), instead of injecting them into the chat's NEW session.
+    parent_session_id: str = ""
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
@@ -621,7 +626,7 @@ class ProcessRegistry:
         if not self._global_watch_admit(now):
             return
 
-        self.completion_queue.put({
+        notification = {
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
@@ -635,7 +640,9 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
             "message_id": session.watcher_message_id,
-        })
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
@@ -1563,7 +1570,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            notification = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -1576,7 +1583,9 @@ class ProcessRegistry:
                 # a consumer-observed completion timestamp, this does not vary
                 # based on which watcher notices exit first.
                 "started_at": session.started_at,
-            })
+            }
+            _redact_process_result(notification)
+            self.completion_queue.put(notification)
 
     # ----- Query Methods -----
 
@@ -2169,8 +2178,26 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter)."""
-        return self.write_stdin(session_id, data + "\n")
+        """Send data + newline to a running process's stdin (like pressing Enter).
+
+        On a Windows PTY session the Enter key is a carriage return: ConPTY
+        cooked input treats ``\\r`` as end-of-line, and a bare ``\\n`` written
+        through pywinpty is NOT delivered as a line terminator — the child's
+        blocking line read (Python ``readline()``, Go ``bufio.Scanner`` as in
+        ``gh auth login``'s "Press Enter to open the browser" prompt) simply
+        never returns and the process hangs while looking healthy. Verified
+        empirically via pywinpty 2.0.15: ``\\n`` -> no line, ``\\r`` /
+        ``\\r\\n`` -> line delivered. Use ``\\r\\n`` so the child sees both the
+        Enter keypress and a conventional newline; POSIX PTYs and Popen pipes
+        keep the plain ``\\n``.
+        """
+        session = self.get(session_id)
+        is_windows_pty = bool(
+            _IS_WINDOWS and session is not None
+            and getattr(session, "_pty", None)
+        )
+        line_ending = "\r\n" if is_windows_pty else "\n"
+        return self.write_stdin(session_id, data + line_ending)
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close the read-only terminal tab mirroring this
@@ -2499,6 +2526,7 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
+                            "parent_session_id": s.parent_session_id,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
@@ -2595,6 +2623,7 @@ class ProcessRegistry:
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
+                parent_session_id=entry.get("parent_session_id", ""),
                 notify_on_complete=entry.get("notify_on_complete", False),
                 watch_patterns=entry.get("watch_patterns", []),
             )
@@ -2616,6 +2645,7 @@ class ProcessRegistry:
                     "thread_id": session.watcher_thread_id,
                     "message_id": session.watcher_message_id,
                     "notify_on_complete": session.notify_on_complete,
+                    "parent_session_id": session.parent_session_id,
                 })
 
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
@@ -2792,6 +2822,12 @@ def format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    # Overflow events carry their human-readable summary in `message` —
+    # without this case they fall through to the completion formatter and
+    # surface as a phantom "process exited (exit code ?)" notification.
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":

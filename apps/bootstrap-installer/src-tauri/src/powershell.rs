@@ -138,7 +138,7 @@ pub async fn run_script(
     args: &[String],
     sink: StreamSink,
     hermes_home_override: Option<&str>,
-    mut cancel_rx: Option<CancelRx>,
+    cancel_rx: &mut Option<CancelRx>,
 ) -> Result<ScriptResult> {
     let mut cmd = build_command(script_path, args);
 
@@ -221,7 +221,7 @@ pub async fn run_script(
                     }
                 }
             }
-            _ = recv_cancel(&mut cancel_rx) => {
+            _ = recv_cancel(cancel_rx) => {
                 tracing::warn!("cancellation received — killing child");
                 killed = true;
                 // best-effort kill; don't propagate errors

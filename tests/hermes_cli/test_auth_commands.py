@@ -521,6 +521,36 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert entries[0]["priority"] == 0
 
 
+def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatch):
+    """Removing a Codex credential must tolerate legacy dict suppression data."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    store = _codex_pool_only_store()
+    primary = store["credential_pool"]["openai-codex"][0]
+    primary.update({"id": "codex-qb", "label": "qb"})
+    store["suppressed_sources"] = {"openai-codex": {"legacy": True}}
+    _write_auth_store(tmp_path, store)
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "qb"
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8"))
+    assert payload.get("credential_pool", {}).get("openai-codex", []) == []
+    assert payload["suppressed_sources"]["openai-codex"] == [
+        "legacy",
+        "device_code",
+        "manual:device_code",
+    ]
+
+    from agent.credential_pool import load_pool
+
+    assert load_pool("openai-codex").peek() is None
+
+
 def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

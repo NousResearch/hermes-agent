@@ -136,7 +136,7 @@ class TestProviderCollectorCliNoop:
         """_ProviderCollector.register_cli_command is a no-op (doesn't crash)."""
         from plugins.memory import _ProviderCollector
 
-        collector = _ProviderCollector()
+        collector = _ProviderCollector("test-provider")
         collector.register_cli_command(
             name="test", help="test", setup_fn=lambda s: None
         )

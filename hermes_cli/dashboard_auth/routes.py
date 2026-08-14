@@ -304,6 +304,15 @@ async def auth_native_authorize(
     ``/auth/callback``), carrying the broker_state in the same PKCE cookie the
     cookie flow uses. On the callback we mint a loopback code (see
     ``auth_callback``); no browser session cookie is ever set for the desktop.
+
+    Password providers have no upstream IDP round trip to broker, but the
+    native flow is still exactly what they want: it moves sign-in out of the
+    desktop's embedded webview (where OS password managers cannot autofill)
+    into the SYSTEM browser (where they can). For a ``supports_password``
+    provider we redirect to the interactive ``/login`` form instead of an
+    IDP, carrying the broker_state in the PKCE cookie; a successful
+    ``/auth/password-login`` then completes the pending authorization and
+    bounces the browser to the loopback redirect (see that route).
     """
     # PKCE method must be S256 (RFC 7636 — plain is disallowed for native apps).
     if code_challenge_method.upper() != "S256":
@@ -344,14 +353,11 @@ async def auth_native_authorize(
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"
         )
-    if not getattr(p, "supports_session", True) or getattr(
-        p, "supports_password", False
-    ):
-        # Native PKCE brokering is only meaningful for redirect/OAuth
-        # providers; a password provider has no IDP round trip to broker.
+    if not getattr(p, "supports_session", True):
+        # Token-only credentials (e.g. drain) are not interactive sign-ins.
         raise HTTPException(
             status_code=400,
-            detail=f"Provider does not support native OAuth login: {p.name!r}",
+            detail=f"Provider does not support native login: {p.name!r}",
         )
 
     from hermes_cli.dashboard_auth import native_flow
@@ -365,6 +371,30 @@ async def auth_native_authorize(
         )
     except native_flow.NativeFlowError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+    if getattr(p, "supports_password", False):
+        # Password provider: no IDP to redirect through. Land the system
+        # browser on the interactive /login form with the broker_state in
+        # the PKCE cookie (the same server-controlled channel the OAuth
+        # branch uses); /auth/password-login picks it up on success and
+        # 302s the browser to the desktop's loopback redirect_uri. The
+        # desktop's challenge/state never touch the cookie — only our
+        # opaque broker_state does.
+        audit_log(
+            AuditEvent.NATIVE_AUTHORIZE_START,
+            provider=p.name,
+            ip=_client_ip(request),
+        )
+        resp = RedirectResponse(
+            url=f"{_prefix(request)}/login", status_code=302
+        )
+        set_pkce_cookie(
+            resp,
+            payload=f"provider={p.name};broker={broker_state}",
+            use_https=detect_https(request),
+            prefix=_prefix(request),
+        )
+        return resp
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
@@ -674,6 +704,15 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     the credential form POSTs via fetch and navigates client-side, so a
     302 (which fetch follows opaquely) is the wrong shape here.
 
+    RFC 8252 native-app branch: when ``/auth/native/authorize`` sent this
+    browser to ``/login`` (password provider), the PKCE cookie carries the
+    opaque ``broker=`` handle. Mirroring the ``/auth/callback`` native
+    branch, success then mints a one-time loopback code instead of a
+    browser session: ``next`` is the desktop's loopback redirect_uri
+    (validated at authorize time) carrying ``code`` + ``state``, and NO
+    session cookies are set — the desktop redeems the code at
+    ``/auth/native/token`` for bearer tokens it stores itself.
+
     Failure modes, all deliberately generic so the endpoint can't be used
     as a username oracle or a provider-enumeration oracle:
       * unknown provider / provider lacks password support → 404
@@ -705,6 +744,41 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
             ip=ip,
         )
         raise HTTPException(status_code=404, detail="Unknown provider")
+
+    # Native-app branch discriminator (see docstring): a broker handle in
+    # the PKCE cookie means this sign-in was initiated by
+    # /auth/native/authorize for a desktop app, not a browser session. The
+    # cookie is server-set (never client-supplied), so it is trustworthy —
+    # and it also records WHICH provider the native flow was initiated for.
+    # /login renders a form for every session provider, so without this
+    # check a flow started for provider A could be completed with provider
+    # B's credentials, binding B's session into A's pending authorization.
+    # Enforce equality BEFORE verifying credentials: nothing is minted, the
+    # pending authorization is preserved, and the user can submit the form
+    # the flow was actually started for.
+    broker_state = ""
+    cookie_provider = ""
+    pkce_raw = read_pkce_cookie(request)
+    if pkce_raw:
+        pkce_parts = dict(
+            seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
+        )
+        broker_state = pkce_parts.get("broker", "")
+        cookie_provider = pkce_parts.get("provider", "")
+    if broker_state and cookie_provider != body.provider:
+        audit_log(
+            AuditEvent.NATIVE_TOKEN_FAILURE,
+            provider=body.provider,
+            reason="provider_mismatch",
+            ip=ip,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This native sign-in was started for a different provider; "
+                "use that provider's form or restart sign-in."
+            ),
+        )
 
     try:
         session = p.complete_password_login(
@@ -740,6 +814,48 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         org_id=session.org_id,
         ip=ip,
     )
+
+    # Native-app branch: the broker handle was parsed (and its provider
+    # binding enforced) above, before credential verification.
+    if broker_state:
+        from hermes_cli.dashboard_auth import native_flow
+
+        try:
+            pending = native_flow.get_pending(broker_state)
+            gw_code = native_flow.complete_pending(
+                broker_state, session=session
+            )
+        except native_flow.NativeFlowError:
+            audit_log(
+                AuditEvent.NATIVE_TOKEN_FAILURE,
+                provider=body.provider,
+                reason="pending_not_found",
+                ip=ip,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Native login expired or unknown; restart sign-in.",
+            )
+        from urllib.parse import urlencode
+
+        sep = "&" if "?" in pending.redirect_uri else "?"
+        loopback = (
+            f"{pending.redirect_uri}{sep}"
+            f"{urlencode({'code': gw_code, 'state': pending.client_state})}"
+        )
+        audit_log(
+            AuditEvent.NATIVE_CODE_ISSUED,
+            provider=body.provider,
+            user_id=session.user_id,
+            ip=ip,
+        )
+        # The login page's form script navigates to ``next`` — here the
+        # loopback listener, which answers with its own "you can close
+        # this window" page. No session cookies: the desktop is not a
+        # browser session (mirrors the /auth/callback native branch).
+        resp = JSONResponse({"ok": True, "next": loopback})
+        clear_pkce_cookie(resp, prefix=_prefix(request))
+        return resp
 
     expires_in = max(60, session.expires_at - int(time.time()))
     landing = _validate_post_login_target(body.next) or "/"

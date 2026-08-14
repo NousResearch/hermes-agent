@@ -223,6 +223,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
         const persistsAsDefault = touchesPrimary && !isSessionOnlyPreset
         const scope = persistsAsDefault ? '--global' : '--session'
+
         const result = await requestGateway<{ deferred?: boolean }>('config.set', {
           session_id: liveSessionId,
           key: 'model',

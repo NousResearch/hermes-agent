@@ -72,19 +72,26 @@ def _drain_outstanding_cleanups(timeout: float = 30.0) -> bool:
     completes before the interpreter tears down daemon threads, even for envs
     the idle reaper already detached from ``_active_environments`` (#86317).
     Returns ``True`` if all tracked threads finished within *timeout*.
+
+    The outstanding set is re-snapshotted every pass rather than joined once:
+    the idle reaper can detach an env and call ``cleanup()`` *while* this drain
+    is already running (e.g. its timer fires during interpreter shutdown),
+    registering a fresh teardown worker after an initial snapshot was taken. A
+    single-snapshot drain would return without joining that late worker,
+    leaving ``docker rm`` to be killed at exit — the exact #86317 gap. Looping
+    until the set is empty (or the deadline passes) closes that window.
     """
     deadline = time.monotonic() + max(0.0, timeout)
-    with _OUTSTANDING_CLEANUP_LOCK:
-        threads = list(_OUTSTANDING_CLEANUP_THREADS)
-    all_done = True
-    for t in threads:
-        if not t.is_alive():
-            continue
-        remaining = deadline - time.monotonic()
-        if remaining > 0:
+    while True:
+        with _OUTSTANDING_CLEANUP_LOCK:
+            pending = [t for t in _OUTSTANDING_CLEANUP_THREADS if t.is_alive()]
+        if not pending:
+            return True
+        for t in pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
             t.join(timeout=remaining)
-        all_done = all_done and not t.is_alive()
-    return all_done
 
 
 atexit.register(_drain_outstanding_cleanups)

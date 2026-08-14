@@ -570,3 +570,133 @@ def test_normalize_usage_handles_dict_openai_chat_completions():
     assert result.cache_read_tokens == 200
     assert result.input_tokens == 500 - 200  # prompt_total - cache_read
     assert result.reasoning_tokens == 30
+
+
+def test_normalize_usage_openai_reads_nested_cache_creation_tokens():
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=100,
+            cache_creation_input_tokens=300,
+        ),
+    )
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 100
+    assert normalized.cache_write_tokens == 300
+    assert normalized.input_tokens == 600
+
+
+def test_normalize_usage_openai_reads_mapping_cache_creation_tokens():
+    usage = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 200,
+        "prompt_tokens_details": {"cache_creation_input_tokens": 300},
+    }
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.cache_write_tokens == 300
+    assert normalized.input_tokens == 700
+
+
+def test_normalize_usage_openai_prefers_nested_cache_write_tokens():
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        prompt_tokens_details=SimpleNamespace(
+            cache_write_tokens=200,
+            cache_creation_input_tokens=300,
+        ),
+        cache_creation_input_tokens=400,
+        cache_write_tokens=500,
+    )
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.cache_write_tokens == 200
+
+
+def test_normalize_usage_mapping_preserves_reasoning_tokens():
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "prompt_tokens_details": {"cached_tokens": 40},
+        "completion_tokens_details": {"reasoning_tokens": 12},
+    }
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 12
+
+
+def test_normalize_usage_mapping_anthropic_fields():
+    usage = {
+        "input_tokens": 80,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 50,
+        "cache_creation_input_tokens": 10,
+        "output_tokens_details": {"reasoning_tokens": 7},
+    }
+
+    normalized = normalize_usage(usage, provider="anthropic", api_mode="anthropic_messages")
+
+    assert normalized.cache_read_tokens == 50
+    assert normalized.cache_write_tokens == 10
+    assert normalized.reasoning_tokens == 7
+
+
+def test_normalize_usage_mapping_codex_fields():
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "input_tokens_details": {
+            "cached_tokens": 60,
+            "cache_creation_tokens": 10,
+        },
+        "output_tokens_details": {"reasoning_tokens": 5},
+    }
+
+    normalized = normalize_usage(usage, provider="openai-codex", api_mode="codex_responses")
+
+    assert normalized.input_tokens == 30
+    assert normalized.cache_read_tokens == 60
+    assert normalized.cache_write_tokens == 10
+    assert normalized.reasoning_tokens == 5
+
+
+def test_normalize_usage_clamps_negative_counters():
+    usage = SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=-5,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=-10,
+            cache_write_tokens=-20,
+        ),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=-3),
+    )
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 100
+    assert normalized.output_tokens == 0
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_write_tokens == 0
+    assert normalized.reasoning_tokens == 0
+
+
+def test_normalize_usage_clamps_inconsistent_cache_total():
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "prompt_tokens_details": {
+            "cached_tokens": 80,
+            "cache_creation_input_tokens": 50,
+        },
+    }
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 0
+    assert normalized.prompt_tokens == 130

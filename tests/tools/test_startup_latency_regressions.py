@@ -34,6 +34,41 @@ class TestAuxProbeMode:
         with aux._client_cache_lock:
             assert key not in aux._client_cache
 
+    def test_probe_stub_never_cached_via_get_cached_client(self):
+        """The inline store in _get_cached_client must honour the same guard.
+
+        test_probe_stub_never_cached above covers _store_cached_client(), but
+        _get_cached_client() assigns to _client_cache directly instead of
+        calling it. That is the path check_fns actually take inside
+        aux_probe_mode(), so without a guard there the probe poisons the entry
+        and the next runtime caller with the same key gets a dead client.
+        """
+        import agent.auxiliary_client as aux
+
+        stub = aux._AuxProbeClientStub()
+        try:
+            with patch.object(
+                aux, "resolve_provider_client", lambda *a, **k: (stub, "m")
+            ):
+                with aux.aux_probe_mode():
+                    client, _model = aux._get_cached_client("probe-guard-test", "m")
+            assert client is stub
+            with aux._client_cache_lock:
+                poisoned = [
+                    key
+                    for key, entry in aux._client_cache.items()
+                    if isinstance(entry[0], aux._AuxProbeClientStub)
+                ]
+            assert poisoned == [], f"probe stub reached the cache: {poisoned}"
+        finally:
+            with aux._client_cache_lock:
+                for key in [
+                    k
+                    for k, e in aux._client_cache.items()
+                    if isinstance(e[0], aux._AuxProbeClientStub)
+                ]:
+                    del aux._client_cache[key]
+
     def test_probe_stub_raises_on_runtime_use(self):
         import agent.auxiliary_client as aux
 

@@ -397,3 +397,73 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_execution_lands_in_active_profile_home(monkeypatch, tmp_path):
+    """Multiplex: an execution created under a profile home override must
+    land in THAT profile's ledger, not the import-time frozen one.
+
+    Regression: EXECUTIONS_FILE was frozen at import time, so under
+    multiplex_profiles every profile's execution rows went into the launch
+    profile's executions.db and secondary profiles showed empty history.
+    """
+    import cron.executions as executions
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from cron.jobs import use_cron_store
+
+    profile_home = tmp_path / "profileB"
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        with use_cron_store(profile_home):
+            executions.create_execution("job-B", source="cron")
+    finally:
+        reset_hermes_home_override(token)
+
+    db = profile_home / "cron" / "executions.db"
+    assert db.exists()
+    rows = sqlite3.connect(db).execute(
+        "SELECT job_id, source, status FROM executions"
+    ).fetchall()
+    assert rows == [("job-B", "cron", "claimed")]
+
+    # The import-time ledger must NOT have received the row.
+    frozen = executions._IMPORT_TIME_EXECUTIONS_FILE
+    if frozen.exists():
+        frozen_rows = sqlite3.connect(frozen).execute(
+            "SELECT job_id FROM executions WHERE job_id = 'job-B'"
+        ).fetchall()
+        assert frozen_rows == []
+
+
+def test_execution_lands_in_cron_store_only_context(monkeypatch, tmp_path):
+    """A use_cron_store()-only scope (no hermes-home override) must route
+    the ledger too — the ContextVar has highest precedence in
+    cron.jobs._current_cron_store, so the ledger resolver must follow it,
+    not just get_hermes_home()."""
+    import cron.executions as executions
+    from cron.jobs import use_cron_store
+
+    store_home = tmp_path / "storeOnly"
+    with use_cron_store(store_home):
+        rec = executions.create_execution("job-S", source="cron")
+        # Reads resolve through the same context (lookup, not just write).
+        latest = executions.latest_execution("job-S")
+        assert latest is not None and latest["id"] == rec["id"]
+
+    db = store_home / "cron" / "executions.db"
+    assert db.exists()
+    rows = sqlite3.connect(db).execute(
+        "SELECT job_id, source, status FROM executions"
+    ).fetchall()
+    assert rows == [("job-S", "cron", "claimed")]
+
+    # The import-time ledger must NOT have received the row.
+    frozen = executions._IMPORT_TIME_EXECUTIONS_FILE
+    if frozen.exists():
+        frozen_rows = sqlite3.connect(frozen).execute(
+            "SELECT job_id FROM executions WHERE job_id = 'job-S'"
+        ).fetchall()
+        assert frozen_rows == []

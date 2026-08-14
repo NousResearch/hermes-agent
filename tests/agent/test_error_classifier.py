@@ -1161,3 +1161,67 @@ class TestExpandedOverflowPatterns:
 
 
 
+
+
+class TestZaiLocalizedOverload:
+    """Z.AI returns HTTP 429 code 1305 for server-side overload, with the
+    message localized per account. The English-only _OVERLOADED_PATTERNS from
+    #53578 never matched the zh-CN text, so a transient provider overload was
+    still classified as rate_limit -- rotating and exhausting the pool, which
+    is fatal for a single-key user. (#14038)"""
+
+    def test_429_code_1305_chinese_message_is_overloaded(self):
+        """The real-world failure: code 1305 + Chinese body."""
+        e = MockAPIError(
+            "Error code: 429 - {'error': {'code': '1305', "
+            "'message': '该模型当前访问量过大，请您稍后再试'}}",
+            status_code=429,
+            body={"error": {"code": "1305",
+                            "message": "该模型当前访问量过大，请您稍后再试"}},
+        )
+        result = classify_api_error(e, provider="zai", model="glm-4.6v-flash")
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_429_code_1305_classifies_by_code_even_without_known_text(self):
+        """Code-based match must hold even if the message is unrecognized."""
+        e = MockAPIError(
+            "Error code: 429",
+            status_code=429,
+            body={"error": {"code": "1305", "message": "\u2014"}},
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    def test_429_chinese_overload_text_without_code_is_overloaded(self):
+        """Text net: localized overload phrasing with no structured code."""
+        e = MockAPIError(
+            "该模型当前访问量过大，请您稍后再试",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    def test_429_code_1302_is_still_a_genuine_rate_limit(self):
+        """Guard: 1302 IS a real per-credential rate limit -- must still rotate."""
+        e = MockAPIError(
+            "Error code: 429 - {'error': {'code': '1302', "
+            "'message': 'Rate limit reached for requests'}}",
+            status_code=429,
+            body={"error": {"code": "1302",
+                            "message": "Rate limit reached for requests"}},
+        )
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_429_chinese_too_frequent_is_rate_limit_not_overload(self):
+        """Guard: "请求过于频繁" (too many requests) is a genuine rate
+        limit and must NOT be swallowed by the localized overload patterns."""
+        e = MockAPIError("请求过于频繁，请稍后再试", status_code=429)
+        result = classify_api_error(e, provider="zai")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True

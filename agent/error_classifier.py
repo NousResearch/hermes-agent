@@ -195,7 +195,31 @@ _OVERLOADED_PATTERNS = [
     "currently overloaded",
     "at capacity",
     "over capacity",
+    # Localized (zh-CN) overload text. Z.AI / Zhipu return the code-1305
+    # overload message in Chinese depending on account locale, so none of the
+    # English patterns above match and a server-side overload still burned the
+    # credential pool -- the exact failure #14038 set out to fix.
+    # Deliberately EXCLUDES "请求过于频繁" (requests too frequent) and the
+    # generic "请稍后再试" (try again later), which also appear on genuine
+    # per-credential rate limits and must keep rotating. (#14038)
+    "访问量过大",          # "traffic volume too large" -- Z.AI 1305
+    "服务器繁忙",          # "server busy"
+    "系统繁忙",            # "system busy"
 ]
+
+# Provider error codes that mean "the server is temporarily overloaded", not
+# "this credential is rate-limited". Matching the numeric code is
+# locale-independent, so classification holds regardless of the account's
+# message language.
+#
+# Z.AI / Zhipu (all surfaced as HTTP 429):
+#   1305 -> "service may be temporarily overloaded"  => overload, retry same key
+#   1302 -> "rate limit reached for requests"        => genuine rate limit
+#   1313 -> fair-usage throttle                      => genuine rate limit
+#   1308 / 1310 / 1316-1321 -> usage & spend limits  => quota/billing
+# Only 1305 is a server-capacity condition; the rest must keep their existing
+# (rotating / billing) behavior. (#14038)
+_OVERLOAD_ERROR_CODES = {"1305"}
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
 _USAGE_LIMIT_PATTERNS = [
@@ -1193,6 +1217,17 @@ def _classify_by_status(
         # endpoint is still busy, and does nothing for a single-key user).
         # Disambiguate on the error body so an overload 429 takes the
         # transient-overload path instead of burning the pool. (#14038)
+        #
+        # Check the structured error code FIRST: it is locale-independent,
+        # whereas the message text is localized per account (Z.AI returns the
+        # 1305 overload message in Chinese for zh-CN accounts, which no
+        # English pattern matches -- leaving the original bug live for the
+        # very provider that motivated the fix).
+        if error_code.strip() in _OVERLOAD_ERROR_CODES:
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+            )
         if any(p in error_msg for p in _OVERLOADED_PATTERNS):
             return result_fn(
                 FailoverReason.overloaded,

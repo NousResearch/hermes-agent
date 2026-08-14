@@ -4524,6 +4524,44 @@ def _recoverable_pool_provider(
     return None
 
 
+def _is_overloaded_error(exc: Exception) -> bool:
+    """Detect provider "temporarily overloaded" responses.
+
+    These reuse HTTP 429 (notably Z.AI / Zhipu error code 1305) but are
+    server-side capacity conditions, NOT per-credential rate limits: the key is
+    valid and the correct recovery is backoff / fallback, never marking the
+    credential exhausted. Shares the pattern and code tables with
+    ``error_classifier`` so both layers classify identically. (#14038)
+    """
+    try:
+        from agent.error_classifier import (
+            _OVERLOADED_PATTERNS,
+            _OVERLOAD_ERROR_CODES,
+        )
+    except Exception:
+        return False
+
+    text = str(exc).lower()
+    code = ""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err_obj = body.get("error")
+        msg = ""
+        if isinstance(err_obj, dict):
+            code = str(err_obj.get("code") or "").strip()
+            msg = str(err_obj.get("message") or "")
+        if not code:
+            code = str(body.get("code") or "").strip()
+        if not msg:
+            msg = str(body.get("message") or "")
+        if msg:
+            text = f"{text} {msg.lower()}"
+
+    if code and code in _OVERLOAD_ERROR_CODES:
+        return True
+    return any(p in text for p in _OVERLOADED_PATTERNS)
+
+
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
@@ -4544,6 +4582,20 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
     error_context = _pool_error_context(exc)
     hint = failed_api_key or None
+
+    # A provider "temporarily overloaded" response (e.g. Z.AI / Zhipu HTTP 429
+    # code 1305) is not a credential failure -- the key is valid, the endpoint
+    # is merely busy. Marking it exhausted burns the pool while the endpoint is
+    # still overloaded and, for a single-key user, leaves nothing to rotate to
+    # (the exact failure #14038 describes). Leave the credential intact and let
+    # the caller retry / fall back.
+    if _is_overloaded_error(exc):
+        logger.info(
+            "Auxiliary client: %s reported a transient overload (not a "
+            "credential rate limit) -- leaving credential intact, no rotation",
+            normalized,
+        )
+        return False
 
     if _is_auth_error(exc):
         refreshed = pool.try_refresh_current()

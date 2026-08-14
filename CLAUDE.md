@@ -366,6 +366,20 @@ Auth: `Authorization: Bearer ${MCP_AUTH_TOKEN}` from `.env.secrets`.
 
 **Context:** added 2026-08-07 after the user flagged "Hermes ne fait plus de reviews" — which was the z.ai 429 storm (resolved by the claudish switch), not a live gap; the watchdog catches the next silent one.
 
+### Cluster-tour global-post watchdog
+
+**Why:** The `hermes-cluster-tour` cron (job `525e5650a8ac`, `13 */12 * * *`) must append a `[CLUSTER-HEALTH]` post on the `global` dashboard at every fire (prompt ETAPE 3, marked OBLIGATOIRE/INCONDITIONNEL). It has skipped that post **silently and non-deterministically** while reporting `status=ok` ("completed successfully") — 2 incidents (2026-08-11 ~38h, 2026-08-14 ~48h), 4 consecutive fires post-T#40 without a global post. Prompt-side emphasis cannot close a prompt-skipping defect; only a programmatic post-fire check can (issue jsboige/hermes-agent #3, design validated by ai-01 in 5 points).
+
+**Watchdog:** `roosync-cluster/scripts/hermes-cluster-tour-watchdog.ps1` — independent observer, same pattern as `hermes-review-watchdog.ps1`. Reads everything from the HOST volume so it works even when the container is down:
+- `C:\Users\jsboi\.hermes\cron\jobs.json` → cluster-tour `last_run_at` (the watched fire)
+- `G:\Mon Drive\Synchronisation\RooSync\.shared-state\dashboards\global.md` → last message block whose section TITLE matches `## [CLUSTER-HEALTH]`
+
+Assertion: when a new fire is older than 15 min, a `[CLUSTER-HEALTH]` title must be timestamped ≥ fire −5 min, else MISSING → appends a `[WARN]` directly on `global.md` (visible exactly where the post should have been, read by every cluster MCP agent) + Telegram alert to the review chat (cooldown 120 min). Never re-fires the tour (spec point 4). Counts OK/MISSING in a state file to instrument the rate (spec point 5).
+
+Deployed as Windows Scheduled Task `Hermes-ClusterTour-Watchdog` (every 30 min off-minute `:07/:37`, via hidden VBS launcher in `C:\ProgramData\claude-hidden-launchers\`), so a fire at 12:13Z is checked by ~12:37Z.
+
+**Gotcha (fixed):** the `[WARN]` body text contains the literal string "[CLUSTER-HEALTH]" ("aucun append [CLUSTER-HEALTH]") — the parser matches the section TITLE (`## [CLUSTER-HEALTH]`) only, otherwise the WARN self-validates as a posted tour.
+
 ### Cluster ASR
 
 `https://whisper-api.myia.io/v1` — self-hosted Whisper on po-2023. Auth via `WHISPER_BEARER_TOKEN` from `.env.secrets`.

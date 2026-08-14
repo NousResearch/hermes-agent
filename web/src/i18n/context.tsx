@@ -17,6 +17,7 @@ import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
 import { ar } from "./ar";
+import { fa } from "./fa";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -36,11 +37,12 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ru,
   hu,
   ar,
+  fa,
 };
 
 // Locales whose script flows right-to-left. Consumed by the provider to set the
 // document direction so Tailwind's logical utilities (ms-/me-, ps-/pe-) flip.
-const RTL_LOCALES = new Set<Locale>(["ar"]);
+const RTL_LOCALES = new Set<Locale>(["ar", "fa"]);
 
 // Display metadata for the language picker — endonym (native name) so users
 // recognize their language even if they don't speak the current UI language.
@@ -69,6 +71,7 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
   ru: { name: "Русский" },
   hu: { name: "Magyar" },
   ar: { name: "العربية" },
+  fa: { name: "فارسی" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

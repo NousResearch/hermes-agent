@@ -2318,6 +2318,38 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
+_GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = (
+    "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
+)
+
+
+def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
+    """Catch gateway-lifecycle verbs spelled with quote/backslash splicing.
+
+    ``_normalize_command_for_detection`` strips backslash escapes, so
+    ``kick\\start`` already reaches the launchctl pattern above. Quote
+    splicing does not: ``_deobfuscate_shell_word_for_detection`` is
+    deliberately scoped to command-position words (widening it would let
+    quoted prose like ``git commit -m "rm -rf /"`` match the destructive
+    patterns), and the spliced verb sits in an ARGUMENT position. So
+    ``launchctl kick"start" -k gui/501/ai.hermes.gateway`` auto-approved
+    while executing exactly as the gated ``kickstart`` form (#80269).
+
+    Delegate to ``cron.lifecycle_guard``, which tokenizes with shlex and is
+    anchored on a hermes-gateway identifier — reusing its prose
+    false-positive coverage instead of loosening the generic pattern
+    engine. This runs last, so an ordinary pattern match still wins and
+    keeps its more specific reason string. Unlike the guard's use inside
+    ``terminal_tool``, this layer only raises an approval prompt; the
+    non-bypassable block still lives in ``cron.lifecycle_guard``.
+    """
+    try:
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+    except Exception:
+        return False
+    return contains_gateway_lifecycle_command(command)
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -2338,6 +2370,12 @@ def detect_dangerous_command(command: str) -> tuple:
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)
+    if _is_shell_token_spliced_gateway_lifecycle(command):
+        return (
+            True,
+            _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION,
+            _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION,
+        )
     return (False, None, None)
 
 

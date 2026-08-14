@@ -849,6 +849,36 @@ class TestLaunchctlGatewayLifecycle:
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
+    def test_quote_spliced_verbs_detected(self):
+        """#80269: the shell joins ``kick"start"`` into the literal verb
+        ``kickstart`` before execution, so the spliced form runs exactly as
+        the gated one. Backslash splices already normalized here; quote
+        splices sit in an argument position that word-scoped deobfuscation
+        deliberately does not touch, so they auto-approved.
+        """
+        for cmd in (
+            'launchctl kick"start" -k gui/501/ai.hermes.gateway',
+            "launchctl kick'start' -k gui/501/ai.hermes.gateway",
+            'launchctl boot"out" gui/501/ai.hermes.gateway',
+            'launchctl bootout gui/501/ai.hermes."gateway"',
+            'hermes gateway re"start"',
+            'systemctl re"start" hermes-gateway',
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+
+    def test_spliced_detection_does_not_flag_prose_or_other_services(self):
+        """The splice pass must not widen the blast radius: it is anchored on
+        a hermes-gateway identifier, so quoted prose and non-gateway hermes
+        services stay auto-approved."""
+        for cmd in (
+            'launchctl kick"start" -k gui/501/ai.hermes.update-checker',
+            'echo "restart the payment gateway"',
+            'git commit -m "document the api gateway restart flow"',
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
 
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy

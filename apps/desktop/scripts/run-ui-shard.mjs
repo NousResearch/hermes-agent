@@ -48,9 +48,14 @@ if (counts.size !== 1 || indices.length !== count || indices.some((v, i) => v !=
 }
 
 // Delegate through test:ui so the vitest command stays single-sourced.
+// npm resolves to npm.cmd on Windows, which needs a shell (same handling as
+// test-desktop.mjs and stage-native-deps.mjs).
 const result = spawnSync(
   'npm',
   ['run', 'test:ui', '--', `--shard=${index}/${count}`, ...process.argv.slice(2)],
-  { stdio: 'inherit', cwd: pkgDir },
+  { stdio: 'inherit', cwd: pkgDir, shell: process.platform === 'win32' },
 )
+if (result.error) {
+  console.error(`run-ui-shard: ${result.error.message}`)
+}
 process.exit(result.status ?? 1)

@@ -2784,6 +2784,7 @@ def terminal_tool(
         # but applies unconditionally (force=True cannot help here).
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from cron.lifecycle_guard import (
+                _BINARY_MAGIC_PREFIXES,
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
@@ -2828,13 +2829,12 @@ def terminal_tool(
                         if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= _MAX_REFERENCED_SCRIPT_BYTES:
                             data = local_path.read_bytes()
                             if len(data) <= _MAX_REFERENCED_SCRIPT_BYTES:
-                                if b"\x00" in data:
-                                    # Binary (ELF/Mach-O/PE), not a shell script:
-                                    # feeding its decoded bytes back into the guard
-                                    # tokenizes machine code into bogus NUL-bearing
-                                    # paths and crashes the scanner (#77703). Mirror
-                                    # lifecycle_guard._read_referenced_script and
-                                    # treat it as nothing to scan.
+                                if data.startswith(_BINARY_MAGIC_PREFIXES):
+                                    # Known executable/archive bytes are not
+                                    # shell text. NUL-bearing text is passed to
+                                    # lifecycle_guard for normalization, so the
+                                    # callback cannot reintroduce #77927 while
+                                    # fixing the binary crash class (#82887).
                                     return None
                                 return data.decode("utf-8", errors="replace")
                 except Exception:
@@ -2856,10 +2856,9 @@ def terminal_tool(
                     )
                     if result.get("returncode", -1) == 0:
                         output = result.get("output", "")
-                        if output and "\x00" in output:
-                            # Binary content from a remote read: skip for the
-                            # same reason as the local branch above (#77703).
-                            return None
+                        # Keep NUL-bearing text intact. The lifecycle guard's
+                        # callback boundary classifies known binary prefixes,
+                        # strips NULs from text, and enforces the byte limit.
                         return output
                 except Exception:
                     pass

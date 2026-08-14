@@ -99,6 +99,11 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
+    # Shells discard NUL bytes in text scripts. Remove them before matching so
+    # ``hermes gateway rest\x00art`` cannot bypass the guard; removal can only
+    # splice tokens together, so this is fail-closed for the safety check.
+    if "\x00" in text:
+        text = text.replace("\x00", "")
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
 
@@ -131,9 +136,10 @@ _PIPE_TO_INTERPRETER = re.compile(
     r"\|\s*&?\s*(?:sudo\s+)?(?:sh|bash|dash|ksh|zsh|xargs|eval|source)\b"
 )
 
-# Executable-image magic numbers: ELF, PE/COFF, Mach-O (universal + thin,
-# both endiannesses). A referenced file starting with one of these is a
-# compiled binary, never a shell script — don't read or scan it at all.
+# Executable-image/archive magic numbers: ELF, PE/COFF, Mach-O (universal +
+# thin, both endiannesses), ar, gzip, and zip. A referenced file starting with
+# one of these is not shell text — don't read or scan it at all. NUL alone is
+# not a binary signal because bash executes NUL-bearing text scripts.
 _BINARY_MAGIC_PREFIXES = (
     b"\x7fELF",
     b"MZ",
@@ -142,6 +148,9 @@ _BINARY_MAGIC_PREFIXES = (
     b"\xce\xfa\xed\xfe",
     b"\xfe\xed\xfa\xce",
     b"\xfe\xed\xfa\xcf",
+    b"!<arch>\n",
+    b"\x1f\x8b",
+    b"PK\x03\x04",
 )
 _BINARY_SNIFF_BYTES = 4096
 
@@ -198,6 +207,8 @@ def contains_launchctl_submit_command(command: str) -> bool:
     semantics; ``bootstrap`` loads an arbitrary plist), which is never safe to
     do from inside the gateway process.
     """
+    if "\x00" in command:
+        command = command.replace("\x00", "")
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
@@ -442,12 +453,17 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
         # Sniff a small prefix first: files that are clearly compiled
-        # binaries (executable magic, or NUL bytes in the head) are never
-        # shell scripts, so skip them WITHOUT reading the rest — reading a
+        # binaries (executable magic) are never shell scripts, so skip them
+        # WITHOUT reading the rest — reading a
         # megabyte of machine code just to discard it wastes the guard's
         # budget and (pre-#77703) fed decoded garbage into the recursion.
-        data = os.read(descriptor, _BINARY_SNIFF_BYTES)
-        if data.startswith(_BINARY_MAGIC_PREFIXES) or b"\x00" in data:
+        # Keep accumulation amortized-linear when a filesystem returns short
+        # reads. Bytes concatenation can copy the full prefix on every chunk,
+        # turning a bounded read into quadratic work under that condition.
+        # bytearray avoids relying on implementation-specific concatenation
+        # optimizations.
+        data = bytearray(os.read(descriptor, _BINARY_SNIFF_BYTES))
+        if data.startswith(_BINARY_MAGIC_PREFIXES):
             return None, False
         # Read the remainder (bounded). Loop because os.read may return
         # short for non-regular-file-backed descriptors.
@@ -462,16 +478,14 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     finally:
         os.close(descriptor)
-    # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
-    # PE), not a shell script — scanning its decoded contents would
-    # tokenize machine code and feed junk paths into the recursion
-    # (including a `ValueError: embedded null byte` from Path.resolve,
-    # #76762). Treat it as "nothing to scan" rather than unsafe: a binary
-    # executed by the user is not a referenced *shell script*.
-    if b"\x00" in data:
-        return None, False
+    # Check size BEFORE stripping NULs: otherwise an oversized NUL-padded
+    # script could shrink below the limit and skip the fail-closed branch.
+    # NUL-bearing text remains executable by bash, so normalize it before
+    # recursive scanning. Known binary formats were rejected by magic above.
     if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
+    if b"\x00" in data:
+        data = data.replace(b"\x00", b"")
     return data.decode("utf-8", errors="replace"), False
 
 
@@ -481,10 +495,11 @@ def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bo
     The recursion boundary must not trust its callbacks: any backend (SSH,
     Modal, Daytona, or a future one) can hand back raw binary bytes decoded
     as text, or arbitrarily large output. Mirror
-    ``_read_referenced_script``'s semantics exactly — NUL bytes mean binary
-    (nothing to scan, checked first, #77703), oversized text fails closed
-    like an oversized local file (#76762) — so remote and local reads can
-    never diverge again. The size check re-encodes to compare *bytes*
+    ``_read_referenced_script``'s semantics exactly — magic prefixes mean
+    binary (nothing to scan), NUL-bearing text is scanned after normalization,
+    and oversized text fails closed like an oversized local file (#76762) —
+    so remote and local reads can never diverge again. The size check
+    re-encodes to compare *bytes*
     (matching the local read and the ``head -c`` wire bound): a >1 MiB
     multibyte file truncated at the byte cap decodes to fewer characters
     than bytes, and a character-count check would scan the truncated text
@@ -494,10 +509,13 @@ def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bo
     """
     if not text:
         return None, False
-    if "\x00" in text:
+    encoded = text.encode("utf-8", errors="replace")
+    if encoded.startswith(_BINARY_MAGIC_PREFIXES):
         return None, False
-    if len(text.encode("utf-8", errors="replace")) > _MAX_REFERENCED_SCRIPT_BYTES:
+    if len(encoded) > _MAX_REFERENCED_SCRIPT_BYTES:
         return None, True
+    if "\x00" in text:
+        text = text.replace("\x00", "")
     return text, False
 
 

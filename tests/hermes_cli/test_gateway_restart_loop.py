@@ -761,6 +761,25 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    def test_referenced_script_handles_short_reads(self, tmp_path, monkeypatch):
+        import cron.lifecycle_guard as lifecycle_guard
+
+        script = tmp_path / "short-read.sh"
+        content = b"#!/bin/sh\n" + b"#" * (32 * 1024)
+        script.write_bytes(content)
+
+        real_read = lifecycle_guard.os.read
+
+        def short_read(descriptor, length):
+            return real_read(descriptor, min(length, 1))
+
+        monkeypatch.setattr(lifecycle_guard.os, "read", short_read)
+
+        text, unsafe = lifecycle_guard._read_referenced_script(script)
+
+        assert text == content.decode()
+        assert unsafe is False
+
     # -- Whole-class regression tests (tilllt's T1-T4 on PR #79454) --------
 
     def test_tilde_nul_candidate_does_not_crash_terminal_walk(self):
@@ -1241,3 +1260,113 @@ class TestLifecycleGuardNeverRaises:
         for value in ("/dev/null", str(tmp_path)):
             with pytest.raises(GatewayLifecycleBlocked):
                 check_gateway_lifecycle("clean prompt", value)
+
+
+class TestLifecycleGuardNulPaddedText:
+    """NUL bytes do not prove a file is binary: bash executes NUL-padded
+    text, so referenced scripts must be normalized and scanned."""
+
+    @staticmethod
+    def _padded_text():
+        return (
+            "#!/bin/sh" + chr(10) + "# pad" + chr(0) + chr(10)
+            + "hermes gateway restart" + chr(10)
+        )
+
+    def test_nul_padded_script_is_blocked(self, tmp_path):
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+        script = tmp_path / "padded.sh"
+        script.write_bytes(self._padded_text().encode())
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("daily ops", str(script))
+
+    def test_remote_terminal_callback_preserves_nul_text(self, monkeypatch):
+        import tools.terminal_tool as tt
+
+        calls = []
+        padded_text = self._padded_text()
+
+        class _RemoteEnv:
+            env = {}
+            cwd = "/remote/workspace"
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                if "head -c" in command:
+                    return {"output": padded_text, "returncode": 0}
+                raise AssertionError("referenced lifecycle script must be blocked")
+
+        monkeypatch.setattr(tt, "_active_environments", {"default": _RemoteEnv()})
+        monkeypatch.setattr(tt, "_last_activity", {"default": 0.0})
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+        monkeypatch.setattr(
+            tt,
+            "_get_env_config",
+            lambda: {
+                "env_type": "local",
+                "cwd": "/tmp",
+                "timeout": 60,
+                "lifetime_seconds": 3600,
+            },
+        )
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+        result = json.loads(
+            tt.terminal_tool(command="/bin/bash /remote/workspace/helper.sh")
+        )
+
+        assert result["exit_code"] == 1
+        assert "referenced script" in result["error"]
+        assert any("head -c" in call for call in calls)
+
+    def test_nul_spliced_prompt_lifecycle_command_is_blocked(self):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+
+        command = "hermes gateway rest" + chr(0) + "art"
+        assert contains_gateway_lifecycle_command(command) is True
+
+    def test_nul_spliced_launchctl_submit_is_blocked(self):
+        from cron.lifecycle_guard import contains_launchctl_submit_command
+
+        command = "launchctl sub" + chr(0) + "mit -l com.hermes -- /bin/true"
+        assert contains_launchctl_submit_command(command) is True
+
+    def test_nul_spliced_lifecycle_command_is_blocked(self, tmp_path):
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+        script = tmp_path / "spliced.sh"
+        script.write_bytes(
+            ("#!/bin/sh" + chr(10) + "hermes gateway rest" + chr(0)
+             + "art" + chr(10)).encode()
+        )
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("daily ops", str(script))
+
+    def test_nul_padded_remote_script_is_blocked(self):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script
+
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            "bash /remote/helper.sh",
+            cwd="/remote",
+            read_remote_script=lambda _path: self._padded_text(),
+        )
+
+        assert result is True
+
+    def test_oversized_nul_padded_script_fails_closed(self, tmp_path):
+        from cron.lifecycle_guard import (
+            GatewayLifecycleBlocked,
+            _MAX_REFERENCED_SCRIPT_BYTES,
+            check_gateway_lifecycle,
+        )
+
+        script = tmp_path / "oversized.sh"
+        script.write_bytes(
+            b"# pad" + bytes([0]) + b"x" * _MAX_REFERENCED_SCRIPT_BYTES
+        )
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("daily ops", str(script))

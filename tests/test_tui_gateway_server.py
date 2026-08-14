@@ -56,6 +56,41 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reap_leaked_notification_pollers():
+    """Stop and join notification pollers leaked by each test.
+
+    session.init/create paths start a per-session poller daemon thread. A
+    poller left running by one test steals-and-requeues events off the
+    PROCESS-GLOBAL process_registry.completion_queue while a later test is
+    asserting on it — the root cause of the flaky
+    test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_threading
+    (two CI hits on unrelated PRs, Aug 2026). Set every registered poller's
+    stop event (the loop wakes at least every 0.5s), then join with ONE
+    small shared budget — never per-thread — so teardown stays O(seconds)
+    for the whole file even when many tests leaked pollers.
+    """
+    yield
+    pollers = [
+        (stop, thread)
+        for stop, thread in list(server._notification_pollers)
+        if thread.is_alive()
+    ]
+    for stop, _thread in pollers:
+        stop.set()
+    deadline = time.time() + 3.0
+    for _stop, thread in pollers:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
+    server._notification_pollers[:] = [
+        (stop, thread)
+        for stop, thread in server._notification_pollers
+        if thread.is_alive()
+    ]
+
+
 def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

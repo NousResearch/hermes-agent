@@ -9779,6 +9779,12 @@ def _wire_desktop_ui() -> None:
     _desktop_ui_wired = True
 
 
+# (stop_event, thread) for every poller ever started in this process.
+# Pruned of dead threads on each spawn; consumed by test teardowns to reap
+# leaked pollers (see _start_notification_poller).
+_notification_pollers: list = []
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
     _wire_agent_terminal_output()
@@ -9788,7 +9794,18 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
         target=_notification_poller_loop,
         args=(stop, sid, session),
         daemon=True,
+        # Stable, greppable name for debuggers and test teardowns.
+        name=f"tui-notif-poller-{sid}",
     )
+    # Registry of (stop, thread) pairs so test teardowns can reap pollers
+    # leaked by session.init/create tests — an unjoined poller steals
+    # events off the process-global completion_queue mid-assertion in a
+    # LATER test (flaky test_run_prompt_submit_requeues_all_unstarted_...).
+    # Bounded: entries for dead threads are pruned on each spawn.
+    _notification_pollers[:] = [
+        (s, th) for (s, th) in _notification_pollers if th.is_alive()
+    ]
+    _notification_pollers.append((stop, t))
     t.start()
     return stop
 

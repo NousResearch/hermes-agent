@@ -65,6 +65,7 @@ import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
 import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
+import { useSessionOwnerProfile } from './use-session-owner-profile'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -113,6 +114,7 @@ function ChatHeader({
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const profiles = useStore($profiles)
+  const sessionProfile = useSessionOwnerProfile()
 
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
@@ -155,6 +157,7 @@ function ChatHeader({
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
+          profile={sessionProfile}
           sessionId={selectedSessionId || activeSessionId || ''}
           sideOffset={8}
           title={title}

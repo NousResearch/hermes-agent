@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useSessionOwnerProfile } from '@/app/chat/use-session-owner-profile'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS } from '@/components/chat/scaffold-row'
@@ -63,7 +64,7 @@ function statusGlyph(status: DelegateRowStatus, label: string): ReactNode {
  * activity, so a fan-out of five children costs ten lines of transcript
  * whatever they get up to.
  */
-function DelegateRowView({ row }: { row: DelegateRow }) {
+function DelegateRowView({ profile, row }: { profile: string; row: DelegateRow }) {
   const { t } = useI18n()
   const copy = t.assistant.tool
   const { sessionId } = row
@@ -83,7 +84,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   ].filter(Boolean)
 
   // Only a child that reported its own session id has somewhere to go.
-  const open = sessionId ? () => void openSessionInNewWindow(sessionId, { watch: true }) : undefined
+  const open = sessionId ? () => void openSessionInNewWindow(sessionId, { profile, watch: true }) : undefined
 
   return (
     <div className="grid min-w-0 max-w-full gap-0.5" data-conversation-scaffold="">
@@ -137,6 +138,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
  */
 export const DelegateTool: FC<Pick<ToolPart, 'args' | 'result' | 'toolCallId'>> = ({ args, result, toolCallId }) => {
   const sessionId = useStore(useSessionView().$runtimeId)
+  const sessionProfile = useSessionOwnerProfile()
   const live = useSessionSlice($subagentsBySession, sessionId)
 
   const rows = useMemo(
@@ -151,7 +153,7 @@ export const DelegateTool: FC<Pick<ToolPart, 'args' | 'result' | 'toolCallId'>> 
   return (
     <div className="grid min-w-0 gap-(--tool-row-gap)" data-delegate-card="" data-slot="tool-block">
       {rows.map(row => (
-        <DelegateRowView key={row.id} row={row} />
+        <DelegateRowView key={row.id} profile={sessionProfile} row={row} />
       ))}
     </div>
   )

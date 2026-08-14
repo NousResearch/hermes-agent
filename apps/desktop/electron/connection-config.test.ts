@@ -34,6 +34,7 @@ import {
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
+  profileScopedConnection,
   profileSshOverride,
   resolveAuthMode,
   resolveProfileBackendRoute,
@@ -276,6 +277,29 @@ test('resolveProfileBackendRoute only tags a descriptor when the backend is shar
     assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
     assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
   }
+})
+
+test('profileScopedConnection stamps the effective named primary when the raw descriptor omits it', () => {
+  const connection = { baseUrl: 'http://127.0.0.1:3000', token: 'token' }
+
+  const scoped = profileScopedConnection(connection, 'life', {
+    backend: 'primary',
+    descriptorProfile: null,
+    scopePath: false
+  })
+
+  assert.deepEqual(scoped, { ...connection, profile: 'life' })
+  assert.equal('profile' in connection, false)
+})
+
+test('profileScopedConnection preserves a shared-backend alias over the effective primary', () => {
+  const scoped = profileScopedConnection({ baseUrl: 'https://remote.example.com' }, 'default', {
+    backend: 'primary',
+    descriptorProfile: 'life',
+    scopePath: true
+  })
+
+  assert.equal(scoped.profile, 'life')
 })
 
 // --- pathWithGlobalRemoteProfile ---

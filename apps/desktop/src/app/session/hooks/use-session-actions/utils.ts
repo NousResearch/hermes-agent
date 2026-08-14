@@ -5,7 +5,7 @@ import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
 import {
   $currentCwd,
   $sessions,
@@ -829,10 +829,15 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+  const owner = normalizeProfileKey(session.profile)
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
+      if (normalizeProfileKey(existing.profile) !== owner) {
+        return true
+      }
+
       if (sessionMatchesStoredId(existing, storedSessionId)) {
         return false
       }
@@ -842,8 +847,19 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+export async function resolveStoredSession(
+  storedSessionId: string,
+  profileHint?: null | string
+): Promise<SessionInfo | undefined> {
+  const hintedProfile = profileHint?.trim() ? normalizeProfileKey(profileHint) : null
+  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
+  const cachedMatches = $sessions.get().filter(session => sessionMatchesStoredId(session, storedSessionId))
+  const ownedMatches = cachedMatches.filter(session => session.profile?.trim())
+
+  const cached = hintedProfile
+    ? ownedMatches.find(session => normalizeProfileKey(session.profile) === hintedProfile)
+    : (ownedMatches.find(session => normalizeProfileKey(session.profile) === activeKey) ??
+      (ownedMatches.length === 1 ? ownedMatches[0] : cachedMatches.length === 1 ? cachedMatches[0] : undefined))
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is
@@ -853,6 +869,22 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
 
   if (cached && (cached.profile?.trim() || !multiProfile)) {
     return cached
+  }
+
+  // A profile-pinned auxiliary window already knows the authoritative owner.
+  // Probe that scope directly so a cloned/same-id row from another profile in
+  // the all-profile cache cannot hijack the resume.
+  if (hintedProfile) {
+    try {
+      const session = await getSession(storedSessionId, hintedProfile)
+
+      session.profile = hintedProfile
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      return undefined
+    }
   }
 
   // Direct by-id on the live backend — one row lookup, no list scan. Covers
@@ -877,12 +909,18 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   // Multi-profile only: probe each other profile by id (still one cheap lookup
   // each) rather than pulling every profile's recent sessions. The first hit
   // carries its owning `profile`, which routes the resume to the right backend.
-  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
+  let profiles = $profiles.get()
 
-  const otherProfiles = $profiles
-    .get()
-    .map(profile => normalizeProfileKey(profile.name))
-    .filter(key => key !== activeKey)
+  // The profile rail is loaded lazily and can also be stale after an external
+  // create/delete. A direct-id miss is rare and needs an authoritative catalog
+  // before deciding the session does not exist elsewhere.
+  try {
+    profiles = await refreshProfiles()
+  } catch {
+    // Best effort: retain the cached catalog when the profile endpoint is down.
+  }
+
+  const otherProfiles = profiles.map(profile => normalizeProfileKey(profile.name)).filter(key => key !== activeKey)
 
   for (const profile of otherProfiles) {
     try {

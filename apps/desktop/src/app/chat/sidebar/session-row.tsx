@@ -376,7 +376,7 @@ function SidebarSessionRowImpl({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              openSession(session.id, () => undefined, 'window')
+              openSession(session.id, () => undefined, 'window', session.profile)
 
               return
             }

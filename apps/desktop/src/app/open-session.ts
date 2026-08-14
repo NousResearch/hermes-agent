@@ -68,11 +68,13 @@ export function openSessionIntentFromModifiers(
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
+ * @param profile Owning profile for `window`; ignored by the other intents.
  */
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
-  intent: OpenSessionIntent = 'in-place'
+  intent: OpenSessionIntent = 'in-place',
+  profile?: null | string
 ): void {
   if (!storedSessionId) {
     return
@@ -82,7 +84,7 @@ export function openSession(
 
   if (resolved === 'window') {
     if (canOpenSessionWindow()) {
-      void openSessionInNewWindow(storedSessionId)
+      void openSessionInNewWindow(storedSessionId, profile ? { profile } : undefined)
 
       return
     }

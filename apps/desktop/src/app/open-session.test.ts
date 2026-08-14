@@ -184,9 +184,9 @@ describe('openSession', () => {
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 
-  it('window pops out when the bridge supports it', () => {
-    openSession('s1', navigate, 'window')
-    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1')
+  it('window pops out against the session owner when the bridge supports it', () => {
+    openSession('s1', navigate, 'window', 'life')
+    expect(openSessionInNewWindow).toHaveBeenCalledWith('s1', { profile: 'life' })
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { canOpenNewWindow, canOpenSessionWindow, openNewWindow, openSessionInNewWindow } from './windows'
+import {
+  canOpenNewWindow,
+  canOpenSessionWindow,
+  openNewWindow,
+  openSessionInNewWindow,
+  windowProfileOverride
+} from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -26,11 +32,40 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  window.history.replaceState({}, '', '/')
+
   if (initialHermesDesktop) {
     desktopWindow.hermesDesktop = initialHermesDesktop
   } else {
     delete desktopWindow.hermesDesktop
   }
+})
+
+describe('windowProfileOverride', () => {
+  it('returns a valid decoded profile hint', () => {
+    window.history.replaceState({}, '', '/?profile=life_2')
+
+    expect(windowProfileOverride()).toBe('life_2')
+  })
+
+  it('canonicalizes mixed-case profile hints like the CLI', () => {
+    window.history.replaceState({}, '', '/?profile=Life_2')
+
+    expect(windowProfileOverride()).toBe('life_2')
+  })
+
+  it('treats malformed profile hints as absent', () => {
+    window.history.replaceState({}, '', '/?profile=..%2Flife')
+
+    expect(windowProfileOverride()).toBeNull()
+  })
+
+  it('treats every non-default CLI reserved profile hint as absent', () => {
+    for (const profile of ['hermes', 'test', 'tmp', 'root', 'sudo']) {
+      window.history.replaceState({}, '', `/?profile=${profile}`)
+      expect(windowProfileOverride(), profile).toBeNull()
+    }
+  })
 })
 
 describe('canOpenSessionWindow', () => {
@@ -79,13 +114,13 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('forwards the watch flag for spectator (subagent) windows', async () => {
+  it('forwards the watch flag and owning profile for spectator (subagent) windows', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
 
-    await openSessionInNewWindow('s1', { watch: true })
+    await openSessionInNewWindow('s1', { profile: 'life', watch: true })
 
-    expect(open).toHaveBeenCalledWith('s1', { watch: true })
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'life', watch: true })
     expect(notifyError).not.toHaveBeenCalled()
   })
 

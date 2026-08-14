@@ -33,7 +33,7 @@ import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { dashboardFallbackArgs, serveBackendArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
@@ -74,6 +74,7 @@ import {
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
+  profileScopedConnection,
   profileSshOverride,
   resolveAuthMode,
   resolveProfileBackendRoute,
@@ -173,7 +174,13 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import {
+  createPrimaryProfileOwner,
+  parseDesktopProfilePreference,
+  resolveEffectivePrimaryProfile
+} from './primary-profile'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { normalizeDesktopProfile } from './profile-name'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
@@ -649,9 +656,6 @@ const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-sta
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
-// Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
-// value its profile resolver would reject and exit on.
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -6739,7 +6743,9 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       continue
     }
 
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
+    const profile = normalizeDesktopProfile(name)
+
+    if (!profile) {
       continue
     }
 
@@ -6751,7 +6757,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
           ssh.token = entry.token
         }
 
-        out[name] = ssh
+        out[profile] = ssh
       }
 
       continue
@@ -6798,7 +6804,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       }
     }
 
-    out[name] = cleaned
+    out[profile] = cleaned
   }
 
   return out
@@ -6895,30 +6901,31 @@ function writeDesktopConnectionConfig(config) {
 function readActiveDesktopProfile() {
   try {
     const raw = fs.readFileSync(DESKTOP_PROFILE_CONFIG_PATH, 'utf8')
-    const parsed = JSON.parse(raw)
-    const name = parsed && typeof parsed.profile === 'string' ? parsed.profile.trim() : ''
 
-    if (name && (name === 'default' || PROFILE_NAME_RE.test(name))) {
-      return name
+    return parseDesktopProfilePreference(raw)
+  } catch (error) {
+    // A missing file means no preference. Malformed persisted state must fail
+    // visibly rather than retargeting the primary backend to another profile.
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return null
     }
-  } catch {
-    // Missing or malformed → no preference.
-  }
 
-  return null
+    throw error
+  }
 }
 
 function writeActiveDesktopProfile(name) {
   const value = typeof name === 'string' ? name.trim() : ''
+  const profile = value ? normalizeDesktopProfile(value) : null
 
-  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
+  if (value && !profile) {
     throw new Error(`Invalid profile name: ${value}`)
   }
 
   fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
+  writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile }, null, 2))
 
-  return value || null
+  return profile
 }
 
 // Sanitize a connection config into the renderer-facing shape. With no
@@ -7900,6 +7907,15 @@ function stopBackendChild(child) {
   stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
 }
 
+// Frozen identity of the primary backend for its lifetime. The legacy
+// `active_profile` file is launch input, not a live routing signal.
+const primaryProfileOwner = createPrimaryProfileOwner(() =>
+  resolveEffectivePrimaryProfile({
+    desktopProfile: readActiveDesktopProfile(),
+    hermesHome: HERMES_HOME
+  })
+)
+
 // Soft gateway-mode apply: tear down the primary without resetting boot UI or
 // reloading the renderer. The shell stays up; the renderer wipes session lists
 // (so skeletons retrigger) and re-dials. Distinct from hard re-home (profile
@@ -7908,6 +7924,7 @@ function resetHermesConnection({ soft = false } = {}) {
   backendStartFailure = null
   remoteReauthFailure = null
   remoteLiveness.clear()
+  primaryProfileOwner.reset()
   const hermesProcess = backendConnectionState.invalidate()
   stopBackendChild(hermesProcess)
 
@@ -7992,11 +8009,12 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
   })
 }
 
-// The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// The profile the primary (window) backend actually runs as. An explicit
+// Desktop preference wins; otherwise mirror the CLI's profile-scoped
+// HERMES_HOME → legacy active_profile → default precedence. Freeze the result
+// until teardown so an external sticky-file edit cannot relabel a live backend.
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return primaryProfileOwner.get()
 }
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
@@ -8012,15 +8030,19 @@ function profileRouteOptions(profile) {
 // resolveProfileBackendRoute(). An empty / unknown profile resolves to the
 // primary, so legacy callers are unchanged.
 async function ensureBackend(profile) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  // All renderer-provided profile values converge here (`hermes:connection`,
+  // REST, and fresh WS tickets). Malformed URL/query input is treated as an
+  // absent hint and cannot become a pool key or `--profile` child argument.
+  const key = normalizeDesktopProfile(profile) ?? primaryProfileKey()
   const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
 
   if (route.backend === 'primary') {
     const connection = await startHermes()
 
-    // A shared backend still owes the caller its profile scope, so renderer-side
-    // WebSocket, filesystem, and cache routing target the selected profile.
-    return route.descriptorProfile ? { ...connection, profile: route.descriptorProfile } : connection
+    // Every connection owes the renderer its effective desktop profile. The raw
+    // primary descriptor predates profiles and omits it, while a shared remote
+    // route can override it with the selected alias.
+    return profileScopedConnection(connection, key, route)
   }
 
   const existing = backendPool.get(key)
@@ -8334,7 +8356,7 @@ async function prepareProfileDeleteRequest(request) {
 
   const decision = decideProfileDeleteAction(profile, {
     isDefaultProfile: p => p === 'default',
-    isValidProfileName: p => PROFILE_NAME_RE.test(p),
+    isValidProfileName: p => normalizeDesktopProfile(p) !== null,
     primaryProfileKey
   })
 
@@ -8430,18 +8452,10 @@ async function startHermes() {
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
     const token = crypto.randomBytes(32).toString('base64url')
-    // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
-    // Pin the desktop's chosen profile via the global --profile flag. This is
-    // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
-    // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
-    // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
-    const activeProfile = readActiveDesktopProfile()
-
-    if (activeProfile) {
-      backendArgs.unshift('--profile', activeProfile)
-    }
+    // Pin every local launch to the frozen owner. Without this, a crash respawn
+    // could follow a changed legacy active_profile file while Electron kept
+    // routing and labeling the connection as the prior owner.
+    const backendArgs = serveBackendArgs(primaryProfileKey())
 
     const setup = await runPrimaryBackendStartup({
       connectRemote,
@@ -8754,9 +8768,9 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
 
 // Secondary "session windows" — one extra OS window per chat so a user can
 // work with multiple chats side by side. The registry guarantees one window
-// per sessionId (re-opening focuses the existing window) and self-cleans on
-// close. The primary mainWindow is never tracked here. Pure logic + the URL
-// builder live in session-windows.ts so they stay unit-testable.
+// per profile + sessionId (re-opening focuses the existing window) and
+// self-cleans on close. The primary mainWindow is never tracked here. Pure
+// logic + the URL builder live in session-windows.ts so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
 
 function focusWindow(win) {
@@ -8775,7 +8789,11 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
+function spawnSecondaryWindow({
+  profile,
+  sessionId,
+  watch
+}: { profile?: null | string; sessionId?: string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -8835,6 +8853,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     win,
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
+      profile,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
     }),
@@ -8845,8 +8864,8 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ profile, sessionId, watch }), profile)
 }
 
 // Additional full "instance" windows — peers of the primary that render the
@@ -9443,7 +9462,12 @@ function restoreMainWindowFromHud() {
 }
 
 function openHudWindow(sessionId, profile) {
-  const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
+  const rawProfile = typeof profile === 'string' ? profile.trim() : ''
+  const profileKey = rawProfile ? normalizeDesktopProfile(rawProfile) : null
+
+  if (rawProfile && !profileKey) {
+    throw new Error(`Invalid profile name: ${rawProfile}`)
+  }
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     // Pointed at another PROFILE: the live renderer is bound to the old
@@ -10006,7 +10030,17 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  const requestedProfile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
+  const profile = normalizeDesktopProfile(requestedProfile)
+
+  if (requestedProfile && !profile) {
+    return { ok: false, error: 'invalid-profile' }
+  }
+
+  createSessionWindow(sessionId.trim(), {
+    profile: profile ?? primaryProfileKey(),
+    watch: opts?.watch === true
+  })
 
   return { ok: true }
 })
@@ -10166,10 +10200,14 @@ ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
 
 // --- HUD mode (chrome-free floating chat) -----------------------------------
 ipcMain.handle('hermes:hud:open', async (_event, request) => {
-  openHudWindow(
-    typeof request?.sessionId === 'string' ? request.sessionId : null,
-    typeof request?.profile === 'string' ? request.profile : null
-  )
+  const rawProfile = typeof request?.profile === 'string' ? request.profile.trim() : ''
+  const profile = rawProfile ? normalizeDesktopProfile(rawProfile) : null
+
+  if (rawProfile && !profile) {
+    return { ok: false, error: 'invalid-profile' }
+  }
+
+  openHudWindow(typeof request?.sessionId === 'string' ? request.sessionId : null, profile)
 
   return { ok: true }
 })
@@ -10551,7 +10589,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+ipcMain.handle('hermes:profile:get', async () => ({ profile: primaryProfileKey() }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

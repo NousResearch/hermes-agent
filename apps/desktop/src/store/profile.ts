@@ -20,7 +20,7 @@ import type { ProfileInfo } from '@/types/hermes'
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
 export function normalizeProfileKey(name: string | null | undefined): string {
-  const value = (name ?? '').trim()
+  const value = (name ?? '').trim().toLowerCase()
 
   return value || 'default'
 }

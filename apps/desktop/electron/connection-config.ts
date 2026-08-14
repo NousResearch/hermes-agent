@@ -427,6 +427,13 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   return { backend: 'pool', descriptorProfile: null, scopePath: false }
 }
 
+/** Stamp the desktop profile scope on a backend connection descriptor. */
+function profileScopedConnection(connection, effectiveProfile, route: ProfileBackendRoute) {
+  const profile = connectionScopeKey(route.descriptorProfile) || connectionScopeKey(effectiveProfile) || 'default'
+
+  return { ...connection, profile }
+}
+
 /**
  * Add renderer-side `request.profile` to a REST path when the route says the
  * serving backend is not already scoped to that profile.
@@ -579,6 +586,7 @@ export {
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
+  profileScopedConnection,
   profileSshOverride,
   resolveAuthMode,
   resolveProfileBackendRoute,

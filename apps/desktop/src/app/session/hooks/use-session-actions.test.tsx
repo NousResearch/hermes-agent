@@ -42,6 +42,11 @@ import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 
+const { mockIsWatchWindow, mockWindowProfileOverride } = vi.hoisted(() => ({
+  mockIsWatchWindow: vi.fn(() => false),
+  mockWindowProfileOverride: vi.fn<() => null | string>(() => null)
+}))
+
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
@@ -56,6 +61,12 @@ vi.mock('@/hermes', async importOriginal => ({
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+}))
+
+vi.mock('@/store/windows', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isWatchWindow: mockIsWatchWindow,
+  windowProfileOverride: mockWindowProfileOverride
 }))
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
@@ -651,6 +662,8 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    mockIsWatchWindow.mockReturnValue(false)
+    mockWindowProfileOverride.mockReturnValue(null)
     vi.restoreAllMocks()
   })
 
@@ -923,6 +936,29 @@ describe('resumeSession failure recovery', () => {
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
     expect(resumeParams).toMatchObject({ source: 'desktop', omit_messages: true })
+  })
+
+  it('uses the pinned profile for a lazy watch resume before the child row exists', async () => {
+    mockIsWatchWindow.mockReturnValue(true)
+    mockWindowProfileOverride.mockReturnValue('life')
+    vi.mocked(getSession).mockRejectedValue(new Error('404: Session not found'))
+    vi.mocked(ensureGatewayProfile).mockClear()
+    let resumeParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        resumeParams = params
+
+        return { session_id: 'runtime-child', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('life')
+    expect(resumeParams).toMatchObject({ lazy: true, profile: 'life', source: 'desktop' })
   })
 
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {

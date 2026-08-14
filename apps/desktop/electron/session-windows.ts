@@ -56,9 +56,17 @@ function chatWindowWebPreferences(preloadPath: string) {
 // renderer reads the flag from window.location.search to suppress the install /
 // onboarding overlays and the global session sidebar. `watch=1` marks a
 // spectator window (e.g. a running subagent's session): the renderer resumes it
-// lazily so the gateway never builds an agent just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch }: any = {}) {
-  const query = `?win=secondary${watch ? '&watch=1' : ''}`
+// lazily so the gateway never builds an agent just to stream into it. `profile`
+// tells the fresh renderer which profile backend owns the routed session before
+// its first gateway connection; without it, auxiliary windows adopt the primary
+// backend and cross-profile session ids miss.
+function buildSessionWindowUrl(sessionId: string, { devServer, profile, rendererIndexPath, watch }: any = {}) {
+  const profileKey = typeof profile === 'string' ? profile.trim() : ''
+
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${
+    profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''
+  }`
+
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -92,20 +100,39 @@ function instanceWindowBounds(base: { x: number; y: number; width: number; heigh
   }
 }
 
-// A small registry keyed by sessionId that guarantees one window per chat:
-// opening a session that already has a live window focuses it instead of
-// spawning a duplicate, and a window removes itself from the registry when it
-// closes. The actual BrowserWindow construction is injected (the `factory`) so
-// this module stays free of Electron and is unit-testable.
+// A small registry keyed by profile + sessionId that guarantees one window per
+// profile-scoped chat: opening a session that already has a live window focuses
+// it instead of spawning a duplicate, and a window removes itself from the
+// registry when it closes. The actual BrowserWindow construction is injected
+// (the `factory`) so this module stays free of Electron and is unit-testable.
 function createSessionWindowRegistry() {
   const windows = new Map()
 
-  function openOrFocus(sessionId, factory) {
-    const key = typeof sessionId === 'string' ? sessionId.trim() : ''
+  const registryKey = (sessionId, profile = null) => {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+
+    if (!id) {
+      return null
+    }
+
+    // Main resolves an omitted hint to the effective primary profile before it
+    // reaches the registry. Keep `default` as the pure-helper fallback so
+    // legacy/test callers share identity with an explicit default window.
+    const profileKey = (typeof profile === 'string' ? profile.trim() : '') || 'default'
+
+    // JSON encodes the tuple unambiguously even if a session id contains the
+    // delimiter text an ad-hoc concatenation would confuse.
+    return JSON.stringify([profileKey, id])
+  }
+
+  function openOrFocus(sessionId, factory, profile = null) {
+    const key = registryKey(sessionId, profile)
 
     if (!key) {
       return null
     }
+
+    const id = sessionId.trim()
 
     const existing = windows.get(key)
 
@@ -124,7 +151,7 @@ function createSessionWindowRegistry() {
       return existing
     }
 
-    const win = factory(key)
+    const win = factory(id)
 
     if (!win) {
       return null
@@ -144,8 +171,8 @@ function createSessionWindowRegistry() {
 
   return {
     openOrFocus,
-    get: key => windows.get(key),
-    has: key => windows.has(key),
+    get: (sessionId, profile = null) => windows.get(registryKey(sessionId, profile)),
+    has: (sessionId, profile = null) => windows.has(registryKey(sessionId, profile)),
     get size() {
       return windows.size
     }

@@ -1,3 +1,5 @@
+import { normalizeDesktopProfile } from '@/lib/profile-name'
+
 import { notifyError } from './notifications'
 
 // Window flag set by the Electron main process when it opens a standalone
@@ -93,7 +95,9 @@ export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWind
 // keeps it honest under test.
 export function windowProfileOverride(): null | string {
   try {
-    return new URLSearchParams(window.location.search).get('profile')?.trim() || null
+    const profile = new URLSearchParams(window.location.search).get('profile')?.trim() ?? ''
+
+    return normalizeDesktopProfile(profile)
   } catch {
     return null
   }
@@ -129,7 +133,10 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { profile?: null | string; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }

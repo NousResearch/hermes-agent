@@ -31,10 +31,14 @@ declare global {
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
-      // with an error code when the sessionId is empty/invalid. `watch` opens
-      // a spectator window (lazy resume — no agent build) for live-streaming
-      // a running subagent's session.
-      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      // with an error code when the sessionId or profile is invalid. `watch`
+      // opens a spectator window (lazy resume — no agent build) for
+      // live-streaming a running subagent's session. `profile` selects the
+      // owning backend before the auxiliary renderer's first gateway dial.
+      openSessionWindow: (
+        sessionId: string,
+        opts?: { profile?: null | string; watch?: boolean }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Open a new full-chrome app window — a peer instance of the primary that
       // renders the complete app against the shared backend, so the user can run
       // multiple GUI windows at once.

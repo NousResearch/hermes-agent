@@ -88,6 +88,22 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
+test('buildSessionWindowUrl carries the owning profile before the hash', () => {
+  const url = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    profile: ' research-lab ',
+    watch: true
+  })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1&profile=research-lab#/abc')
+})
+
+test('buildSessionWindowUrl omits a blank profile hint', () => {
+  const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', profile: '   ' })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary#/abc')
+})
+
 test('instanceWindowBounds cascades a new window off its source bounds', () => {
   const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 
@@ -118,6 +134,58 @@ test('registry opens one window per session and focuses on re-open', () => {
   assert.equal(first, second)
   assert.equal(registry.size, 1)
   assert.equal(win.calls.focus, 1, 'second open focuses the existing window')
+})
+
+test('registry treats the same session id in different profiles as different windows', () => {
+  const registry = createSessionWindowRegistry()
+  let built = 0
+
+  const factory = () => {
+    built += 1
+
+    return makeFakeWindow()
+  }
+
+  registry.openOrFocus('s1', factory, 'default')
+  registry.openOrFocus('s1', factory, 'life')
+  registry.openOrFocus('s1', factory, 'life')
+
+  assert.equal(built, 2)
+  assert.equal(registry.size, 2)
+})
+
+test('registry treats an omitted profile as default ownership', () => {
+  const registry = createSessionWindowRegistry()
+  let built = 0
+
+  const factory = () => {
+    built += 1
+
+    return makeFakeWindow()
+  }
+
+  registry.openOrFocus('s1', factory)
+  registry.openOrFocus('s1', factory, 'default')
+
+  assert.equal(built, 1)
+  assert.equal(registry.size, 1)
+})
+
+test('registry tuple keys do not collide with delimiter text in session ids', () => {
+  const registry = createSessionWindowRegistry()
+  let built = 0
+
+  const factory = () => {
+    built += 1
+
+    return makeFakeWindow()
+  }
+
+  registry.openOrFocus('b\u0000c', factory, 'a')
+  registry.openOrFocus('c', factory, 'a\u0000b')
+
+  assert.equal(built, 2)
+  assert.equal(registry.size, 2)
 })
 
 test('registry restores + shows a minimized/hidden window on re-open', () => {

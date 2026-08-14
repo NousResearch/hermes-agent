@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
+import { useSessionOwnerProfile } from '@/app/chat/use-session-owner-profile'
 import { AGENTS_ROUTE } from '@/app/routes'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
@@ -84,6 +85,7 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const sessionProfile = useSessionOwnerProfile()
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -125,7 +127,9 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   const openAgents = () => navigate(AGENTS_ROUTE)
 
   const openSubagent = (item: ComposerStatusItem) =>
-    item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
+    item.sessionId
+      ? void openSessionInNewWindow(item.sessionId, { profile: sessionProfile, watch: true })
+      : openAgents()
 
   // Preview links live as child rows of the background group — a localhost dev
   // server and its preview are the same thing — so they no longer float as an

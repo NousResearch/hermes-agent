@@ -133,8 +133,12 @@ class TestAdapterPrefersResolver:
 
         assert adapter._is_callback_user_authorized("999", chat_id="-100") is False
 
-    def test_resolver_exception_falls_back_to_env(self, monkeypatch):
-        """If the resolver raises, the adapter falls back to env-only auth."""
+    def test_resolver_exception_fails_closed(self, monkeypatch):
+        """A resolver error must DENY, not fall through to the process-wide env
+        allowlist. The env fallback is not scoped to the routed profile, so
+        honoring it on a resolver error would cross the profile-specific
+        pairing boundary (#86296). Fail closed instead."""
+        # Env allowlist WOULD allow "999"; the resolver raising must not let it.
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
 
         def _boom(source):
@@ -143,7 +147,7 @@ class TestAdapterPrefersResolver:
         adapter = _make_adapter()
         adapter._callback_auth_resolver = _boom
 
-        assert adapter._is_callback_user_authorized("999", chat_id="-100") is True
+        assert adapter._is_callback_user_authorized("999", chat_id="-100") is False
 
     def test_no_resolver_still_fail_closed_without_allowlist(self, monkeypatch):
         """No resolver, no allowlist, no allow-all → deny (preserves #24457)."""
@@ -256,3 +260,110 @@ class TestAuthorizePlatformCallback:
 
         assert runner._authorize_platform_callback(_callback_source()) is True
         runner._profile_name_for_source.assert_not_called()
+
+
+# -- Real callback-dispatch gating: ea:/sc:/cl: families -------------------
+
+
+class _FakeUser:
+    def __init__(self, uid, first_name="op"):
+        self.id = uid
+        self.first_name = first_name
+
+
+class _FakeChat:
+    def __init__(self, chat_id, chat_type="group"):
+        self.id = chat_id
+        self.type = chat_type
+
+
+class _FakeMessage:
+    def __init__(self, chat_id, chat_type="group", thread_id=None):
+        self.chat_id = chat_id
+        self.chat = _FakeChat(chat_id, chat_type)
+        self.message_thread_id = thread_id
+
+
+class _FakeQuery:
+    def __init__(self, data, user_id="999", chat_id="-1001234567890"):
+        self.data = data
+        self.from_user = _FakeUser(user_id)
+        self.message = _FakeMessage(chat_id)
+        self.answers = []
+
+    async def answer(self, text=None, **kwargs):
+        self.answers.append(text)
+
+
+class _FakeUpdate:
+    def __init__(self, query):
+        self.callback_query = query
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def _dispatch_adapter(resolver):
+    adapter = _make_adapter()
+    adapter._callback_auth_resolver = resolver
+    # Registries the ea:/sc:/cl: blocks consult *after* the auth gate.
+    adapter._approval_state = {1: "sess-ea"}
+    adapter._slash_confirm_state = {"cid": "sess-sc"}
+    adapter._clarify_state = {"lid": "sess-cl"}
+    return adapter
+
+
+class TestCallbackDispatchGating:
+    """Drive the real ``_handle_callback_query`` for each gated button family
+    (``ea:`` approval, ``sc:`` slash-confirm, ``cl:`` clarify) so the dispatch
+    path itself — not a mocked seam — is proven to deny an unauthorized
+    operator via the installed resolver. This is the exact tap path #86296
+    reproduced (a pairing-authorized operator was wrongly rejected; here we
+    assert the inverse boundary: an *un*authorized operator is refused and the
+    pending action is never consumed)."""
+
+    @pytest.mark.parametrize(
+        "data, registry_attr, key, denial_marker",
+        [
+            ("ea:once:1", "_approval_state", 1, "approve"),
+            ("sc:once:cid", "_slash_confirm_state", "cid", "answer this prompt"),
+            ("cl:lid:0", "_clarify_state", "lid", "answer this prompt"),
+        ],
+    )
+    def test_unauthorized_operator_denied_and_state_untouched(
+        self, data, registry_attr, key, denial_marker
+    ):
+        adapter = _dispatch_adapter(lambda source: False)
+        query = _FakeQuery(data)
+        _run(adapter._handle_callback_query(_FakeUpdate(query), None))
+        # Denied with an authorization message ...
+        assert query.answers, "expected a denial answer"
+        assert "not authorized" in query.answers[-1].lower()
+        assert denial_marker in query.answers[-1].lower()
+        # ... and the pending action was NOT consumed/resolved.
+        assert key in getattr(adapter, registry_attr)
+
+    @pytest.mark.parametrize(
+        "data, registry_attr, key",
+        [
+            ("ea:once:1", "_approval_state", 1),
+            ("sc:once:cid", "_slash_confirm_state", "cid"),
+            ("cl:lid:0", "_clarify_state", "lid"),
+        ],
+    )
+    def test_authorized_operator_passes_gate(self, data, registry_attr, key):
+        """A resolver-authorized operator clears the gate: the block proceeds
+        past the auth check to the registry lookup (here empty → 'already
+        resolved'), proving the deny branch was not taken."""
+        adapter = _dispatch_adapter(lambda source: True)
+        # Empty registry so the post-gate step short-circuits without running
+        # the heavy resolve/render code — we only assert the gate was cleared.
+        setattr(adapter, registry_attr, {})
+        query = _FakeQuery(data)
+        _run(adapter._handle_callback_query(_FakeUpdate(query), None))
+        assert query.answers
+        assert "not authorized" not in query.answers[-1].lower()
+        assert "already" in query.answers[-1].lower()

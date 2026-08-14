@@ -1210,15 +1210,24 @@ class TelegramAdapter(BasePlatformAdapter):
         # routed profile's pairing store would be skipped (#86296).
         resolver = getattr(self, "_callback_auth_resolver", None)
         if callable(resolver):
+            # The resolver is the authoritative, profile-scoped decision. If it
+            # raises, fail CLOSED — do not fall through to the introspection /
+            # env-allowlist path below. That fallback is process-wide and not
+            # scoped to the routed profile, so honoring it here would let a
+            # resolver error silently cross the profile-specific pairing
+            # boundary (#86296). The env fallback is intentionally reserved for
+            # the no-resolver legacy path only.
             try:
                 return bool(resolver(_build_source()))
             except Exception:
-                logger.debug(
+                logger.warning(
                     "[Telegram] callback auth resolver failed for user %s; "
-                    "falling back to introspection/env auth",
+                    "denying (fail-closed) rather than crossing the profile "
+                    "pairing boundary via env-only auth",
                     normalized_user_id,
                     exc_info=True,
                 )
+                return False
 
         # Legacy fallback: recover the runner from a bound message handler
         # (non-multiplex primary adapters), then env-only fail-closed.

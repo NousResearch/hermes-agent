@@ -1409,3 +1409,49 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+class TestWebhookEnvOverride:
+    def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
+        """An explicit ``platforms.webhook.enabled: false`` must survive
+        _apply_env_overrides() even when WEBHOOK_ENABLED is truthy in the env.
+
+        Regression (#85637): _apply_env_overrides() force-set
+        webhook.enabled = True whenever WEBHOOK_ENABLED was truthy. In
+        multiplex mode a secondary profile pins ``webhook.enabled: false`` so
+        it shares the default profile's listener instead of binding its own
+        port, but it still inherits the process-level WEBHOOK_ENABLED
+        (or carries one in its own .env). The unconditional re-enable
+        flipped it back on and tripped the MultiplexConfigError check.
+
+        The fix honors the explicit disable, flagged by ``_enabled_explicit``
+        in the platform's extra (set when the config.yaml pins enabled).
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.WEBHOOK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "WEBHOOK_ENABLED": "true",
+                "WEBHOOK_PORT": "9999",
+                "WEBHOOK_SECRET": "shared-secret",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        # Explicit disable wins over the env-var presence.
+        assert config.platforms[Platform.WEBHOOK].enabled is False
+        # Port/secret are still wired through for the shared listener.
+        assert config.platforms[Platform.WEBHOOK].extra.get("port") == 9999
+        assert (
+            config.platforms[Platform.WEBHOOK].extra.get("secret")
+            == "shared-secret"
+        )

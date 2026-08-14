@@ -363,18 +363,24 @@ export function useBackgroundSync({
         activeTranscriptRefreshPendingRef.current = null
       }
 
+      let sawBusyDuringRead = false
+
+      const unsubscribeBusy = $busy.listen(busy => {
+        sawBusyDuringRead ||= busy
+      })
+
       void Promise.resolve(refreshActiveTranscript()).finally(() => {
+        unsubscribeBusy()
+
         // If streaming began while the read was in flight, reconciliation was
         // discarded and the external event still needs one idle retry.
         if (
           preservePending &&
-          $busy.get() &&
+          (sawBusyDuringRead || $busy.get()) &&
           $activeSessionId.get() === runtimeSessionId &&
           $selectedStoredSessionId.get() === storedSessionId
         ) {
           activeTranscriptRefreshPendingRef.current = sessionKey
-
-          return
         }
       })
     },

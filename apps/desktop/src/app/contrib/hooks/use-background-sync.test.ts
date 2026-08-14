@@ -205,7 +205,7 @@ describe('active transcript refresh', () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
   })
 
-  it('coalesces a burst of global ticks, including writes for another session', async () => {
+  it('coalesces a burst of global session-change ticks', async () => {
     vi.useFakeTimers()
     $changeEventsAvailable.set(true)
     const refresh = vi.fn(async () => undefined)
@@ -220,7 +220,7 @@ describe('active transcript refresh', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      vi.advanceTimersByTime(10_000)
+      vi.advanceTimersByTime(9_999)
       await Promise.resolve()
     })
 

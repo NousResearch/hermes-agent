@@ -14,6 +14,17 @@ const SENTENCE_3 = [
 ].join('\n')
 const MARKDOWN_BLOCK = ['# Deployment notes', '', 'This block should stay fenced'].join('\n')
 const YAML_LIST = ['providers:', '  - name: deepseek', '  - name: openai'].join('\n')
+const BULLET_2 = ['- item one', '- item two'].join('\n')
+
+// Stone441 macOS repro (2026-08-14): long `text`/`prompt` fences with
+// numbered Chinese prose were downgraded to rendered prose. Numbered lines
+// ("1. 中文…") match proseLineCount's ASCII-leading regex, so they trip the
+// prose heuristic; the explicit-tag guard must keep them fenced.
+const CHINESE_NUMBERED = [
+  '1. 这是一个较长的中文提示词，包含编号和具体步骤说明。',
+  '2. 第二行继续描述用户希望保留的完整提示词内容。',
+  '3. 第三行用于验证换行、编号和空格在代码块内保持原样。'
+].join('\n')
 
 describe('isLikelyProseCodeBlock', () => {
   it('detects prose that Streamdown mislabels as an unknown language', () => {
@@ -70,6 +81,34 @@ describe('isLikelyProseCodeBlock', () => {
 
   it('keeps yaml bullet lists as code', () => {
     expect(isLikelyProseCodeBlock('yaml', YAML_LIST)).toBe(false)
+  })
+
+  // Whole-class regression (spfcraze triage, 2026-08-14): non-COMMON explicit
+  // tags with bullet-list bodies were prose-classified by the bullet heuristic
+  // before the explicit-tag guard was reached. gdscript/zsh are non-COMMON,
+  // text/plain/plaintext are NON_CODE (not COMMON) — all must stay code.
+  it('keeps gdscript bullet lists as code (spfcraze repro)', () => {
+    expect(isLikelyProseCodeBlock('gdscript', BULLET_2)).toBe(false)
+  })
+
+  it('keeps zsh bullet lists as code (spfcraze repro)', () => {
+    expect(isLikelyProseCodeBlock('zsh', BULLET_2)).toBe(false)
+  })
+
+  it('keeps NON_CODE-family bullet lists as code (text/plain/plaintext)', () => {
+    expect(isLikelyProseCodeBlock('text', BULLET_2)).toBe(false)
+    expect(isLikelyProseCodeBlock('plain', BULLET_2)).toBe(false)
+    expect(isLikelyProseCodeBlock('plaintext', BULLET_2)).toBe(false)
+  })
+
+  // Stone441 macOS repro: numbered Chinese prose inside text/prompt fences
+  // must stay code blocks (the numbered lines trip the prose heuristic).
+  it('keeps text fences with numbered Chinese prose as code (Stone441)', () => {
+    expect(isLikelyProseCodeBlock('text', CHINESE_NUMBERED)).toBe(false)
+  })
+
+  it('keeps prompt fences with numbered Chinese prose as code (Stone441)', () => {
+    expect(isLikelyProseCodeBlock('prompt', CHINESE_NUMBERED)).toBe(false)
   })
 })
 
@@ -150,5 +189,24 @@ describe('isLikelyProseFence', () => {
 
   it('keeps yaml bullet lists as code', () => {
     expect(isLikelyProseFence('yaml', YAML_LIST)).toBe(false)
+  })
+
+  // Whole-class regression (spfcraze triage, 2026-08-14): same bullet-list
+  // coverage on the fence layer — non-COMMON explicit tags must stay code.
+  it('keeps gdscript/zsh bullet-list fences as code', () => {
+    expect(isLikelyProseFence('gdscript', BULLET_2)).toBe(false)
+    expect(isLikelyProseFence('zsh', BULLET_2)).toBe(false)
+  })
+
+  it('keeps NON_CODE-family bullet-list fences as code', () => {
+    expect(isLikelyProseFence('text', BULLET_2)).toBe(false)
+    expect(isLikelyProseFence('plain', BULLET_2)).toBe(false)
+    expect(isLikelyProseFence('plaintext', BULLET_2)).toBe(false)
+  })
+
+  // Stone441 macOS repro: text/prompt fences with numbered Chinese prose.
+  it('keeps text/prompt fences with numbered Chinese prose as code (Stone441)', () => {
+    expect(isLikelyProseFence('text', CHINESE_NUMBERED)).toBe(false)
+    expect(isLikelyProseFence('prompt', CHINESE_NUMBERED)).toBe(false)
   })
 })

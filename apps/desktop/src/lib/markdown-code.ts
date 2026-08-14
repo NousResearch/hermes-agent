@@ -396,6 +396,19 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return false
   }
 
+  // Any explicit, valid language tag is respected as code — even when the
+  // body is a bullet list (gdscript/zsh lists were prose-classified by the
+  // bullet heuristic below, which only exempts COMMON languages). Exception:
+  // Streamdown-mislabeled unknown tags like "heads" (bullet + inline
+  // markdown emphasis) stay prose per the upstream test locked in below.
+  if (
+    cleanLanguage !== '' &&
+    VALID_LANGUAGE_RE.test(cleanLanguage) &&
+    !(signals.bulletLines >= 1 && signals.hasMarkdown)
+  ) {
+    return false
+  }
+
   // A bullet list with markdown emphasis is prose even when it happens to be
   // structured; the config veto below is only meant to protect config/kv
   // listings, so let the bullet-prose case win first. Known code languages

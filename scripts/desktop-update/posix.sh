@@ -175,13 +175,18 @@ prepare_node_for_build() {
   if command -v node >/dev/null 2>&1 && node_satisfies_build "$(node --version 2>/dev/null)"; then
     return 0
   fi
-  # Otherwise look for a compatible installed Node (Homebrew versioned
-  # formulae and /usr/local) and prepend its bin dir to PATH for the build.
+  # Otherwise look for a compatible installed Node and prepend its bin dir
+  # to PATH for the build. Default candidates are the Homebrew versioned
+  # formulae and /usr/local; HERMES_NODE_CANDIDATE_DIRS overrides the list
+  # (space-separated) for custom install layouts and tests.
+  # A candidate only counts if BOTH node and npm are present — a node
+  # binary without its npm (partial/keg-only install) would still fail
+  # `npm ci` later, just with a more confusing error.
   local cand v
-  for cand in /opt/homebrew/opt/node@22/bin /opt/homebrew/opt/node@24/bin \
+  for cand in ${HERMES_NODE_CANDIDATE_DIRS:-/opt/homebrew/opt/node@22/bin /opt/homebrew/opt/node@24/bin \
               /opt/homebrew/opt/node@26/bin /usr/local/opt/node@22/bin \
-              /usr/local/opt/node@24/bin /usr/local/opt/node@26/bin; do
-    [ -x "$cand/node" ] || continue
+              /usr/local/opt/node@24/bin /usr/local/opt/node@26/bin}; do
+    [ -x "$cand/node" ] && [ -x "$cand/npm" ] || continue
     v="$("$cand/node" --version 2>/dev/null)"
     if node_satisfies_build "$v"; then
       log "build Node: system $(command -v node >/dev/null 2>&1 && node --version || echo none) is not compatible; using $cand ($v)"
@@ -569,7 +574,11 @@ trap 'on_signal TERM' TERM
 if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
   "$HERMES_BIN" desktop --force-build --build-only >> "$LOG" 2>&1 || {
-    FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
+    # Include the Node actually used for the build: if prepare_node_for_build
+    # auto-selected a compatible Node and the build still failed, the user
+    # needs to see WHICH Node was used to diagnose (e.g. a partial install).
+    build_node_ver="$(command -v node >/dev/null 2>&1 && node --version 2>/dev/null || echo none)"
+    FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build (build Node: $build_node_ver). Run hermes desktop --force-build from a terminal to retry."
     exit 6
   }
 fi

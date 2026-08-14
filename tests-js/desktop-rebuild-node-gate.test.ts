@@ -75,3 +75,52 @@ describe('shared lib node-version-check.sh (single source of truth)', () => {
     }
   })
 })
+
+describe('prepare_node_for_build candidate selection', () => {
+  const TMP = '/tmp/hermes-node-gate-test'
+
+  /** Extract prepare_node_for_build into a temp file, then run it. */
+  function runPrepare(prelude: string): string {
+    const script = `
+set -u
+log() { echo "LOG: $1"; }
+source "$1"
+source "$3"
+${prelude}
+prepare_node_for_build
+echo "FINAL_PATH=$PATH"
+`
+
+    // Extract the function body to a temp file so bash sources it as code
+    // (command substitution would word-split the multi-line function).
+    const fnFile = `${TMP}/prepare_node_for_build.sh`
+    execFileSync('bash', ['-c', `sed -n '/^prepare_node_for_build() {/,/^}/p' "$1" > "$2"`, 'bash', POSIX, fnFile])
+
+    return execFileSync('bash', ['-c', script, 'bash', LIB, POSIX, fnFile], { encoding: 'utf8' })
+  }
+
+  test('skips a candidate that has node but no npm', () => {
+    execFileSync('bash', ['-c', `rm -rf ${TMP} && mkdir -p ${TMP}/node-only/bin`])
+    execFileSync('bash', ['-c', `printf '#!/bin/sh\\necho v24.0.0\\n' > ${TMP}/node-only/bin/node && chmod +x ${TMP}/node-only/bin/node`])
+
+    const out = runPrepare(`
+      export HERMES_NODE_CANDIDATE_DIRS="${TMP}/node-only/bin"
+      export PATH="/nonexistent:/usr/bin:/bin"
+    `)
+
+    expect(out).toContain('WARNING: no compatible Node found')
+  })
+
+  test('accepts a candidate that has both node and npm', () => {
+    execFileSync('bash', ['-c', `rm -rf ${TMP} && mkdir -p ${TMP}/full/bin`])
+    execFileSync('bash', ['-c', `printf '#!/bin/sh\\necho v24.0.0\\n' > ${TMP}/full/bin/node && printf '#!/bin/sh\\necho npm\\n' > ${TMP}/full/bin/npm && chmod +x ${TMP}/full/bin/node ${TMP}/full/bin/npm`])
+
+    const out = runPrepare(`
+      export HERMES_NODE_CANDIDATE_DIRS="${TMP}/full/bin"
+      export PATH="/nonexistent:/usr/bin:/bin"
+    `)
+
+    expect(out).toContain(`using ${TMP}/full/bin`)
+    expect(out).toContain(`FINAL_PATH=${TMP}/full/bin`)
+  })
+})

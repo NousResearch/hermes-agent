@@ -253,7 +253,11 @@ function useSessionActions({
               triggerHaptic('selection')
               // Read the row lazily: subscribing every row's menu to $sessions
               // would re-render the whole sidebar on each session update.
-              const cwd = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.cwd?.trim() || undefined
+              const cwd =
+                $sessions
+                  .get()
+                  .find(s => sessionMatchesStoredId(s, sessionId))
+                  ?.cwd?.trim() || undefined
 
               void openSessionInTerminal(sessionId, { cwd, profile })
             }

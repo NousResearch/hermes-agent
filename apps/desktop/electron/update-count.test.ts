@@ -6,7 +6,13 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { compareApiUrl, parseCompareBehindCount, resolveBehindCount, resolveCommitLogSelection, shouldCountCommits } from './update-count'
+import {
+  compareApiUrl,
+  parseCompareBehindCount,
+  resolveBehindCount,
+  resolveCommitLogSelection,
+  shouldCountCommits
+} from './update-count'
 
 function createTempGitRepo() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-update-count-'))

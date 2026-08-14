@@ -32,7 +32,10 @@ test('windowsQuote doubles embedded quotes', () => {
 })
 
 test('terminalScriptEnv drops PATH in any casing and keeps the rest', () => {
-  const env = terminalScriptEnv({ Path: 'C:\\junk', PATH: '/junk', PYTHONPATH: '/repo', PYTHONUTF8: '1' }, '/home/b/.hermes')
+  const env = terminalScriptEnv(
+    { Path: 'C:\\junk', PATH: '/junk', PYTHONPATH: '/repo', PYTHONUTF8: '1' },
+    '/home/b/.hermes'
+  )
 
   assert.deepEqual(env, { PYTHONPATH: '/repo', PYTHONUTF8: '1', HERMES_HOME: '/home/b/.hermes' })
 })

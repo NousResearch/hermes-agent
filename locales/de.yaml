@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Titel ist nach Bereinigung leer — Sitzung ohne Titel gestartet."
     tip:                   "\n✦ Tipp: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset ist nur in Telegram-, Discord- und Slack-Threads verfügbar."
+    thread_only:           "Führen Sie {prefix}autoreset in dem Thread aus, den Sie konfigurieren möchten (nicht in einer Stammkonversation oder einem übergeordneten Kanal)."
+    usage:                 "Verwendung: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "deaktiviert"
+    policy_daily:          "täglich um {hour}:{minute}"
+    policy_idle:           "nach {minutes} Minuten Inaktivität"
+    policy_both:           "täglich um {hour}:{minute} oder nach {minutes} Minuten Inaktivität"
+    policy_unknown:        "{mode}"
+    scope_override:        "Thread-Überschreibung"
+    scope_inherited:       "geerbte Richtlinie"
+    status:                "Automatische Zurücksetzung: {policy} ({scope})."
+    invalid_state:         "Der Status der automatischen Thread-Zurücksetzung ist ungültig; es wurden keine Änderungen vorgenommen."
+    invalid_status:        "Automatische Zurücksetzung: deaktiviert (sicherer Rückfall; Thread-Richtlinienstatus ist ungültig)."
+    save_failed:           "Die Richtlinie zur automatischen Thread-Zurücksetzung konnte nicht gespeichert werden."
+    read_failed:           "Die Richtlinie zur automatischen Thread-Zurücksetzung konnte nicht gelesen werden."
+
   restart:
     in_progress:           "⏳ Gateway-Neustart läuft bereits..."
     restarting:            "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."

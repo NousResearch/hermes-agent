@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Le titre est vide après nettoyage — session démarrée sans titre."
     tip:                   "\n✦ Astuce : {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset est disponible uniquement dans les fils Telegram, Discord et Slack."
+    thread_only:           "Exécutez {prefix}autoreset dans le fil à configurer (pas dans une conversation racine ni dans le canal parent)."
+    usage:                 "Utilisation : {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "désactivée"
+    policy_daily:          "tous les jours à {hour}:{minute}"
+    policy_idle:           "après {minutes} minutes d’inactivité"
+    policy_both:           "tous les jours à {hour}:{minute} ou après {minutes} minutes d’inactivité"
+    policy_unknown:        "{mode}"
+    scope_override:        "politique propre au fil"
+    scope_inherited:       "politique héritée"
+    status:                "Réinitialisation automatique : {policy} ({scope})."
+    invalid_state:         "L’état de réinitialisation automatique des fils est invalide ; aucune modification effectuée."
+    invalid_status:        "Réinitialisation automatique : désactivée (repli sûr ; état de politique de fil invalide)."
+    save_failed:           "Impossible d’enregistrer la politique de réinitialisation automatique du fil."
+    read_failed:           "Impossible de lire la politique de réinitialisation automatique du fil."
+
   restart:
     in_progress:           "⏳ Redémarrage du gateway déjà en cours..."
     restarting:            "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `hermes gateway restart`."

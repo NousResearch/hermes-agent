@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
     tip:                   "\n✦ 提示：{tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset 仅适用于 Telegram、Discord 和 Slack 话题串。"
+    thread_only:           "请在要配置的话题串内运行 {prefix}autoreset（不能在根对话或父频道中运行）。"
+    usage:                 "用法：{prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "已禁用"
+    policy_daily:          "每天 {hour}:{minute}"
+    policy_idle:           "空闲 {minutes} 分钟后"
+    policy_both:           "每天 {hour}:{minute}，或空闲 {minutes} 分钟后"
+    policy_unknown:        "{mode}"
+    scope_override:        "话题串专属设置"
+    scope_inherited:       "继承的策略"
+    status:                "自动重置：{policy}（{scope}）。"
+    invalid_state:         "话题串自动重置状态无效；未进行任何更改。"
+    invalid_status:        "自动重置：已禁用（安全回退；话题串策略状态无效）。"
+    save_failed:           "无法保存话题串自动重置策略。"
+    read_failed:           "无法读取话题串自动重置策略。"
+
   restart:
     in_progress:           "⏳ 网关重启已在进行中……"
     restarting:            "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"

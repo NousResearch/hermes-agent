@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ El título queda vacío tras la limpieza — sesión iniciada sin título."
     tip:                   "\n✦ Consejo: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset solo está disponible en hilos de Telegram, Discord y Slack."
+    thread_only:           "Ejecuta {prefix}autoreset dentro del hilo que quieras configurar (no en una conversación raíz ni en el canal principal)."
+    usage:                 "Uso: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "desactivado"
+    policy_daily:          "cada día a las {hour}:{minute}"
+    policy_idle:           "tras {minutes} minutos de inactividad"
+    policy_both:           "cada día a las {hour}:{minute} o tras {minutes} minutos de inactividad"
+    policy_unknown:        "{mode}"
+    scope_override:        "configuración específica del hilo"
+    scope_inherited:       "política heredada"
+    status:                "Restablecimiento automático: {policy} ({scope})."
+    invalid_state:         "El estado del restablecimiento automático de hilos no es válido; no se ha realizado ningún cambio."
+    invalid_status:        "Restablecimiento automático: desactivado (modo seguro; el estado de la política del hilo no es válido)."
+    save_failed:           "No se pudo guardar la política de restablecimiento automático del hilo."
+    read_failed:           "No se pudo leer la política de restablecimiento automático del hilo."
+
   restart:
     in_progress:           "⏳ El reinicio del gateway ya está en curso..."
     restarting:            "♻ Reiniciando el gateway. Si no recibes notificación en 60 segundos, reinicia desde la consola con `hermes gateway restart`."

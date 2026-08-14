@@ -299,10 +299,10 @@ Reset policies control when a session automatically loses context (gets a new `s
 
 | Mode | Behavior | Default Config |
 |---|---|---|
-| `"none"` | Never auto-reset. Context managed only by compression. | — |
+| `"none"` | Never auto-reset. Context managed only by compression. | **(default)** |
 | `"idle"` | Reset after N minutes of inactivity from `updated_at`. | `idle_minutes: 1440` (24h) |
-| `"daily"` | Reset at a specific hour each day (local time). | `at_hour: 4` (4 AM) |
-| `"both"` | Whichever triggers first — daily boundary OR idle timeout. | **(default)** |
+| `"daily"` | Reset at a specific local time each day. | `at_hour: 4`, `at_minute: 0` (04:00) |
+| `"both"` | Whichever triggers first — daily boundary OR idle timeout. | — |
 
 ### Policy Evaluation
 
@@ -312,8 +312,10 @@ idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
 if now > idle_deadline: return "idle"
 
 # Daily check
-today_reset = now.replace(hour=policy.at_hour, minute=0, second=0, microsecond=0)
-if now.hour < policy.at_hour:
+today_reset = now.replace(
+    hour=policy.at_hour, minute=policy.at_minute, second=0, microsecond=0
+)
+if (now.hour, now.minute) < (policy.at_hour, policy.at_minute):
     today_reset -= timedelta(days=1)  # Reset hasn't happened yet today
 if entry.updated_at < today_reset: return "daily"
 ```
@@ -323,6 +325,25 @@ if entry.updated_at < today_reset: return "daily"
 Reset policies are configurable per platform and session type via `config.get_reset_policy()`.
 This allows different platforms to have different expiry rules (e.g., Telegram DMs reset
 after 24h idle, but Slack groups persist indefinitely).
+
+### Per-Thread Overrides
+
+Private and public Telegram topics, Discord threads, and Slack threads may
+persist an explicit `daily` or `none` override with `/autoreset` whenever both
+the chat ID and thread ID are stable, non-empty strings. Root DMs, parent
+channels, and other non-thread conversations are not supported. The durable
+route key is the profile namespace plus platform, chat ID, and thread ID; it
+never includes the user ID or live session ID. Resolution order is:
+
+```text
+thread override > platform policy > session-type policy > global policy
+```
+
+`/autoreset on` selects `04:00`, `/autoreset daily HH:MM` selects an exact
+server-local time, `/autoreset off` disables automatic reset for the thread,
+and `/autoreset inherit` deletes the override. Slack uses `!autoreset` because
+native slash commands cannot be typed inside Slack threads. Overrides are
+stored atomically in `thread_reset_policies.json` and survive session resets.
 
 ### Exclusions
 
@@ -672,6 +693,7 @@ When a session expires:
 session_reset:
   mode: none            # none (default) | idle | daily | both
   at_hour: 4            # daily reset hour (local time)
+  at_minute: 0          # daily reset minute (local time)
   idle_minutes: 1440    # idle timeout (24h)
   notify: true          # notify user on auto-reset
 ```

@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Після очищення назва порожня — сесію запущено без назви."
     tip:                   "\n✦ Порада: {tip}"
 
+  autoreset:
+    unsupported_platform:  "Команда {prefix}autoreset доступна лише в гілках Telegram, Discord і Slack."
+    thread_only:           "Запустіть {prefix}autoreset усередині гілки, яку потрібно налаштувати (не в кореневій розмові чи батьківському каналі)."
+    usage:                 "Використання: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "вимкнено"
+    policy_daily:          "щодня о {hour}:{minute}"
+    policy_idle:           "після {minutes} хвилин бездіяльності"
+    policy_both:           "щодня о {hour}:{minute} або після {minutes} хвилин бездіяльності"
+    policy_unknown:        "{mode}"
+    scope_override:        "налаштування для гілки"
+    scope_inherited:       "успадкована політика"
+    status:                "Автоматичне скидання: {policy} ({scope})."
+    invalid_state:         "Стан автоматичного скидання гілок недійсний; зміни не внесено."
+    invalid_status:        "Автоматичне скидання: вимкнено (безпечний режим; стан політики гілки недійсний)."
+    save_failed:           "Не вдалося зберегти політику автоматичного скидання гілки."
+    read_failed:           "Не вдалося прочитати політику автоматичного скидання гілки."
+
   restart:
     in_progress:           "⏳ Перезапуск гейтвея вже виконується..."
     restarting:            "♻ Перезапуск гейтвея. Якщо ви не отримаєте сповіщення протягом 60 секунд, перезапустіть із консолі командою `hermes gateway restart`."

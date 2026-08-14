@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Tisztítás után a cím üres — a munkamenet cím nélkül indult."
     tip:                   "\n✦ Tipp: {tip}"
 
+  autoreset:
+    unsupported_platform:  "A {prefix}autoreset csak Telegram-, Discord- és Slack-szálakban érhető el."
+    thread_only:           "Futtasd a {prefix}autoreset parancsot a beállítani kívánt szálban (ne gyökérbeszélgetésben vagy szülőcsatornában)."
+    usage:                 "Használat: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "kikapcsolva"
+    policy_daily:          "naponta {hour}:{minute}-kor"
+    policy_idle:           "{minutes} perc tétlenség után"
+    policy_both:           "naponta {hour}:{minute}-kor vagy {minutes} perc tétlenség után"
+    policy_unknown:        "{mode}"
+    scope_override:        "szálspecifikus felülbírálás"
+    scope_inherited:       "örökölt házirend"
+    status:                "Automatikus visszaállítás: {policy} ({scope})."
+    invalid_state:         "A szál automatikus visszaállítási állapota érvénytelen; nem történt módosítás."
+    invalid_status:        "Automatikus visszaállítás: kikapcsolva (biztonságos tartalék; a szál házirendjének állapota érvénytelen)."
+    save_failed:           "Nem sikerült menteni a szál automatikus visszaállítási házirendjét."
+    read_failed:           "Nem sikerült beolvasni a szál automatikus visszaállítási házirendjét."
+
   restart:
     in_progress:           "⏳ Az átjáró újraindítása már folyamatban van..."
     restarting:            "♻ Átjáró újraindítása. Ha 60 másodpercen belül nem kapsz értesítést, indítsd újra a konzolból a `hermes gateway restart` paranccsal."

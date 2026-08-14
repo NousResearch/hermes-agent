@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Titel is leeg na opruiming — sessie sonder titel begin."
     tip:                   "\n✦ Wenk: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset is slegs in Telegram-, Discord- en Slack-drade beskikbaar."
+    thread_only:           "Voer {prefix}autoreset uit binne die draad wat jy wil opstel (nie in 'n hoofgesprek of ouerkanaal nie)."
+    usage:                 "Gebruik: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "gedeaktiveer"
+    policy_daily:          "daagliks om {hour}:{minute}"
+    policy_idle:           "ná {minutes} minute se onaktiwiteit"
+    policy_both:           "daagliks om {hour}:{minute} of ná {minutes} minute se onaktiwiteit"
+    policy_unknown:        "{mode}"
+    scope_override:        "draadspesifieke beleid"
+    scope_inherited:       "oorgeërfde beleid"
+    status:                "Outomatiese terugstelling: {policy} ({scope})."
+    invalid_state:         "Die draad se outomatiese-terugstellingstaat is ongeldig; geen veranderinge is aangebring nie."
+    invalid_status:        "Outomatiese terugstelling: gedeaktiveer (veilige terugval; die draadbeleidstaat is ongeldig)."
+    save_failed:           "Kon nie die draad se outomatiese-terugstellingbeleid stoor nie."
+    read_failed:           "Kon nie die draad se outomatiese-terugstellingbeleid lees nie."
+
   restart:
     in_progress:           "⏳ Gateway-herbegin reeds aan die gang..."
     restarting:            "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."

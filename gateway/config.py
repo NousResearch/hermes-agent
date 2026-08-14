@@ -533,7 +533,7 @@ class SessionResetPolicy:
     Controls when sessions reset (lose context).
     
     Modes:
-    - "daily": Reset at a specific hour each day
+    - "daily": Reset at a specific local hour and minute each day
     - "idle": Reset after N minutes of inactivity
     - "both": Whichever triggers first (daily boundary OR idle timeout)
     - "none": Never auto-reset (context managed only by compression)
@@ -554,11 +554,15 @@ class SessionResetPolicy:
     # by the reset guard. Raise this if you run legitimate multi-day jobs whose
     # liveness should pin the conversation open.
     bg_process_max_age_hours: int = 24
+    # Kept last to preserve the positional constructor contract for existing
+    # callers while extending daily schedules to minute precision.
+    at_minute: int = 0  # Minute for daily reset (0-59, local time)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
             "at_hour": self.at_hour,
+            "at_minute": self.at_minute,
             "idle_minutes": self.idle_minutes,
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
@@ -571,6 +575,7 @@ class SessionResetPolicy:
         # Handle both missing keys and explicit null values (YAML null → None)
         mode = data.get("mode")
         at_hour = data.get("at_hour")
+        at_minute = data.get("at_minute")
         idle_minutes = data.get("idle_minutes")
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
@@ -578,6 +583,7 @@ class SessionResetPolicy:
         return cls(
             mode=mode if mode is not None else "none",
             at_hour=at_hour if at_hour is not None else 4,
+            at_minute=at_minute if at_minute is not None else 0,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
@@ -1828,20 +1834,44 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
     Called by ``load_gateway_config()`` after all config sources are merged.
     Extracted as a separate function for testability.
     """
-    policy = config.default_reset_policy
+    policies = [
+        config.default_reset_policy,
+        *config.reset_by_type.values(),
+        *config.reset_by_platform.values(),
+    ]
+    for policy in policies:
+        if (
+            isinstance(policy.at_hour, bool)
+            or not isinstance(policy.at_hour, int)
+            or not 0 <= policy.at_hour <= 23
+        ):
+            logger.warning(
+                "Invalid at_hour=%s (must be 0-23). Using default 4.",
+                policy.at_hour,
+            )
+            policy.at_hour = 4
 
-    if not (0 <= policy.at_hour <= 23):
-        logger.warning(
-            "Invalid at_hour=%s (must be 0-23). Using default 4.", policy.at_hour
-        )
-        policy.at_hour = 4
+        if (
+            isinstance(policy.at_minute, bool)
+            or not isinstance(policy.at_minute, int)
+            or not 0 <= policy.at_minute <= 59
+        ):
+            logger.warning(
+                "Invalid at_minute=%s (must be 0-59). Using default 0.",
+                policy.at_minute,
+            )
+            policy.at_minute = 0
 
-    if policy.idle_minutes is None or policy.idle_minutes <= 0:
-        logger.warning(
-            "Invalid idle_minutes=%s (must be positive). Using default 1440.",
-            policy.idle_minutes,
-        )
-        policy.idle_minutes = 1440
+        if (
+            isinstance(policy.idle_minutes, bool)
+            or not isinstance(policy.idle_minutes, int)
+            or policy.idle_minutes <= 0
+        ):
+            logger.warning(
+                "Invalid idle_minutes=%s (must be positive). Using default 1440.",
+                policy.idle_minutes,
+            )
+            policy.idle_minutes = 1440
 
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.

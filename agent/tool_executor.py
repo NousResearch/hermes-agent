@@ -1577,7 +1577,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # so the steer marker is never truncated. See steer() for details.
     if finalize and num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
-        agent._apply_pending_kanban_note_to_tool_results(messages, num_tools)
+        getattr(agent, "_apply_pending_kanban_note_to_tool_results", lambda *a: None)(messages, num_tools)
 
 
 
@@ -2359,7 +2359,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # applied to sequential execution as well.
     if finalize and num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
-        agent._apply_pending_kanban_note_to_tool_results(messages, num_tools_seq)
+        getattr(agent, "_apply_pending_kanban_note_to_tool_results", lambda *a: None)(messages, num_tools_seq)
 
 
 
@@ -2422,7 +2422,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             config=_tool_budget,
         )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)
-        agent._apply_pending_kanban_note_to_tool_results(messages, total_tools)
+        getattr(agent, "_apply_pending_kanban_note_to_tool_results", lambda *a: None)(messages, total_tools)
 
 
 __all__ = [

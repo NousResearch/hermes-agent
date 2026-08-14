@@ -248,6 +248,12 @@ _LONG_HANDLERS = frozenset(
         # dead after a few skin switches. The handler serializes concurrent
         # reloads via _mcp_reload_lock.
         "reload.mcp",
+        # MCP server test/OAuth RPCs block on network: a probe spawns a stdio
+        # server (cold `npx` cold start = many seconds) or connects to a remote
+        # endpoint; oauth.start blocks up to ~30s waiting for the provider to
+        # publish an authorization URL. Keep them off the reader thread.
+        "mcp.servers.test",
+        "mcp.servers.oauth.start",
         "process.list",
         # profiles.list runs list_profiles() (recursive skill-tree walk per
         # profile) and opens each profile's state.db for the last-session
@@ -14666,6 +14672,27 @@ def _browser_disconnect(rid) -> dict:
     return _ok(rid, {"connected": False})
 
 
+
+
+# Per-profile MCP lifecycle helpers (mcp.servers.* handlers). Defined on THIS
+# namespace so the rebound handler bodies (register() below) can resolve them,
+# same as _ok/_err — a plain def in methods_tools would be unreachable.
+from .mcp_rpc_helpers import (  # noqa: E402
+    reset_profile as _mcp_reset_profile,
+    summarize_server as _mcp_summarize_server_impl,
+)
+
+
+def _mcp_resolve_profile(rid, params):  # noqa: E402
+    # Bind this namespace's _err so the helper's error envelopes match every
+    # other handler's shape; handlers call this with just (rid, params).
+    from .mcp_rpc_helpers import resolve_profile as _rp
+
+    return _rp(rid, params, _err)
+
+
+def _mcp_summarize_server(name, cfg):  # noqa: E402
+    return _mcp_summarize_server_impl(name, cfg)
 
 
 # ── Split @method handler modules (see method_ctx.py) ────────────────

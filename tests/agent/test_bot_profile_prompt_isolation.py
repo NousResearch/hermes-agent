@@ -90,3 +90,27 @@ def test_agent_home_none_without_session_db():
 
     assert system_prompt._agent_home(_Agent()) is None
     assert system_prompt._agent_skills_dir(_Agent()) is None
+
+
+def test_profile_name_correct_on_bound_profile_session(tmp_path, monkeypatch):
+    """Regression for the fix-of-the-fix: on a CORRECTLY bound profile session
+    the ambient home IS the profile dir, so deriving the profile name with
+    ``get_hermes_home()/profiles`` as the root would never match and every
+    profile would misreport as \"default\". The name must derive from the
+    hermes ROOT (get_default_hermes_root)."""
+    from agent import system_prompt
+
+    bot_home = tmp_path / "profiles" / "mybot"
+    bot_home.mkdir(parents=True)
+
+    # Bound session: HERMES_HOME env points at the profile dir itself.
+    monkeypatch.setenv("HERMES_HOME", str(bot_home))
+
+    assert system_prompt._profile_name_for_home(bot_home) == "mybot"
+
+
+def test_profile_name_default_when_home_is_root(tmp_path, monkeypatch):
+    from agent import system_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert system_prompt._profile_name_for_home(tmp_path) == "default"

@@ -289,6 +289,27 @@ def _agent_skills_dir(agent: Any) -> Optional[Path]:
     return (home / "skills") if home is not None else None
 
 
+def _profile_name_for_home(home: Path) -> str:
+    """Derive the profile name for an explicit agent home.
+
+    ``<root>/profiles/X`` -> ``"X"``; anything else -> ``"default"``.
+
+    Uses :func:`get_default_hermes_root` (NOT ``get_hermes_home()``): on a
+    correctly bound profile session the ambient home IS the profile dir, so
+    ``get_hermes_home()/profiles`` would never contain ``home`` and every
+    profile would misreport as "default".
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+        rel = home.resolve().relative_to((root / "profiles").resolve())
+        return rel.parts[0] if rel.parts else "default"
+    except (ValueError, OSError):
+        # Home IS the root (default profile) or unrelatable -> default.
+        return "default"
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -551,22 +572,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     active_profile = "default"
     try:
         if _agent_home_path is not None:
-            root = get_hermes_home()
-            try:
-                rel = _agent_home_path.resolve().relative_to((root / "profiles").resolve())
-                active_profile = rel.parts[0] if rel.parts else "default"
-            except (ValueError, OSError):
-                # Home IS the launch root (default) or unrelatable → default.
-                active_profile = "default"
+            active_profile = _profile_name_for_home(_agent_home_path)
         else:
             from agent.file_safety import _resolve_active_profile_name
             active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
     # Home string for the message text: prefer the agent's own home so the
-    # paths named match the profile just resolved.
+    # paths named match the profile just resolved. The root (where the
+    # default profile's data lives) comes from get_default_hermes_root():
+    # get_hermes_home() on a bound profile session is the PROFILE dir, which
+    # would misname the default profile's paths.
+    from hermes_constants import get_default_hermes_root as _root_fn
     _home_str = str(_agent_home_path if _agent_home_path is not None else get_hermes_home())
-    _root_str = str(get_hermes_home())
+    _root_str = str(_root_fn())
     if active_profile == "default":
         post_workspace_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "

@@ -6901,6 +6901,42 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                # ── User-blocked tool check ───────────────────────────
+                # When the user denies a dangerous command via the
+                # approval dialog, the tool result is a BLOCKED string.
+                # Without a dispatch-layer halt the agent may retry the
+                # same intent with a different tool — a bypass of the
+                # user's explicit deny.  Scan the tool messages just
+                # produced and force-stop the turn when a BLOCKED is
+                # found so the user's decision is respected.
+                _user_blocked = False
+                for _msg in reversed(messages):
+                    if _msg.get("role") != "tool":
+                        break
+                    _content = _msg.get("content", "")
+                    if isinstance(_content, str) and _content.startswith("BLOCKED"):
+                        _user_blocked = True
+                        break
+                if _user_blocked:
+                    _turn_exit_reason = "user_blocked"
+                    final_response = (
+                        "操作被拒绝。请指示下一步。"
+                    )
+                    agent._emit_status(
+                        "⛔ 用户拒绝了危险操作 — 已停止 Agent 循环"
+                    )
+                    messages.append(
+                        {"role": "assistant", "content": final_response}
+                    )
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    agent._safe_print(f"\n{final_response}\n")
+                    break
+
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
                     # the in-memory result back to the model or project any
@@ -6908,6 +6944,56 @@ def run_conversation(
                     _turn_exit_reason = "session_persistence_failed"
                     final_response = ""
                     failed = True
+                # ── User-blocked tool check ───────────────────────────
+                # When the user denies a dangerous command via the
+                # approval dialog, the tool result is a BLOCKED string.
+                # Without a dispatch-layer halt the agent may retry the
+                # same intent with a different tool — a bypass of the
+                # user's explicit deny.  Scan the tool messages just
+                # produced and force-stop the turn when a BLOCKED is
+                # found so the user's decision is respected.
+                _user_blocked = False
+                for _msg in reversed(messages):
+                    if _msg.get("role") != "tool":
+                        break
+                    _content = _msg.get("content", "")
+                    if isinstance(_content, str):
+                        # Plain-text BLOCKED — terminal/file_tools/approval
+                        if _content.startswith("BLOCKED") or _content.startswith("[\"BLOCKED"):
+                            _user_blocked = True
+                            break
+                        # JSON-wrapped BLOCKED — execute_code returns
+                        # {"status":"error","error":"BLOCKED: ..."} when
+                        # the user denies via approval guard.  The plain-
+                        # text startswith check misses this path entirely.
+                        if _content.startswith("{"):
+                            try:
+                                parsed = json.loads(_content)
+                                if isinstance(parsed, dict):
+                                    error = parsed.get("error", "")
+                                    if isinstance(error, str) and error.startswith("BLOCKED"):
+                                        _user_blocked = True
+                                        break
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                if _user_blocked:
+                    _turn_exit_reason = "user_blocked"
+                    final_response = (
+                        "操作被拒绝。请指示下一步。"
+                    )
+                    agent._emit_status(
+                        "⛔ 用户拒绝了危险操作 — 已停止 Agent 循环"
+                    )
+                    messages.append(
+                        {"role": "assistant", "content": final_response}
+                    )
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    agent._safe_print(f"\n{final_response}\n")
                     break
 
                 if agent._tool_guardrail_halt_decision is not None:

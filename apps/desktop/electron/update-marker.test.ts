@@ -115,6 +115,19 @@ test('writeUpdateMarker writes a marker that readLiveUpdateMarker accepts', () =
   assert.ok(fs.existsSync(markerPath(home)), 'marker file should exist after write')
 })
 
+test('writeUpdateMarker preserves a live holder age across pid hand-off', () => {
+  const home = tmpHome('write-handoff-age')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) - 300
+
+  writeMarker(home, 1010, startedAt)
+  writeUpdateMarker(home, 2020, { kill: ALIVE, now: () => now })
+
+  const [pidLine, startedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
+  assert.equal(Number.parseInt(pidLine, 10), 2020, 'the hand-off records the new owner')
+  assert.equal(Number.parseInt(startedLine, 10), startedAt, 'the holder age must not restart during hand-off')
+})
+
 test('writeUpdateMarker is best-effort (no throw on bad path)', () => {
   // A non-existent directory should not throw.
   const badHome = path.join(os.tmpdir(), 'hermes-marker-nonexistent-' + Date.now())

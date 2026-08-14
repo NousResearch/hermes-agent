@@ -119,15 +119,30 @@ export function readLiveUpdateMarker(
  *
  * Fix: the desktop writes the marker itself, using the spawned updater's
  * PID, immediately after `spawn()`. The updater's `UpdateMarkerGuard` will
- * later overwrite it with its own PID — that's fine, the marker body is
- * the same format and `readLiveUpdateMarker` only cares that *some* live
- * pid owns it. When the updater finishes it deletes the marker as before.
+ * later adopt it or another hand-off stage may replace the PID. A live
+ * holder's original timestamp is preserved across those transfers so retries
+ * cannot keep resetting the 20-minute stale ceiling. When the updater finishes
+ * it deletes the marker as before.
  * If the updater never starts (spawn failure) the marker still contains a
  * real PID, so `readLiveUpdateMarker` will self-heal once that PID exits.
  */
-export function writeUpdateMarker(hermesHome, pid, { now = Date.now } = {}) {
+export function writeUpdateMarker(
+  hermesHome,
+  pid,
+  {
+    kill,
+    now = Date.now,
+    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS
+  }: {
+    now?: () => number
+    maxAgeMs?: number
+    kill?: typeof process.kill
+  } = {}
+) {
   const file = markerPath(hermesHome)
-  const startedAt = Math.floor(now() / 1000)
+  const nowMs = now()
+  const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs })
+  const startedAt = owner ? Math.floor((nowMs - owner.ageMs) / 1000) : Math.floor(nowMs / 1000)
 
   try {
     fs.writeFileSync(file, `${pid}\n${startedAt}\n`, 'utf8')

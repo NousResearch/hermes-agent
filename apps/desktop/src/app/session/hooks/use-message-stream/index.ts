@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { isDiagnosticsArmed, recordGatewayEventApplied, recordStreamDeltaApplied } from '@/diagnostics'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
@@ -26,6 +27,7 @@ import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
+import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -62,6 +64,29 @@ interface QueuedStreamDeltas {
 let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
+
+// Diagnostics only, and only while a capture is armed: how big the flush about
+// to run is, in sessions and characters. Sizes, never the delta text — the
+// capture ring buffer must never hold message content (see src/diagnostics).
+const queuedDeltaSizes = (queue: Map<string, QueuedStreamDeltas>) => {
+  let queuedChars = 0
+
+  for (const queued of queue.values()) {
+    queuedChars += queued.assistant.length
+
+    for (const delta of queued.reasoning) {
+      queuedChars += delta.text.length
+    }
+  }
+
+  return { queuedChars, sessions: queue.size, sessionIds: [...queue.keys()] }
+}
+
+// Recording a gateway-event dispatch below this cost would be ring churn: a
+// streaming turn emits dozens of sub-millisecond queue pushes per second, and
+// the interesting rows are the ones that plausibly contributed to a dropped
+// frame. A quarter of a 16ms frame is where "contributed" starts.
+const GATEWAY_EVENT_RECORD_MIN_MS = 4
 
 export function useMessageStream({
   activeGatewayProfile = 'default',
@@ -198,16 +223,52 @@ export function useMessageStream({
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
 
+  // Diagnostics only: how many sessions have a turn in flight right now.
+  // `busy` covers tool-call turns too, so this counts concurrent threads even
+  // when a thread contributes render load without queueing any text — the
+  // signal the `sessions` (queue size) field structurally cannot carry.
+  const countBusySessions = useCallback(() => {
+    let busy = 0
+
+    for (const state of sessionStateByRuntimeIdRef.current.values()) {
+      if (state.busy) {
+        busy += 1
+      }
+    }
+
+    return busy
+  }, [sessionStateByRuntimeIdRef])
+
   const flushQueuedDeltas = useCallback(
-    (sessionId?: string) => {
+    (sessionId?: string, source: 'eager' | 'timer' = 'eager') => {
       const queue = queuedDeltasRef.current
       const ids = sessionId ? [sessionId] : [...queue.keys()]
+
+      // Ordering-sensitive events (tool rows, interim seals, completion) drain
+      // the queue OUTSIDE the instrumented timer flush — under an agentic turn
+      // that is where most of the apply cost actually runs, and it removes the
+      // session from the queue before the next timer flush can count it. Record
+      // these drains too (path: 'eager') or a tool-heavy thread is invisible.
+      // Same armed-guard economics as runFlush: one boolean test when disarmed.
+      const eager =
+        source === 'eager' && isDiagnosticsArmed()
+          ? { historyMessages: 0, queuedChars: 0, sessions: 0, startedAt: performance.now() }
+          : null
 
       for (const id of ids) {
         const queued = queue.get(id)
 
         if (!queued) {
           continue
+        }
+
+        if (eager) {
+          eager.sessions += 1
+          eager.queuedChars += queued.assistant.length
+
+          for (const delta of queued.reasoning) {
+            eager.queuedChars += delta.text.length
+          }
         }
 
         queue.delete(id)
@@ -227,9 +288,24 @@ export function useMessageStream({
             () => [reasoningPart(queued.reasoning)]
           )
         }
+
+        if (eager) {
+          eager.historyMessages += sessionStateByRuntimeIdRef.current.get(id)?.messages.length ?? 0
+        }
+      }
+
+      if (eager && eager.sessions > 0) {
+        recordStreamDeltaApplied({
+          busySessions: countBusySessions(),
+          historyMessages: eager.historyMessages,
+          path: 'eager',
+          queuedChars: eager.queuedChars,
+          sessions: eager.sessions,
+          writeMs: performance.now() - eager.startedAt
+        })
       }
     },
-    [mutateStream]
+    [countBusySessions, mutateStream, sessionStateByRuntimeIdRef]
   )
 
   const scheduleDeltaFlush = useCallback(() => {
@@ -273,7 +349,10 @@ export function useMessageStream({
       flushHandleRef.current = null
       const startedAt = performance.now()
       lastFlushAtRef.current = startedAt
-      flushQueuedDeltas()
+      // Diagnostics reads the queue before it drains. Guarded on the armed flag
+      // so a normal build does one boolean test per flush and allocates nothing.
+      const pending = isDiagnosticsArmed() ? queuedDeltaSizes(queuedDeltasRef.current) : null
+      flushQueuedDeltas(undefined, 'timer')
       // The store write above is only the cheap half of a flush. While a
       // session streams, syncSessionStateToView defers the $messages publish
       // (and with it the React commit + Streamdown re-parse the floor is meant
@@ -287,6 +366,24 @@ export function useMessageStream({
       // stays as the fallback.
       const writeCost = performance.now() - startedAt
       lastFlushCostRef.current = writeCost
+
+      // One capture event per flush, carrying the costs this path ALREADY
+      // measures. `commitMs`/`rafGapMs` are filled in place by the same
+      // measurement frame below — no second measurement pass, and a hidden
+      // renderer (no frame) still leaves the write-cost half on the record.
+      const sample = pending
+        ? recordStreamDeltaApplied({
+            busySessions: countBusySessions(),
+            historyMessages: pending.sessionIds.reduce(
+              (total, id) => total + (sessionStateByRuntimeIdRef.current.get(id)?.messages.length ?? 0),
+              0
+            ),
+            path: 'timer',
+            queuedChars: pending.queuedChars,
+            sessions: pending.sessions,
+            writeMs: writeCost
+          })
+        : null
 
       // At most one measurement rAF may be pending: only the newest flush's
       // measurement matters (the guard below discards stale frames), and a
@@ -305,7 +402,13 @@ export function useMessageStream({
           return
         }
 
-        lastFlushCostRef.current = writeCost + Math.max(0, performance.now() - frameStart)
+        const commitCost = Math.max(0, performance.now() - frameStart)
+        lastFlushCostRef.current = writeCost + commitCost
+
+        if (sample) {
+          sample.commitMs = Math.round(commitCost * 100) / 100
+          sample.rafGapMs = Math.round(Math.max(0, frameStart - startedAt) * 100) / 100
+        }
       })
     }
 
@@ -326,7 +429,7 @@ export function useMessageStream({
     // in the worst case (a delta arriving before the unthrottle lands) the
     // clamp only stretches one flush to ~1s in a window nobody can see.
     flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, adaptiveFloor - sinceLast))
-  }, [flushQueuedDeltas])
+  }, [countBusySessions, flushQueuedDeltas, sessionStateByRuntimeIdRef])
 
   const queueDelta = useCallback(
     (sessionId: string, key: keyof QueuedStreamDeltas, delta: string) => {
@@ -759,7 +862,7 @@ export function useMessageStream({
     [updateSessionState]
   )
 
-  const handleGatewayEvent = useGatewayEventHandler({
+  const dispatchGatewayEvent = useGatewayEventHandler({
     activeGatewayProfile,
     appendAssistantDelta,
     appendReasoningDelta,
@@ -778,6 +881,40 @@ export function useMessageStream({
     updateSessionState,
     upsertToolCall
   })
+
+  // Diagnostics wrapper around the dispatcher. The delta queue's flush events
+  // only see text streaming; everything else the gateway drives — tool-row
+  // upserts, subagent progress, session.info patches, terminal chunks — is
+  // applied synchronously inside the dispatch below and was invisible to a
+  // capture. Timing the dispatch as a whole covers every one of those paths by
+  // construction, with a floor so the ring only keeps rows that plausibly
+  // contributed to a dropped frame. Disarmed cost: one boolean test per event.
+  const handleGatewayEvent = useCallback(
+    (event: RpcEvent) => {
+      if (!isDiagnosticsArmed()) {
+        dispatchGatewayEvent(event)
+
+        return
+      }
+
+      const startedAt = performance.now()
+
+      try {
+        dispatchGatewayEvent(event)
+      } finally {
+        const durationMs = performance.now() - startedAt
+
+        if (durationMs >= GATEWAY_EVENT_RECORD_MIN_MS) {
+          recordGatewayEventApplied({
+            busySessions: countBusySessions(),
+            durationMs,
+            eventType: typeof event.type === 'string' ? event.type : 'unknown'
+          })
+        }
+      }
+    },
+    [countBusySessions, dispatchGatewayEvent]
+  )
 
   return {
     appendAssistantDelta,

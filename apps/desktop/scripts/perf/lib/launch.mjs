@@ -22,6 +22,59 @@ import { CDP, requireDriver, sleep } from './cdp.mjs'
 
 const require = createRequire(import.meta.url)
 const DESKTOP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+const REPO_ROOT = resolve(DESKTOP_DIR, '..', '..')
+
+/** Where the CLI installs itself — the app's own ACTIVE_HERMES_ROOT default. */
+function activeHermesRoot() {
+  const home =
+    process.env.HERMES_HOME ||
+    (process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'hermes')
+      : join(homedir(), '.hermes'))
+
+  return join(home, 'hermes-agent')
+}
+
+/** A python that has Hermes' dependencies installed, or null. */
+function findBackendPython() {
+  const rel =
+    process.platform === 'win32' ? join('Scripts', 'python.exe') : join('bin', 'python')
+
+  for (const root of [REPO_ROOT, activeHermesRoot()]) {
+    for (const venv of ['venv', '.venv']) {
+      const candidate = join(root, venv, rel)
+
+      if (existsSync(candidate)) {
+        return candidate
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Env that pins the spawned instance's BACKEND to this checkout.
+ *
+ * Normally the app resolves a backend by its own precedence and lands on the
+ * installed runtime — which is a different source tree. A scenario that asserts
+ * on gateway-side behaviour (hitch-classify) would then be testing the
+ * installed gateway, not the one in this working tree, so it pins the source
+ * root explicitly. The checkout has no venv of its own, so the interpreter
+ * falls back to the installed runtime's — same dependencies, this repo's code.
+ */
+function backendSourcePinEnv() {
+  const python = process.env.HERMES_DESKTOP_PYTHON || findBackendPython()
+
+  if (!python) {
+    throw new Error(
+      'no python with Hermes dependencies found (looked for venv/.venv in the checkout and in the installed ' +
+        'runtime) — set HERMES_DESKTOP_PYTHON to one'
+    )
+  }
+
+  return { HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT, HERMES_DESKTOP_PYTHON: python }
+}
 
 async function reachable(url) {
   try {
@@ -161,12 +214,15 @@ const ANTI_THROTTLE_FLAGS = [
  * `coldStart: true` skips the gateway-connect wait and settle (for launch-time
  * measurement) and returns `timings` (spawn→CDP, spawn→driver) plus renderer
  * boot marks (FCP, time-to-composer).
+ * `gatewayTestHooks: true` starts this instance's backend with the diagnostics
+ * test hooks enabled — only the U5 proof scenario asks for it.
  */
 export async function startIsolatedInstance({
   port = 9222,
   devPort = 5174,
   prod = false,
   coldStart = false,
+  gatewayTestHooks = false,
   hermesHome,
   userDataDir,
   seedConfig = true,
@@ -248,6 +304,16 @@ export async function startIsolatedInstance({
 
     if (devUrl) {
       env.HERMES_DESKTOP_DEV_SERVER = devUrl
+    }
+
+    // Electron passes its whole environment to the backend it spawns, so this
+    // is what mounts the gateway's guarded loop-block route in THIS isolated
+    // instance's gateway and nowhere else (the user's own gateway is a
+    // different process that never sees it). The hook only exists in this
+    // checkout's `hermes_cli`, so the backend is pinned to it as well.
+    if (gatewayTestHooks) {
+      env.HERMES_DIAGNOSTICS_TEST_HOOKS = '1'
+      Object.assign(env, backendSourcePinEnv())
     }
 
     const spawnAt = Date.now()

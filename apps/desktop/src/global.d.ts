@@ -355,8 +355,47 @@ declare global {
       findInPage: (query: string, options?: { forward?: boolean; findNext?: boolean }) => Promise<{ count: number }>
       stopFindInPage: () => Promise<void>
       onFoundInPage: (callback: (result: { activeMatchOrdinal: number; count: number }) => void) => () => void
+      // Hitch-capture arming, pushed by the capture controller in main. Optional
+      // because the renderer must keep working against a preload that predates
+      // the diagnostics surface — no bridge simply means never armed, which is
+      // the zero-cost state. Wired by `initDiagnosticsArming` in src/diagnostics.
+      diagnostics?: {
+        onArm: (callback: (payload: { captureId: string; wallClockAnchorMs: number }) => void) => () => void
+        onDisarm: (callback: () => void) => () => void
+        // Registers the source preload answers main's 'diagnostics:collect'
+        // pulls from, so the renderer never has to know the channel names.
+        // Returns the unsubscribe. Optional for the same reason the bridge
+        // itself is: an older preload simply contributes no renderer stream.
+        setSnapshotProvider?: (provider: (captureId: string) => unknown) => () => void
+      }
+      // Local-only capture control for the Diagnostics settings section (U4):
+      // start/stop the capture and write a sanitized bundle under userData.
+      // Optional so the section can hide itself on an older preload.
+      diagnosticsCapture?: {
+        start: () => Promise<{ captureId: string; wallClockAnchorMs: number; mainMonotonicAnchorMs: number }>
+        stop: () => Promise<DesktopDiagnosticsExport | null>
+        status: () => Promise<DesktopDiagnosticsStatus>
+      }
     }
   }
+}
+
+export interface DesktopDiagnosticsStatus {
+  armed: boolean
+  captureId: null | string
+}
+
+/** What `diagnosticsCapture.stop()` reports back: where the bundle landed and
+ *  how the exporter classified it (R3). Never any captured content. */
+export interface DesktopDiagnosticsExport {
+  captureId: string
+  /** Absolute path of the exported bundle directory. */
+  directory: string
+  /** Labels strongest-first; `['unclassified']` when nothing fired. */
+  labels: string[]
+  primary: null | string
+  /** Per-stream event counts, for the status line. */
+  streams: { name: string; events: number; absent?: string }[]
 }
 
 export interface DesktopMarketplaceSearchItem {

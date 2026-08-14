@@ -32,6 +32,8 @@ Examples:
     hermes debug share --no-redact  Disable upload-time secret redaction
     hermes debug share --nous       Upload to Nous-internal storage (private)
     hermes debug delete <url>       Delete a previously uploaded paste
+    hermes debug diagnose           Snapshot the Hermes process tree (local only)
+    hermes debug diagnose --wpr     Also record a bounded WPR trace (UNSANITIZED)
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
@@ -96,5 +98,51 @@ Examples:
         nargs="*",
         default=[],
         help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
+    )
+    diagnose_parser = debug_sub.add_parser(
+        "diagnose",
+        help="Snapshot the Hermes process tree, optionally with a bounded WPR trace",
+        description=(
+            "Host-side companion to the desktop app's diagnostics capture "
+            "(Settings -> Diagnostics). Writes a local report: the Hermes "
+            "process tree (pid, parent pid and executable basename only -- "
+            "never command lines) and, with --wpr, a time-bounded Windows "
+            "Performance Recorder trace. Nothing is uploaded. The WPR ETL is a "
+            "SYSTEM-WIDE kernel capture that is NOT sanitized and must not be "
+            "attached to a bug report; it is written to an 'unsafe-to-share' "
+            "subdirectory with a README explaining why."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    diagnose_parser.add_argument(
+        "--out",
+        default=None,
+        help="Output directory (default: $HERMES_HOME/diagnostics/diagnose-<timestamp>)",
+    )
+    diagnose_parser.add_argument(
+        "--wpr",
+        action="store_true",
+        help=(
+            "Also record a Windows Performance Recorder trace. Requires an "
+            "elevated shell and wpr.exe; skipped with a note when unavailable. "
+            "Produces an UNSANITIZED, unsafe-to-share ETL (see the description)."
+        ),
+    )
+    diagnose_parser.add_argument(
+        "--wpr-profile",
+        default="GeneralProfile",
+        help="WPR profile to record (default: GeneralProfile)",
+    )
+    diagnose_parser.add_argument(
+        "--wpr-seconds",
+        type=int,
+        default=30,
+        help="How long to record, in seconds (default: 30)",
+    )
+    diagnose_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Hard timeout for any single wpr invocation, in seconds (default: 300)",
     )
     debug_parser.set_defaults(func=cmd_debug)

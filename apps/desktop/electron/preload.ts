@@ -395,5 +395,67 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:found-in-page', listener)
 
     return () => ipcRenderer.removeListener('hermes:found-in-page', listener)
+  },
+  // Hitch capture (U3). The capture controller lives in MAIN — it is the only
+  // process that can reach both the renderers and the gateway — so all three
+  // messages here are main-initiated:
+  //
+  //   main -> renderer  'diagnostics:arm'     { captureId, wallClockAnchorMs }
+  //   main -> renderer  'diagnostics:disarm'
+  //   main -> renderer  'diagnostics:collect' { requestId, captureId }
+  //   renderer -> main  'diagnostics:collect:result' { requestId, snapshot }
+  //
+  // Collect is a pull, not a push, because only main knows when the capture
+  // ends. Electron has no main->renderer invoke, so the request carries a
+  // `requestId` the reply echoes back and main correlates on (the same
+  // send-both-ways idiom the pet overlay and quick entry use). The renderer
+  // hands its snapshot source down once via `setSnapshotProvider`; preload
+  // holds it and answers on main's behalf, so the renderer never has to know
+  // the channel names. No provider registered (older renderer, harness) is not
+  // an error: preload answers with a null snapshot and the capture proceeds
+  // without that window's stream.
+  diagnostics: {
+    onArm: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('diagnostics:arm', listener)
+
+      return () => ipcRenderer.removeListener('diagnostics:arm', listener)
+    },
+    onDisarm: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('diagnostics:disarm', listener)
+
+      return () => ipcRenderer.removeListener('diagnostics:disarm', listener)
+    },
+    setSnapshotProvider: provider => {
+      const listener = async (_event, request) => {
+        const requestId = request?.requestId
+        let snapshot = null
+
+        try {
+          snapshot = (await provider(request?.captureId)) ?? null
+        } catch {
+          // A renderer that cannot snapshot itself still owes main an answer,
+          // otherwise the export waits out the full collect timeout.
+          snapshot = null
+        }
+
+        ipcRenderer.send('diagnostics:collect:result', { requestId, snapshot })
+      }
+
+      ipcRenderer.on('diagnostics:collect', listener)
+
+      return () => ipcRenderer.removeListener('diagnostics:collect', listener)
+    }
+  },
+  // Capture control for the Diagnostics settings section (U4). Separate from
+  // the `diagnostics` namespace above because that one is main-driven push and
+  // this one is renderer-driven request/response. `stop` also writes the
+  // sanitized bundle and answers with its path + classification — one action,
+  // no separate export step.
+  diagnosticsCapture: {
+    start: () => ipcRenderer.invoke('hermes:diagnostics:start'),
+    stop: () => ipcRenderer.invoke('hermes:diagnostics:stop'),
+    status: () => ipcRenderer.invoke('hermes:diagnostics:status')
   }
 })

@@ -27,8 +27,12 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py as a fresh module.
+
+    Fresh per call so process-scoped state in the plugin (the once-per-process
+    permanent-error latch) starts clean in each test.
+    """
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -40,7 +44,12 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    return _load_plugin_module().router
 
 
 @pytest.fixture
@@ -584,6 +593,132 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+# ---------------------------------------------------------------------------
+# Permanent (process-level) Kanban failure — no reconnect storm
+# ---------------------------------------------------------------------------
+
+
+def _permissive_ws_auth(monkeypatch):
+    """Stub hermes_cli.web_server so every WS upgrade is authorized."""
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="",
+        _ws_auth_ok=lambda ws: True,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+
+def test_ws_events_delegated_child_closes_terminally_and_logs_once(
+    tmp_path, monkeypatch, caplog,
+):
+    """A delegated-child PermissionError is permanent — close terminally, log once.
+
+    The guard is process-level, so every reconnect hits it again. Before the
+    fix the catch-all closed with no code, the dashboard's backoff treated that
+    as transient, and errors.log grew a line every few seconds for as long as a
+    tab was open. Now: a distinct terminal close code (not 1008, which the
+    dashboard renders as an auth failure) and exactly one warning per process.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    _permissive_ws_auth(monkeypatch)
+
+    mod = _load_plugin_module()
+    app = FastAPI()
+    app.include_router(mod.router, prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    # Genuinely delegated-child context: the real guard fires inside
+    # connect()'s first-open migration pass (write_txn), so clear the
+    # per-process init cache to force that pass to run again.
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    kb._INITIALIZED_PATHS.clear()
+
+    from starlette.websockets import WebSocketDisconnect
+
+    caplog.clear()
+    codes = []
+    # Two connections back to back — the second stands in for the client's
+    # immediate reconnect attempt.
+    for _ in range(2):
+        with caplog.at_level("WARNING"):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with c.websocket_connect("/api/plugins/kanban/events") as ws:
+                    ws.receive_json()
+        codes.append(exc.value.code)
+
+    assert codes == [mod.WS_KANBAN_UNAVAILABLE, mod.WS_KANBAN_UNAVAILABLE]
+    assert mod.WS_KANBAN_UNAVAILABLE != 1008  # 1008 renders as "auth failed"
+
+    stream_warnings = [
+        r for r in caplog.records
+        if "Kanban event stream" in r.getMessage()
+    ]
+    assert len(stream_warnings) == 1, [r.getMessage() for r in stream_warnings]
+    assert "not retrying" in stream_warnings[0].getMessage()
+    # And the old per-attempt line is gone entirely.
+    assert not [
+        r for r in caplog.records
+        if "Kanban event stream error:" in r.getMessage()
+    ]
+
+
+def test_init_db_permission_error_logs_once_per_process(tmp_path, monkeypatch, caplog):
+    """``_conn``'s init_db failure is the same permanent condition — log once."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    mod = _load_plugin_module()
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    kb._INITIALIZED_PATHS.clear()
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            with pytest.raises(PermissionError):
+                mod._conn()
+
+    init_warnings = [
+        r for r in caplog.records if "init_db" in r.getMessage()
+    ]
+    assert len(init_warnings) == 1, [r.getMessage() for r in init_warnings]
+    assert "not retrying" in init_warnings[0].getMessage()
+
+
+def test_dashboard_bundle_stops_reconnecting_on_kanban_unavailable_close():
+    """Client terminal branch: new close code ends the loop with a non-auth message.
+
+    Ordinary transient closes must keep the existing backoff/reopen behavior.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text(encoding="utf-8")
+
+    mod = _load_plugin_module()
+    close_branch = f"if (ev && ev.code === {mod.WS_KANBAN_UNAVAILABLE})"
+    assert close_branch in js, f"missing terminal branch for {close_branch}"
+
+    onclose = js.split("ws.onclose = function (ev) {", 1)[1].split("};", 1)[0]
+    assert close_branch in onclose
+    # Terminal: the branch returns before reaching the backoff/reopen tail.
+    terminal, _, transient = onclose.partition(close_branch)
+    assert "setTimeout(openWs" not in terminal + close_branch
+    assert "wsKanbanUnavailable" in transient
+    assert "auth" not in transient.split("return;", 1)[0].lower()
+    # Transient closes still reopen with the unchanged backoff.
+    assert "setTimeout(openWs, delay)" in transient
+    assert "wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000)" in transient
 
 
     # The bug symptom was a traceback; we don't assert on stderr because

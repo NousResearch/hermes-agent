@@ -394,6 +394,47 @@ describe('messaging profile scope', () => {
     expect($messagingPlatformTotals.get()['work:signal']).toBe(42)
   })
 
+  it('ignores an older overlapping load-more response for the same profile and platform', async () => {
+    const older = deferred<{ sessions: SessionInfo[]; total: number }>()
+    const newer = deferred<{ sessions: SessionInfo[]; total: number }>()
+
+    setMessagingSessions([row('m1', { profile: 'work', source: 'signal' })])
+    listAllProfileSessions.mockImplementationOnce(() => older.promise).mockImplementationOnce(() => newer.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+    const olderLoad = result.current.loadMoreMessagingForPlatform('signal')
+
+    setMessagingSessions([
+      row('m1', { profile: 'work', source: 'signal' }),
+      row('m2', { profile: 'work', source: 'signal' })
+    ])
+    const newerLoad = result.current.loadMoreMessagingForPlatform('signal')
+
+    await act(async () => {
+      newer.resolve({
+        sessions: [
+          row('m1', { profile: 'work', source: 'signal' }),
+          row('m2', { profile: 'work', source: 'signal' }),
+          row('m3', { profile: 'work', source: 'signal' })
+        ],
+        total: 3
+      })
+      await newerLoad
+
+      older.resolve({
+        sessions: [
+          row('m1', { profile: 'work', source: 'signal' }),
+          row('m2', { profile: 'work', source: 'signal' })
+        ],
+        total: 2
+      })
+      await olderLoad
+    })
+
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['m1', 'm2', 'm3'])
+    expect($messagingPlatformTotals.get()).toEqual({ 'work:signal': 3 })
+  })
+
   it('ignores an in-flight response after the active profile changes', async () => {
     const work = deferred<{ sessions: SessionInfo[]; total: number }>()
     const personal = deferred<{ sessions: SessionInfo[]; total: number }>()

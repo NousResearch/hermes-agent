@@ -101,6 +101,7 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const profileScopeRef = useRef(profileScope)
+  const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
   profileScopeRef.current = profileScope
@@ -158,6 +159,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         return
       }
 
+      const requestKey = messagingTotalsKey(sessionProfile, platform)
+      const requestId = (loadMoreMessagingRequestRef.current[requestKey] ?? 0) + 1
+      loadMoreMessagingRequestRef.current[requestKey] = requestId
+
       const inProfile = (s: SessionInfo) =>
         sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
 
@@ -173,7 +178,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         { source: platform }
       )
 
-      if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+      if (
+        loadMoreMessagingRequestRef.current[requestKey] !== requestId ||
+        messagingProfileFor(profileScopeRef.current) !== sessionProfile
+      ) {
         return
       }
 
@@ -185,9 +193,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       ])
 
       const total = result.total ?? incoming.length
-      const totalsKey = messagingTotalsKey(sessionProfile, platform)
 
-      setMessagingPlatformTotals(prev => ({ ...prev, [totalsKey]: Math.max(total, incoming.length) }))
+      setMessagingPlatformTotals(prev => ({ ...prev, [requestKey]: Math.max(total, incoming.length) }))
     },
     [profileScope]
   )

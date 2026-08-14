@@ -1,8 +1,7 @@
 """Adversarial verification tests for ci-poller-hint-dead-skill-ref.
 
 Independent of the implementer's own tests in test_notify_on_complete.py.
-Goal: re-derive the acceptance criteria from the spec at
-/home/neo/projects/_backlog/specs/ci-poller-hint-dead-skill-ref.md and probe
+Goal: re-derive the acceptance criteria from the spec and probe
 edge cases the implementer's 4 restored tests did not cover:
 
   1. No skill_view() dead pointer remains anywhere in the hint text.

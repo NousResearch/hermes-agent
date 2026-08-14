@@ -5855,6 +5855,14 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         ),
+        # Preserve provider-supplied reasoning identity through the gateway so
+        # Desktop updates the correct disclosure instead of concatenating
+        # separate native Responses summaries.
+        "reasoning_item_callback": lambda item_id, text: _emit(
+            "reasoning.delta",
+            sid,
+            {"reasoning_id": item_id, "text": text},
+        ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),

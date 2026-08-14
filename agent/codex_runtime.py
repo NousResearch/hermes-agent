@@ -1038,6 +1038,7 @@ def _consume_codex_event_stream(
     model: str,
     on_text_delta=None,
     on_reasoning_delta=None,
+    on_reasoning_item=None,
     on_commentary_message=None,
     on_first_delta=None,
     on_event=None,
@@ -1070,9 +1071,13 @@ def _consume_codex_event_stream(
     * ``on_text_delta(str)`` — fires per ``response.output_text.delta``, suppressed
       once a function_call event is seen (so tool-call turns don't bleed text
       into the chat).
-    * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta`` and
-      ``phase=analysis`` message deltas. When no dedicated commentary callback
-      is supplied, commentary also uses this legacy fallback.
+    * ``on_reasoning_delta(str)`` — legacy fallback for reasoning events that do
+      not expose a stable provider item/part identity, plus ``phase=analysis``
+      message deltas. When no dedicated commentary callback is supplied,
+      commentary also uses this legacy fallback.
+    * ``on_reasoning_item(source_id, text)`` — item-aware reasoning summary
+      deltas. ``source_id`` is ``<item_id>:summary:<summary_index>`` so every
+      Responses summary entry remains a separate live Desktop part.
     * ``on_commentary_message(str)`` — fires once per completed
       ``phase=commentary`` message, before any following tool item executes.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
@@ -1179,6 +1184,33 @@ def _consume_codex_event_stream(
         if "function_call" in event_type:
             has_tool_calls = True
             # fall through — function_call items still get added on output_item.done
+
+        if event_type == "response.reasoning_summary_text.delta":
+            reasoning_text = _event_field(event, "delta", "")
+            item_id = _event_field(event, "item_id")
+            summary_index = _event_field(event, "summary_index")
+            structured = (
+                on_reasoning_item is not None
+                and isinstance(item_id, str)
+                and item_id
+                and isinstance(summary_index, int)
+                and not isinstance(summary_index, bool)
+                and summary_index >= 0
+            )
+            if reasoning_text and structured:
+                try:
+                    on_reasoning_item(
+                        f"{item_id}:summary:{summary_index}", reasoning_text
+                    )
+                    continue
+                except Exception:
+                    logger.debug("Codex stream on_reasoning_item raised", exc_info=True)
+            if reasoning_text and on_reasoning_delta is not None:
+                try:
+                    on_reasoning_delta(reasoning_text)
+                except Exception:
+                    logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            continue
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
@@ -1440,6 +1472,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     model=api_kwargs.get("model"),
                     on_text_delta=_on_text_delta,
                     on_reasoning_delta=_on_reasoning_delta,
+                    on_reasoning_item=getattr(
+                        agent, "reasoning_item_callback", None
+                    ),
                     on_commentary_message=(
                         _on_commentary_message
                         if (

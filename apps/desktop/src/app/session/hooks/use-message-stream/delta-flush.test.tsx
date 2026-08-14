@@ -13,6 +13,10 @@ import { useMessageStream } from './index'
 
 const SID = 'session-1'
 let appendAssistantDelta: ((sessionId: string, delta: string) => void) | null = null
+
+let appendReasoningDelta: ((sessionId: string, delta: string, replace?: boolean, sourceId?: string) => void) | null =
+  null
+
 let states: Map<string, ClientSessionState>
 type UpdateSessionState = (
   sessionId: string,
@@ -38,7 +42,8 @@ function Harness() {
 
   useEffect(() => {
     appendAssistantDelta = stream.appendAssistantDelta
-  }, [stream.appendAssistantDelta])
+    appendReasoningDelta = stream.appendReasoningDelta
+  }, [stream.appendAssistantDelta, stream.appendReasoningDelta])
 
   return null
 }
@@ -46,6 +51,7 @@ function Harness() {
 function mountStream() {
   render(<Harness />)
   expect(appendAssistantDelta).not.toBeNull()
+  expect(appendReasoningDelta).not.toBeNull()
 }
 
 function assistantText() {
@@ -59,6 +65,7 @@ describe('useMessageStream delta flush scheduling', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     appendAssistantDelta = null
+    appendReasoningDelta = null
     states = new Map()
     updateSessionState = vi.fn((sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
       const next = updater(states.get(sessionId) ?? createClientSessionState())
@@ -91,6 +98,26 @@ describe('useMessageStream delta flush scheduling', () => {
     })
 
     expect(assistantText()).toBe('still streaming')
+  })
+
+  it('keeps distinct reasoning item ids separate when they flush together', async () => {
+    mountStream()
+
+    act(() => appendReasoningDelta!(SID, 'Inspecting the transcript', false, 'reasoning-1'))
+    act(() => appendReasoningDelta!(SID, 'Comparing the event lifecycle', false, 'reasoning-2'))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    const reasoning =
+      states
+        .get(SID)
+        ?.messages.at(-1)
+        ?.parts.filter(part => part.type === 'reasoning') ?? []
+
+    expect(reasoning.map(part => part.text)).toEqual(['Inspecting the transcript', 'Comparing the event lifecycle'])
+    expect(reasoning.map(part => part.sourceId)).toEqual(['reasoning-1', 'reasoning-2'])
   })
 
   it('flushes queued text immediately when a hidden window becomes visible', () => {

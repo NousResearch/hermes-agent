@@ -413,6 +413,16 @@ describe('interleaved reasoning/text coalescing', () => {
     expect((parts[1] as { text: string }).text).toBe('Working on it.')
   })
 
+  it('keeps separate Codex reasoning items as separate parts', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'Inspecting the transcript', 'reasoning-1')
+    parts = appendReasoningPart(parts, 'Comparing the event lifecycle', 'reasoning-2')
+    parts = appendReasoningPart(parts, ' before rendering', 'reasoning-1')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'reasoning'])
+    expect((parts[0] as { text: string }).text).toBe('Inspecting the transcript before rendering')
+    expect((parts[1] as { text: string }).text).toBe('Comparing the event lifecycle')
+  })
+
   it('starts a fresh text part after a tool call (segment boundary)', () => {
     let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.')
     parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')

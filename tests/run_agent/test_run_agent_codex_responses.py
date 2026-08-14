@@ -619,6 +619,153 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     assert response.output_text == ""
 
 
+def test_consume_codex_stream_preserves_reasoning_summary_boundaries():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    legacy_reasoning = []
+    structured_reasoning = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.reasoning_summary_part.added",
+                item_id="rs_first",
+                summary_index=0,
+                part=SimpleNamespace(type="summary_text", text=""),
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                item_id="rs_first",
+                summary_index=0,
+                delta="Inspecting the source",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_part.done",
+                item_id="rs_first",
+                summary_index=0,
+                part=SimpleNamespace(type="summary_text", text="Inspecting the source"),
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                item_id="rs_first",
+                summary_index=1,
+                delta="Checking the package",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                item_id="rs_verify",
+                summary_index=0,
+                delta="Verifying the artifact",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=legacy_reasoning.append,
+        on_reasoning_item=lambda item_id, text: structured_reasoning.append(
+            (item_id, text)
+        ),
+    )
+
+    assert legacy_reasoning == []
+    assert structured_reasoning == [
+        ("rs_first:summary:0", "Inspecting the source"),
+        ("rs_first:summary:1", "Checking the package"),
+        ("rs_verify:summary:0", "Verifying the artifact"),
+    ]
+
+
+def test_consume_codex_stream_preserves_summary_text_when_identity_delivery_fails():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    def raising_callback(_source_id, _text):
+        raise RuntimeError("display callback failed")
+
+    cases = [
+        ({"item_id": "rs_valid", "summary_index": 0}, None),
+        ({"item_id": "rs_invalid", "summary_index": "0"}, lambda _source_id, _text: None),
+        ({"item_id": "rs_raising", "summary_index": 0}, raising_callback),
+    ]
+
+    for identity, callback in cases:
+        legacy_reasoning = []
+        _consume_codex_event_stream(
+            _FakeCreateStream([
+                SimpleNamespace(
+                    type="response.reasoning_summary_text.delta",
+                    delta="Preserved summary",
+                    **identity,
+                ),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed"),
+                ),
+            ]),
+            model="gpt-5-codex",
+            on_reasoning_delta=legacy_reasoning.append,
+            on_reasoning_item=callback,
+        )
+
+        assert legacy_reasoning == ["Preserved summary"]
+
+
+def test_run_codex_stream_wires_reasoning_summary_boundaries_to_gateway(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    legacy_reasoning = []
+    structured_reasoning = []
+    agent.reasoning_callback = legacy_reasoning.append
+    agent.reasoning_item_callback = lambda item_id, text: structured_reasoning.append(
+        (item_id, text)
+    )
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_live",
+        summary=[SimpleNamespace(type="summary_text", text="Inspecting the source")],
+        encrypted_content="opaque",
+        status="completed",
+    )
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.reasoning_summary_part.added",
+                item_id="rs_live",
+                summary_index=0,
+                part=SimpleNamespace(type="summary_text", text=""),
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                item_id="rs_live",
+                summary_index=0,
+                delta="Inspecting the source",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_part.done",
+                item_id="rs_live",
+                summary_index=0,
+                part=SimpleNamespace(type="summary_text", text="Inspecting the source"),
+            ),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output == [reasoning_item]
+    assert legacy_reasoning == []
+    assert structured_reasoning == [
+        ("rs_live:summary:0", "Inspecting the source"),
+    ]
+
+
 def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 

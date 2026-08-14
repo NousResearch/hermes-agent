@@ -8,7 +8,13 @@ import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
-export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
+type AssistantUiMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
+
+export type ReasoningChatMessagePart = Extract<AssistantUiMessagePart, { type: 'reasoning' }> & {
+  sourceId?: string
+}
+
+export type ChatMessagePart = Exclude<AssistantUiMessagePart, { type: 'reasoning' }> | ReasoningChatMessagePart
 
 export type ChatMessage = {
   id: string
@@ -54,6 +60,7 @@ export type GatewayEventPayload = {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_id?: string
   service_tier?: string
   fast?: boolean
   approval_mode?: string
@@ -134,8 +141,8 @@ export function textPart(text: string): ChatMessagePart {
   return { type: 'text', text }
 }
 
-export function reasoningPart(text: string): ChatMessagePart {
-  return { type: 'reasoning', text }
+export function reasoningPart(text: string, sourceId?: string): ReasoningChatMessagePart {
+  return { type: 'reasoning', text, ...(sourceId && { sourceId }) }
 }
 
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
@@ -448,7 +455,22 @@ export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMes
   return appendStreamPart(parts, 'text', delta).parts
 }
 
-export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+export function appendReasoningPart(parts: ChatMessagePart[], delta: string, sourceId?: string): ChatMessagePart[] {
+  if (sourceId) {
+    const next = [...parts]
+
+    const index = next.findLastIndex(part => part.type === 'reasoning' && part.sourceId === sourceId)
+
+    if (index >= 0) {
+      const part = next[index] as ReasoningChatMessagePart
+      next[index] = { ...part, text: `${part.text}${delta}` }
+
+      return next
+    }
+
+    return [...next, reasoningPart(delta, sourceId)]
+  }
+
   return appendStreamPart(parts, 'reasoning', delta).parts
 }
 

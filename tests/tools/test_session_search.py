@@ -823,3 +823,147 @@ class TestLegacyContinuationPlusDelegation:
 
         # Delegation child must NOT appear
         assert "s_delegate" not in sids
+
+
+# =========================================================================
+# /new-reset lineage must stay discoverable (#85756)
+#
+# Gateway /new creates a child with parent_session_id and ends the parent
+# with end_reason='session_reset'. That child carries no transcript, so the
+# current-lineage exclusion (which assumes same-root content is already in
+# context) goes blind: FTS hits in last-night's session are dropped, and
+# browse hides every recent interactive row because they all have a parent.
+# Delegation children (live parent, no end_reason) must stay excluded.
+# =========================================================================
+
+def _seed_gateway_new_reset_chain(db, *, needle="ibuprofen night-dose protocol"):
+    """A → B → C gateway /new chain. C is the empty current session."""
+    db.create_session(
+        "s_aug12", source="telegram", session_key="tg:user:1",
+    )
+    db.append_message("s_aug12", role="user", content="older unrelated chat")
+    db.end_session("s_aug12", "session_reset")
+
+    db.create_session(
+        "s_night", source="telegram",
+        parent_session_id="s_aug12",
+        session_key="tg:user:1",
+        model_config={"_reset_from": "s_aug12"},
+    )
+    db._conn.execute(
+        "UPDATE sessions SET title = ? WHERE id = ?",
+        ("Night ibuprofen plan", "s_night"),
+    )
+    db.append_message("s_night", role="user", content=f"Remember the {needle}")
+    db.append_message(
+        "s_night", role="assistant", content=f"Noted {needle} at 21:00",
+    )
+    db.end_session("s_night", "session_reset")
+
+    db.create_session(
+        "s_today", source="telegram",
+        parent_session_id="s_night",
+        session_key="tg:user:1",
+        model_config={"_reset_from": "s_night"},
+    )
+    db._conn.commit()
+    return needle
+
+
+class TestNewResetLineageDiscovery:
+    """After /new, yesterday's session must be searchable from the empty child."""
+
+    def test_session_reset_parent_discoverable_from_child(self, db):
+        _seed_gateway_new_reset_chain(db)
+        result = json.loads(session_search(
+            query="ibuprofen", db=db, current_session_id="s_today",
+        ))
+        assert result["success"] is True
+        assert result["count"] >= 1
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_night" in sids
+        blob = json.dumps(result["results"], ensure_ascii=False).lower()
+        assert "ibuprofen" in blob
+
+    def test_cli_new_session_parent_discoverable_from_child(self, db):
+        db.create_session("s_cli_old", source="cli")
+        db.append_message(
+            "s_cli_old", role="user",
+            content="quartz lantern wiring diagram from yesterday",
+        )
+        db.end_session("s_cli_old", "new_session")
+        db.create_session(
+            "s_cli_new", source="cli", parent_session_id="s_cli_old",
+        )
+        result = json.loads(session_search(
+            query="quartz lantern", db=db, current_session_id="s_cli_new",
+        ))
+        assert result["count"] >= 1
+        assert "s_cli_old" in [r["session_id"] for r in result["results"]]
+
+    def test_live_delegation_child_still_excluded(self, db):
+        """Unended parent+child (delegate_task) must stay hidden."""
+        db.create_session("s_parent", source="cli")
+        db.append_message(
+            "s_parent", role="user",
+            content="nebula deployment infrastructure setup",
+        )
+        db.create_session(
+            "s_child", source="cli", parent_session_id="s_parent",
+        )
+        result = json.loads(session_search(
+            query="nebula deployment", db=db, current_session_id="s_child",
+        ))
+        assert result["count"] == 0
+
+    def test_title_match_reset_parent_not_dropped(self, db):
+        _seed_gateway_new_reset_chain(db)
+        result = json.loads(session_search(
+            query="Night ibuprofen plan", db=db, current_session_id="s_today",
+        ))
+        assert result["count"] >= 1
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_night" in sids
+
+    def test_scroll_into_reset_parent_is_allowed(self, db):
+        _seed_gateway_new_reset_chain(db)
+        disc = json.loads(session_search(
+            query="ibuprofen", db=db, current_session_id="s_today", limit=1,
+        ))
+        assert disc["count"] >= 1
+        hit = disc["results"][0]
+        scrolled = json.loads(session_search(
+            session_id=hit["session_id"],
+            around_message_id=hit["match_message_id"],
+            db=db,
+            current_session_id="s_today",
+        ))
+        assert scrolled["success"] is True
+        assert scrolled["mode"] == "scroll"
+        contents = " ".join(m.get("content") or "" for m in scrolled["messages"])
+        assert "ibuprofen" in contents.lower()
+
+
+class TestNewResetLineageBrowse:
+    """Browse must list /new-reset conversations, not only cron/root rows."""
+
+    def test_reset_parent_appears_in_browse(self, db):
+        _seed_gateway_new_reset_chain(db)
+        result = json.loads(session_search(db=db, current_session_id="s_today"))
+        assert result["mode"] == "browse"
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_today" not in sids
+        assert "s_night" in sids
+
+    def test_browse_still_hides_live_delegation_child(self, db):
+        db.create_session("s_main", source="cli")
+        db.append_message("s_main", role="user", content="parent work")
+        db.create_session(
+            "s_delegate", source="cli", parent_session_id="s_main",
+        )
+        db.append_message("s_delegate", role="assistant", content="subagent work")
+        result = json.loads(session_search(db=db, current_session_id="s_other"))
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_delegate" not in sids
+        assert "s_main" in sids
+

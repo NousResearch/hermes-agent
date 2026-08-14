@@ -10061,7 +10061,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # Cancelled after pop but before durable dispatch — hold, don't lose.
             if event is not None:
                 self._hold_inbound_event(event, where="media-group-flush-cancelled")
-            return
+            raise
         finally:
             if self._media_group_tasks.get(media_group_id) is current_task:
                 self._media_group_tasks.pop(media_group_id, None)

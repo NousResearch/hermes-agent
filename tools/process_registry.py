@@ -1386,24 +1386,33 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         finally:
             if _waiter is not None:
                 _waiter.close()
+            # Capture EOF is not process exit: the child may have redirected or
+            # closed its pipes while still alive (issue #86416). This reader owns
+            # the real exit — wait unbounded so a notify_on_complete session
+            # still notifies autonomously when the child actually terminates.
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                session.process.wait, lambda: session.process.returncode)
+                session.process.wait, lambda: session.process.returncode,
+                proc=session.process)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code, proc=None) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
         one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
 
         A process may close stdout long before it exits.  The reader owns a dedicated
         daemon thread, so it must keep waiting rather than publish a false completion
         and discard the only ``Popen`` handle that can reap the child.
+        For pipe-backed readers (``proc`` given), capture-pipe EOF is not process
+        exit (issue #86416). When observation itself fails, leave the session in
+        _running. An unknown exit code is never finalized as a completion.
         """
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
                 append(tail)
+        rc = None
         try:
-            wait()
+            rc = wait()
         except Exception as e:
             # A PTY child reaped by isalive() already has its exitstatus; only an
             # unknown status must stay tracked for later reconciliation.
@@ -1411,7 +1420,20 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 logger.warning("%s wait failed; leaving process tracked: %s", label, e)
                 return
             logger.warning("%s wait failed; recording known exit status: %s", label, e)
-        self._finish_exited(session, exit_code())
+        if rc is None and proc is not None:
+            rc = proc.poll()
+        if rc is None and proc is not None:
+            logger.info(
+                "Process %s reached EOF on capture pipe but the direct child "
+                "is still running (pid=%s); not marking as exited.",
+                session.id,
+                session.pid,
+            )
+            return
+        code = exit_code()
+        if code is None:
+            return
+        self._finish_exited(session, code)
 
     _log_delta_command = staticmethod(log_delta_command)
 

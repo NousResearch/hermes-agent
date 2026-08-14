@@ -357,20 +357,36 @@ def _(rid, params: dict) -> dict:
             model_set = True
         except Exception:
             pass
-    elif is_truthy_value(params.get("mirror_credentials", True)) and not (path / "config.yaml").exists():
-        # No explicit pin and no cloned config: inherit the launch profile's
-        # provider+model so the first turn resolves. Same writer as the pin.
+    elif is_truthy_value(params.get("mirror_credentials", True)):
+        # No explicit pin: inherit the launch profile's provider+model so the
+        # first turn resolves. Gate on the MODEL SECTION being absent, not on
+        # config.yaml existing — earlier mirroring steps (voice sections,
+        # #85755) legitimately create the file first, and a file-existence
+        # gate silently skipped inheritance for every non-clone bot
+        # ("No inference provider configured" on first message, tester
+        # report). Clones bring their own model section and stay untouched.
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_cli.config import load_config_readonly, read_user_config_raw
             from hermes_cli.web_routers.profiles import _write_profile_model
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
 
-            cfg = load_config_readonly() or {}
-            model_cfg = cfg.get("model") or {}
-            inherited_provider = str(model_cfg.get("provider") or "")
-            inherited_model = str(model_cfg.get("default") or "")
-            if inherited_provider and inherited_model:
-                _write_profile_model(path, inherited_provider, inherited_model)
-                mirrored["model_inherited"] = True
+            token = set_hermes_home_override(str(path))
+            try:
+                dst_model = (read_user_config_raw() or {}).get("model") or {}
+            finally:
+                reset_hermes_home_override(token)
+
+            if not (dst_model.get("provider") and dst_model.get("default")):
+                cfg = load_config_readonly() or {}
+                model_cfg = cfg.get("model") or {}
+                inherited_provider = str(model_cfg.get("provider") or "")
+                inherited_model = str(model_cfg.get("default") or "")
+                if inherited_provider and inherited_model:
+                    _write_profile_model(path, inherited_provider, inherited_model)
+                    mirrored["model_inherited"] = True
         except Exception:
             pass
 

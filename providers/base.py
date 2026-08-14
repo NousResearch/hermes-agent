@@ -75,6 +75,12 @@ class ProviderProfile:
     refresh_credential: Callable[[Any], Any] | None = None
     classify_api_error: Callable[..., Any] | None = None
 
+    # ── Reasoning echo (replay side) ─────────────────────────
+    # True when replayed assistant messages must keep reasoning_content.
+    # Plain class attribute, NOT a dataclass field, so plugins opt in
+    # without changing stock construction.
+    echo_reasoning_content = False
+
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
     # tool-result messages natively.  Set on providers that expose

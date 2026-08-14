@@ -147,35 +147,55 @@ def test_llm_drafts_sahil_linkedin_still_uses_static():
     assert len(drafts) > 0, "sahil_linkedin should still use static templates"
 
 
-# ── reply_suggester.py: no suggestions for short/placeholder posts ──────
+# ── reply_suggester.py: no suggestions for absent/placeholder source context ──
 
-def test_reply_suggester_short_post_returns_empty():
-    """Posts with < 40 chars return no suggestions."""
+def test_reply_suggester_short_post_no_id_returns_empty():
+    """Posts without an 'id' field (no source tweet context) return no suggestions."""
     post = {"text": "Nice."}
     suggestions = rs.suggest_replies_for_post(post, "test_user")
-    assert suggestions == [], "Short posts should return no suggestions"
+    assert suggestions == [], "Posts without source tweet id should return no suggestions"
 
 
-def test_reply_suggester_placeholder_post_returns_empty():
-    """Placeholder/synthetic posts return no suggestions."""
-    post = {"text": "Just shipped a thing."}  # 22 chars, < 40
+def test_reply_suggester_placeholder_post_no_id_returns_empty():
+    """Placeholder/synthetic posts without an 'id' return no suggestions."""
+    post = {"text": "Just shipped a thing."}
     suggestions = rs.suggest_replies_for_post(post, "test_user")
-    assert suggestions == [], "Placeholder posts should return no suggestions"
+    assert suggestions == [], "Placeholder posts without id should return no suggestions"
+
+
+def test_reply_suggester_short_real_post_returns_suggestions():
+    """Genuine short posts with an 'id' (real source tweet) get suggestions.
+    
+    The old <40-char length gate would have rejected this. The structural
+    'id' check correctly permits it — real tweets can be short.
+    """
+    post = {
+        "text": "Just shipped it.",
+        "id": "1887654321098765432",
+    }
+    suggestions = rs.suggest_replies_for_post(post, "test_user")
+    assert len(suggestions) > 0, (
+        "Short real posts with source tweet id should get reply suggestions"
+    )
 
 
 def test_reply_suggester_real_post_returns_suggestions():
-    """Real posts with substantive content still get suggestions."""
+    """Real posts with substantive content and an 'id' still get suggestions."""
     post = {
         "text": "Just shipped a new feature that lets you split your shopping across 9 UK supermarkets automatically. Saved £6.40 on my first test run.",
         "hashtags": ["buildinpublic"],
+        "id": "1887654321098765432",
     }
     suggestions = rs.suggest_replies_for_post(post, "test_user")
     assert len(suggestions) > 0, "Real posts should get reply suggestions"
 
 
 def test_reply_suggester_engagement_bait_returns_empty():
-    """Engagement bait posts return no suggestions (existing behaviour)."""
-    post = {"text": "RT if you agree! Like if you've been there. Comment below with your take."}
+    """Engagement bait posts return no suggestions even with a real id."""
+    post = {
+        "text": "RT if you agree! Like if you've been there. Comment below with your take.",
+        "id": "1887654321098765432",
+    }
     suggestions = rs.suggest_replies_for_post(post, "test_user")
     assert suggestions == [], "Engagement bait should return no suggestions"
 

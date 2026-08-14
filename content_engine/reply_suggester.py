@@ -164,9 +164,11 @@ def suggest_replies_for_post(post: Dict, account_handle: str) -> List[Dict]:
     if len(text) < 10:
         return []
     
-    # Require actual tweet content — not a placeholder or synthetic post.
-    # Real tweets have substantive text; synthetic/placeholder posts don't.
-    if len(text) < 40:
+    # Require actual source tweet context — not a placeholder or synthetic post.
+    # Real tweets from xurl carry an 'id' field; synthetic/placeholder posts don't.
+    # This rejects absent/placeholder source context without penalising genuine
+    # short posts (e.g. "Ship." from a real account).
+    if not post.get("id"):
         return []
     
     # Skip engagement bait / bot-looking content

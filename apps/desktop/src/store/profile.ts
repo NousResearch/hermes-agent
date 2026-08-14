@@ -315,6 +315,14 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
 export const ALL_PROFILES = '__all__'
 
+// Messaging totals belong to the Desktop profile route as well as the source.
+// Shared by the fetcher and sidebar so neither can read another profile's count.
+export const messagingProfileFor = (profileScope: string): string =>
+  profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
+
+export const messagingTotalsKey = (messagingProfile: string, sourceId: string): string =>
+  `${messagingProfile}:${sourceId}`
+
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
 // Opt-in unified view. When false, scope follows the live gateway profile, so

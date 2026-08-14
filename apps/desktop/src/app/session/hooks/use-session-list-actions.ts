@@ -17,7 +17,7 @@ import {
   SIDEBAR_FILTERED_PAGE_SIZE,
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
-import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { messagingProfileFor, messagingTotalsKey, normalizeProfileKey } from '@/store/profile'
 import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
@@ -96,9 +96,6 @@ interface UseSessionListActionsArgs {
   profileScope: string
 }
 
-const sessionProfileForScope = (profileScope: string): string =>
-  profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
-
 /** Owns the sidebar's session-list fetching + paging: recents, cron runs/jobs,
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
@@ -114,17 +111,16 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // the sidebar's profile scope; otherwise a remote-profile switch leaks one
   // instance's Telegram/Signal sections into another instance's workspace.
   const refreshMessagingSessions = useCallback(async () => {
-    const sessionProfile = sessionProfileForScope(profileScope)
+    const sessionProfile = messagingProfileFor(profileScope)
 
     // A callback captured before a profile switch may still be queued by an
-    // event subscription. Do not let it start a request or clear current totals.
-    if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+    // event subscription. Do not let it start a request against the old scope.
+    if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
     const requestId = refreshMessagingSessionsRequestRef.current + 1
     refreshMessagingSessionsRequestRef.current = requestId
-    setMessagingPlatformTotals({})
 
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
@@ -133,7 +129,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         refreshMessagingSessionsRequestRef.current !== requestId ||
-        sessionProfileForScope(profileScopeRef.current) !== sessionProfile
+        messagingProfileFor(profileScopeRef.current) !== sessionProfile
       ) {
         return
       }
@@ -156,9 +152,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
-      const sessionProfile = sessionProfileForScope(profileScope)
+      const sessionProfile = messagingProfileFor(profileScope)
 
-      if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
         return
       }
 
@@ -177,7 +173,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         { source: platform }
       )
 
-      if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
         return
       }
 
@@ -189,7 +185,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       ])
 
       const total = result.total ?? incoming.length
-      setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
+      const totalsKey = messagingTotalsKey(sessionProfile, platform)
+
+      setMessagingPlatformTotals(prev => ({ ...prev, [totalsKey]: Math.max(total, incoming.length) }))
     },
     [profileScope]
   )
@@ -203,7 +201,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
     try {
-      await refreshCronJobsStore(sessionProfileForScope(profileScope))
+      await refreshCronJobsStore(messagingProfileFor(profileScope))
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
@@ -235,7 +233,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page and never inherits another profile's cron or messaging
       // sections. ALL_PROFILES remains the explicit unified view.
-      const sessionProfile = sessionProfileForScope(profileScope)
+      const sessionProfile = messagingProfileFor(profileScope)
 
       // Batched: one request opens each profile DB once and returns all three
       // source-scoped slices, instead of three separate listAllProfileSessions

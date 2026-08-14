@@ -78,6 +78,8 @@ import {
   $profiles,
   $profileScope,
   ALL_PROFILES,
+  messagingProfileFor,
+  messagingTotalsKey,
   normalizeProfileKey
 } from '@/store/profile'
 import {
@@ -396,6 +398,7 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
+  const messagingProfile = messagingProfileFor(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -1202,7 +1205,7 @@ export function ChatSidebar({
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
+        const known = messagingPlatformTotals[messagingTotalsKey(messagingProfile, sourceId)]
         const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
         const total = Math.max(ordered.length, unpinnedKnown ?? 0)
 
@@ -1218,7 +1221,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession])
+  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
   // Grouping by profile: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

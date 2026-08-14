@@ -354,6 +354,44 @@ describe('messaging profile scope', () => {
 
     expect(listAllProfileSessions.mock.calls[0][4]).toBe('work')
     expect($messagingSessions.get().map(s => s.id)).toEqual(['m1', 'm2'])
+    expect($messagingPlatformTotals.get()).toEqual({ 'work:signal': 2 })
+  })
+
+  it('keeps resolved platform totals separate across profile switches', async () => {
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('work-signal', { profile: 'work', source: 'signal' })],
+      total: 42
+    })
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('signal')
+    })
+
+    expect($messagingPlatformTotals.get()).toEqual({ 'work:signal': 42 })
+
+    rerender({ profileScope: 'personal' })
+
+    expect($messagingPlatformTotals.get()['personal:signal']).toBeUndefined()
+    expect($messagingPlatformTotals.get()['work:signal']).toBe(42)
+
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('personal-signal', { profile: 'personal', source: 'signal' })],
+      total: 3
+    })
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('signal')
+    })
+
+    expect($messagingPlatformTotals.get()).toEqual({ 'personal:signal': 3, 'work:signal': 42 })
+
+    rerender({ profileScope: 'work' })
+
+    expect($messagingPlatformTotals.get()['work:signal']).toBe(42)
   })
 
   it('ignores an in-flight response after the active profile changes', async () => {
@@ -386,9 +424,9 @@ describe('messaging profile scope', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-message'])
   })
 
-  it('does not let a callback captured before a profile switch clear current totals', async () => {
+  it('does not let a callback captured before a profile switch disturb current totals', async () => {
     listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
-    setMessagingPlatformTotals({ signal: 12 })
+    setMessagingPlatformTotals({ 'work:signal': 12 })
 
     const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
       initialProps: { profileScope: 'work' }
@@ -403,6 +441,6 @@ describe('messaging profile scope', () => {
     })
 
     expect(listAllProfileSessions).not.toHaveBeenCalled()
-    expect($messagingPlatformTotals.get()).toEqual({ signal: 12 })
+    expect($messagingPlatformTotals.get()).toEqual({ 'work:signal': 12 })
   })
 })

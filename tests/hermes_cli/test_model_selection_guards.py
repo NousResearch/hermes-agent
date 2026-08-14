@@ -93,11 +93,11 @@ def test_cost_guard_still_fires_through_registry():
         id="pricey/model",
         name="pricey/model",
         family="",
-        provider_id="test",
+        provider_id="anthropic",
         cost_input=50.0,
         cost_output=200.0,
     )
     warnings = selection_warnings(
-        "pricey/model", provider="test", model_info=info
+        "pricey/model", provider="anthropic", model_info=info
     )
     assert any(w.kind == "cost" for w in warnings)

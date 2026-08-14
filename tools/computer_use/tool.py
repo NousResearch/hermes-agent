@@ -195,7 +195,15 @@ def _cua_permission_mode(session_id: str) -> str:
     except Exception:
         # Approval state must fail closed if it cannot be resolved.
         pass
-    return "standard"
+    try:
+        # Without YOLO, honor the configured mode (standard | bounded).
+        # bounded requires computer_use.capability_manifest; the backend
+        # fails loudly at session start when the manifest is missing.
+        from tools.computer_use.cua_backend import _cua_configured_permission_mode
+
+        return _cua_configured_permission_mode()
+    except Exception:
+        return "standard"
 
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
@@ -649,6 +657,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             profile_mode=args.get("profile_mode", "isolated_new"),
             profile_name=args.get("profile_name"),
             allow_launch=bool(args.get("allow_launch")),
+            approval_token=args.get("approval_token"),
         ))
 
     browser_tools = {

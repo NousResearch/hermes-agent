@@ -240,6 +240,32 @@ def _cua_telemetry_disabled() -> bool:
     return not bool(_computer_use_cfg().get("cua_telemetry", False))
 
 
+def _cua_configured_permission_mode() -> str:
+    """The user-configured cua-driver permission mode.
+
+    Reads ``computer_use.permission_mode`` (default ``standard``).  Only
+    ``standard`` and ``bounded`` are honored here — ``unrestricted`` is
+    deliberately NOT a config value: it stays tied to the explicit
+    per-session Hermes YOLO toggle so a stale config line can never
+    silently bypass approvals. Unknown values fall closed to ``standard``.
+    """
+    raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
+    return raw if raw in {"standard", "bounded"} else "standard"
+
+
+def _cua_capability_manifest() -> Optional[str]:
+    """Path of the reviewed capability manifest for bounded mode, or None.
+
+    Reads ``computer_use.capability_manifest``.  Existence is validated by
+    ``_EmbeddedCuaDaemon`` so a missing file fails loudly at session start
+    instead of silently degrading the authorization story.
+    """
+    raw = _computer_use_cfg().get("capability_manifest")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
 def _computer_use_max_image_dimension() -> Optional[int]:
     """Longest-edge cap for cua-driver screenshots, or None to leave unset.
 
@@ -381,19 +407,48 @@ def _wsl_windows_path_to_posix(path: str) -> str:
 
 
 class _EmbeddedCuaDaemon:
-    """Private host-owned daemon used for an explicit unrestricted session.
+    """Private host-owned daemon for a non-standard permission mode.
 
     Cua Driver permission mode is immutable after daemon startup.  Reusing the
     machine-wide daemon would therefore let one Hermes session's YOLO choice
     affect another session.  A private embedded daemon gives the requesting
-    session its own socket, process, and launch-time risk acknowledgement.
+    session its own socket, process, and launch-time authorization:
+
+    * ``unrestricted`` — explicit Hermes YOLO; launch-time risk
+      acknowledgement via ``--dangerously-bypass-approvals``.
+    * ``bounded`` — a user-reviewed capability manifest
+      (``computer_use.capability_manifest`` in config.yaml) approved at
+      launch via ``--approve-capability-manifest``.  The manifest, not a
+      runtime prompt, is the authorization boundary; calls outside it fail
+      closed inside cua-driver.
     """
 
     _START_TIMEOUT_SECONDS = 15.0
 
-    def __init__(self, driver_cmd: str, permission_mode: str) -> None:
-        if permission_mode != "unrestricted":
-            raise ValueError("embedded permission override supports unrestricted only")
+    def __init__(
+        self,
+        driver_cmd: str,
+        permission_mode: str,
+        capability_manifest: Optional[str] = None,
+    ) -> None:
+        if permission_mode not in {"unrestricted", "bounded"}:
+            raise ValueError(
+                "embedded permission override supports unrestricted or bounded only"
+            )
+        if permission_mode == "bounded":
+            manifest = str(capability_manifest or "").strip()
+            if not manifest:
+                raise ValueError(
+                    "bounded permission mode requires computer_use.capability_manifest"
+                )
+            manifest = os.path.abspath(os.path.expanduser(manifest))
+            if not os.path.isfile(manifest):
+                raise ValueError(
+                    f"capability manifest not found: {manifest}"
+                )
+            self.capability_manifest: Optional[str] = manifest
+        else:
+            self.capability_manifest = None
         self.permission_mode = permission_mode
         self._driver_cmd = driver_cmd
         self._command = driver_cmd
@@ -411,8 +466,9 @@ class _EmbeddedCuaDaemon:
 
     def child_env(self) -> Dict[str, str]:
         env = cua_driver_child_env()
-        env["CUA_DRIVER_PERMISSION_MODE"] = "unrestricted"
-        env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
+        env["CUA_DRIVER_PERMISSION_MODE"] = self.permission_mode
+        if self.permission_mode == "unrestricted":
+            env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
 
     def _drain_stderr(self, process: Any) -> None:
@@ -447,9 +503,18 @@ class _EmbeddedCuaDaemon:
             self.socket_path,
             "--no-permissions-gate",
             "--permission-mode",
-            "unrestricted",
-            "--dangerously-bypass-approvals",
+            self.permission_mode,
         ]
+        if self.permission_mode == "unrestricted":
+            command.append("--dangerously-bypass-approvals")
+        else:  # bounded — manifest validated in __init__
+            command.extend(
+                [
+                    "--capability-manifest",
+                    str(self.capability_manifest),
+                    "--approve-capability-manifest",
+                ]
+            )
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -1917,14 +1982,23 @@ class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self, permission_mode: str = "standard") -> None:
-        if permission_mode not in {"standard", "unrestricted"}:
+        if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
-        self._embedded_daemon = (
-            _EmbeddedCuaDaemon(resolve_cua_driver_cmd() or "", permission_mode)
-            if permission_mode == "unrestricted"
-            else None
-        )
+        if permission_mode == "unrestricted":
+            self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = _EmbeddedCuaDaemon(
+                resolve_cua_driver_cmd() or "", permission_mode
+            )
+        elif permission_mode == "bounded":
+            # Manifest path comes from config.yaml; _EmbeddedCuaDaemon
+            # validates existence and raises a clear error otherwise.
+            self._embedded_daemon = _EmbeddedCuaDaemon(
+                resolve_cua_driver_cmd() or "",
+                permission_mode,
+                capability_manifest=_cua_capability_manifest(),
+            )
+        else:
+            self._embedded_daemon = None
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
         # Sticky context — updated by capture(), used by action tools.

@@ -343,6 +343,7 @@ class CuaTypedBrowserRoute:
         profile_mode: str,
         profile_name: Optional[str] = None,
         allow_launch: bool = False,
+        approval_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run explicit setup through the driver's authoritative mode gate."""
         missing = self._require_tool("browser_prepare")
@@ -361,17 +362,22 @@ class CuaTypedBrowserRoute:
                     "Existing-profile attachment requires an exact positive pid and window_id pair.",
                 )
             # The driver owns the immutable standard/bounded/unrestricted
-            # decision. Standard fails closed without a certified host;
-            # explicit Hermes YOLO owns a private unrestricted daemon.
+            # decision. Standard fails closed without a certified host,
+            # a user-minted single-use approval token, or an approved
+            # bounded manifest; explicit Hermes YOLO owns a private
+            # unrestricted daemon.
             self.state.clear()
-            return self._call(
-                "browser_prepare",
-                {
-                    "pid": exact_pid,
-                    "window_id": exact_window,
-                    "strategy": {"kind": "existing_profile"},
-                },
-            )
+            args: Dict[str, Any] = {
+                "pid": exact_pid,
+                "window_id": exact_window,
+                "strategy": {"kind": "existing_profile"},
+            }
+            if isinstance(approval_token, str) and approval_token:
+                # Minted out-of-band by `hermes computer-use browser-approve`
+                # (cua-driver browser-approve): five-minute, single-use. The
+                # user, never the model, is the source of this value.
+                args["approval_token"] = approval_token
+            return self._call("browser_prepare", args)
         if profile_mode not in {"isolated_new", "isolated_named"}:
             return _refusal(
                 "browser_profile_mode_invalid",

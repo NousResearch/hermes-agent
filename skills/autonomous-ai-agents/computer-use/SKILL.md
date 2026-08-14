@@ -180,11 +180,29 @@ browser tools. The contract is capability-based:
 `cua_browser_prepare` is a separate approved setup action. Driver-owned
 `isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
 An `existing_profile` is decided by cua-driver's immutable permission mode.
-Normal Hermes sessions use `standard`, which requires a certified protected
-host and fails closed when Hermes has none. Explicit Hermes YOLO (`--yolo`,
-`/yolo`, or `approvals.mode: off`) launches a private embedded cua-driver in
-`unrestricted` after that risk acceptance, so there are no runtime Cua
-approval prompts. Never invent, store, log, or reuse a grant token.
+Prefer `isolated_new` unless the task genuinely needs the user's signed-in
+session — attaching to an existing profile exposes its live pages, cookies,
+and storage over the browser protocol.
+
+Authorization paths for `existing_profile`, in preference order:
+
+1. **User-minted token (standard mode).** Ask the user to run
+   `hermes computer-use browser-approve --pid <pid> --window-id <window_id>
+   --profile-mode existing_profile` in their terminal and paste back the
+   token. Pass it as `approval_token` on `cua_browser_prepare`. The token is
+   single-use and expires in ~5 minutes, so mint it right before the call.
+   You cannot create this token yourself; only the user can.
+2. **Bounded manifest.** When `computer_use.permission_mode: bounded` is
+   configured with a reviewed `capability_manifest`, prepares inside the
+   manifest's scope succeed without prompts and everything else fails closed.
+   No token needed; do not ask for one.
+3. **Explicit Hermes YOLO** (`--yolo`, `/yolo`, or `approvals.mode: off`)
+   launches a private embedded cua-driver in `unrestricted` after that risk
+   acceptance, so there are no runtime Cua approval prompts.
+
+Without any of these, `existing_profile` fails closed — report the refusal and
+offer path 1 to the user; do not retry, downgrade trust, or work around it.
+Never invent, store, log, or reuse a grant token.
 
 Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
 permission UI, OS prompts, native dialogs, extension surfaces, unsupported

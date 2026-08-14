@@ -80,23 +80,67 @@ or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
 ## Permission modes and logged-in browser profiles
 
-Hermes maps its existing approval UX onto cua-driver 0.10's immutable daemon
+Hermes maps its existing approval UX onto cua-driver's immutable daemon
 modes. There is no second permission toggle to keep in sync:
 
 | Hermes session | cua-driver mode | Human intervention | `existing_profile` |
 |---|---|---|---|
-| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless a certified protected host is available; Hermes does not claim one today |
+| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless you mint a single-use token with `hermes computer-use browser-approve` |
+| `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch | Allowed only within the manifest's declared profiles/origins/tools; everything else fails closed |
 | `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts | Allowed within Cua's built-in, managed, and user policy ceilings |
 
-The unrestricted daemon is private to that Hermes session. Turning `/yolo`
-off, resetting/closing the session, cancellation cleanup, or process exit ends
-the Cua session and stops that daemon. It never changes the machine-wide
-daemon's mode or grants another Hermes conversation the same authority.
+### Attaching to your signed-in browser (`browser-approve`)
+
+The agent can drive a Chrome/Edge window you already have open — including a
+signed-in profile — **without restarting the browser, copying the profile, or
+touching your tabs**. Because DevTools access exposes that profile's live
+pages, cookies, and storage, cua-driver requires an explicit human grant that
+ordinary tool approval cannot substitute for. Hermes surfaces it as:
+
+```bash
+# The agent will tell you the exact pid/window_id it discovered:
+hermes computer-use browser-approve --pid 844 --window-id 10725 --profile-mode existing_profile
+```
+
+This mints a five-minute, single-use token bound to that exact process and
+window. Paste the token to the agent; it passes it as `approval_token` on the
+`cua_browser_prepare` action and cua-driver verifies the binding before
+attaching. The grant lives only in driver memory and dies with the session.
+Prefer letting the agent use an isolated profile (`isolated_new`, no token
+needed beyond the normal tool approval) unless the task genuinely needs your
+authenticated session.
+
+### Bounded mode for repeatable automation
+
+For recurring browser automation (cron jobs, scheduled research against an
+authenticated app), per-run tokens are impractical. `bounded` mode replaces
+prompts with a capability manifest you review once:
+
+```yaml
+# config.yaml
+computer_use:
+  permission_mode: bounded
+  capability_manifest: ~/.hermes/cua-manifest.yaml
+```
+
+The manifest names the apps, browser profile kinds, allowed origins, and
+typed tools the session may use (see the
+[cua-driver permission modes reference](https://cua.ai/docs/reference/cua-driver/permission-modes)
+for the format). Hermes launches a private per-session daemon with
+`--capability-manifest ... --approve-capability-manifest`; anything outside
+the manifest fails closed inside cua-driver. A missing or unreadable manifest
+fails loudly at session start rather than silently downgrading. Session YOLO
+still overrides bounded for that one session.
+
+The bounded and unrestricted daemons are private to that Hermes session.
+Turning `/yolo` off, resetting/closing the session, cancellation cleanup, or
+process exit ends the Cua session and stops that daemon. It never changes the
+machine-wide daemon's mode or grants another Hermes conversation the same
+authority.
 
 `smart` approval remains `standard`: an LLM classification is not protected
-human consent. Cua's `bounded` manifest mode is also not inferred from smart
-approval or a normal tool confirmation; it needs a separately trusted host
-that reviews and launches the exact manifest.
+human consent, and it cannot mint a `browser-approve` token or stand in for a
+reviewed manifest.
 
 <div class="alert alert--warning">
 
@@ -319,6 +363,15 @@ without TCC / Session 0 / X11 setup), the `browser` toolset uses a
 real headless Chromium and is the right answer for web-only tasks.
 
 ## Configuration
+
+Permission mode and manifest (see
+[Permission modes](#permission-modes-and-logged-in-browser-profiles) above):
+
+```yaml
+computer_use:
+  permission_mode: standard        # standard (default) | bounded
+  capability_manifest: ""          # manifest path, required for bounded
+```
 
 Override the driver binary path (tests / CI / local builds):
 

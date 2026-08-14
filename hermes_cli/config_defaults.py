@@ -3274,6 +3274,22 @@ DEFAULT_CONFIG = {
         #   True  = always disable the overlay
         #   False = always enable the overlay
         "no_overlay": None,
+        # cua-driver permission mode for this Hermes install.
+        #   standard (default) — cua-driver's own approval boundary. Protected
+        #     operations (e.g. attaching to an existing signed-in browser
+        #     profile) fail closed unless the user mints a single-use token
+        #     via `hermes computer-use browser-approve`.
+        #   bounded — repeatable automation under a user-reviewed capability
+        #     manifest (set capability_manifest below). No runtime prompts;
+        #     anything outside the manifest fails closed inside cua-driver.
+        # `unrestricted` is intentionally NOT accepted here: it stays bound to
+        # the explicit per-session YOLO toggle so a config line can never
+        # silently bypass approvals.
+        "permission_mode": "standard",
+        # Absolute or ~ path to the reviewed cua-driver capability manifest
+        # YAML used when permission_mode is "bounded". See
+        # https://cua.ai/docs/reference/cua-driver/permission-modes
+        "capability_manifest": "",
     },
 
     # =========================================================================

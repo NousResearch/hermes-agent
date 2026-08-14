@@ -6934,6 +6934,37 @@ def _stamp_latency_once(latency_info: Optional[Dict[str, int]], key: str, starte
         latency_info[key] = _elapsed_ms(started_at)
 
 
+# ── Auxiliary LLM observability ──────────────────────────────────────────
+# Optional observers receive lifecycle events without affecting the request path.
+_AUX_LLM_OBSERVERS: List[Callable[[str, Dict[str, Any]], None]] = []
+_AUX_LLM_OBSERVERS_LOCK = threading.Lock()
+
+
+def register_aux_llm_observer(observer: Callable[[str, Dict[str, Any]], None]) -> None:
+    """Register an idempotent, fail-open observer for auxiliary LLM calls."""
+    with _AUX_LLM_OBSERVERS_LOCK:
+        if observer not in _AUX_LLM_OBSERVERS:
+            _AUX_LLM_OBSERVERS.append(observer)
+
+
+def unregister_aux_llm_observer(observer: Callable[[str, Dict[str, Any]], None]) -> None:
+    """Remove a previously registered auxiliary LLM observer."""
+    with _AUX_LLM_OBSERVERS_LOCK:
+        if observer in _AUX_LLM_OBSERVERS:
+            _AUX_LLM_OBSERVERS.remove(observer)
+
+
+def _notify_aux_llm(event: str, **kwargs: Any) -> None:
+    """Notify a snapshot of observers; telemetry must never break aux calls."""
+    with _AUX_LLM_OBSERVERS_LOCK:
+        observers = tuple(_AUX_LLM_OBSERVERS)
+    for observer in observers:
+        try:
+            observer(event, kwargs)
+        except Exception:
+            logger.debug("auxiliary LLM observer %r failed on %s", observer, event, exc_info=True)
+
+
 @_relay_auxiliary_call
 def call_llm(
     task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
@@ -6954,24 +6985,33 @@ def call_llm(
         latency_info["queue_wait_ms"] = _elapsed_ms(queue_started_at, request_started_at)
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
-        with (
-            aux_progress_hook(
-                prior_progress_hook
-                if callable(prior_progress_hook)
-                else ((lambda: None) if latency_info is not None else None)
-            ),
-            _aux_thread_local_hook(_aux_dispatch, functools.partial(
-                _stamp_latency_once, latency_info, "provider_dispatch_ms", request_started_at)),
-            _aux_thread_local_hook(_aux_provider_response, functools.partial(
-                _stamp_latency_once, latency_info, "time_to_first_progress_ms", request_started_at)),
-        ):
-            response = _call_llm_impl(
-                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-                main_runtime=main_runtime, messages=messages, temperature=temperature,
-                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-                reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
-                stream=stream, stream_options=stream_options, route_info=route_info,
-            )
+        _notify_aux_llm("start", task=task, provider=provider, model=model,
+                        api_mode=api_mode, messages=messages)
+        try:
+            with (
+                aux_progress_hook(
+                    prior_progress_hook
+                    if callable(prior_progress_hook)
+                    else ((lambda: None) if latency_info is not None else None)
+                ),
+                _aux_thread_local_hook(_aux_dispatch, functools.partial(
+                    _stamp_latency_once, latency_info, "provider_dispatch_ms", request_started_at)),
+                _aux_thread_local_hook(_aux_provider_response, functools.partial(
+                    _stamp_latency_once, latency_info, "time_to_first_progress_ms", request_started_at)),
+            ):
+                response = _call_llm_impl(
+                    task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                    main_runtime=main_runtime, messages=messages, temperature=temperature,
+                    max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                    reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
+                    stream=stream, stream_options=stream_options, route_info=route_info,
+                )
+        except Exception as exc:
+            _notify_aux_llm("error", task=task, provider=provider, model=model,
+                            api_mode=api_mode, error=str(exc))
+            raise
+        _notify_aux_llm("end", task=task, provider=provider, model=model,
+                        api_mode=api_mode, response=response)
         if stream and semaphore is not None:
             stream_semaphore = semaphore
             semaphore = None
@@ -7247,12 +7287,21 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
+        _notify_aux_llm("start", task=task, provider=provider, model=model,
+                        api_mode=None, messages=messages)
+        response = await _async_call_llm_impl(
             task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
             main_runtime=main_runtime, messages=messages, temperature=temperature,
             max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
             reasoning_config=reasoning_config, route_info=route_info,
         )
+        _notify_aux_llm("end", task=task, provider=provider, model=model,
+                        api_mode=None, response=response)
+        return response
+    except Exception as exc:
+        _notify_aux_llm("error", task=task, provider=provider, model=model,
+                        api_mode=None, error=str(exc))
+        raise
     finally:
         if semaphore is not None:
             semaphore.release()

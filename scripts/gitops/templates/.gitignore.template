@@ -54,9 +54,16 @@ cron/jobs.json
 # Feature-artifacts: only .md files tracked; deny everything else inside.
 feature-artifacts/**
 !feature-artifacts/**/*.md
-# Auth / credential temp files and backups (defence-in-depth).
+# Auth / credential files and backups (defence-in-depth).
+# Exact credential files at any depth.
+**/auth.json
+**/auth.lock
+**/credentials.json
+# Temp/backup variants of credential files.
 **/auth.json.*
 **/auth.tmp.*
+**/auth.lock.*
+**/auth.lock.tmp.*
 **/credentials.json.*
 **/credentials.tmp.*
 # Vault keys and private keys.

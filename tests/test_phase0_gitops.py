@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path("/home/kensei/worktrees/gitops-hardening-20260814")
+REPO = Path(__file__).resolve().parents[1]
 GITOPS = REPO / "scripts" / "gitops"
 TEMPLATE = GITOPS / "templates" / ".gitignore.template"
 WATCHER = GITOPS / "hermes-auto-commit.sh"
@@ -132,8 +132,13 @@ class TestGitignoreTemplate:
         """Nested profiles/**/auth.json.* and auth.tmp.* must be excluded."""
         text = TEMPLATE.read_text()
         for pattern in [
+            "**/auth.json",
+            "**/auth.lock",
+            "**/credentials.json",
             "**/auth.json.*",
             "**/auth.tmp.*",
+            "**/auth.lock.*",
+            "**/auth.lock.tmp.*",
             "**/credentials.json.*",
             "**/credentials.tmp.*",
         ]:
@@ -211,9 +216,6 @@ class TestInstallSandbox:
         env = os.environ.copy()
         env["HERMES_HOME"] = str(tmp_hermes)
         env["KENSEI_REPO"] = str(REPO)
-        # install.sh uses crontab; skip if locked.
-        if subprocess.run(["bash", "-c", "crontab -l"], capture_output=True).returncode not in (0, 1):
-            pytest.skip("crontab not available")
         res = subprocess.run(
             ["bash", str(INSTALL)],
             env=env,
@@ -221,7 +223,6 @@ class TestInstallSandbox:
             text=True,
             timeout=60,
         )
-        # The crontab step may fail under sandbox; check the rest of the install.
         assert (tmp_hermes / ".git").is_dir(), f"git not initialised: {res.stderr}"
         assert (tmp_hermes / ".gitignore").is_file()
         assert (tmp_hermes / ".git" / "hooks" / "pre-commit").is_file()
@@ -233,14 +234,18 @@ class TestInstallSandbox:
         )
         assert "init:" in log.stdout, f"no init commit; log: {log.stdout}"
 
-    def test_install_uses_script_path_for_cron_dedup(self):
-        """install.sh must check for the watcher script path (not just the
-        comment tag) to avoid duplicate crontab entries when Hermes cron
-        already owns the watcher."""
+    def test_install_does_not_call_crontab(self):
+        """install.sh must NOT invoke crontab. Hermes cron owns the watcher."""
         text = INSTALL.read_text()
-        assert 'grep -qF "$DEPLOY_DIR/hermes-auto-commit.sh"' in text, (
-            "install.sh must use grep -qF on the script path for cron dedup, "
-            "not just the comment tag"
+        assert "crontab" not in text, (
+            "install.sh must not reference crontab at all — "
+            "Hermes cron owns the watcher"
+        )
+        assert "Hermes cron owns the watcher" in text, (
+            "install.sh must log that Hermes cron owns the watcher"
+        )
+        assert "no user-crontab row installed" in text, (
+            "install.sh must state no user-crontab row is installed"
         )
 
     def test_watcher_is_idempotent(self, tmp_hermes: Path, monkeypatch):
@@ -392,4 +397,29 @@ class TestPreCommitLint:
             ["git", "commit", "-m", "test"], cwd=tmp_hermes, capture_output=True, text=True
         )
         assert res.returncode != 0, "lint should have blocked id_rsa"
+        assert "forbidden" in res.stderr.lower() or "refusing" in res.stderr.lower()
+
+    def test_blocks_nested_exact_auth(self, tmp_hermes: Path):
+        """Pre-commit must block exact nested auth.json, auth.lock, credentials.json."""
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_hermes, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "kensei@local"], cwd=tmp_hermes, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "KENSEI"], cwd=tmp_hermes, check=True
+        )
+        (tmp_hermes / ".git" / "hooks").mkdir(exist_ok=True)
+        shutil.copy(LINT, tmp_hermes / ".git" / "hooks" / "pre-commit")
+        os.chmod(tmp_hermes / ".git" / "hooks" / "pre-commit", 0o755)
+
+        # Test nested auth.json (exact, not temp variant)
+        (tmp_hermes / "profiles" / "kensei").mkdir(parents=True, exist_ok=True)
+        (tmp_hermes / "profiles" / "kensei" / "auth.json").write_text("{}")
+        subprocess.run(
+            ["git", "add", "profiles/kensei/auth.json"], cwd=tmp_hermes, check=True
+        )
+        res = subprocess.run(
+            ["git", "commit", "-m", "test"], cwd=tmp_hermes, capture_output=True, text=True
+        )
+        assert res.returncode != 0, "lint should have blocked nested auth.json"
         assert "forbidden" in res.stderr.lower() or "refusing" in res.stderr.lower()

@@ -1483,7 +1483,12 @@ def drain_truncation_warnings() -> list:
 # Skills prompt cache
 # =========================================================================
 
-_SKILLS_PROMPT_CACHE_MAX = 8
+# Sized for multi-profile processes: since #86313 the cache key carries a
+# per-profile skills_dir (one entry per profile × platform), so the old cap
+# of 8 could thrash on a gateway multiplexing default + several bots (each
+# miss = full os.walk manifest rebuild). ~32 costs low single-digit MB worst
+# case.
+_SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2: entries gained org provenance fields (org_id/org_author/rel_dir) for M2

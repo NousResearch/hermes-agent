@@ -163,9 +163,16 @@ def _plugin_session_info(agent: Any) -> Dict[str, str]:
     except Exception:
         cwd = ""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        # Prefer the agent's own home (override-aware, session_db fallback) —
+        # ambient get_active_profile_name() misreports on threads that lost
+        # the HERMES_HOME ContextVar (#86313 class; plugin half per @helix4u).
+        _home = _agent_home(agent)
+        if _home is not None:
+            profile_name = _profile_name_for_home(_home)
+        else:
+            from hermes_cli.profiles import get_active_profile_name
 
-        profile_name = str(get_active_profile_name() or "default")
+            profile_name = str(get_active_profile_name() or "default")
     except Exception:
         profile_name = "default"
     return {
@@ -264,15 +271,33 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
 
 
 def _agent_home(agent: Any) -> Optional[Path]:
-    """The agent's OWN profile home, resolved from its dedicated session_db.
+    """The agent's OWN profile home.
 
-    The agent's ``_session_db.db_path`` is ``<home>/state.db`` — ground truth
-    for which profile this agent belongs to, independent of any HERMES_HOME
-    ContextVar (which a build thread can lose: ContextVars don't propagate
-    into ``threading.Thread``, so an unbound build falls back to the launch
-    home and leaks the default profile's skills/identity into a bot prompt).
-    Returns None when it can't be resolved so callers fall back to ambient.
+    Resolution order:
+
+    1. A bound HERMES_HOME ContextVar override wins. Surfaces that multiplex
+       several profiles over ONE shared session DB (the messaging gateway:
+       ``gateway/run.py`` hands every agent the launch-home ``state.db`` and
+       binds the profile home per turn via ``_profile_runtime_scope`` +
+       ``copy_context``) would otherwise have the db-derived launch home
+       STOMP the correctly-bound profile — inverting the leak this helper
+       exists to fix (found by @kshitijk4poor's post-merge probe on #86313).
+    2. Fallback: the home containing the agent's ``_session_db.db_path``
+       (``<home>/state.db``) — ground truth on threads that lost the
+       ContextVar (ContextVars don't propagate into ``threading.Thread``),
+       where the unbound build previously fell back to the launch home and
+       leaked the default profile's skills/identity into a bot prompt.
+
+    Returns None when neither resolves so callers fall back to ambient.
     """
+    try:
+        from hermes_constants import get_hermes_home_override
+
+        override = get_hermes_home_override()
+        if override:
+            return Path(override)
+    except Exception:
+        pass
     try:
         db = getattr(agent, "_session_db", None)
         db_path = getattr(db, "db_path", None)

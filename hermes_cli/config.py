@@ -1396,8 +1396,28 @@ def _warn_invalid_platform_toolsets(results: Dict[str, Any], quiet: bool) -> Non
         from hermes_cli.toolset_validation import validate_platform_toolsets
         from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
-        for w in validate_platform_toolsets(
-                read_raw_config().get("platform_toolsets"), validate_toolset, toolset_allowed_for_platform):
+        raw_platform_toolsets = read_raw_config().get("platform_toolsets")
+        ts_warnings = validate_platform_toolsets(
+            raw_platform_toolsets, validate_toolset, toolset_allowed_for_platform
+        )
+        if ts_warnings:
+            # Plugin toolsets may be declared only when the enabled plugin is
+            # loaded. Migration commands do not otherwise discover plugins,
+            # so retry after discovery before calling those names invalid.
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+            except Exception as _plugin_discovery_err:
+                logger.debug(
+                    "plugin discovery during toolset validation failed: %s",
+                    _plugin_discovery_err,
+                )
+            else:
+                ts_warnings = validate_platform_toolsets(
+                    raw_platform_toolsets, validate_toolset, toolset_allowed_for_platform
+                )
+        for w in ts_warnings:
             results["warnings"].append(w)
             if not quiet:
                 print(f"  ⚠ {w}")

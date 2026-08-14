@@ -361,10 +361,17 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 # ---------------------------------------------------------------------------
 
 class DirectAlias(NamedTuple):
-    """Exact model mapping that bypasses catalog resolution."""
+    """Exact model mapping that bypasses catalog resolution.
+
+    ``api_key`` is optional. When set (including via ``${ENV}`` expansion at
+    load time), switch_model must use it for the alias's base_url instead of
+    whatever credential the default provider already resolved — otherwise a
+    custom endpoint receives the wrong provider's key (#83612).
+    """
     model: str
     provider: str
     base_url: str
+    api_key: str = ""
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -384,6 +391,7 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
             model: "qwen3.5:397b"
             provider: custom
             base_url: "https://ollama.com/v1"
+            api_key: "sk-..."           # optional; or "${MY_ALIAS_KEY}"
           minimax:
             model: "minimax-m2.7"
             provider: custom
@@ -408,9 +416,25 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 model = entry.get("model", "")
                 provider = entry.get("provider", "custom")
                 base_url = entry.get("base_url", "")
+                api_key = str(entry.get("api_key", "") or "").strip()
+                if api_key.startswith("${") and api_key.endswith("}"):
+                    # Profile-scoped env when multiplexed; plain getenv otherwise.
+                    try:
+                        from agent.secret_scope import get_secret, UnscopedSecretError
+                        try:
+                            api_key = get_secret(api_key[2:-1]) or ""
+                        except UnscopedSecretError:
+                            import os
+                            api_key = os.environ.get(api_key[2:-1], "") or ""
+                    except Exception:
+                        import os
+                        api_key = os.environ.get(api_key[2:-1], "") or ""
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
-                        model=model, provider=provider, base_url=base_url,
+                        model=model,
+                        provider=provider,
+                        base_url=base_url,
+                        api_key=api_key,
                     )
 
         # --- model.aliases (string-based format, from config set) ---
@@ -1769,14 +1793,18 @@ def switch_model(
         except Exception:
             pass
 
-    # --- Direct alias override: use exact base_url from the alias if set ---
+    # --- Direct alias override: use exact base_url / key from the alias ---
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
-            if not api_key:
+            # Prefer the alias's own key so we never send the default
+            # provider's credential to a custom host (#83612).
+            if _da.api_key:
+                api_key = _da.api_key
+            elif not api_key:
                 api_key = "no-key-required"
 
     # --- Resolve api_mode from the final (provider, base_url) before validation ---

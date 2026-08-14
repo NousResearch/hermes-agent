@@ -121,6 +121,65 @@ async def test_bridge_rejects_wrong_token_before_accepting_socket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bridge_rejects_duplicate_or_extra_token_query_values() -> None:
+    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    await server.start()
+    try:
+        with pytest.raises(InvalidStatus) as caught:
+            async with connect(
+                f"ws://127.0.0.1:{server.bound_port}/api/ws?token={'t' * 64}&token=wrong"
+            ):
+                pass
+        assert caught.value.response.status_code == 401
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_bridge_never_advertises_unproven_topic_control_or_identifiers() -> None:
+    store = FakeStore()
+    store.rows[0]["thread_id"] = "thread-9"
+    store.rows[0]["title"] = "Topic session-1 thread-9 123456789"
+    store.transcripts["session-1"][0]["content"] = (
+        "Decided to use session-1 in thread-9 for chat 123456789."
+    )
+    bridge_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="123456789",
+        token="t" * 64,
+        port=0,
+        topic_control="bot_api_private_topic",
+    )
+    server = BeckyLoopsBridgeServer(config=bridge_config, store=store)
+    await server.start()
+    try:
+        async with connect(
+            f"ws://127.0.0.1:{server.bound_port}/api/ws?token={'t' * 64}"
+        ) as ws:
+            await ws.recv()
+            capabilities = await rpc(ws, 1, "becky.loops.capabilities", {})
+            assert capabilities["result"]["topic_control"] == "unavailable"
+            listed = await rpc(ws, 2, "becky.loops.list", {})
+            assert "session-1" not in listed["result"]["loops"][0]["title"]
+            summary = await rpc(
+                ws,
+                3,
+                "becky.loops.summarize",
+                {
+                    "source_ref": SOURCE_REF,
+                    "expected_revision": REVISION,
+                    "force": False,
+                },
+            )
+            encoded = json.dumps(summary)
+            assert "session-1" not in encoded
+            assert "thread-9" not in encoded
+            assert "123456789" not in encoded
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_bridge_summarize_is_bounded_and_revision_bound() -> None:
     server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
     await server.start()

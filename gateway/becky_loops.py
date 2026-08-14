@@ -93,6 +93,17 @@ def _bounded_text(value: Any, limit: int = 500) -> str:
     return text[:limit].rstrip()
 
 
+def _safe_public_text(value: Any, hidden_values: set[str], limit: int = 500) -> str:
+    """Bound text while removing known Telegram/session identifiers."""
+    text = _redact(str(value or ""))
+    for hidden in sorted(
+        (item for item in hidden_values if item), key=len, reverse=True
+    ):
+        text = re.sub(re.escape(hidden), "[REDACTED]", text, flags=re.IGNORECASE)
+    text = " ".join(text.split()).strip()
+    return text[:limit].rstrip()
+
+
 def _redact(value: str) -> str:
     text = value
     text = re.sub(r"\b(?:sk|pk)-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", text)
@@ -256,6 +267,8 @@ class BeckyLoopsBridgeServer:
             return _http_response(404, "Not found")
         query = parse_qs(urlsplit(request.path).query, keep_blank_values=True)
         supplied = query.get("token", [""])[0]
+        if set(query) != {"token"} or len(query["token"]) != 1:
+            return _http_response(401, "Unauthorized")
         if supplied != self.config.token:
             return _http_response(401, "Unauthorized")
         return None
@@ -327,7 +340,7 @@ class BeckyLoopsBridgeServer:
                 "schema_version": "1",
                 "summary_schema_version": "1",
                 "methods": _METHODS,
-                "topic_control": self.config.topic_control,
+                "topic_control": "unavailable",
                 "same_topic_reopen": False,
                 "new_session_fallback": True,
                 "max_request_bytes": _MAX_REQUEST_BYTES,
@@ -379,11 +392,18 @@ class BeckyLoopsBridgeServer:
         rows = self.store.list_topics(self.config.chat_id)
         return next((row for row in rows if row.get("source_ref") == source_ref), None)
 
-    @staticmethod
-    def _public_index(row: dict[str, Any]) -> dict[str, Any]:
+    def _public_index(self, row: dict[str, Any]) -> dict[str, Any]:
+        hidden_values = {
+            self.config.chat_id,
+            str(row.get("session_id") or ""),
+            str(row.get("thread_id") or ""),
+            str(row.get("source_ref") or ""),
+        }
         return {
             "source_ref": row["source_ref"],
-            "title": _bounded_text(row.get("title") or "Telegram loop", 128),
+            "title": _safe_public_text(
+                row.get("title") or "Telegram loop", hidden_values, 128
+            ),
             "source_state": row.get("source_state", "active"),
             "revision": row["revision"],
             "message_count": max(0, int(row.get("message_count") or 0)),
@@ -395,8 +415,14 @@ class BeckyLoopsBridgeServer:
     def _summary(
         self, row: dict[str, Any], transcript: list[dict[str, Any]]
     ) -> dict[str, Any]:
+        hidden_values = {
+            self.config.chat_id,
+            str(row.get("session_id") or ""),
+            str(row.get("thread_id") or ""),
+            str(row.get("source_ref") or ""),
+        }
         texts = [
-            (_bounded_text(message.get("content"), 900), message)
+            (_safe_public_text(message.get("content"), hidden_values, 900), message)
             for message in transcript
             if isinstance(message.get("content"), str)
             and _bounded_text(message.get("content"), 900)
@@ -406,8 +432,10 @@ class BeckyLoopsBridgeServer:
             text for text, message in texts if message.get("role") == "assistant"
         ]
         summary_source = " ".join(text for text, _ in texts[-4:]).strip()
-        summary = _bounded_text(
-            summary_source or "No summary text was available.", _MAX_SUMMARY_CHARS
+        summary = _safe_public_text(
+            summary_source or "No summary text was available.",
+            hidden_values,
+            _MAX_SUMMARY_CHARS,
         )
         decisions = [
             text[:500]
@@ -565,18 +593,14 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         port = int(section.get("port", 9_120))
     except (TypeError, ValueError):
         port = 9_120
-    topic_control = str(
-        section.get("proven_topic_control", "unavailable") or "unavailable"
-    ).strip()
     return BeckyLoopsConfig(
         enabled=True,
         chat_id=chat_id,
         token=token,
         port=port,
-        topic_control=topic_control
-        if topic_control
-        in {"unavailable", "bot_api_private_topic", "mtproto_private_topic"}
-        else "unavailable",
+        # No mutation adapter is installed in this deployment.  Never
+        # advertise a configured-but-unimplemented control method.
+        topic_control="unavailable",
     )
 
 

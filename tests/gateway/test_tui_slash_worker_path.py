@@ -18,25 +18,31 @@ from tui_gateway import server as tui_server
 
 
 class TestPrependToolPaths:
-    def test_prepends_venv_and_user_bin(self):
+    def test_prepends_managed_venv_and_user_bin(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
         env = {"PATH": "/usr/bin"}
         result = tui_server._prepend_tool_paths(env)
 
         parts = result["PATH"].split(os.pathsep)
-        # venv bin first, then user-local bin, then the original PATH preserved
-        assert parts[0] == str(Path(sys.executable).parent)
+        # managed bin first (managed-first policy), then venv bin, then
+        # user-local bin, then the original PATH preserved
+        assert parts[0] == str(tmp_path / "hh" / "bin")
+        assert parts[1] == str(Path(sys.executable).parent)
         assert str(Path.home() / ".local" / "bin") in parts
         assert parts[-1] == "/usr/bin"
 
-    def test_preserves_existing_path_when_empty(self):
+    def test_preserves_existing_path_when_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
         env = {}
         result = tui_server._prepend_tool_paths(env)
 
         parts = result["PATH"].split(os.pathsep)
-        assert parts[0] == str(Path(sys.executable).parent)
+        assert parts[0] == str(tmp_path / "hh" / "bin")
+        assert str(Path(sys.executable).parent) in parts
         assert str(Path.home() / ".local" / "bin") in parts
 
-    def test_venv_bin_points_at_sys_executable_dir(self):
+    def test_managed_bin_leads_path(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
         env = {"PATH": "/bin"}
         result = tui_server._prepend_tool_paths(env)
-        assert result["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
+        assert result["PATH"].split(os.pathsep)[0] == str(tmp_path / "hh" / "bin")

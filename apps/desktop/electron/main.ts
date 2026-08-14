@@ -37,6 +37,7 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
+import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import {
   canImportHermesCli,
   execProbeSync,
@@ -2830,6 +2831,27 @@ async function releaseBackendLock(updateRoot, tag) {
     forceKillProcessTree,
     stopAllPoolBackends
   })
+
+  // Stop separately-running messaging gateways (all profiles) BEFORE the
+  // venv-shim lock poll. The gateway is launched by the gateway-launcher
+  // desktop plugin via /api/gateway/start and is NOT in backendConnectionState
+  // or backendPool, so the kills above never see it. (#70337)
+  //
+  // Windows venv quirk: a gateway started through the venv shim is TWO
+  // processes — venv\Scripts\python.exe (launcher) -> uv python (worker) —
+  // and gateway.pid records the WORKER. The venv lock is held by the LAUNCHER
+  // (its parent), and taskkill /T from the worker PID does not reach parents.
+  // So instead of tree-killing the recorded PID, delegate to the CLI's own
+  // `hermes gateway stop --all`: it discovers every profile's gateway
+  // processes (launcher + worker), drains in-flight agents (planned-stop
+  // marker → resume_pending persistence), and force-kills survivors — exactly
+  // the logic hermes update's _pause_windows_gateways_for_update relies on.
+  // Best-effort: failure (wedged/absent CLI) does not abort the hand-off;
+  // the shim-lock poll below and the updater's venv-blocker scan still fail
+  // loudly if the venv stays held.
+  if (IS_WINDOWS) {
+    stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
+  }
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000

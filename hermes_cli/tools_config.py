@@ -1654,26 +1654,29 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
     "Browser Use" row. Failure is non-fatal: ``browser_exec`` can still run
     zero-install via ``uvx browser-use``, and the built-in browser tools
     remain the final fallback.
-    """
-    if shutil.which("browser-use"):
-        _print_success("    browser-use CLI found on PATH")
-    else:
-        _print_info("    Installing browser-use CLI (uv tool install browser-use)...")
-        try:
-            from tools.browser_use_cli import install_cli
 
-            ok, message = install_cli()
-        except Exception as exc:  # pragma: no cover — defensive
-            ok, message = False, f"install failed: {exc}"
-        if ok:
-            _print_success(f"    {message}")
+    MANAGED-FIRST: a browser-use on the user's PATH does NOT satisfy this
+    check — only the Hermes-managed ``$HERMES_HOME/bin`` copy does.
+    ``install_cli()`` short-circuits on the managed copy and otherwise
+    provisions it, so resolution always lands on a binary Hermes installs
+    and updates rather than a user-level side install.
+    """
+    _print_info("    Ensuring browser-use CLI (managed install)...")
+    try:
+        from tools.browser_use_cli import install_cli
+
+        ok, message = install_cli()
+    except Exception as exc:  # pragma: no cover — defensive
+        ok, message = False, f"install failed: {exc}"
+    if ok:
+        _print_success(f"    {message}")
+    else:
+        for line in str(message).splitlines():
+            _print_warning(f"    {line[:200]}")
+        if shutil.which("uvx"):
+            _print_info("    Falling back to zero-install runs via `uvx browser-use`")
         else:
-            for line in str(message).splitlines():
-                _print_warning(f"    {line[:200]}")
-            if shutil.which("uvx"):
-                _print_info("    Falling back to zero-install runs via `uvx browser-use`")
-            else:
-                _print_info("    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+            _print_info("    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
     if verbose_hints:
         _print_info("    Local Chrome needs remote debugging: chrome://inspect/#remote-debugging")
         _print_info("    Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")

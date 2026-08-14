@@ -706,7 +706,8 @@ class TestBrowserExec:
 
 
 class TestFindCliManagedBin:
-    """_find_cli probes ~/.local/bin and $HERMES_HOME/bin after PATH."""
+    """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and
+    ~/.local/bin, so the Hermes-installed copy always wins."""
 
     @pytest.fixture(autouse=True)
     def _hermetic_home(self, tmp_path, monkeypatch):
@@ -746,9 +747,11 @@ class TestFindCliManagedBin:
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(cli)]
 
-    def test_user_local_bin_precedes_managed_bin(self, tmp_path, monkeypatch):
-        """A user-level install wins over Hermes' managed copy — mirrors the
-        PATH-first preference (user intent beats bootstrap)."""
+    def test_managed_bin_precedes_user_local_bin(self, tmp_path, monkeypatch):
+        """MANAGED-FIRST: Hermes' managed copy wins over a user-level side
+        install — every backend selection provisions/updates the managed
+        copy, so resolution must land on the binary we control (no version
+        drift from stray `uv tool install` runs)."""
         user_dir = tmp_path / "userhome" / ".local" / "bin"
         user_dir.mkdir(parents=True)
         user_cli = user_dir / "browser-use"
@@ -759,7 +762,22 @@ class TestFindCliManagedBin:
         managed_cli = managed_dir / "browser-use"
         managed_cli.write_text("#!/bin/sh\n")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(user_cli)]
+        assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
+
+    def test_managed_bin_precedes_path(self, tmp_path, monkeypatch):
+        """MANAGED-FIRST: the managed copy also wins over one on PATH."""
+        path_dir = tmp_path / "onpath"
+        path_dir.mkdir()
+        path_cli = path_dir / "browser-use"
+        path_cli.write_text("#!/bin/sh\n")
+        path_cli.chmod(path_cli.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setenv("PATH", str(path_dir))
+        managed_dir = tmp_path / "home" / "bin"
+        managed_dir.mkdir(parents=True)
+        managed_cli = managed_dir / "browser-use"
+        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
+        assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
     def test_user_local_bin_uvx_fallback(self, tmp_path, monkeypatch):
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
@@ -771,9 +789,32 @@ class TestFindCliManagedBin:
 
 
 class TestInstallCli:
-    def test_already_installed_on_path(self, tmp_path, monkeypatch):
+    def test_path_install_does_not_short_circuit(self, tmp_path, monkeypatch):
+        """MANAGED-FIRST: a browser-use on PATH is a user-level side install
+        and must NOT satisfy install_cli() — only the managed copy does,
+        otherwise resolution stays pinned to a binary Hermes can't update."""
         cli = _fake_cli(tmp_path, "")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: cli if name == "browser-use" and path is None else None)
+        import sys as _sys
+        import types as _types
+        fake = _types.ModuleType("hermes_cli.managed_uv")
+        fake.ensure_uv = lambda **kw: None
+        monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
+        ok, msg = bu_cli.install_cli()
+        # No uv available in this fixture, so the attempted managed install
+        # fails — the point is that the PATH copy did not short-circuit.
+        assert ok is False
+        assert "already installed" not in msg
+
+    def test_already_installed_in_managed_bin(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "home" / "bin"
+        bin_dir.mkdir(parents=True)
+        cli = bin_dir / "browser-use"
+        cli.write_text("#!/bin/sh\n")
+        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         ok, msg = bu_cli.install_cli()
         assert ok is True
         assert "already installed" in msg

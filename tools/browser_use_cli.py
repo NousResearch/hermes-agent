@@ -223,14 +223,16 @@ def _user_local_bin_dir() -> Optional[str]:
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run.
 
-    Prefers an installed browser-use binary (PATH, then the user-level tool
-    dir, then Hermes' managed $HERMES_HOME/bin); falls back to running it
-    through uvx across the same probe set. The extra probes matter because
-    Hermes bootstraps its own uv into $HERMES_HOME/bin (not on the user's
-    PATH), and Desktop/TUI workers can spawn with a minimal PATH that omits
-    ~/.local/bin where `uv tool install` links binaries by default.
+    MANAGED-FIRST resolution: Hermes' own ``$HERMES_HOME/bin`` copy — the
+    one every browser backend selection installs and updates via
+    ``install_cli()`` — always wins, so all sessions drive one canonical,
+    Hermes-controlled binary. PATH and the user-level tool dir
+    (~/.local/bin / %APPDATA%\\uv\\bin, where a manual ``uv tool install``
+    links binaries) are fallbacks for setups that never ran our install,
+    and cover Desktop/TUI workers that spawn with a minimal PATH. The uvx
+    zero-install path (same probe order) is the final fallback.
     """
-    probe_paths = (None, _user_local_bin_dir(), _managed_bin_dir())
+    probe_paths = (_managed_bin_dir(), None, _user_local_bin_dir())
     for probe_path in probe_paths:
         if probe_path is None or probe_path:
             direct = shutil.which("browser-use", path=probe_path)
@@ -254,9 +256,11 @@ def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
 
     Returns ``(ok, message)`` — never raises.
     """
-    direct = shutil.which("browser-use")
-    if direct:
-        return True, f"browser-use CLI already installed ({direct})"
+    # MANAGED-FIRST: only the managed copy short-circuits the install. A
+    # browser-use found on PATH is a user-level side install — it must NOT
+    # prevent provisioning the canonical Hermes-managed copy, or resolution
+    # stays pinned to a binary we don't control (version drift, no updates
+    # through hermes tools).
     bin_dir = _managed_bin_dir()
     if bin_dir:
         managed = shutil.which("browser-use", path=bin_dir)

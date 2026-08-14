@@ -650,14 +650,20 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
             _run_post_setup("camofox")
         ensure.assert_not_called()
 
-    def test_ensure_helper_short_circuits_when_cli_on_path(self):
+    def test_ensure_helper_always_delegates_to_install_cli(self):
+        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
+        helper — install_cli() owns the managed-copy check and provisions
+        $HERMES_HOME/bin when only side installs exist."""
         with patch(
             "hermes_cli.tools_config.shutil.which", return_value="/usr/bin/browser-use"
-        ), patch("tools.browser_use_cli.install_cli") as install:
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
+        ) as install:
             from hermes_cli.tools_config import _ensure_browser_use_cli
 
             _ensure_browser_use_cli()
-        install.assert_not_called()
+        install.assert_called_once()
 
     def test_ensure_helper_install_failure_is_non_fatal(self):
         """A failed install must warn and fall back, never raise — the

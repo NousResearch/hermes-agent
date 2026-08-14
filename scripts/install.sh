@@ -2443,7 +2443,10 @@ install_browser_use_cli() {
         log_info "Skipping Browser Use CLI install (uv unavailable)"
         return 0
     fi
-    if command -v browser-use >/dev/null 2>&1 || [ -x "$HERMES_HOME/bin/browser-use" ]; then
+    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
+    # on the user's PATH is a side install — resolution prefers the managed
+    # copy, so it must be provisioned regardless.
+    if [ -x "$HERMES_HOME/bin/browser-use" ]; then
         log_success "Browser Use CLI already installed"
         return 0
     fi

@@ -14,6 +14,7 @@ import asyncio
 import json
 import threading
 import time
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
@@ -149,10 +150,12 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     routes = []
     configs = []
     sessions = []
+    attempt_ids = []
     call_count = {"n": 0}
 
     class _Session:
         async def call_tool(self, *args, **kwargs):
+            attempt_ids.append(kwargs["meta"]["com.nousresearch.hermes/toolAttemptId"])
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise ClosedResourceError
@@ -195,10 +198,18 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
 
         assert parsed == {"result": "reconnected"}
         assert call_count["n"] == 2
+        assert len(set(attempt_ids)) == 1
+        assert str(uuid.UUID(attempt_ids[0])) == attempt_ids[0]
         assert routes == [expected_route, expected_route]
         assert configs == [transport_config, transport_config]
         assert len(sessions) == 2
         assert sessions[0] is not sessions[1]
+
+        parsed = json.loads(handler({}))
+        assert parsed == {"result": "reconnected"}
+        assert call_count["n"] == 3
+        assert attempt_ids[2] != attempt_ids[0]
+        assert str(uuid.UUID(attempt_ids[2])) == attempt_ids[2]
     finally:
         loop.call_soon_threadsafe(server._shutdown_event.set)
         run_future.result(timeout=5)

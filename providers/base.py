@@ -56,6 +56,12 @@ class ProviderProfile:
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
+    # ── Reasoning echo (replay side) ─────────────────────────
+    # True when replayed assistant messages must keep reasoning_content.
+    # Plain class attribute, NOT a dataclass field, so plugins opt in
+    # without changing stock construction.
+    echo_reasoning_content = False
+
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
     # tool-result messages natively.  Set on providers that expose

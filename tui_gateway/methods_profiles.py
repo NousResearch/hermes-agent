@@ -446,7 +446,20 @@ def _(rid, params: dict) -> dict:
                         {"name": skill_name, "enabled": skill_name.lower() not in disabled}
                     )
 
-            from toolsets import get_all_toolsets, get_toolset_info
+            # Toolsets: the same filtered universe the `hermes tools`
+            # checklist offers — configurable toolsets (built-in + plugin),
+            # minus platform-restricted ones that don't apply here — with
+            # enablement resolved the way the runtime actually resolves it.
+            # The raw registry (get_all_toolsets) leaks internal platform
+            # composites (hermes-discord, feishu_drive, ...) and reports
+            # everything "enabled" whenever the profile has no pin, which a
+            # capabilities UI then faithfully mis-renders (tester report).
+            from hermes_cli.tools_config import (
+                _get_effective_configurable_toolsets,
+                _get_platform_tools,
+                _toolset_allowed_for_platform,
+            )
+            from toolsets import resolve_toolset
 
             tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
             pinned = tools_cfg.get("enabled_toolsets")
@@ -455,15 +468,32 @@ def _(rid, params: dict) -> dict:
                 if isinstance(pinned, list)
                 else None
             )
+            try:
+                platform_enabled = set(
+                    _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+                )
+            except Exception:
+                platform_enabled = set()
             toolsets_out = []
-            for ts_name in sorted(get_all_toolsets().keys()):
-                info = get_toolset_info(ts_name) or {}
+            for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
+                if not _toolset_allowed_for_platform(ts_name, "cli"):
+                    continue
+                try:
+                    tool_count = len(set(resolve_toolset(ts_name)))
+                except Exception:
+                    tool_count = 0
+                enabled = (
+                    ts_name in pinned_set
+                    if pinned_set is not None
+                    else ts_name in platform_enabled
+                )
                 toolsets_out.append(
                     {
                         "name": ts_name,
-                        "description": info.get("description") or "",
-                        "tool_count": len(info.get("tools") or []),
-                        "enabled": True if pinned_set is None else ts_name in pinned_set,
+                        "label": ts_label,
+                        "description": ts_desc or "",
+                        "tool_count": tool_count,
+                        "enabled": enabled,
                     }
                 )
 

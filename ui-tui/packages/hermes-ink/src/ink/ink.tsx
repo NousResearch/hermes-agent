@@ -1155,7 +1155,13 @@ export default class Ink {
     const { bytes: writeBytes, backpressure } = writeDiffToTerminal(
       this.terminal,
       optimized,
-      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      // Never emit BSU/ESU (DEC 2026) on terminals that don't support it —
+      // main screen included. Multiplexers like Zellij re-parse and re-chunk
+      // the stream with their own timing, so the markers buy no atomicity and
+      // stale frames get pushed into main-screen scrollback as repeated
+      // chrome (#66490). Supported terminals keep today's behavior on both
+      // screens (skip=false → BSU/ESU wrapped).
+      !SYNC_OUTPUT_SUPPORTED,
       trackDrain
         ? () => {
             // Callback fires once Node has flushed the chunk to the OS.

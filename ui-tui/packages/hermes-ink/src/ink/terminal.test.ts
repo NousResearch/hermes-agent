@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { isSynchronizedOutputSupported, needsAltScreenResizeScrollbackClear } from './terminal.js'
+import { BSU, ESU } from './termio/dec.js'
+
+import { isSynchronizedOutputSupported, needsAltScreenResizeScrollbackClear, writeDiffToTerminal } from './terminal.js'
 
 describe('terminal resize quirks', () => {
   it('uses a deeper alt-screen resize clear for Apple Terminal', () => {
@@ -34,5 +36,39 @@ describe('synchronized output detection', () => {
 
   it('reports no support for an unknown terminal', () => {
     expect(isSynchronizedOutputSupported({ TERM: 'xterm-256color' })).toBe(false)
+  })
+})
+
+describe('writeDiffToTerminal sync-marker gating (#66490 main-screen gap)', () => {
+  const makeTerminal = () => {
+    const writes: string[] = []
+    const stdout = {
+      write(chunk: string) {
+        writes.push(String(chunk))
+        return true
+      }
+    }
+    return { terminal: { stderr: stdout, stdout } as never, writes }
+  }
+
+  it('wraps the frame in BSU/ESU when sync markers are enabled', () => {
+    const { terminal, writes } = makeTerminal()
+    writeDiffToTerminal(terminal, [{ content: 'frame', type: 'stdout' }] as never, false)
+    const out = writes.join('')
+    expect(out).toContain(BSU)
+    expect(out).toContain(ESU)
+  })
+
+  it('emits no BSU/ESU when skipSyncMarkers is true (unsupported terminal, ANY screen)', () => {
+    // The renderer passes !SYNC_OUTPUT_SUPPORTED for every write path — main
+    // screen included. Under Zellij the multiplexer re-chunks the stream, so
+    // the markers buy no atomicity and stale frames leak into main-screen
+    // scrollback as repeated chrome.
+    const { terminal, writes } = makeTerminal()
+    writeDiffToTerminal(terminal, [{ content: 'frame', type: 'stdout' }] as never, true)
+    const out = writes.join('')
+    expect(out).not.toContain(BSU)
+    expect(out).not.toContain(ESU)
+    expect(out).toContain('frame')
   })
 })

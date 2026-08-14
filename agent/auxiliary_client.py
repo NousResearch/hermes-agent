@@ -6545,9 +6545,13 @@ def _project_provider_profile(
     handles_reasoning = False
     messages_wire = False
     try:
-        from providers import get_provider_profile
+        from providers import get_provider_profile, resolve_provider_profile
         from providers.base import ProviderProfile
-        profile = get_provider_profile(provider_norm)
+
+        # Aux routes carry the raw route/entry name (never a canonicalized
+        # "custom" plus a separate requested name), so the provider string
+        # doubles as the requested identity.
+        profile = resolve_provider_profile(provider, requested=provider)
         if profile is None and _routes_to_custom_endpoint(provider_norm):
             # A keyed ``providers:`` entry referenced by its bare key (or via ``main``/``auto``) is
             # the same OpenAI-compatible custom endpoint the main path already projects with the

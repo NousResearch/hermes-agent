@@ -664,18 +664,17 @@ class DeepSeekModelCapabilities:
     native_web_search: bool = False
 
 
-# Fail closed for unknown / dated model IDs. The current DeepSeek Responses
-# guide documents V4 Flash only and says V4 Pro support is not yet available.
-# Keep the Pro entry explicit so its future rollout is a localized capability
-# change rather than another cross-cutting routing patch.
+# Fail closed for unknown / dated model IDs. DeepSeek's Responses guide lists
+# the exact GA model IDs below; aliases and future snapshots must be enabled
+# explicitly when their wire capabilities are documented.
 _DEEPSEEK_MODEL_CAPABILITIES: Dict[str, DeepSeekModelCapabilities] = {
     "deepseek-v4-flash": DeepSeekModelCapabilities(
         responses_api=True,
         native_web_search=True,
     ),
     "deepseek-v4-pro": DeepSeekModelCapabilities(
-        responses_api=False,
-        native_web_search=False,
+        responses_api=True,
+        native_web_search=True,
     ),
 }
 _DEEPSEEK_NO_CAPABILITIES = DeepSeekModelCapabilities()

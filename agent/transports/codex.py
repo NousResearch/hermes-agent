@@ -399,8 +399,11 @@ class ResponsesApiTransport(ProviderTransport):
                 _effort_clamp["xhigh"] = "high"
             _effort_clamp.update({"max": "high", "ultra": "high"})
         elif is_deepseek_responses:
-            # DeepSeek accepts max but not Hermes/OpenAI product aliases.
-            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
+            # DeepSeek V4 Responses exposes none/low/high/max. Normalize
+            # Hermes/OpenAI aliases to DeepSeek's documented wire values.
+            _effort_clamp.update(
+                {"medium": "high", "xhigh": "high", "ultra": "max"}
+            )
         if (params.get("provider") or "").strip().lower() == "actual":
             # Actual Computer relays to SGLang/vLLM backends that accept only
             # none/low/medium/high/max for reasoning effort — a forwarded
@@ -570,6 +573,11 @@ class ResponsesApiTransport(ProviderTransport):
             and not is_deepseek_responses
         ):
             kwargs["include"] = []
+        elif is_deepseek_responses:
+            # DeepSeek thinking is enabled by default. Omitting ``reasoning``
+            # therefore does not honor reasoning.enabled=false; ``none`` is
+            # the provider's explicit Responses API disable value.
+            kwargs["reasoning"] = {"effort": "none"}
 
         request_overrides = params.get("request_overrides")
         if request_overrides:

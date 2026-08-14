@@ -56,7 +56,7 @@ class _DeepSeekResponsesHandler(BaseHTTPRequestHandler):
         self._send_event({
             "type": "response.completed",
             "sequence_number": sequence,
-            "response": _completed_response(items),
+            "response": _completed_response(items, request_body["model"]),
         })
 
     def _send_event(self, event: dict) -> None:
@@ -85,7 +85,7 @@ def _message_item(text: str, item_id: str) -> dict:
     }
 
 
-def _completed_response(items: list[dict]) -> dict:
+def _completed_response(items: list[dict], model: str) -> dict:
     return {
         "id": "resp_local",
         "object": "response",
@@ -97,7 +97,7 @@ def _completed_response(items: list[dict]) -> dict:
         "instructions": None,
         "max_output_tokens": None,
         "max_tool_calls": None,
-        "model": "deepseek-v4-flash",
+        "model": model,
         "output": items,
         "parallel_tool_calls": True,
         "previous_response_id": None,
@@ -169,10 +169,12 @@ def _web_search_tool() -> dict:
     }
 
 
+@pytest.mark.parametrize("model", ["deepseek-v4-flash", "deepseek-v4-pro"])
 def test_real_sdk_streams_and_replays_deepseek_web_search_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     deepseek_wire_server,
+    model,
 ):
     from run_agent import AIAgent
 
@@ -195,7 +197,7 @@ def test_real_sdk_streams_and_replays_deepseek_web_search_call(
         base_url=base_url,
         provider="deepseek",
         api_mode="chat_completions",  # stale input must be corrected by model
-        model="deepseek-v4-flash",
+        model=model,
         max_iterations=1,
         enabled_toolsets=[],
         quiet_mode=True,
@@ -241,7 +243,9 @@ def test_real_sdk_streams_and_replays_deepseek_web_search_call(
         "/responses",
     ]
     first_body = handler.captured_requests[0]["body"]
+    assert first_body["model"] == model
     assert first_body["tools"] == [{"type": "web_search"}]
+    assert first_body["reasoning"] == {"effort": "high"}
     assert "prompt_cache_key" not in first_body
     assert "include" not in first_body
     assert "context_management" not in first_body

@@ -319,7 +319,7 @@ Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-
 
 ### DeepSeek native search
 
-`deepseek-v4-flash` can execute `web_search` inside the model's Responses API turn. Use the regular DeepSeek inference credential and opt in explicitly:
+`deepseek-v4-flash` and `deepseek-v4-pro` can execute `web_search` inside the model's Responses API turn. Use the regular DeepSeek inference credential and opt in explicitly:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -331,7 +331,7 @@ web:
   extract_backend: "firecrawl"  # optional; native DeepSeek search does not extract
 ```
 
-Only `deepseek-v4-flash` uses this route. `deepseek-v4-pro` and unsupported variants remain on Chat Completions and will return an actionable error if the native backend is selected. Hermes never auto-enables this backend merely because `DEEPSEEK_API_KEY` exists, and it only swaps in the native tool when the `web_search` function is already enabled for the agent.
+Both exact GA model IDs use this route. Unknown or dated variants that are not capability-enabled remain on Chat Completions and return an actionable error if the native backend is selected. Hermes never auto-enables this backend merely because `DEEPSEEK_API_KEY` exists, and it only swaps in the native tool when the `web_search` function is already enabled for the agent.
 
 Native search can be token-intensive because DeepSeek may run multiple searches and page opens in one turn. Server-side `web_search_call` items are saved and replayed on follow-up turns so the search context is preserved.
 

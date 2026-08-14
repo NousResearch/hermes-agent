@@ -51,13 +51,13 @@ def test_switch_pro_to_flash_uses_responses_root():
     assert result.base_url == "https://api.deepseek.com"
 
 
-def test_switch_flash_to_pro_restores_chat_v1():
+def test_switch_flash_to_pro_stays_on_responses_root():
     result = _run_switch(
         "deepseek-v4-pro",
         current_model="deepseek-v4-flash",
-        runtime_mode="codex_responses",
-        runtime_url="https://api.deepseek.com",
+        runtime_mode="chat_completions",
+        runtime_url="https://api.deepseek.com/v1",
     )
     assert result.success
-    assert result.api_mode == "chat_completions"
-    assert result.base_url == "https://api.deepseek.com/v1"
+    assert result.api_mode == "codex_responses"
+    assert result.base_url == "https://api.deepseek.com"

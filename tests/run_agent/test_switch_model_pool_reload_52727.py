@@ -231,10 +231,10 @@ class TestSwitchModelReloadsCredentialPool:
         ),
         (
             "deepseek-v4-pro",
-            "codex_responses",
-            "https://api.deepseek.com",
             "chat_completions",
             "https://api.deepseek.com/v1",
+            "codex_responses",
+            "https://api.deepseek.com",
         ),
     ],
 )

@@ -139,7 +139,7 @@ def test_deepseek_credential_rotation_preserves_wire_specific_official_root(
         model=(
             "deepseek-v4-flash"
             if api_mode == "codex_responses"
-            else "deepseek-v4-pro"
+            else "deepseek-v4-pro-legacy"
         ),
         api_key="old",
         base_url=current_url,

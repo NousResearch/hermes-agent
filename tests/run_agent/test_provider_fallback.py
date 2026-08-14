@@ -261,7 +261,7 @@ class TestFallbackChainAdvancement:
         assert agent._client_kwargs["base_url"] == "https://api.deepseek.com"
         assert str(agent.client.base_url).rstrip("/") == "https://api.deepseek.com"
 
-    def test_deepseek_pro_fallback_uses_chat_v1(self):
+    def test_deepseek_pro_fallback_uses_responses_root(self):
         fbs = [{"provider": "deepseek", "model": "deepseek-v4-pro"}]
         agent = _make_agent(fallback_model=fbs)
         with (
@@ -273,7 +273,7 @@ class TestFallbackChainAdvancement:
                 "agent.auxiliary_client.resolve_provider_client",
                 return_value=(
                     _mock_client(
-                        base_url="https://api.deepseek.com",
+                        base_url="https://api.deepseek.com/v1",
                         api_key="deepseek-key",
                     ),
                     "deepseek-v4-pro",
@@ -286,10 +286,10 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
 
-        assert agent.api_mode == "chat_completions"
-        assert agent.base_url == "https://api.deepseek.com/v1"
-        assert agent._client_kwargs["base_url"] == "https://api.deepseek.com/v1"
-        assert str(agent.client.base_url).rstrip("/") == "https://api.deepseek.com/v1"
+        assert agent.api_mode == "codex_responses"
+        assert agent.base_url == "https://api.deepseek.com"
+        assert agent._client_kwargs["base_url"] == "https://api.deepseek.com"
+        assert str(agent.client.base_url).rstrip("/") == "https://api.deepseek.com"
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

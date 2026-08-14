@@ -312,11 +312,11 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 
 Hermes keeps the canonical `deepseek` provider and selects the wire protocol by model:
 
-- `deepseek-v4-flash` uses DeepSeek's Responses API at `https://api.deepseek.com/responses`.
-- `deepseek-v4-pro`, dated variants, and other capability-disabled first-party IDs remain on Chat Completions under `https://api.deepseek.com/v1`.
+- `deepseek-v4-flash` and the GA `deepseek-v4-pro` (`DeepSeek-V4-Pro-0813`) use DeepSeek's Responses API at `https://api.deepseek.com/responses`.
+- Unknown aliases and dated IDs not listed in Hermes' capability table fail closed to Chat Completions under `https://api.deepseek.com/v1`.
 - Custom `DEEPSEEK_BASE_URL` proxies are not rewritten; only the official DeepSeek endpoint is normalized.
 
-Set `DEEPSEEK_API_KEY` in `~/.hermes/.env`, then select Flash normally:
+Set `DEEPSEEK_API_KEY` in `~/.hermes/.env`, then select either supported model normally:
 
 ```yaml
 model:
@@ -324,7 +324,7 @@ model:
   default: deepseek-v4-flash
 ```
 
-DeepSeek V4 Flash also supports server-side native web search. It is deliberately opt-in because search turns can consume substantially more tokens than ordinary inference:
+DeepSeek V4 Flash and V4 Pro also support server-side native web search. It is deliberately opt-in because search turns can consume substantially more tokens than ordinary inference:
 
 ```yaml
 web:

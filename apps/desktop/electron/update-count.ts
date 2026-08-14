@@ -63,6 +63,7 @@ function compareApiUrl({ currentSha, originUrl, targetSha }) {
 
 function canonicalRemoteForCompare(originUrl) {
   const value = String(originUrl || '').trim()
+
   const match =
     /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(value) ||
     /^(?:ssh:\/\/git@|https:\/\/|http:\/\/)github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(value)

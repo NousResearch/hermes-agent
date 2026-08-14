@@ -2579,6 +2579,7 @@ async function checkUpdates() {
     // compare API when possible; otherwise behind stays null ("update
     // available, count unknown") and updateAvailable carries the signal.
     const upToDate = Boolean(currentSha && currentSha === targetSha)
+
     const sshBehind = upToDate
       ? 0
       : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })

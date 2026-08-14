@@ -57,6 +57,8 @@ else
     INSTALL_DIR_EXPLICIT=false
 fi
 PYTHON_VERSION="3.11"
+# Keep this exclusive ceiling aligned with pyproject.toml's requires-python.
+PYTHON_MAX_VERSION="3.14"
 NODE_VERSION="22"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
@@ -642,6 +644,13 @@ check_python() {
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
+        return 0
+    fi
+
+    local compatible_request=">=$PYTHON_VERSION,<$PYTHON_MAX_VERSION"
+    if PYTHON_PATH="$("$UV_CMD" python find "$compatible_request" 2>/dev/null)"; then
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+        log_success "Compatible Python found: $PYTHON_FOUND_VERSION"
         return 0
     fi
 
@@ -1433,15 +1442,17 @@ setup_venv() {
         return 0
     fi
 
-    log_info "Creating virtual environment with Python $PYTHON_VERSION..."
+    local venv_python="${PYTHON_PATH:-$PYTHON_VERSION}"
+    local venv_label="${PYTHON_FOUND_VERSION:-Python $PYTHON_VERSION}"
+    log_info "Creating virtual environment with $venv_label..."
 
     if [ -d "venv" ]; then
         log_info "Virtual environment already exists, recreating..."
         rm -rf venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    # uv creates the venv with the resolved interpreter in one step
+    $UV_CMD venv venv --python "$venv_python"
 
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
@@ -1454,7 +1465,7 @@ setup_venv() {
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
     fi
 
-    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+    log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null || printf '%s' "$venv_label"))"
 }
 
 install_deps() {

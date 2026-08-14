@@ -2325,9 +2325,27 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         from toolsets import validate_toolset
         from hermes_cli.toolset_validation import validate_platform_toolsets
 
+        raw_platform_toolsets = read_raw_config().get("platform_toolsets")
         ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+            raw_platform_toolsets, validate_toolset
         )
+        if ts_warnings:
+            # Plugin toolsets may be declared only when the enabled plugin is
+            # loaded. Migration commands do not otherwise discover plugins,
+            # so retry after discovery before calling those names invalid.
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+            except Exception as _plugin_discovery_err:
+                logger.debug(
+                    "plugin discovery during toolset validation failed: %s",
+                    _plugin_discovery_err,
+                )
+            else:
+                ts_warnings = validate_platform_toolsets(
+                    raw_platform_toolsets, validate_toolset
+                )
         for w in ts_warnings:
             results["warnings"].append(w)
             if not quiet:

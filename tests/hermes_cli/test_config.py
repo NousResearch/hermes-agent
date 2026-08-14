@@ -1313,6 +1313,47 @@ class TestDelegationCapUnificationMigration:
         assert "delegation" not in raw
 
 
+class TestPlatformToolsetMigrationValidation:
+    def test_retries_validation_after_enabled_plugin_discovery(
+        self, tmp_path, monkeypatch
+    ):
+        plugin_dir = tmp_path / "plugins" / "late-bound-toolset"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: late-bound-toolset\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    from toolsets import TOOLSETS\n"
+            "    TOOLSETS['late-bound-tools'] = {\n"
+            "        'description': 'Late-bound test tools',\n"
+            "        'tools': [],\n"
+            "        'includes': [],\n"
+            "    }\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "platform_toolsets": {"cli": ["late-bound-tools"]},
+                    "plugins": {"enabled": ["late-bound-toolset"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from toolsets import TOOLSETS
+
+        try:
+            results = migrate_config(interactive=False, quiet=True)
+            assert not any("late-bound-tools" in w for w in results["warnings"])
+        finally:
+            TOOLSETS.pop("late-bound-tools", None)
+
+
 class TestBackgroundNotificationsConciseMigration:
     """v34 → v35: move users on the old implicit default 'all' to 'concise'."""
 

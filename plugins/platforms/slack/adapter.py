@@ -1955,7 +1955,16 @@ class SlackAdapter(BasePlatformAdapter):
                 token=primary_token,
                 user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
             )
-            self._app = AsyncApp(token=primary_token, client=primary_client)
+            # AsyncWebClient already owns the token. Slack Bolt implicitly
+            # reloads SLACK_BOT_TOKEN even when token=None, then warns that the
+            # duplicate is ignored. Hide it only for this synchronous constructor
+            # call and restore it immediately afterward.
+            env_bot_token = os.environ.pop("SLACK_BOT_TOKEN", None)
+            try:
+                self._app = AsyncApp(token=None, client=primary_client)
+            finally:
+                if env_bot_token is not None:
+                    os.environ["SLACK_BOT_TOKEN"] = env_bot_token
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client

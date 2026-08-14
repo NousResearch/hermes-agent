@@ -99,17 +99,25 @@ canonical user-scoped form such as
 `viking://user/default/peers/${OPENVIKING_AGENT}/memories/...` in API-key mode.
 Explicit remembers do not depend on session commit extraction.
 
-Hermes built-in `memory` tool additions are mirrored to OpenViking after the
-local memory operation succeeds:
+Successful Hermes built-in `memory` mutations are mirrored to OpenViking in
+FIFO order. Hermes persists the exact OpenViking URI for each native memory
+entry in the active profile at
+`$HERMES_HOME/openviking/memory_mirror_registry.json`, so later mutations never
+need to guess a target by semantic similarity:
 
 | Hermes action | OpenViking operation |
 |---------------|----------------------|
-| `add` | `content/write` with `mode=create` under the configured peer memory namespace |
+| `add` | `content/write` with `mode=create`; store the exact returned URI in the mirror registry |
+| `replace` | resolve one registry entry from `target` + `old_text`, then replace the same URI and wait for semantic/vector refresh |
+| `remove` | resolve one registry entry from `target` + `old_text`, then delete that exact URI and wait for semantic cleanup |
 
-Built-in `replace` and `remove` operations are not mirrored because Hermes
-native memory entries do not yet carry stable OpenViking file URIs. Use
-`viking_forget` when the user explicitly asks to delete a specific OpenViking
-memory URI.
+The mirror registry owns only memories created through this built-in-memory
+bridge. Session-extracted memories and explicit `viking_remember` writes are not
+registered or modified by it. Existing OpenViking memories created before the
+registry was introduced also have no safe automatic mapping: a later built-in
+`replace` or `remove` for such an entry fails closed with a warning and leaves
+OpenViking unchanged rather than guessing which memory to mutate. Use
+`viking_forget` with an exact URI for manual cleanup of those entries.
 
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as

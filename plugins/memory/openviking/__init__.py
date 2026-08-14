@@ -4763,37 +4763,25 @@ class OpenVikingMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Mirror successful built-in memory additions to OpenViking."""
-        if action != "add" or not content or not self._ensure_client():
+        """Mirror successful built-in memory mutations to OpenViking."""
+        if action not in {"add", "replace", "remove"} or not self._ensure_client():
+            return
+        if action in {"add", "replace"} and not content:
             return
 
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        from plugins.memory.openviking.native_memory_mirror import (
+            enqueue_native_memory_write,
+        )
 
-        def _write():
-            try:
-                client = self._new_client()
-                client.post("/api/v1/content/write", {
-                    "uri": uri,
-                    "content": content,
-                    "mode": "create",
-                })
-            except Exception as e:
-                logger.debug("OpenViking memory mirror failed: %s", e)
-            finally:
-                with self._memory_write_lock:
-                    self._memory_write_threads.discard(threading.current_thread())
-
-        t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
-        with self._memory_write_lock:
-            if self._shutting_down:
-                return
-            self._memory_write_threads.add(t)
-            try:
-                t.start()
-            except Exception as e:
-                self._memory_write_threads.discard(t)
-                logger.debug("OpenViking memory mirror worker failed to start: %s", e)
+        enqueue_native_memory_write(
+            self,
+            action,
+            target,
+            content,
+            metadata=metadata,
+            subdir=subdir,
+        )
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -4830,6 +4818,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Stop deferred finalizers from issuing new commits against a
         # torn-down client, then drain everything still in flight.
         self._shutting_down = True
+        from plugins.memory.openviking.native_memory_mirror import (
+            shutdown_native_memory_mirror,
+        )
+
+        shutdown_native_memory_mirror(self, timeout=5.0)
         # Wait for every in-flight writer across all tracked sessions.
         with self._inflight_lock:
             all_workers = [

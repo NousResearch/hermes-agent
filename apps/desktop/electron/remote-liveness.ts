@@ -126,7 +126,7 @@ export interface RevalidatePooledRemoteBackendsOptions {
   entries: Iterable<[string, PooledRemoteEntry]>
   log: (message: string) => void
   probe: (url: string, options: { timeoutMs: number }) => Promise<unknown>
-  stopBackend: (profile: string) => void
+  stopBackend: (profile: string, expectedEntry: PooledRemoteEntry) => boolean
   tracker: RemoteLivenessTracker
 }
 
@@ -170,8 +170,10 @@ export async function revalidatePooledRemoteBackends({
         }
 
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        stopBackend(profile)
-        dropped.push(profile)
+
+        if (stopBackend(profile, entry)) {
+          dropped.push(profile)
+        }
       }
     })
   )

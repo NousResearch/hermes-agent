@@ -202,6 +202,64 @@ class TestStartRun:
                 interrupted.set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("second_input", "expected_statuses"),
+        [("hello", [202, 202]), ("changed", [202, 409])],
+    )
+    async def test_concurrent_first_idempotency_key_is_atomic(
+        self, adapter, second_input, expected_statuses
+    ):
+        app = _create_runs_app(adapter)
+        original_json = web.Request.json
+        parsing = 0
+        both_parsing = asyncio.Event()
+
+        async def _barrier_json(request, *args, **kwargs):
+            nonlocal parsing
+            parsing += 1
+            if parsing == 2:
+                both_parsing.set()
+            await asyncio.wait_for(both_parsing.wait(), timeout=3.0)
+            return await original_json(request, *args, **kwargs)
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(web.Request, "json", _barrier_json),
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-turn-concurrent"}
+
+                first, second = await asyncio.gather(
+                    cli.post("/v1/runs", json={"input": "hello"}, headers=headers),
+                    cli.post(
+                        "/v1/runs",
+                        json={"input": second_input},
+                        headers=headers,
+                    ),
+                )
+                first_data, second_data = await asyncio.gather(
+                    first.json(), second.json()
+                )
+
+                assert sorted([first.status, second.status]) == expected_statuses
+                if second_input == "hello":
+                    assert first_data["run_id"] == second_data["run_id"]
+                else:
+                    conflict = first_data if first.status == 409 else second_data
+                    assert conflict["error"]["code"] == "idempotency_conflict"
+                for _ in range(40):
+                    if mock_agent.run_conversation.call_count:
+                        break
+                    await asyncio.sleep(0.05)
+                mock_agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_idempotent_replay_bypasses_concurrency_limit(self, adapter):
         adapter._max_concurrent_runs = 1
         app = _create_runs_app(adapter)

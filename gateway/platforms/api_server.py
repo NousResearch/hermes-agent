@@ -6607,7 +6607,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     ensure_ascii=False,
                 ).encode("utf-8")
             ).hexdigest()
-            prior = prior_idempotent_run
+            # Body parsing yields to the event loop. Re-read after fingerprinting
+            # so a concurrent first request cannot reuse the stale pre-parse
+            # snapshot and start a second run for the same scoped key.
+            prior = self._run_idempotency.get(idempotency_scope)
             if prior is not None and prior["run_id"] not in self._run_statuses:
                 self._run_idempotency.pop(idempotency_scope, None)
                 prior = None

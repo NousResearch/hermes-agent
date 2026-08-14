@@ -595,8 +595,13 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
 
 
 def _sandbox_tools_for(enabled_tools: Optional[list[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+    """Tri-state sandbox tool resolution. None → legacy default (every sandbox tool); an
+    explicit list (possibly empty) → exact intersection with SANDBOX_ALLOWED_TOOLS, so an
+    empty grant denies all rather than broadening to the default
+    (SECURITY-CLASS-faf9d60580300e16 / #84271)."""
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,

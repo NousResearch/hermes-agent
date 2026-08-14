@@ -1220,6 +1220,50 @@ class TestDiscoveryTemporalNarrowing:
         ))
         assert result["success"] is False
 
+    def test_window_finds_in_range_session_buried_by_fts_limit(self, db, monkeypatch):
+        """A June hit must survive even if FTS rank would fill the scan with August.
+
+        Teknium's ticket wants the bound in the search query (WHERE), not a
+        post-filter of the already-truncated FTS top-N.
+        """
+        monkeypatch.setattr(
+            "tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2
+        )
+        august = _unix(2026, 8, 10)
+        for i in range(4):
+            sid = f"s_aug_{i}"
+            db.create_session(sid, source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (august, f"August {i}", sid),
+            )
+            db.append_message(
+                sid, role="user", content="modpack modpack modpack modpack"
+            )
+            db.append_message(
+                sid, role="assistant", content=("modpack details " * 20)
+            )
+        db.create_session("s_june", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (_unix(2026, 6, 15), "June quiet", "s_june"),
+        )
+        db.append_message("s_june", role="user", content="modpack")
+        db.append_message("s_june", role="assistant", content="ok")
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="modpack",
+            limit=5,
+            after="2026-06-01",
+            before="2026-07-01",
+            db=db,
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_june" in sids
+        assert all(not sid.startswith("s_aug_") for sid in sids)
+
 
 class TestDiscoverySessionExclusion:
     def test_exclude_session_ids_drops_named_session(self, db):

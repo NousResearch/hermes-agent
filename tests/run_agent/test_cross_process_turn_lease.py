@@ -7,6 +7,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+from agent import relay_runtime
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -382,6 +383,56 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
     assert interrupt_calls
     assert interrupt_calls[0][1] is True
     assert "could not be refreshed" in str(interrupt_calls[0][0]).lower()
+
+
+def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._session_turn_lease_refresh_interval = 0.01
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    interrupt_calls = []
+
+    def track_interrupt(message=None, hard_cancel=False):
+        interrupt_calls.append((message, hard_cancel))
+        agent._interrupt_requested = True
+
+    agent.interrupt = track_interrupt
+
+    def delayed_refresh_error(session_id, holder, **kwargs):
+        refresh_started.set()
+        release_refresh.wait(timeout=2.0)
+        raise OSError("database unavailable")
+
+    db.refresh_session_turn_lease = delayed_refresh_error
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        assert refresh_started.wait(timeout=2.0)
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    original_finish = relay_runtime.SESSION_COORDINATOR.finish_logical_calls
+
+    def finish_after_refresh(turn, *, outcome):
+        release_refresh.set()
+        time.sleep(0.05)
+        return original_finish(turn, outcome=outcome)
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR,
+        "finish_logical_calls",
+        finish_after_refresh,
+    )
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "seed"}],
+    )
+
+    assert result["final_response"] == "ok"
+    assert interrupt_calls == []
+    assert agent._interrupt_requested is False
 
 
 def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):

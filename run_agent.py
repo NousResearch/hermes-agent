@@ -8086,11 +8086,21 @@ class AIAgent:
         durable_turn_lease = None
         durable_turn_lease_stop = None
         durable_turn_lease_thread = None
+        durable_turn_lease_activity_lock = threading.Lock()
+        durable_turn_lease_turn_active = False
         token = None
         acct_token = None
         task_started = False
         task_finished = False
         relay_outcome = "failed"
+
+        def _stop_durable_turn_lease_refresher() -> None:
+            nonlocal durable_turn_lease_turn_active
+            with durable_turn_lease_activity_lock:
+                durable_turn_lease_turn_active = False
+                if durable_turn_lease_stop is not None:
+                    durable_turn_lease_stop.set()
+
         try:
             # Serialize the full load -> run -> flush region across Hermes
             # processes. Gateway's asyncio lease closes alias routing inside one
@@ -8260,10 +8270,16 @@ class AIAgent:
 
                 def _refresh_durable_turn_lease() -> None:
                     def _interrupt_turn(message: str) -> None:
-                        try:
-                            self.interrupt(message, hard_cancel=True)
-                        except Exception:
-                            self._interrupt_requested = True
+                        with durable_turn_lease_activity_lock:
+                            if (
+                                durable_turn_lease_stop.is_set()
+                                or not durable_turn_lease_turn_active
+                            ):
+                                return
+                            try:
+                                self.interrupt(message, hard_cancel=True)
+                            except Exception:
+                                self._interrupt_requested = True
 
                     while not durable_turn_lease_stop.wait(_lease_refresh_interval):
                         try:
@@ -8300,6 +8316,8 @@ class AIAgent:
                             )
                             return
 
+                with durable_turn_lease_activity_lock:
+                    durable_turn_lease_turn_active = True
                 durable_turn_lease_thread = threading.Thread(
                     target=_refresh_durable_turn_lease,
                     name="session-turn-lease-refresh",
@@ -8348,19 +8366,25 @@ class AIAgent:
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
             with bind_subagent_parent(self), scoped_runtime_main({}):
-                result = run_conversation(
-                    self,
-                    user_message,
-                    system_message,
-                    conversation_history,
-                    effective_task_id,
-                    stream_callback,
-                    persist_user_message,
-                    persist_user_timestamp=persist_user_timestamp,
-                    persist_user_display_kind=persist_user_display_kind,
-                    persist_user_display_metadata=persist_user_display_metadata,
-                    moa_config=moa_config,
-                )
+                try:
+                    result = run_conversation(
+                        self,
+                        user_message,
+                        system_message,
+                        conversation_history,
+                        effective_task_id,
+                        stream_callback,
+                        persist_user_message,
+                        persist_user_timestamp=persist_user_timestamp,
+                        persist_user_display_kind=persist_user_display_kind,
+                        persist_user_display_metadata=persist_user_display_metadata,
+                        moa_config=moa_config,
+                    )
+                finally:
+                    # The lease remains held through relay/task finalization, but
+                    # those post-loop steps must not receive a late refresh
+                    # interrupt that poisons the next turn on this cached agent.
+                    _stop_durable_turn_lease_refresher()
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"
@@ -8406,8 +8430,7 @@ class AIAgent:
                             relay_lease
                         )
                 finally:
-                    if durable_turn_lease_stop is not None:
-                        durable_turn_lease_stop.set()
+                    _stop_durable_turn_lease_refresher()
                     if (
                         durable_turn_lease_thread is not None
                         and durable_turn_lease_thread.is_alive()

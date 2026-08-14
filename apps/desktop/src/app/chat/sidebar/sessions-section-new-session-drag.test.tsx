@@ -42,6 +42,7 @@ vi.mock('@/i18n', () => ({
         },
         showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
       },
+      profiles: { switchToProfile: (label: string) => `Switch to ${label}` },
       statusStack: { coding: { switchFailed: (label: string) => `Could not switch to ${label}` } }
     }
   })
@@ -77,6 +78,7 @@ const baseProps = () => ({
   onResumeSession: noop,
   onToggle: noop,
   onTogglePin: noop,
+  onToggleUnread: noop,
   open: true,
   pinned: false,
   sessions: [] as SessionInfo[],

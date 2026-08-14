@@ -100,3 +100,28 @@ class SessionPeersMixin:
         if self._ai_observe_others:
             return session.assistant_peer_id, target_peer_id
         return target_peer_id, None
+
+    def _peer_id_for_runtime_id(self, runtime_id: str) -> str:
+        """Map one gateway runtime identity onto its Honcho peer ID with the same alias-then-prefix
+        order ``_resolve_user_peer_id`` applies, so an aliased account lands on its peer on any turn."""
+        aliases = getattr(self._config, "user_peer_aliases", {}) if self._config else {}
+        if isinstance(aliases, dict):
+            alias = aliases.get(runtime_id)
+            if isinstance(alias, str) and alias.strip():
+                return self._sanitize_id(alias.strip())
+        prefix = getattr(self._config, "runtime_peer_prefix", "") if self._config else ""
+        prefix = prefix.strip() if isinstance(prefix, str) else ""
+        return self._generated_runtime_peer_id(prefix, runtime_id) if prefix else self._sanitize_id(runtime_id)
+
+    def resolve_author_peer_id(self, key: str, author_id: str | None, author_name: str | None = None) -> str | None:
+        """Peer ID for the turn's author, or None to keep the session's peer: no author named, the
+        author IS the session's peer, or ``pinPeerName`` collapsing identities by operator request.
+        ``author_name`` is a display name (attacker-influenceable), so it never becomes a peer ID."""
+        runtime_id = str(author_id).strip() if author_id else ""
+        if not runtime_id:
+            return None
+        if self._config is not None and bool(getattr(self._config, "peer_name", None)) \
+                and getattr(self._config, "pin_peer_name", False) is True:
+            return None
+        peer_id = self._peer_id_for_runtime_id(runtime_id)
+        return None if peer_id == self._resolve_user_peer_id(key) else peer_id

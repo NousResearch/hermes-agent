@@ -63,6 +63,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
+        # honcho_session_id -> author peer IDs already joined to that session.
+        self._joined_author_peers: dict[str, set[str]] = {}
         self._sessions_cache: dict[str, Any] = {}
         # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client, so an
         # in-flight resolver never stores an object bound to the discarded client.
@@ -245,6 +247,26 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
     # ----- Writes -----
 
+    def _author_peer_for_session(self, honcho_session: Any, honcho_session_id: str, author_peer_id: str) -> Any:
+        """Return the author's peer, joining it to the session on first sight. A shared session's
+        roster is open (people and agents arrive later), so peers join when they first write; joins
+        are remembered per session so this costs one API call per author."""
+        peer = self._get_or_create_peer(author_peer_id)
+        with self._cache_lock:
+            if author_peer_id in self._joined_author_peers.setdefault(honcho_session_id, set()):
+                return peer
+        try:
+            from honcho.session import SessionPeerConfig
+            config = SessionPeerConfig(observe_me=self._user_observe_me, observe_others=self._user_observe_others)
+            honcho_session.add_peers([(peer, config)])
+        except Exception as e:
+            # The write still lands under the right peer; only the membership (observe config) is missing.
+            logger.debug("Honcho author peer join failed for %s: %s", author_peer_id, e)
+            return peer
+        with self._cache_lock:
+            self._joined_author_peers.setdefault(honcho_session_id, set()).add(author_peer_id)
+        return peer
+
     def _flush_session(self, session: HonchoSession) -> bool:
         """Write unsynced messages to Honcho synchronously."""
         new_messages = [m for m in session.messages if not m.get("_synced")]
@@ -258,7 +280,15 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session is None:
                 honcho_session, _ = self._get_or_create_honcho_session(session.honcho_session_id, user_peer, assistant_peer)
-            honcho_messages = [(user_peer if m["role"] == "user" else assistant_peer).message(m["content"]) for m in new_messages]
+            honcho_messages = []
+            for m in new_messages:
+                if m["role"] != "user":
+                    honcho_messages.append(assistant_peer.message(m["content"]))
+                    continue
+                author_peer_id = m.get("author_peer_id")
+                peer = (self._author_peer_for_session(honcho_session, session.honcho_session_id, author_peer_id)
+                        if author_peer_id else user_peer)
+                honcho_messages.append(peer.message(m["content"]))
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
 

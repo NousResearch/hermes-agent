@@ -263,6 +263,21 @@ def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
     return False
 
 
+def _native_compaction_active(context_management: Any) -> bool:
+    """Is THIS request natively compacted?
+
+    True only when the caller's eligibility gate
+    (``native_compaction.native_compaction_context_management``) produced a
+    non-empty payload. Every native-compaction side effect on the wire —
+    sending ``context_management``, replaying a ``type: "compaction"``
+    checkpoint, restructuring the input around it — hangs off this one
+    predicate, so a checkpoint that outlives the gate (model swapped out of
+    the gpt-5.6 family, compression disabled, rejection kill switch, resumed
+    session) cannot keep reshaping requests on its own.
+    """
+    return isinstance(context_management, list) and bool(context_management)
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -303,6 +318,9 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
             current_issuer_kind=issuer,
+            native_compaction_eligible=_native_compaction_active(
+                kwargs.get("context_management")
+            ),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -377,6 +395,12 @@ class ResponsesApiTransport(ProviderTransport):
         # agent.native_compaction.native_compaction_context_management();
         # None means the field is never added to the request.
         context_management = params.get("context_management")
+        # Single source of truth for "this request is natively compacted":
+        # the same value decides whether the field goes out AND whether the
+        # converter may replay/prune around a compaction checkpoint. Keeping
+        # them derived from one expression is what stops a persisted
+        # checkpoint from restructuring the wire after the gate closes.
+        native_compaction_active = _native_compaction_active(context_management)
 
         # Resolve the issuing endpoint for this call. Stashed on the
         # transport so normalize_response can stamp it onto reasoning
@@ -471,6 +495,7 @@ class ResponsesApiTransport(ProviderTransport):
                 is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
+                native_compaction_eligible=native_compaction_active,
             ),
             "store": False,
         }
@@ -478,7 +503,7 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
-        if isinstance(context_management, list) and context_management:
+        if native_compaction_active:
             kwargs["context_management"] = context_management
 
         session_id = params.get("session_id")

@@ -107,9 +107,13 @@ def _safe_public_text(value: Any, hidden_values: set[str], limit: int = 500) -> 
     except Exception:
         logger.debug("Hermes force redactor unavailable", exc_info=True)
     for hidden in sorted(
-        (item for item in hidden_values if item), key=len, reverse=True
+        (item for item in hidden_values if len(item) >= 3), key=len, reverse=True
     ):
-        text = re.sub(re.escape(hidden), "[REDACTED]", text, flags=re.IGNORECASE)
+        if hidden.isdigit():
+            pattern = rf"(?<!\d){re.escape(hidden)}(?!\d)"
+        else:
+            pattern = rf"(?<![A-Za-z0-9_-]){re.escape(hidden)}(?![A-Za-z0-9_-])"
+        text = re.sub(pattern, "[REDACTED]", text, flags=re.IGNORECASE)
     text = " ".join(text.split()).strip()
     return text[:limit].rstrip()
 

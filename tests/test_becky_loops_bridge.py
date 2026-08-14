@@ -224,9 +224,21 @@ def test_public_text_uses_force_redaction_and_title_fallback() -> None:
     assert index["title"] == "Telegram loop"
     redacted = server._summary(
         store.rows[0],
-        [{"role": "user", "content": "AWS key=AKIA12345678901234", "timestamp": 0}],
+        [{"role": "user", "content": "AWS key=AKIA1234567890123456", "timestamp": 0}],
     )
-    assert "AKIA12345678901234" not in json.dumps(redacted)
+    assert "AKIA1234567890123456" not in json.dumps(redacted)
+
+
+def test_public_text_does_not_redact_short_id_substrings() -> None:
+    store = FakeStore()
+    store.rows[0]["session_id"] = "s"
+    store.rows[0]["thread_id"] = "t"
+    server = BeckyLoopsBridgeServer(config=config(), store=store)
+    summary = server._summary(
+        store.rows[0],
+        [{"role": "user", "content": "This is a useful plan.", "timestamp": 0}],
+    )
+    assert summary["summary"] == "This is a useful plan."
 
 
 @pytest.mark.asyncio

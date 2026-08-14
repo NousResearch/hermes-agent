@@ -5760,7 +5760,10 @@ async def _standalone_upload_file(
     return {"success": True, "message_id": message_id, "raw": result}
 
 
-_SLACK_THREAD_TS_RE = re.compile(r"^\d+\.\d+$")
+# ASCII digits only: Python's ``\d`` also matches Unicode decimal digits, so a
+# value like "١٧١٨٠٠٠٠٠٠.١٢٣٤٥٦" would pass and reach Slack (which rejects it)
+# instead of falling back to the channel root.
+_SLACK_THREAD_TS_RE = re.compile(r"^[0-9]+\.[0-9]+$")
 
 
 def _coerce_slack_thread_ts(thread_id):

@@ -172,3 +172,27 @@ def test_standalone_send_keeps_valid_thread_ts(monkeypatch, _standalone_send):
     assert len(fake_session.calls) == 1
     _token, body = fake_session.calls[0]
     assert body.get("thread_ts") == "1718000000.123456"
+
+
+def test_standalone_send_drops_unicode_digit_thread_ts(
+    monkeypatch, _standalone_send
+):
+    """A dotted ts written with non-ASCII (Unicode) digits is not a valid Slack
+    ``thread_ts``. Python's ``\\d`` would match it, so the anchor must be
+    validated against ASCII digits only and dropped in favour of the channel
+    root — otherwise Slack rejects it with ``invalid_thread_ts`` (#86264)."""
+    fake_session = _SlackSession()
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: fake_session)
+
+    pconfig = SimpleNamespace(enabled=True, token="good-token", extra={})
+    result = asyncio.run(
+        # "1718000000.123456" in Arabic-Indic digits.
+        _standalone_send(
+            pconfig, "C123", "hello", thread_id="١٧١٨٠٠٠٠٠٠.١٢٣٤٥٦"
+        )
+    )
+
+    assert "error" not in result
+    assert len(fake_session.calls) == 1
+    _token, body = fake_session.calls[0]
+    assert "thread_ts" not in body

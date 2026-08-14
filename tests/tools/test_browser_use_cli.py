@@ -101,6 +101,28 @@ class TestSubprocessEnvironment:
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
 
+    def test_subprocess_env_strips_parent_python_import_paths(self, monkeypatch):
+        """#83427/#84841/#86006/#86104: the browser-use CLI runs under its
+        own Python — inherited PYTHONPATH/PYTHONHOME pointing at Hermes's
+        venv make it import wrong-ABI C-extensions (pydantic_core) and
+        crash. Both must be stripped; unrelated vars survive."""
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {
+            "PYTHONPATH": "/hermes:/hermes/venv/lib/site-packages",
+            "PYTHONHOME": "/hermes/venv",
+            "KEEP_ME": "yes",
+        }
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+
+        env = bu_cli._base_subprocess_env()
+
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env["KEEP_ME"] == "yes"
+
 
 class TestToolSurfaceSwap:
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):

@@ -62,6 +62,7 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     return {
         "url": entry.get("url", ""),
         "auth": entry.get("auth", {}) or {},
+        "headers": entry.get("headers", {}) or {},
         "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)),
         "capabilities": entry.get("capabilities", []) or [],
         "tenant": entry.get("tenant", ""),
@@ -79,14 +80,14 @@ def _auth_header(auth: dict) -> dict:
 # --------------------------------------------------------------------------
 
 def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes-A2A/1.0", **headers}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
+    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, "User-Agent": "Hermes-A2A/1.0", **headers}
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
@@ -153,7 +154,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     outbound redaction, audit, persistence, and metrics.
     """
     base_url = peer.get("url", "")
-    headers = _auth_header(peer.get("auth", {}) or {})
+    headers = {**_auth_header(peer.get("auth", {}) or {}), **(peer.get("headers", {}) or {})}
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
 
     # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.

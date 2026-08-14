@@ -24,7 +24,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest, normalizeChoices, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { clarifyStillBlocking, clearClarifyRequest, normalizeChoices, sessionClarifyRequest, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
@@ -820,7 +820,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
-        clearClarifyRequest(undefined, sessionId)
+        // A parked clarify is special: the Python bridge stays blocked on
+        // clarify.respond until the user answers or the server-side clarify
+        // timeout expires. A turn-end event that arrives while the bridge is
+        // still blocked (stream reconnect, HUD overlay churn — #83319) must
+        // NOT wipe the dialog, or the user loses the only thing that can
+        // unblock the agent. Drop it only once the server can no longer be
+        // waiting (finite timeout elapsed) — a wait-forever request
+        // (timeoutSeconds null) is cleared only by an explicit answer/skip.
+        if (!clarifyStillBlocking(sessionClarifyRequest(sessionId).get())) {
+          clearClarifyRequest(undefined, sessionId)
+        }
         // Turn ended without a final `todo` update — drop a still-unfinished
         // list so "Tasks N/M" doesn't stay pinned above the composer with the
         // last item stuck pending/in_progress. Finished lists keep their linger.
@@ -1005,6 +1015,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const rawChoices = payload?.choices
         const choices = normalizeChoices(rawChoices)
         const multiSelect = payload?.multi_select === true
+        const timeoutSeconds =
+          typeof payload?.timeout_seconds === 'number' && payload.timeout_seconds > 0
+            ? payload.timeout_seconds
+            : null
 
         if (requestId && question) {
           if (rawChoices != null && choices.length === 0) {
@@ -1016,7 +1030,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             question,
             choices: choices.length > 0 ? choices : null,
             multiSelect,
-            sessionId: sessionId ?? null
+            sessionId: sessionId ?? null,
+            receivedAt: Date.now(),
+            timeoutSeconds
           })
 
           if (sessionId) {
@@ -1367,10 +1383,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         // A turn that errors out has also ended — drop any open blocking prompt
         // for this session so an approval/sudo/secret overlay can't linger past
-        // the failed turn (same intent as the message.complete clear).
+        // the failed turn (same intent as the message.complete clear). Clarify
+        // gets the #83319 guard: keep the dialog while the server-side bridge
+        // can still be blocked on clarify.respond.
         if (sessionId) {
           clearAllPrompts(sessionId)
-          clearClarifyRequest(undefined, sessionId)
+          if (!clarifyStillBlocking(sessionClarifyRequest(sessionId).get())) {
+            clearClarifyRequest(undefined, sessionId)
+          }
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)

@@ -9,6 +9,14 @@ export interface ClarifyRequest {
   choices: string[] | null
   multiSelect: boolean
   sessionId: string | null
+  /** When the request was parked locally (Date.now() at setClarifyRequest). */
+  receivedAt: number
+  /**
+   * How long the server-side bridge stays blocked waiting for an answer.
+   * null means it waits forever (clarify_timeout <= 0) — see the #83319
+   * guard below. Sent by tui_gateway as timeout_seconds on clarify.request.
+   */
+  timeoutSeconds: number | null
 }
 
 /**
@@ -76,6 +84,29 @@ export const sessionClarifyRequest = (sessionId: string | null) =>
 
 export function setClarifyRequest(request: ClarifyRequest): void {
   $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+}
+
+/**
+ * True when the server-side bridge may STILL be blocked on this request.
+ *
+ * The desktop clears parked clarify dialogs when a turn ends or errors, but
+ * the Python side stays blocked on clarify.respond until the user answers OR
+ * its own clarify timeout expires. A turn-end event that arrives while the
+ * bridge is still blocked (stream reconnect, HUD overlay focus churn —
+ * #83319) must not wipe the dialog, or the user loses the only thing that
+ * can unblock the agent. A finite timeout means the server gives up on its
+ * own after timeoutSeconds — past that point the dialog is stale and safe
+ * to drop. A null timeout means the server waits forever, so the dialog
+ * must survive turn-end events and only an explicit answer/skip clears it.
+ */
+export const clarifyStillBlocking = (request: ClarifyRequest | null, now: number = Date.now()): boolean => {
+  if (!request) {
+    return false
+  }
+  if (request.timeoutSeconds === null) {
+    return true
+  }
+  return now - request.receivedAt < request.timeoutSeconds * 1000
 }
 
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {

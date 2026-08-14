@@ -8,7 +8,9 @@ import {
   hasClarifyRequest,
   normalizeChoices,
   setClarifyRequest,
-  skipClarifyRequest
+  skipClarifyRequest,
+  clarifyStillBlocking,
+  sessionClarifyRequest
 } from './clarify'
 import { $gateway } from './gateway'
 import { $activeSessionId } from './session'
@@ -19,7 +21,9 @@ function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
     question: `question-${requestId}`,
     choices: null,
     multiSelect: false,
-    sessionId
+    sessionId,
+    receivedAt: 0,
+    timeoutSeconds: null
   }
 }
 
@@ -163,5 +167,37 @@ describe('normalizeChoices', () => {
   it('returns empty array when nothing survives', () => {
     expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
     expect(normalizeChoices([])).toEqual([])
+  })
+})
+
+describe('clarifyStillBlocking (#83319 guard)', () => {
+  const req = (receivedAt: number, timeoutSeconds: number | null): ClarifyRequest => ({
+    requestId: 'r1',
+    question: 'q',
+    choices: ['a'],
+    sessionId: 's1',
+    receivedAt,
+    timeoutSeconds
+  })
+
+  it('false when there is no parked request', () => {
+    expect(clarifyStillBlocking(null)).toBe(false)
+  })
+
+  it('true while a finite server timeout has not elapsed', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_000 + 100)).toBe(true)
+  })
+
+  it('false once a finite server timeout has elapsed (dialog is stale)', () => {
+    expect(clarifyStillBlocking(req(1_000, 600), 1_000 + 600_001)).toBe(false)
+  })
+
+  it('true forever when the server waits for a real answer (null timeout)', () => {
+    expect(clarifyStillBlocking(req(1_000, null), 1_000 + 3_600_000)).toBe(true)
+  })
+
+  it('preserves an unanswered wait-forever dialog across turn-end clears', () => {
+    setClarifyRequest(req(1_000, null))
+    expect(clarifyStillBlocking(sessionClarifyRequest('s1').get())).toBe(true)
   })
 })

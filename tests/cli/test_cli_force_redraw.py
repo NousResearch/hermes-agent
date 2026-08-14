@@ -389,3 +389,40 @@ class TestFirstSigwinchBaseline:
         bare_cli._install_resize_recovery(app)  # must not raise
 
         assert getattr(bare_cli, "_last_resize_width", None) is None
+
+
+class TestFocusRegainRedraw:
+    """Focus-in (CSI I) routes through the same recovery as Ctrl+L, rate-limited.
+
+    While the tab/window is hidden the emulator may coalesce output or repaint
+    the surface; on regain prompt_toolkit's incremental diff stacks a fresh
+    copy of the prompt chrome on top of the stale one (#60920 focus-regain
+    variant, #25337).
+    """
+
+    def test_focus_regain_triggers_full_redraw(self, bare_cli):
+        calls = []
+        bare_cli._force_full_redraw = lambda: calls.append("redraw")
+
+        bare_cli._schedule_focus_regain_redraw()
+
+        assert calls == ["redraw"]
+
+    def test_focus_regain_redraw_is_rate_limited(self, bare_cli):
+        calls = []
+        bare_cli._force_full_redraw = lambda: calls.append("redraw")
+
+        bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
+        bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
+        bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
+
+        assert calls == ["redraw"]
+
+    def test_focus_regain_redraw_fires_again_after_interval(self, bare_cli):
+        calls = []
+        bare_cli._force_full_redraw = lambda: calls.append("redraw")
+
+        bare_cli._schedule_focus_regain_redraw(min_interval=0.0)
+        bare_cli._schedule_focus_regain_redraw(min_interval=0.0)
+
+        assert calls == ["redraw", "redraw"]

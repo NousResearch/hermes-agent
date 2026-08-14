@@ -3,6 +3,7 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from 're
 import { useNavigate } from 'react-router'
 
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
+import { HiddenBackdropScope } from '@/components/Backdrop'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -383,7 +384,12 @@ export function HudShell() {
           it paints behind the transcript. */}
       <div aria-hidden data-hud-glass />
 
-      <WiredPane part="chatRoutes" />
+      {/* HUD is an overlay on another app, not another wallpaper canvas. Keep
+          every image backdrop out of this window so its transparent dead space
+          stays visually empty and cheap to composite. */}
+      <HiddenBackdropScope>
+        <WiredPane part="chatRoutes" />
+      </HiddenBackdropScope>
 
       {/* The way back — without it the only exits are ⌘⇧H and ⌘W, both
           invisible. Placed and revealed entirely from styles.css. */}

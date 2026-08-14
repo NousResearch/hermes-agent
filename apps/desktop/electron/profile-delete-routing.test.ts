@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import {
+  completeProfileAppearanceCleanup,
+  decideProfileDeleteAction,
+  profileNameFromCreateRequest,
+  profileNameFromDeleteRequest,
+  resolveRouteProfile
+} from './profile-delete-routing'
 
 // ---------------------------------------------------------------------------
 // profileNameFromDeleteRequest
@@ -30,6 +36,20 @@ test('profileNameFromDeleteRequest returns null for an empty/whitespace name', (
 
 test('profileNameFromDeleteRequest returns null for an undecodable path segment', () => {
   assert.equal(profileNameFromDeleteRequest({ method: 'DELETE', path: '/api/profiles/%E0%A4%A' }), null)
+})
+
+test('profileNameFromCreateRequest parses and normalizes POST /api/profiles', () => {
+  assert.equal(
+    profileNameFromCreateRequest({ body: { name: ' Worker ' }, method: 'POST', path: '/api/profiles' }),
+    'worker'
+  )
+  assert.equal(profileNameFromCreateRequest({ body: { name: 'worker' }, method: 'GET', path: '/api/profiles' }), null)
+  assert.equal(profileNameFromCreateRequest({ body: {}, method: 'POST', path: '/api/profiles' }), null)
+  assert.equal(profileNameFromCreateRequest({ body: { name: 'default' }, method: 'POST', path: '/api/profiles' }), null)
+  assert.equal(
+    profileNameFromCreateRequest({ body: { name: 'worker' }, method: 'POST', path: '/api/profiles/worker' }),
+    null
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -79,4 +99,70 @@ test('resolveRouteProfile passes the requested profile through when nothing was 
 
 test('resolveRouteProfile passes through undefined when nothing was torn down and no profile was requested', () => {
   assert.equal(resolveRouteProfile(null, undefined), undefined)
+})
+
+test('completeProfileAppearanceCleanup removes local wallpaper and notifies renderers after success', async () => {
+  const removed: string[] = []
+  const notified: string[] = []
+  const result = { ok: true }
+
+  assert.equal(
+    await completeProfileAppearanceCleanup('worker', result, {
+      logCleanupFailure: () => assert.fail('cleanup should not fail'),
+      notifyProfileReset: profile => notified.push(profile),
+      removeWallpaper: async profile => removed.push(profile)
+    }),
+    result
+  )
+  assert.deepEqual(removed, ['worker'])
+  assert.deepEqual(notified, ['worker'])
+})
+
+test('completeProfileAppearanceCleanup preserves success and purges preferences when file cleanup fails', async () => {
+  const failures: string[] = []
+  const notified: string[] = []
+  const result = { ok: true }
+
+  assert.equal(
+    await completeProfileAppearanceCleanup('worker', result, {
+      logCleanupFailure: profile => failures.push(profile),
+      notifyProfileReset: profile => notified.push(profile),
+      removeWallpaper: async () => {
+        throw new Error('disk unavailable')
+      }
+    }),
+    result
+  )
+  assert.deepEqual(failures, ['worker'])
+  assert.deepEqual(notified, ['worker'])
+})
+
+test('completeProfileAppearanceCleanup preserves success when a renderer closes during notification', async () => {
+  const failures: string[] = []
+  const result = { ok: true }
+
+  assert.equal(
+    await completeProfileAppearanceCleanup('worker', result, {
+      logCleanupFailure: profile => failures.push(profile),
+      notifyProfileReset: () => {
+        throw new Error('renderer was destroyed')
+      },
+      removeWallpaper: async () => undefined
+    }),
+    result
+  )
+  assert.deepEqual(failures, ['worker'])
+})
+
+test('completeProfileAppearanceCleanup is a no-op for unrelated API requests', async () => {
+  const result = { sessions: [] }
+
+  assert.equal(
+    await completeProfileAppearanceCleanup(null, result, {
+      logCleanupFailure: () => assert.fail('no cleanup expected'),
+      notifyProfileReset: () => assert.fail('no notification expected'),
+      removeWallpaper: async () => assert.fail('no removal expected')
+    }),
+    result
+  )
 })

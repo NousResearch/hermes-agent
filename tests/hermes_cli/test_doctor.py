@@ -1517,3 +1517,73 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestMacOSTCCGrants:
+    """macOS TCC grant persistence check (issue #86385)."""
+
+    def test_silent_on_non_macos(self, monkeypatch, capsys):
+        """Non-macOS: the check must produce no output."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
+        monkeypatch.setattr(doctor_mod, "_desktop_app_bundle", lambda: None)
+        doctor_mod.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_no_desktop_bundle(self, monkeypatch, capsys):
+        """No locally-built desktop bundle: nothing to check, no output."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(doctor_mod, "_desktop_app_bundle", lambda: None)
+        doctor_mod.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
+
+    def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
+        """Pre-#73681 builds have a cdhash-pinned DR → warn that grants reset."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_mod,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes" and cdhash H"97e692f3890f781fa0ad5ad6cb9d769cfaf42628"',
+        )
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC grants will reset after every update" in out
+        assert "cdhash-pinned" in out
+        assert "hermes update" in out
+
+    def test_ok_and_repair_info_on_identifier_dr(self, monkeypatch, capsys, tmp_path):
+        """Post-#73681 identifier-only DR → stable + stale-grant repair info."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_mod,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes"',
+        )
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+        assert "toggle" in out
+        assert "relaunch" in out
+
+    def test_warns_when_dr_unreadable(self, monkeypatch, capsys, tmp_path):
+        """codesign failure → warn, never crash."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: None)
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out

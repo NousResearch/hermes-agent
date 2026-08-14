@@ -117,8 +117,6 @@ word word word
         skill_md.chmod(0o644)
         replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "Step 1: Done!")
 
-        from tools.skill_manager_tool import _edit_skill
-
         result = _edit_skill("mode-skill", replacement)
 
         assert result["success"] is True
@@ -164,6 +162,53 @@ word word word
         result = _write_file("mode-skill", "references/example.md", "new\n")
 
         assert result["success"] is True
+        assert stat.S_IMODE(reference.stat().st_mode) == 0o660
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    def test_supporting_file_patch_preserves_existing_mode(self, mode):
+        """Patching a reference preserves its existing private or shared mode."""
+        _create_skill("mode-skill", SKILL_CONTENT)
+        reference = self.skills_dir / "mode-skill" / "references/example.md"
+        reference.parent.mkdir()
+        reference.write_text("old\n", encoding="utf-8")
+        reference.chmod(mode)
+
+        result = _patch_skill(
+            "mode-skill",
+            "old",
+            "new",
+            file_path="references/example.md",
+        )
+
+        assert result["success"] is True
+        assert reference.read_text(encoding="utf-8") == "new\n"
+        assert stat.S_IMODE(reference.stat().st_mode) == mode
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_supporting_file_patch_rollback_preserves_mode_when_scan_blocks(
+        self, monkeypatch
+    ):
+        """Blocked reference patches restore content and the original mode."""
+        _create_skill("rollback-skill", SKILL_CONTENT)
+        reference = self.skills_dir / "rollback-skill" / "references/example.md"
+        reference.parent.mkdir()
+        reference.write_text("original\n", encoding="utf-8")
+        reference.chmod(0o660)
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._security_scan_skill",
+            lambda _skill_dir: "blocked",
+        )
+
+        result = _patch_skill(
+            "rollback-skill",
+            "original",
+            "blocked",
+            file_path="references/example.md",
+        )
+
+        assert result["success"] is False
+        assert reference.read_text(encoding="utf-8") == "original\n"
         assert stat.S_IMODE(reference.stat().st_mode) == 0o660
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

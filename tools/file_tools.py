@@ -12,7 +12,11 @@ import threading
 from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
-from tools.binary_extensions import has_binary_extension
+from tools.binary_extensions import (
+    has_binary_extension,
+    has_opaque_document_extension,
+    is_pdf_path,
+)
 from tools.file_operations import (
     ShellFileOperations,
     normalize_read_pagination,
@@ -2186,7 +2190,6 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     - .pdf: rejected only when OVERWRITING an existing regular file. Raw PDF
       syntax is text-authorable, so new-file creation stays allowed.
     """
-    from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
     if has_opaque_document_extension(filepath):
         ext = filepath[filepath.rfind("."):].lower()
         return (

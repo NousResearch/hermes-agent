@@ -245,12 +245,24 @@ def test_extract_visible_messages_drops_only_tool_result_json() -> None:
                 "content": '{"destination":"Orlando","budget":397}',
                 "timestamp": timestamp,
             },
+            {
+                "role": "user",
+                "content": '{"result":"prefer Toronto","date":"2026-10-13"}',
+                "timestamp": timestamp,
+            },
+            {
+                "role": "user",
+                "content": '{"output":"user-authored"}',
+                "timestamp": timestamp,
+            },
         ],
         set(),
     )
 
     assert [message.text for message in visible] == [
-        '{"destination":"Orlando","budget":397}'
+        '{"destination":"Orlando","budget":397}',
+        '{"result":"prefer Toronto","date":"2026-10-13"}',
+        '{"output":"user-authored"}',
     ]
 
 

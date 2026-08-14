@@ -4498,7 +4498,49 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        # No explicit delegation override: normally inherit the parent. Named
+        # custom providers need one extra identity check, however. The live
+        # agent stores the resolved billing class as bare ``custom`` and two
+        # named providers may share the same base_url. In that case blindly
+        # inheriting the parent's provider/key can pair a switched model with
+        # the previous custom provider (e.g. model-b-current + provider-a
+        # credentials). Recover the named identity from the model catalog first
+        # and resolve its complete credential bundle for the child.
+        parent_model = str(getattr(parent_agent, "model", "") or "").strip()
+        parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
+        parent_base_url = str(getattr(parent_agent, "base_url", "") or "").strip()
+        try:
+            from hermes_cli.runtime_provider import (
+                canonical_custom_identity,
+                resolve_runtime_provider,
+            )
+
+            custom_identity = canonical_custom_identity(
+                base_url=parent_base_url,
+                config_provider=parent_provider,
+                model=configured_model or parent_model,
+            )
+            if custom_identity:
+                runtime = resolve_runtime_provider(
+                    requested=custom_identity,
+                    target_model=configured_model or parent_model or None,
+                )
+                return {
+                    "model": configured_model or parent_model or runtime.get("model") or None,
+                    "provider": custom_identity,
+                    "base_url": runtime.get("base_url"),
+                    "api_key": runtime.get("api_key") or None,
+                    "api_mode": runtime.get("api_mode"),
+                    "request_overrides": dict(runtime.get("request_overrides") or {}),
+                    "max_output_tokens": runtime.get("max_output_tokens"),
+                    "command": runtime.get("command"),
+                    "args": list(runtime.get("args") or []),
+                }
+        except Exception as exc:
+            logger.debug("Could not canonicalize inherited custom provider: %s", exc)
+
+        # Built-ins and genuine ad-hoc endpoints keep the ordinary inheritance
+        # path; None overrides are resolved from the parent in _build_child_agent.
         return {
             "model": configured_model,
             "provider": None,
@@ -4508,7 +4550,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "request_overrides": None,
             "max_output_tokens": None,
         }
-
     # Provider is configured — resolve full credentials
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider

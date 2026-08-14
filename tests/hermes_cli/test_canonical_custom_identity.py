@@ -98,3 +98,38 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
 
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
+
+
+def test_model_beats_ambiguous_shared_base_url(monkeypatch):
+    """Disjoint model catalogs disambiguate providers sharing one gateway."""
+    shared = "https://shared.invalid/v1"
+    config = {
+        "custom_providers": [
+            {
+                "name": "ark",
+                "base_url": shared,
+                "api_key": "sk-ark",
+                "model": "model-a-default",
+                "models": {"model-a-default": {}},
+            },
+            {
+                "name": "newapi",
+                "base_url": shared,
+                "api_key": "sk-newapi",
+                "model": "model-b-default",
+                "models": {"model-b-current": {}, "model-b-default": {}},
+            },
+        ]
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    assert rp.find_custom_provider_identity(shared) == "custom:ark"
+    assert (
+        rp.canonical_custom_identity(
+            base_url=shared,
+            config_provider="custom:ark",
+            model="model-b-current",
+        )
+        == "custom:newapi"
+    )

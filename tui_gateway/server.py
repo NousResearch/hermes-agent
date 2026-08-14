@@ -9426,6 +9426,33 @@ def _collect_kanban_notifications(session: dict) -> list:
     return texts
 
 
+def _run_notification_prompt(
+    rid: str,
+    sid: str,
+    session: dict,
+    event: dict,
+    text: str,
+) -> None:
+    """Submit one notification turn with validated durable projection metadata."""
+    from tools.async_delegation import internal_event_persistence
+
+    display_kind, display_metadata = internal_event_persistence(
+        event,
+        trusted_internal=True,
+    )
+    if display_kind is not None and display_metadata is not None:
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            display_metadata=display_metadata,
+        )
+        return
+    _run_prompt_submit(rid, sid, session, text)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9494,7 +9521,17 @@ def _notification_poller_loop(
                     rid = f"__notif__{int(time.time() * 1000)}"
                     try:
                         _emit("message.start", sid)
-                        _run_prompt_submit(rid, sid, session, "\n".join(_batch))
+                        _run_notification_prompt(
+                            rid,
+                            sid,
+                            session,
+                            {
+                                "type": "kanban_notification",
+                                "session_id": sid,
+                                "items": list(_batch),
+                            },
+                            "\n".join(_batch),
+                        )
                     except Exception as exc:
                         print(
                             f"[tui_gateway] kanban notification dispatch failed: "
@@ -9580,17 +9617,7 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
-                )
-            else:
-                _run_prompt_submit(rid, sid, session, text)
+            _run_notification_prompt(rid, sid, session, evt, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9658,17 +9685,7 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
-                )
-            else:
-                _run_prompt_submit(rid, sid, session, text)
+            _run_notification_prompt(rid, sid, session, evt, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9706,6 +9723,17 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
         "completed_count": completed_count or task_count - failed_count,
         "failed_count": failed_count,
     }
+    for key in (
+        "event_schema",
+        "event_id",
+        "event_kind",
+        "workflow_id",
+        "display_kind",
+        "user_originated",
+        "terminal",
+    ):
+        if key in evt:
+            metadata[key] = evt[key]
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
@@ -10790,7 +10818,7 @@ def _run_prompt_submit(
                     continue
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _run_notification_prompt(rid, sid, session, _evt, synth)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

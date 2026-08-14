@@ -244,6 +244,37 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _trusted_internal_request_projection(
+    headers: Any,
+    *,
+    api_key_configured: bool,
+    session_id: str,
+    user_message: Any,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Project an authenticated Gateway self-wake as a non-human turn."""
+    if str(headers.get("X-Hermes-Internal-Event") or "").strip() != "1":
+        return None, None
+    if not api_key_configured:
+        raise PermissionError("internal event headers require API key authentication")
+    event_id = str(headers.get("X-Hermes-Internal-Event-Id") or "").strip()
+    if len(event_id) > 200 or re.search(r"[\r\n\x00]", event_id):
+        event_id = ""
+    payload_digest = hashlib.sha256(
+        str(user_message).encode("utf-8")
+    ).hexdigest()
+    from tools.async_delegation import internal_event_persistence
+
+    return internal_event_persistence(
+        {
+            "type": "api_server_wake",
+            "event_id": event_id,
+            "session_id": session_id,
+            "payload_digest": payload_digest,
+        },
+        trusted_internal=True,
+    )
+
+
 _REQUEST_OPTION_MISSING = object()
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
@@ -4224,6 +4255,18 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
 
+        try:
+            persist_user_display_kind, persist_user_display_metadata = (
+                _trusted_internal_request_projection(
+                    request.headers,
+                    api_key_configured=bool(self._api_key),
+                    session_id=session_id,
+                    user_message=user_message,
+                )
+            )
+        except PermissionError as exc:
+            return web.json_response(_openai_error(str(exc)), status=403)
+
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -4330,6 +4373,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
                 **agent_overrides,
                 route=route,
             ))
@@ -4351,6 +4396,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
                 **agent_overrides,
                 route=route,
             )
@@ -6211,6 +6258,8 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
+        persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None,
@@ -6299,11 +6348,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     # ``agent_ref``, and only /v1/runs has a run_id, so neither
                     # is a usable hook for the rest.
                     self._shutdown_interruptible_agents[id(agent)] = agent
-                    result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
-                    )
+                    conversation_kwargs: Dict[str, Any] = {
+                        "user_message": user_message,
+                        "conversation_history": conversation_history,
+                        "task_id": effective_task_id,
+                    }
+                    if (
+                        persist_user_display_kind is not None
+                        and persist_user_display_metadata is not None
+                    ):
+                        conversation_kwargs["persist_user_display_kind"] = (
+                            persist_user_display_kind
+                        )
+                        conversation_kwargs["persist_user_display_metadata"] = (
+                            persist_user_display_metadata
+                        )
+                    result = agent.run_conversation(**conversation_kwargs)
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

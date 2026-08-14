@@ -276,7 +276,7 @@ class TestNotificationPollerLoopKanbanWiring:
         import tui_gateway.server as server
 
         emits: list = []
-        submits: list = []
+        submits: list[dict] = []
         monkeypatch.setattr(server, "_KANBAN_POLL_SECONDS", 0.01)
         monkeypatch.setattr(
             server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
@@ -284,7 +284,9 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
-            lambda rid, sid, sess, text: submits.append(text),
+            lambda rid, sid, sess, text, **kwargs: submits.append(
+                {"text": text, **kwargs}
+            ),
         )
         stop = threading.Event()
         thread = threading.Thread(
@@ -330,7 +332,13 @@ class TestNotificationPollerLoopKanbanWiring:
         status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
         assert any(tid in t for t in status_texts), status_texts
         assert any(e == "message.start" for e, _ in emits)
-        assert any(tid in text for text in submits), submits
+        assert any(tid in submit["text"] for submit in submits), submits
+        assert submits[0]["display_kind"] == "internal_event"
+        assert (
+            submits[0]["display_metadata"]["event_kind"]
+            == "workflow.kanban_notification.internal"
+        )
+        assert submits[0]["display_metadata"]["user_originated"] is False
         assert session["running"] is True  # poller claimed the turn
         assert not session.get("_kanban_pending")
 
@@ -357,6 +365,6 @@ class TestNotificationPollerLoopKanbanWiring:
             stop.set()
             thread.join(timeout=5)
 
-        assert any(tid in text for text in submits), submits
+        assert any(tid in submit["text"] for submit in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True

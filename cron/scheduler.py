@@ -3679,8 +3679,13 @@ def run_job(
 
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            # SessionDB resolves profile-sensitive paths during construction.
+            # Preserve this cron job's profile scope across the timeout worker.
+            _session_db_context = contextvars.copy_context()
             try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+                _session_db = _session_db_pool.submit(
+                    _session_db_context.run, SessionDB
+                ).result(timeout=_session_db_timeout)
             finally:
                 # Don't wait for a wedged connect() to unwind — abandon the
                 # worker thread (same pattern as the agent inactivity timeout

@@ -1566,6 +1566,11 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         except Exception:
             pass
     try:
+        # launchd/systemd-supervised gateways are not orphans — never reap them.
+        own |= _get_service_pids()
+    except Exception:
+        pass
+    try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
         # for the current profile when no systemd supervisor is present.
         orphans = [p for p in find_gateway_pids(exclude_pids=own) if p and p > 0]

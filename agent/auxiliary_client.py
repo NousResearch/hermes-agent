@@ -1283,7 +1283,7 @@ def _to_openai_base_url(base_url: str) -> str:
         # ZAI uses /api/anthropic for the Coding Plan's Anthropic wire.  The
         # matching OpenAI-wire endpoint is /api/coding/paas/v4; /api/paas/v4
         # is the independently billed general API.
-        if "open.bigmodel.cn" in url or "bigmodel" in url or "api.z.ai" in url:
+        if base_url_host_matches(url, "open.bigmodel.cn") or base_url_host_matches(url, "api.z.ai"):
             rewritten = url[: -len("/anthropic")] + "/coding/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
@@ -1297,7 +1297,7 @@ def _to_openai_base_url(base_url: str) -> str:
             url,
         )
         return url
-    if "api.kimi.com" in url and url.endswith("/coding"):
+    if base_url_host_matches(url, "api.kimi.com") and url.endswith("/coding"):
         # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
         # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)
         # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.

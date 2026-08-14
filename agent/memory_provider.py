@@ -124,7 +124,10 @@ class MemoryProvider(ABC):
     # -- Optional hooks (override to opt in) ---------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count."""
+        """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count,
+        author_id, author_name, author_is_bot. The author trio names who wrote THIS turn: a shared
+        session carries several participants and other agents, so a provider keying durable state
+        on identity must read it per turn. All three are absent when the transport gave no author."""
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """End-of-session extraction; fires only at real session boundaries, never per-turn."""

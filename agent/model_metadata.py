@@ -57,10 +57,18 @@ def _resolve_requests_verify() -> bool | str:
     that a single env var can cover both `requests` and `httpx` callsites
     inside the same process.
 
+    Precedence matches ``agent.ssl_verify.resolve_httpx_verify`` so the
+    requests and httpx paths cannot disagree about which bundle wins.
+
     Returns either a filesystem path to a CA bundle, or True to defer to
     the requests default (certifi).
     """
-    for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
+    for env_var in (
+        "HERMES_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
             return val

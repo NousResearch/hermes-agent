@@ -5170,6 +5170,7 @@ def _resolve_verify(
         or os.getenv("HERMES_CA_BUNDLE")
         or os.getenv("SSL_CERT_FILE")
         or os.getenv("REQUESTS_CA_BUNDLE")
+        or os.getenv("CURL_CA_BUNDLE")
     )
 
     if effective_insecure:
@@ -9071,6 +9072,8 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         getattr(args, "ca_bundle", None)
         or os.getenv("HERMES_CA_BUNDLE")
         or os.getenv("SSL_CERT_FILE")
+        or os.getenv("REQUESTS_CA_BUNDLE")
+        or os.getenv("CURL_CA_BUNDLE")
     )
 
     try:

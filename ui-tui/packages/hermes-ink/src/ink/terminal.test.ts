@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { BSU, ESU } from './termio/dec.js'
-
 import { isSynchronizedOutputSupported, needsAltScreenResizeScrollbackClear, writeDiffToTerminal } from './terminal.js'
+import { BSU, ESU } from './termio/dec.js'
 
 describe('terminal resize quirks', () => {
   it('uses a deeper alt-screen resize clear for Apple Terminal', () => {
@@ -42,12 +41,15 @@ describe('synchronized output detection', () => {
 describe('writeDiffToTerminal sync-marker gating (#66490 main-screen gap)', () => {
   const makeTerminal = () => {
     const writes: string[] = []
+
     const stdout = {
       write(chunk: string) {
         writes.push(String(chunk))
+
         return true
       }
     }
+
     return { terminal: { stderr: stdout, stdout } as never, writes }
   }
 

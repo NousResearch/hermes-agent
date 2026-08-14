@@ -122,6 +122,43 @@ word word word
         assert not (self.skills_dir / "blocked-skill").exists()
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_new_documents_are_exactly_0644_under_restrictive_umask(self):
+        """New skill documents override a restrictive process umask."""
+        old_umask = os.umask(0o077)
+        try:
+            create_result = _create_skill("umask-skill", SKILL_CONTENT)
+            write_result = _write_file(
+                "umask-skill", "references/example.md", "# Reference\n"
+            )
+        finally:
+            os.umask(old_umask)
+
+        assert create_result["success"] is True
+        assert write_result["success"] is True
+        skill_md = self.skills_dir / "umask-skill" / "SKILL.md"
+        reference = self.skills_dir / "umask-skill" / "references/example.md"
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
+        assert stat.S_IMODE(reference.stat().st_mode) == 0o644
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_explicit_skill_md_patch_preserves_existing_mode(self):
+        """Explicit SKILL.md patch paths preserve the existing document mode."""
+        _create_skill("explicit-skill", SKILL_CONTENT)
+        skill_md = self.skills_dir / "explicit-skill" / "SKILL.md"
+        skill_md.chmod(0o660)
+
+        result = _patch_skill(
+            "explicit-skill",
+            "Step 1: Do the thing.",
+            "Step 1: Done!",
+            file_path="SKILL.md",
+        )
+
+        assert result["success"] is True
+        assert "Step 1: Done!" in skill_md.read_text(encoding="utf-8")
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o660
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     @pytest.mark.parametrize("mode", [0o600, 0o660])
     def test_edit_preserves_existing_mode(self, mode):
         """Full skill edits must preserve private and shared document modes."""

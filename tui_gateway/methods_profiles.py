@@ -31,6 +31,35 @@ def _(rid, params: dict) -> dict:
     __globals__ onto server.py, so module-level names here are invisible.
     """
 
+    def _latest_message_preview(db, session_id):
+        """Short excerpt of the NEWEST user/assistant message in a session.
+
+        Rosters show this under each agent's name — messaging-app semantics
+        (latest exchange), unlike the shared first-message preview that
+        session lists use for recognition. Tool rows, inactive rows, and
+        empty content are skipped; agent-delivery prefixes are kept
+        (callers style them). Same query shape as
+        SessionDB.latest_message_row_id.
+        """
+        try:
+            with db._lock:
+                row = db._conn.execute(
+                    "SELECT content FROM messages"
+                    " WHERE session_id = ? AND role IN ('user', 'assistant')"
+                    " AND active = 1"
+                    " AND content IS NOT NULL AND TRIM(content) != ''"
+                    " ORDER BY id DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+        except Exception:
+            return ""
+        if not row:
+            return ""
+        text = " ".join(str(row[0] or "").split()).strip()
+        if len(text) > 80:
+            return text[:80] + "..."
+        return text
+
     def _latest_profile_session_row(profile_path):
         """Most recent human-facing session in a profile's state.db, or None.
 
@@ -55,7 +84,7 @@ def _(rid, params: dict) -> dict:
                 ):
                     if (s.get("source") or "").strip().lower() in deny:
                         continue
-                    return {
+                    row = {
                         "id": s["id"],
                         "title": s.get("title") or "",
                         "preview": s.get("preview") or "",
@@ -63,6 +92,17 @@ def _(rid, params: dict) -> dict:
                         "last_active": s.get("last_active") or s.get("started_at") or 0,
                         "message_count": s.get("message_count") or 0,
                     }
+                    # Roster surfaces want "where the conversation IS", not
+                    # where it began: override the shared first-message
+                    # preview with the newest user/assistant text. Best-
+                    # effort — any failure keeps the first-message preview.
+                    try:
+                        latest = _latest_message_preview(db, s["id"])
+                        if latest:
+                            row["preview"] = latest
+                    except Exception:
+                        pass
+                    return row
             finally:
                 try:
                     db.close()

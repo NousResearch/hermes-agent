@@ -537,6 +537,10 @@ export interface HermesConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
+  // True only when `profile` is a request scope on the shared primary backend.
+  // A pooled backend also carries `profile`, so presence alone cannot identify
+  // the shared-primary routing case.
+  sharedPrimary?: boolean
   windowButtonPosition: { x: number; y: number } | null
 }
 

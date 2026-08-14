@@ -603,14 +603,12 @@ def _structured_summary_packet(summary: StructuredLoopSummary) -> dict[str, Any]
 
 
 def _bounded_model_string(value: Any, limit: int) -> str:
-    if (
-        not isinstance(value, str)
-        or not value.strip()
-        or len(value) > limit
-        or _TOOL_ENVELOPE_MARKER_PATTERN.search(value)
-    ):
+    if not isinstance(value, str) or _TOOL_ENVELOPE_MARKER_PATTERN.search(value):
         raise _SummaryValidationError()
-    return value
+    cleaned = _remove_embedded_tool_result_json(value)
+    if not cleaned.strip() or len(cleaned) > limit:
+        raise _SummaryValidationError()
+    return cleaned.strip()
 
 
 def _optional_model_string(value: Any, limit: int) -> str | None:

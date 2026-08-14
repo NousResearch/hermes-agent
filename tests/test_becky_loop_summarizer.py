@@ -529,6 +529,20 @@ def test_model_result_validation_fails_closed_for_invalid_shape(mutate: Any) -> 
     assert "sensitive-provider-text" not in str(exc_info.value)
 
 
+def test_model_result_validation_removes_embedded_tool_json() -> None:
+    """Provider summaries cannot reintroduce tool JSON into public fields."""
+    raw = _valid_model_result()
+    raw["about"] = (
+        '{"output":"health={\\"status\\":\\"ok\\"}", '
+        '"exit_code":0,"error":null} The deployment is healthy.'
+    )
+
+    validated = LoopSummarizer._validate_model_result(raw, {"m000001"})
+
+    assert validated.about == "The deployment is healthy."
+    assert "exit_code" not in validated.about
+
+
 @pytest.mark.parametrize(
     "raw",
     [

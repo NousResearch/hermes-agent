@@ -1482,6 +1482,8 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Provider-specific custom headers (e.g. from custom_providers[].custom_headers)
+    override_default_headers: Optional[dict] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1691,6 +1693,9 @@ def _build_child_agent(
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])
     )
+    # Resolve provider-specific custom headers: delegation override > parent inherit.
+    # Ensures custom_providers[].custom_headers propagate to subagents in inherit mode.
+    effective_default_headers = override_default_headers or getattr(parent_agent, "_default_headers", None)
 
     # When override_provider is set (e.g. delegation.provider: minimax-cn),
     # the subagent must use direct API calls — not the parent's ACP transport.
@@ -1800,6 +1805,7 @@ def _build_child_agent(
             thinking_callback=child_thinking_cb,
             session_db=getattr(parent_agent, "_session_db", None),
             parent_session_id=getattr(parent_agent, "session_id", None),
+            requested_provider=effective_provider,
             providers_allowed=child_providers_allowed,
             providers_ignored=child_providers_ignored,
             providers_order=child_providers_order,
@@ -1814,6 +1820,7 @@ def _build_child_agent(
             openrouter_min_coding_score=child_openrouter_min_coding_score,
             tool_progress_callback=child_progress_cb,
             iteration_budget=None,  # fresh budget per subagent
+            default_headers=effective_default_headers,
             **child_optional_kwargs,
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -3631,6 +3638,7 @@ def delegate_task(
             override_max_tokens=creds.get("max_output_tokens"),
             override_acp_command=creds.get("command"),
             override_acp_args=creds.get("args"),
+            override_default_headers=creds.get("default_headers"),
             role=effective_role,
         )
         # Attach the validated schema for the completion-side validation
@@ -4305,6 +4313,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "default_headers": runtime.get("default_headers"),
     }
 
 

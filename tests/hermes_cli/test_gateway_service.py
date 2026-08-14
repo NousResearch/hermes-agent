@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -317,7 +318,55 @@ class TestLaunchdServiceRecovery:
     def test_wait_for_pid_exit_ignores_nonpositive_pid(self):
         assert gateway_cli._wait_for_pid_exit(0, timeout=30) is True
 
+    def test_write_launchd_plist_securely_uses_owner_only_mode_with_permissive_umask(
+        self, tmp_path
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_umask = os.umask(0)
+        try:
+            gateway_cli._write_launchd_plist_securely(
+                plist_path, "<plist>secret</plist>"
+            )
+        finally:
+            os.umask(old_umask)
 
+        assert plist_path.read_text(encoding="utf-8") == "<plist>secret</plist>"
+        assert plist_path.stat().st_mode & 0o777 == 0o600
+
+    def test_write_launchd_plist_securely_repairs_existing_permissive_mode(self, tmp_path):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old</plist>", encoding="utf-8")
+        plist_path.chmod(0o644)
+
+        gateway_cli._write_launchd_plist_securely(plist_path, "<plist>new</plist>")
+
+        assert plist_path.read_text(encoding="utf-8") == "<plist>new</plist>"
+        assert plist_path.stat().st_mode & 0o777 == 0o600
+
+    def test_launchd_plist_preserves_proxy_environment(self, monkeypatch):
+        for key in (
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "localhost,.internal.example")
+        monkeypatch.setenv("no_proxy", "oneapi.example.com,.corp.example")
+        monkeypatch.setenv("http_proxy", "http://user:pa&ss@proxy.example:8080")
+
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        env = parsed["EnvironmentVariables"]
+
+        assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+        assert env["NO_PROXY"] == "localhost,.internal.example"
+        assert env["no_proxy"] == "oneapi.example.com,.corp.example"
+        assert env["http_proxy"] == "http://user:pa&ss@proxy.example:8080"
 
     def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
         """#43842: when the refresh runs inside the gateway's own process tree,
@@ -2034,4 +2083,3 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is False
         assert list_calls["n"] >= 1
-

@@ -3608,6 +3608,29 @@ def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
     return strip_leaked_bracketed_paste_wrappers(text)
 
 
+def _suspend_cli_process() -> None:
+    """Suspend only the CLI process, not its whole process group (Unix).
+
+    Ctrl+Z used to signal the group via ``os.kill(0, SIGTSTP)``, stopping
+    every background job sharing it (long-running terminal/OCR tasks) —
+    which made a stray 0x1A byte in pasted input *look* like a crash
+    (#83006). Shell job control stops only the foreground job; mirror that
+    by signaling just this process so ``fg`` resumes the CLI while
+    background tasks keep running.
+
+    Known limit: this narrows, but does not eliminate, the paste-trigger
+    half of #83006. A pasted 0x1A whose bytes reach the key parser (torn
+    paste where the ESC[200~ start marker is lost, or a raw 0x1A keypress)
+    still fires the ``c-z`` binding and suspends the CLI itself — only the
+    collateral group suspension is gone. A raw 0x1A is byte-identical to a
+    real Ctrl+Z, so it is inherently undetectable app-side; leave it as a
+    documented terminal/job-control limit.
+    """
+    import signal as _sig
+
+    os.kill(os.getpid(), _sig.SIGTSTP)
+
+
 def _apply_bracketed_paste_timeout_patch() -> None:
     """Patch prompt_toolkit to recover from torn bracketed-paste sequences.
 
@@ -16818,14 +16841,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"\n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}")
                 event.app.invalidate()
                 return
-            import signal as _sig
             from prompt_toolkit.application import run_in_terminal
             from hermes_cli.skin_engine import get_active_skin
             agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
             msg = f"\n{agent_name} has been suspended. Run `fg` to bring {agent_name} back."
             def _suspend():
                 os.write(1, msg.encode())
-                os.kill(0, _sig.SIGTSTP)
+                logger.info("Ctrl+Z: suspending Hermes CLI (pid %d)", os.getpid())
+                _suspend_cli_process()
             run_in_terminal(_suspend)
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)

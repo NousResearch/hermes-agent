@@ -15,7 +15,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import yaml
 
@@ -628,7 +628,7 @@ def _localhost_to_ipv4(url: str) -> str:
 
 
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
-    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
+    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", "llama-swap", or None (TTL-cached)."""
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
@@ -651,6 +651,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
         ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
         ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
+        # llama-swap serves /props only per model, so the llamacpp leg never matches it. Detect it via its
+        # management route /running (200 with {"running": [...]}; bare llama-server 404s). Never detect through
+        # a model-scoped route: those start the named model.
+        ("llama-swap", (f"{server_url}/running",), lambda r: "running" in r.json()),
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),
     )
     result: Optional[str] = None
@@ -1352,6 +1356,41 @@ def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
     return None
 
 
+def _props_reported_n_ctx(payload: Any) -> Optional[int]:
+    """The runtime ``n_ctx`` from a llama.cpp ``/props`` payload: ``default_generation_settings.n_ctx`` is the
+    context the server actually allocated, authoritative over ``n_ctx_train`` and over /v1/models metadata."""
+    if not isinstance(payload, dict):
+        return None
+    gen_settings = payload.get("default_generation_settings")
+    if not isinstance(gen_settings, dict):
+        return None
+    return _coerce_reasonable_int(gen_settings.get("n_ctx"))
+
+
+def _llamaswap_context(client, server_url: str, model: str) -> Optional[int]:
+    """llama-swap /props per model, resident-gated. Any model-scoped route STARTS a non-resident model, and a
+    metadata probe must never load a model: consult /running first and query /props only for resident ids.
+    A non-resident model yields None; callers keep the cached or default value until a real request starts it."""
+    resp = client.get(f"{server_url}/running")
+    if resp.status_code != 200:
+        return None
+    try:
+        entries = resp.json().get("running") or []
+    except Exception:
+        entries = []
+    resident = {str(entry.get("model")) for entry in entries if isinstance(entry, dict) and entry.get("model")}
+    if model not in resident:
+        return None
+    resp = client.get(f"{server_url}/props?model={quote(model, safe='')}")
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        return None
+    return _props_reported_n_ctx(payload)
+
+
 def _openai_models_list_context(client, server_url: str, model: str) -> Optional[int]:
     """/v1/models list: match by id, else the sole model on single-model servers (llama.cpp reports a GGUF path as id)."""
     resp = client.get(f"{server_url}/v1/models")
@@ -1399,7 +1438,11 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model),
         "llamacpp": lambda client: _llamacpp_context(client, server_url, model),
     }.get(server_type)
-    probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
+    if server_type == "llama-swap":
+        # The /v1/models/{model} leg is model-scoped too and would start the model; only the resident-gated probe runs.
+        probes = [lambda client: _llamaswap_context(client, server_url, model)]
+    else:
+        probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:
         with httpx.Client(timeout=3.0, headers=_auth_headers(api_key)) as client:
             return next((ctx for ctx in (probe(client) for probe in probes) if ctx is not None), None)

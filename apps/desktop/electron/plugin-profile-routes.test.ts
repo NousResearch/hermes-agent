@@ -115,6 +115,39 @@ describe('buildOpaqueProfileRoutes', () => {
     expect(new Set(routes.map(route => route.connectionId))).toHaveLength(1)
   })
 
+  it('reports the backend root for a per-profile URL alias', async () => {
+    const routes = await buildOpaqueProfileRoutes({
+      getProfileConfig: profile =>
+        profile === 'barry'
+          ? config({ mode: 'remote', remoteUrl: 'https://tower.example' })
+          : config(),
+      globalConfig: config(),
+      installationId: 'install-a-secret',
+      primaryProfile: 'default',
+      profileNames: ['default', 'barry'],
+      resolveSsh: vi.fn()
+    })
+
+    expect(routes[1]).toMatchObject({ profile: 'barry', targetProfile: 'default' })
+  })
+
+  it('reports an explicit backend profile inherited from global SSH', async () => {
+    const routes = await buildOpaqueProfileRoutes({
+      getProfileConfig: () => config(),
+      globalConfig: config({
+        mode: 'ssh',
+        sshHost: 'gateway',
+        sshRemoteProfile: 'remote-primary'
+      }),
+      installationId: 'install-a-secret',
+      primaryProfile: 'default',
+      profileNames: ['default', 'desktop-alias'],
+      resolveSsh: vi.fn(async () => ({ hostname: 'gateway.example', port: 22, user: 'hermes' }))
+    })
+
+    expect(routes.map(route => route.targetProfile)).toEqual(['remote-primary', 'remote-primary'])
+  })
+
   it('keeps cloud organizations on one service URL in distinct groups', async () => {
     const routes = await buildOpaqueProfileRoutes({
       getProfileConfig: profile =>

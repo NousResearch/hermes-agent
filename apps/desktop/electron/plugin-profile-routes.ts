@@ -96,6 +96,28 @@ function opaqueConnectionId(scope: string, installationId: string): string {
   return `connection-${digest.slice(0, 24)}`
 }
 
+function backendTargetProfile(scoped: ProfileRouteConfig, globalConfig: ProfileRouteConfig, profile: string): string {
+  if (scoped.mode === 'ssh') {
+    return normalizeProfile(scoped.sshRemoteProfile || profile)
+  }
+
+  // A per-profile URL/cloud override selects a standalone remote backend. It
+  // does not forward the Desktop alias as a backend profile scope, so that
+  // backend answers as its own root profile.
+  if (scoped.mode === 'remote' || scoped.mode === 'cloud') {
+    return 'default'
+  }
+
+  // An inherited global SSH route may explicitly pin the remote process to a
+  // differently named profile. Without that pin, Desktop profile names remain
+  // the backend profile scope, like inherited URL/cloud connections.
+  if (globalConfig.mode === 'ssh' && globalConfig.sshRemoteProfile) {
+    return normalizeProfile(globalConfig.sshRemoteProfile)
+  }
+
+  return profile
+}
+
 /**
  * Resolve Desktop routing profiles at the Electron boundary and return only
  * keyed, credential-free descriptors to the renderer/plugin runtime.
@@ -132,8 +154,7 @@ export async function buildOpaqueProfileRoutes({
         connectionId: opaqueConnectionId(scope.key, installationId),
         mode: scope.mode,
         profile,
-        targetProfile:
-          scoped.mode === 'ssh' ? normalizeProfile(scoped.sshRemoteProfile || profile) : profile
+        targetProfile: backendTargetProfile(scoped, globalConfig, profile)
       }
     })
   )

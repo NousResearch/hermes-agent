@@ -110,6 +110,30 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
+def resolve_provider_profile(
+    provider: str | None, requested: str | None = None
+) -> ProviderProfile | None:
+    """Resolve the profile for a request, requested-provider-first.
+
+    A profile with ``activates_on_requested_provider = True`` claims
+    entries by requested name or alias. Without such a profile,
+    resolution is exactly ``get_provider_profile(provider)``.
+    """
+    requested_norm = str(requested or "").strip().lower()
+    if requested_norm:
+        profile = get_provider_profile(requested_norm)
+        if profile is not None and getattr(
+            profile, "activates_on_requested_provider", False
+        ):
+            logger.debug(
+                "provider profile %r activated via requested provider %r",
+                profile.name,
+                requested_norm,
+            )
+            return profile
+    return get_provider_profile(str(provider or "").strip().lower())
+
+
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     global _PROVIDER_LIST_CACHE

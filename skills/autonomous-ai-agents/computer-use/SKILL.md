@@ -186,22 +186,24 @@ and storage over the browser protocol.
 
 Authorization paths for `existing_profile`, in preference order:
 
-1. **User-minted token (standard mode).** Ask the user to run
-   `hermes computer-use browser-approve --pid <pid> --window-id <window_id>
-   --profile-mode existing_profile` in their terminal and paste back the
-   token. Pass it as `approval_token` on `cua_browser_prepare`. The token is
-   single-use and expires in ~5 minutes, so mint it right before the call.
-   You cannot create this token yourself; only the user can.
+1. **Config grant (standard mode).** When
+   `computer_use.grant_existing_profile: true` is set, the runtime is
+   launched pre-authorized (`--grant existing-profile`) and the prepare
+   succeeds against the exact proven `(pid, window_id)`. If it's not set,
+   the prepare fails closed — tell the user to flip that config key (and
+   restart the session) if they want this; do not retry or work around it.
 2. **Bounded manifest.** When `computer_use.permission_mode: bounded` is
    configured with a reviewed `capability_manifest`, prepares inside the
    manifest's scope succeed without prompts and everything else fails closed.
-   No token needed; do not ask for one.
 3. **Explicit Hermes YOLO** (`--yolo`, `/yolo`, or `approvals.mode: off`)
    launches a private embedded cua-driver in `unrestricted` after that risk
    acceptance, so there are no runtime Cua approval prompts.
 
-Without any of these, `existing_profile` fails closed — report the refusal and
-offer path 1 to the user; do not retry, downgrade trust, or work around it.
+A user may also paste a token from `hermes computer-use browser-approve`
+(pass it as `approval_token`); current cua-driver builds treat that as a
+disabled legacy path, so expect the config grant to be the working route.
+Without any of these, `existing_profile` fails closed — report the refusal
+and name the config key; do not retry, downgrade trust, or work around it.
 Never invent, store, log, or reuse a grant token.
 
 Use the native capture/AX/pixel/foreground ladder for browser chrome, browser

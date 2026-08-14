@@ -85,30 +85,35 @@ modes. There is no second permission toggle to keep in sync:
 
 | Hermes session | cua-driver mode | Human intervention | `existing_profile` |
 |---|---|---|---|
-| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless you mint a single-use token with `hermes computer-use browser-approve` |
+| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless `computer_use.grant_existing_profile: true` (one-time config opt-in) |
 | `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch | Allowed only within the manifest's declared profiles/origins/tools; everything else fails closed |
 | `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts | Allowed within Cua's built-in, managed, and user policy ceilings |
 
-### Attaching to your signed-in browser (`browser-approve`)
+### Attaching to your signed-in browser
 
 The agent can drive a Chrome/Edge window you already have open — including a
 signed-in profile — **without restarting the browser, copying the profile, or
 touching your tabs**. Because DevTools access exposes that profile's live
 pages, cookies, and storage, cua-driver requires an explicit human grant that
-ordinary tool approval cannot substitute for. Hermes surfaces it as:
+ordinary tool approval cannot substitute for. You opt in once, in config.yaml:
 
-```bash
-# The agent will tell you the exact pid/window_id it discovered:
-hermes computer-use browser-approve --pid 844 --window-id 10725 --profile-mode existing_profile
+```yaml
+computer_use:
+  grant_existing_profile: true
 ```
 
-This mints a five-minute, single-use token bound to that exact process and
-window. Paste the token to the agent; it passes it as `approval_token` on the
-`cua_browser_prepare` action and cua-driver verifies the binding before
-attaching. The grant lives only in driver memory and dies with the session.
-Prefer letting the agent use an isolated profile (`isolated_new`, no token
-needed beyond the normal tool approval) unless the task genuinely needs your
-authenticated session.
+Hermes then launches the cua-driver runtime with the trusted-launcher grant
+(`--grant existing-profile`, live-verified against cua-driver 0.19.3), and
+`cua_browser_prepare` with an existing profile succeeds against the exact
+`(pid, window_id)` the agent proves. Leave it `false` (the default) and
+existing-profile attachment fails closed; driver-owned isolated profiles work
+either way and are what the agent prefers.
+
+Older cua-driver builds also shipped an interactive `browser-approve` token
+verb; current drivers treat that token as a disabled legacy compatibility
+path. Hermes still exposes `hermes computer-use browser-approve` as a
+passthrough and forwards a pasted token as `approval_token`, but the config
+grant above is the supported route.
 
 ### Bounded mode for repeatable automation
 
@@ -370,7 +375,8 @@ Permission mode and manifest (see
 ```yaml
 computer_use:
   permission_mode: standard        # standard (default) | bounded
-  capability_manifest: ""          # manifest path, required for bounded
+  capability_manifest: ""          # session-policy path, required for bounded
+  grant_existing_profile: false    # opt-in: attach to signed-in browser in standard mode
 ```
 
 Override the driver binary path (tests / CI / local builds):

@@ -215,12 +215,13 @@ def test_bounded_daemon_serves_with_approved_manifest(tmp_path, monkeypatch):
     command = captured["command"]
     assert "--permission-mode" in command
     assert command[command.index("--permission-mode") + 1] == "bounded"
-    assert "--capability-manifest" in command
+    # Flag names live-verified against cua-driver 0.19.3.
+    assert "--session-policy" in command
     assert (
-        command[command.index("--capability-manifest") + 1]
+        command[command.index("--session-policy") + 1]
         == str(manifest)
     )
-    assert "--approve-capability-manifest" in command
+    assert "--approve-session-policy" in command
     assert "--dangerously-bypass-approvals" not in command
 
 
@@ -254,7 +255,22 @@ def test_unrestricted_daemon_serve_command_unchanged(monkeypatch):
 
     command = captured["command"]
     assert "--dangerously-bypass-approvals" in command
-    assert "--capability-manifest" not in command
+    assert "--session-policy" not in command
+
+
+# ── standard-mode --grant existing-profile ──────────────────────────────
+
+
+def test_grant_existing_profile_defaults_off(monkeypatch):
+    monkeypatch.setattr(cb, "_computer_use_cfg", dict)
+    assert cb._cua_grant_existing_profile() is False
+
+
+def test_grant_existing_profile_reads_config(monkeypatch):
+    monkeypatch.setattr(
+        cb, "_computer_use_cfg", lambda: {"grant_existing_profile": True}
+    )
+    assert cb._cua_grant_existing_profile() is True
 
 
 # ── permission-mode resolution ──────────────────────────────────────────

@@ -292,10 +292,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "description": (
                     "Browser preparation mode. existing_profile is decided by "
                     "cua-driver's immutable permission mode: in standard mode "
-                    "ask the user to mint a single-use token with `hermes "
-                    "computer-use browser-approve` and pass it as "
-                    "approval_token; bounded mode authorizes via the reviewed "
-                    "capability manifest; explicit Hermes YOLO uses a private "
+                    "it requires the user's config opt-in "
+                    "computer_use.grant_existing_profile: true (if refused, "
+                    "report that key to the user — you cannot grant it); "
+                    "bounded mode authorizes via the reviewed capability "
+                    "manifest; explicit Hermes YOLO uses a private "
                     "unrestricted daemon."
                 ),
             },
@@ -303,11 +304,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "approval_token": {
                 "type": "string",
                 "description": (
-                    "Single-use existing-profile attachment token the USER "
-                    "minted with `hermes computer-use browser-approve`. Ask "
-                    "the user to run that command and give you the token; "
-                    "never invent one. Only meaningful with "
-                    "profile_mode='existing_profile'."
+                    "Optional single-use setup token the USER minted with "
+                    "`hermes computer-use browser-approve` and pasted to you; "
+                    "never invent one. Legacy path on current cua-driver "
+                    "builds — the supported existing-profile route is the "
+                    "computer_use.grant_existing_profile config opt-in."
                 ),
             },
             "allow_launch": {

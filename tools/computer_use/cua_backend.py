@@ -266,6 +266,23 @@ def _cua_capability_manifest() -> Optional[str]:
     return raw.strip()
 
 
+def _cua_grant_existing_profile() -> bool:
+    """True when the user pre-authorized existing-profile browser attachment.
+
+    Reads ``computer_use.grant_existing_profile`` (default False). This is
+    cua-driver's trusted-launcher grant: Hermes appends
+    ``--grant existing-profile`` when spawning the standard-mode runtime, so
+    ``browser_prepare`` with ``strategy: existing_profile`` succeeds without
+    a per-use token (live-verified against cua-driver 0.19.3, where the
+    interactive ``browser-approve`` token is a legacy compatibility path
+    that is disabled by default). The user flips this in config.yaml — a
+    deliberate, durable statement that agents on this machine may attach to
+    their signed-in browser. It never applies to bounded (the manifest owns
+    that decision) or unrestricted (already bypassed) daemons.
+    """
+    return bool(_computer_use_cfg().get("grant_existing_profile", False))
+
+
 def _computer_use_max_image_dimension() -> Optional[int]:
     """Longest-edge cap for cua-driver screenshots, or None to leave unset.
 
@@ -508,11 +525,14 @@ class _EmbeddedCuaDaemon:
         if self.permission_mode == "unrestricted":
             command.append("--dangerously-bypass-approvals")
         else:  # bounded — manifest validated in __init__
+            # Live-verified against cua-driver 0.19.3: the serve flags are
+            # --session-policy/--approve-session-policy (the docs' older
+            # --capability-manifest names are not accepted).
             command.extend(
                 [
-                    "--capability-manifest",
+                    "--session-policy",
                     str(self.capability_manifest),
-                    "--approve-capability-manifest",
+                    "--approve-session-policy",
                 ]
             )
         self._process = subprocess.Popen(
@@ -1231,6 +1251,15 @@ class _CuaDriverSession:
                 child_env = self._embedded_daemon.child_env()
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
+                # Standard-mode trusted-launcher grant: the user opted in via
+                # config.yaml (computer_use.grant_existing_profile), so the
+                # runtime is launched pre-authorized for existing-profile
+                # browser attachment (`cua-driver mcp --grant
+                # existing-profile`, live-verified on 0.19.3). Never applied
+                # to embedded daemons: bounded's manifest and unrestricted's
+                # bypass own that decision.
+                if _cua_grant_existing_profile():
+                    args = [*args, "--grant", "existing-profile"]
                 child_env = cua_driver_child_env()
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(

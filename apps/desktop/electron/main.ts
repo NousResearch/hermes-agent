@@ -94,6 +94,9 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { COLLECT_RESULT_CHANNEL, createCaptureController } from './diagnostics-capture'
+import { electronProcessTree, exportDiagnosticsBundle } from './diagnostics-export'
+import { createGatewayDiagnosticsClient, gatewayDiagnosticsPath } from './diagnostics-gateway'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { findGitBash as _findGitBash } from './find-git-bash'
@@ -10838,7 +10841,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   return { ...(base as any), sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
 }
 
-ipcMain.handle('hermes:api', async (_event, request) => {
+async function handleHermesApiRequest(request) {
   // Remote-profile session requests would otherwise hit the local primary off
   // each profile's on-disk state.db — fine for local profiles, but a remote
   // profile's sessions live on its remote host, so the UI's IDs 404 (or mutations
@@ -10907,6 +10910,28 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     upload: request?.upload,
     timeoutMs
   })
+}
+
+// The renderer's REST calls are the one transport main can actually see, so a
+// failure here (the observed 60s "Timed out connecting to Hermes backend") is
+// recorded as a diagnostics transport event — duration, coarse route prefix and
+// error class only, never the request or its body. While disarmed the recorder
+// returns immediately, so the failure path is unchanged.
+ipcMain.handle('hermes:api', async (_event, request) => {
+  const startedAt = Date.now()
+
+  try {
+    return await handleHermesApiRequest(request)
+  } catch (error) {
+    diagnosticsCapture.recordTransportError({
+      channel: 'hermes:api',
+      path: request?.path,
+      durationMs: Date.now() - startedAt,
+      error
+    })
+
+    throw error
+  }
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main
@@ -11179,6 +11204,86 @@ const activeWorkByWebContents = new Map<number, ActiveWork>()
 // unthrottled while any turn is in flight (streaming must paint while hidden)
 // and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
 const streamThrottle = createStreamThrottle()
+
+// Hitch capture (U3). Disarmed the app costs nothing: no sampler runs, no
+// window edge is recorded, and the gateway is never asked anything. Armed, main
+// contributes its own ring (window responsiveness, app metrics, transport
+// failures), pushes the capture id + wall-clock anchor to every renderer, and
+// pulls the gateway ring over the SAME authenticated channel `hermes:api`
+// already uses — no new listener or credential. See diagnostics-capture.ts.
+const gatewayDiagnostics = createGatewayDiagnosticsClient(async (method, params) => {
+  const connection = await startHermes()
+
+  return fetchJson(`${connection.baseUrl}${gatewayDiagnosticsPath(method)}`, connection.token, {
+    method: 'POST',
+    body: params,
+    timeoutMs: 10_000
+  })
+})
+
+const diagnosticsCapture = createCaptureController({
+  now: () => performance.now(),
+  listWindows: () => BrowserWindow.getAllWindows() as never,
+  getAppMetrics: () => app.getAppMetrics() as never,
+  gateway: gatewayDiagnostics,
+  // The gateway ring is local-backend only; a remote/SSH host is not asked and
+  // the exporter marks the stream absent with reason 'remote-gateway'.
+  isRemoteGateway: () => primaryBackendIsRemote()
+})
+
+app.on('browser-window-created', (_event, win) => diagnosticsCapture.attachWindow(win as never))
+
+ipcMain.on(COLLECT_RESULT_CHANNEL, (_event, payload) => diagnosticsCapture.handleCollectResult(payload))
+
+// Stop gathers the bundle AND writes it (U4): the Diagnostics settings section
+// is a one-action flow, so there is no separate "export" step for the user to
+// forget. The bundle goes to `<userData>/diagnostics/<captureId>/` and nothing
+// leaves the machine; the renderer gets back only the path plus the R3
+// classification, never any captured events.
+ipcMain.handle('hermes:diagnostics:start', () => diagnosticsCapture.start())
+ipcMain.handle('hermes:diagnostics:stop', async () => {
+  const bundle = await diagnosticsCapture.stop()
+
+  if (!bundle) {
+    return null
+  }
+
+  let metrics = []
+
+  try {
+    metrics = app.getAppMetrics() as never
+  } catch {
+    // A process tree is nice to have, not a reason to lose the capture.
+  }
+
+  const result = await exportDiagnosticsBundle({
+    bundle,
+    userDataPath: app.getPath('userData'),
+    appVersion: app.getVersion(),
+    processes: electronProcessTree({
+      mainPid: process.pid,
+      mainPpid: process.ppid,
+      execPath: process.execPath,
+      metrics
+    })
+  })
+
+  return {
+    captureId: bundle.captureId,
+    directory: result.directory,
+    labels: result.classification.labels,
+    primary: result.classification.primary,
+    streams: result.manifest.streams.map(stream => ({
+      name: stream.name,
+      events: stream.events,
+      ...(stream.absent ? { absent: stream.absent } : {})
+    }))
+  }
+})
+ipcMain.handle('hermes:diagnostics:status', () => ({
+  armed: diagnosticsCapture.isArmed(),
+  captureId: diagnosticsCapture.captureId()
+}))
 
 function updateStreamThrottleFromActiveWork() {
   streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)

@@ -678,6 +678,16 @@
                 "WebSocket auth failed — reload the page to refresh the session token."));
               return;
             }
+            // WS_KANBAN_UNAVAILABLE (plugin_api.py): the server cannot open the
+            // Kanban database and the condition is permanent for its process,
+            // so reconnecting just re-triggers it every backoff tick — that
+            // loop is what filled errors.log. Terminal, and deliberately NOT
+            // the auth message: nothing is wrong with the session token.
+            if (ev && ev.code === 4004) {
+              setError(tx(t, "wsKanbanUnavailable",
+                "Kanban live updates stopped — the Hermes server cannot open the Kanban database. Restart Hermes to recover."));
+              return;
+            }
             const delay = Math.min(wsBackoffRef.current, 30000);
             wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
             setTimeout(openWs, delay);

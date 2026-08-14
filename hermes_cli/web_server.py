@@ -57,6 +57,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli import diagnostics_ring
 from hermes_cli.config import (
     build_cron_model_impact,
     cfg_get,
@@ -12985,6 +12986,67 @@ async def stop_gateway(profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
+# Hitch-capture diagnostics ring (U3 / KTD2 / KTD4).
+#
+# These three routes are the gateway's half of a desktop hitch capture. They
+# ride the SAME authenticated channel the desktop's ``hermes:api`` calls
+# already use: no listener, port, or credential is introduced here — the
+# ``/api/`` prefix alone puts them behind ``auth_middleware`` (session token on
+# loopback) and the OAuth gate on public binds, since they are deliberately not
+# in ``PUBLIC_API_PATHS``. The same three operations are also reachable as
+# JSON-RPC methods over ``/api/ws`` (see
+# ``hermes_cli.diagnostics_ring.install_rpc_methods``).
+#
+# Everything the ring holds is counts, durations, and HMAC'd identifiers —
+# see the module docstring for the sanitization contract.
+# ---------------------------------------------------------------------------
+
+
+async def _diagnostics_body(request: Request) -> dict:
+    """Params for a diagnostics route; a missing/!dict body means no params."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return body if isinstance(body, dict) else {}
+
+
+@app.post("/api/diagnostics/arm")
+async def diagnostics_arm(request: Request):
+    body = await _diagnostics_body(request)
+    try:
+        return diagnostics_ring.arm(
+            body.get("capture_id"), body.get("wall_clock_anchor_ms")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/diagnostics/disarm")
+async def diagnostics_disarm(request: Request):
+    return diagnostics_ring.disarm()
+
+
+@app.post("/api/diagnostics/collect")
+async def diagnostics_collect(request: Request):
+    body = await _diagnostics_body(request)
+    try:
+        return diagnostics_ring.collect(body.get("capture_id"))
+    except LookupError as exc:
+        # 409, not 404: the route exists, the capture does not. The desktop
+        # client reads 404/405/501 as "this gateway predates diagnostics" and
+        # would mislabel a mis-sequenced pull as an unsupported backend.
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+# The U5 proof harness has to cause a real gateway stall to prove the capture
+# attributes one to the gateway. Its hook is mounted here and ONLY when the
+# process was started with HERMES_DIAGNOSTICS_TEST_HOOKS=1 — a normally started
+# gateway never registers the route, so it answers 404.
+diagnostics_ring.install_test_routes(app)
+
+
+# ---------------------------------------------------------------------------
 # Credential pool endpoints — list / add / remove rotation keys.
 #
 # The credential pool (auth.json -> credential_pool.<provider>[]) holds the
@@ -17813,6 +17875,44 @@ app.include_router(_dashboard_auth_router)
 mount_spa(app)
 
 
+# ── Loop heartbeat watchdog (CF-1) ───────────────────────────────────
+# Confirm the GIL-pressure hypothesis in production. Re-arm a 2s tick and
+# measure the drift between when it *should* fire and when it actually does: a
+# healthy loop drifts ~0, but a turn that holds the GIL blocks the loop and the
+# next tick fires late by the stall duration. We log that so a stalled-loop WS
+# drop is diagnosable from the gateway log. Uses loop.time() (monotonic) for
+# drift, and call_later (not a task) so it dies with the loop — nothing to
+# cancel on shutdown.
+_HB_INTERVAL = 2.0
+_HB_STALL_THRESHOLD = 5.0
+
+
+def _install_loop_heartbeat(loop) -> None:
+    """Arm the self-re-arming heartbeat tick on *loop*."""
+
+    def _loop_heartbeat(expected: float) -> None:
+        now = loop.time()
+        drift = now - expected
+        if drift > _HB_STALL_THRESHOLD:
+            _log.warning(
+                "event loop stalled %.1fs (GIL pressure suspected)",
+                drift,
+            )
+        interval = _HB_INTERVAL
+        # While a diagnostics capture is armed this same tick doubles as the
+        # gateway's stall sampler (U3/KTD4): it runs fast enough to resolve a
+        # sub-second block, and every drift above the ring floor becomes a
+        # structured event. The warning threshold above is deliberately
+        # untouched — the ring is an additional sink, not a louder log.
+        if diagnostics_ring.ARMED:
+            interval = diagnostics_ring.armed_heartbeat_interval()
+            diagnostics_ring.note_loop_tick()
+            diagnostics_ring.record_loop_drift(drift)
+        loop.call_later(interval, _loop_heartbeat, now + interval)
+
+    loop.call_later(_HB_INTERVAL, _loop_heartbeat, loop.time() + _HB_INTERVAL)
+
+
 def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     """Read the OS-assigned port from a live uvicorn server socket.
 
@@ -18233,34 +18333,8 @@ def start_server(
             except Exception as exc:  # pragma: no cover - best-effort
                 _log.debug("loop noise filter install skipped: %s", exc)
 
-            # ── Loop heartbeat watchdog (CF-1) ───────────────────────────
-            # Confirm the GIL-pressure hypothesis in production. Re-arm a 2s
-            # tick and measure the drift between when it *should* fire and
-            # when it actually does: a healthy loop drifts ~0, but a turn that
-            # holds the GIL blocks the loop and the next tick fires late by the
-            # stall duration. We log that so a stalled-loop WS drop is
-            # diagnosable from the gateway log. Uses loop.time() (monotonic)
-            # for drift, and call_later (not a task) so it dies with the loop —
-            # nothing to cancel on shutdown.
-            _hb_interval = 2.0
-            _hb_stall_threshold = 5.0
-            _hb_loop = asyncio.get_running_loop()
-
-            def _loop_heartbeat(expected: float) -> None:
-                now = _hb_loop.time()
-                drift = now - expected
-                if drift > _hb_stall_threshold:
-                    _log.warning(
-                        "event loop stalled %.1fs (GIL pressure suspected)",
-                        drift,
-                    )
-                _hb_loop.call_later(
-                    _hb_interval, _loop_heartbeat, now + _hb_interval
-                )
-
-            _hb_loop.call_later(
-                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
-            )
+            # Loop heartbeat watchdog (CF-1) — see _install_loop_heartbeat.
+            _install_loop_heartbeat(asyncio.get_running_loop())
 
             await server.main_loop()
             if server.started:

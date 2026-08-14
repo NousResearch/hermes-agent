@@ -743,6 +743,24 @@ try:
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
+# A long-lived Hermes server is a fresh root of trust, not delegate_task child
+# work, so it must not inherit the delegated-child lineage marker from whatever
+# agent happened to launch it. Left in place the marker never expires and every
+# Kanban open in this process fails closed (connect()'s first-open migration
+# pass runs through write_txn), which is what made the dashboard event stream
+# error on every reconnect. Agent-delegated subprocesses are unaffected — see
+# agent.delegation_context.clear_delegated_child_marker_for_server_role.
+try:
+    from agent.delegation_context import (
+        clear_delegated_child_marker_for_server_role as _clear_delegated_marker,
+        is_server_role_argv as _is_server_role_argv,
+    )
+
+    if _is_server_role_argv(sys.argv[1:]):
+        _clear_delegated_marker()
+except Exception:
+    pass  # best-effort — a missing agent package must not break the CLI
+
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 # Dashboard entrypoints bootstrap with GUI mode so gui.log is always present

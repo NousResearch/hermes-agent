@@ -87,7 +87,16 @@ def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     data = json.dumps(body).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, "User-Agent": "Hermes-A2A/1.0", **headers}
+    # Custom peer headers are operator-controlled but Content-Type and
+    # A2A-Version are protocol-owned and must not be clobbered; a config typo
+    # would otherwise cause peer rejection or protocol-version mismatches.
+    # User-Agent stays overridable (some proxies filter user agents).
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
@@ -101,8 +110,15 @@ def _http_post_sse(url: str, body: dict, headers: dict, timeout: int):
     for the caller to format.
     """
     data = json.dumps(body).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION,
-            "User-Agent": "Hermes-A2A/1.0", "Accept": "text/event-stream", **headers}
+    # Same precedence policy as _http_post_json: Accept is protocol-owned for
+    # this streaming request, alongside Content-Type/A2A-Version.
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         ctype = resp.headers.get("Content-Type", "")

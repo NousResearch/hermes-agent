@@ -1479,8 +1479,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        from providers import resolve_provider_profile
+        _profile = resolve_provider_profile(agent.provider, getattr(agent, "requested_provider", None))
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     # Strip image parts for non-vision models on BOTH paths (registered

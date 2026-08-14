@@ -266,6 +266,22 @@ def test_extract_visible_messages_drops_only_tool_result_json() -> None:
     ]
 
 
+def test_extract_visible_messages_removes_embedded_tool_result_json() -> None:
+    """Tool-result JSON must not survive when followed by ordinary prose."""
+    timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+    embedded = (
+        '{"output":"== OFF while home: automations on, blinds OPEN ==", '
+        '"exit_code":0,"error":null} The core rule works.'
+    )
+
+    visible = extract_visible_messages(
+        [{"role": "assistant", "content": embedded, "timestamp": timestamp}],
+        set(),
+    )
+
+    assert [message.text for message in visible] == ["The core rule works."]
+
+
 @pytest.mark.parametrize(
     "content",
     [

@@ -445,7 +445,8 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 def _safe_public_text(value: str, hidden_values: set[str]) -> str:
     text = _TOOL_ENVELOPE_PATTERN.sub(" ", value)
-    if not text.strip() or _is_tool_result_json(text):
+    text = _remove_embedded_tool_result_json(text)
+    if not text.strip():
         return ""
     if _force_redact is None:
         return "[REDACTED]"
@@ -469,6 +470,10 @@ def _is_tool_result_json(text: str) -> bool:
         parsed = json.loads(text)
     except (TypeError, ValueError):
         return False
+    return _is_tool_result_object(parsed)
+
+
+def _is_tool_result_object(parsed: object) -> bool:
     if not isinstance(parsed, dict):
         return False
     keys = set(parsed)
@@ -479,6 +484,37 @@ def _is_tool_result_json(text: str) -> bool:
         or bool(evidence_keys and payload_keys)
         or len(evidence_keys) >= 2
     )
+
+
+def _remove_embedded_tool_result_json(text: str) -> str:
+    """Remove tool-shaped JSON objects embedded in otherwise useful prose."""
+    decoder = json.JSONDecoder()
+    removals: list[tuple[int, int]] = []
+    cursor = 0
+    while True:
+        start = text.find("{", cursor)
+        if start < 0:
+            break
+        try:
+            parsed, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        if _is_tool_result_object(parsed):
+            removals.append((start, end))
+            cursor = end
+        else:
+            cursor = start + 1
+    if not removals:
+        return text
+    parts: list[str] = []
+    cursor = 0
+    for start, end in removals:
+        parts.append(text[cursor:start])
+        parts.append(" ")
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def _nonempty_hidden_values(hidden_values: set[str]) -> list[str]:

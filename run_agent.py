@@ -1819,6 +1819,16 @@ class AIAgent:
         appended to the review prompt — e.g. "save the deploy workflow as a
         skill". The automatic post-turn triggers never set it.
         """
+        # A delegation subagent (``_delegate_depth > 0``) must not run the
+        # automatic post-turn review. Subagents are ephemeral workers already
+        # barred from writing shared MEMORY.md (``DELEGATE_BLOCKED_TOOLS``) and
+        # are spawned with ``skip_memory=True``, so a review here has little to
+        # persist — yet it inherits the subagent's (often premium) delegation
+        # model and replays the whole conversation at premium rates, silently
+        # inflating token cost (#85859). An explicit ``/refine`` (``focus`` set)
+        # is a deliberate user request and still runs.
+        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+            return
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(

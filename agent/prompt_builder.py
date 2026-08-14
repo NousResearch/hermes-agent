@@ -2154,12 +2154,21 @@ def _truncate_content(
     return head + marker + tail
 
 
-def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+def load_soul_md(
+    context_length: Optional[int] = None,
+    home_override: "Path | None" = None,
+) -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
+
+    ``home_override`` scopes the read to an explicit profile home (the agent
+    knows its own home from its session_db path). Without it, resolution is
+    ambient — which on a thread that lost the HERMES_HOME ContextVar falls
+    back to the launch home and reads the wrong profile's SOUL.md (#50233,
+    same class as the skills-index leak fixed in #86313).
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -2167,7 +2176,8 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
+    _home = Path(home_override) if home_override is not None else get_hermes_home()
+    soul_path = _home / "SOUL.md"
     if not soul_path.exists():
         return None
     try:
@@ -2350,6 +2360,7 @@ def build_context_files_prompt(
     skip_soul: bool = False,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,
+    home_override: "Path | None" = None,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -2413,7 +2424,7 @@ def build_context_files_prompt(
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md(context_length)
+        soul_content = load_soul_md(context_length, home_override=home_override)
         if soul_content:
             sections.append(soul_content)
 

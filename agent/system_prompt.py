@@ -352,7 +352,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md(_ctx_len)
+        # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
+        # ambient resolution on a thread that lost the HERMES_HOME ContextVar
+        # reads the launch profile's SOUL.md instead (#50233).
+        _soul_content = _r.load_soul_md(_ctx_len, home_override=_agent_home(agent))
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -692,7 +695,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
             context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+            allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+            home_override=_agent_home(agent))
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

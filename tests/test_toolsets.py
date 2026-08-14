@@ -57,6 +57,28 @@ class TestGetToolset:
 
 
 
+class TestFileReadonlyToolset:
+    def test_exposes_only_read_and_search(self):
+        tools = resolve_toolset("file_readonly")
+        assert set(tools) == {"read_file", "search_files"}
+
+    def test_excludes_write_and_patch(self):
+        tools = resolve_toolset("file_readonly")
+        assert "write_file" not in tools
+        assert "patch" not in tools
+
+    def test_is_valid_and_marked_read_only(self):
+        assert validate_toolset("file_readonly")
+        ts = get_toolset("file_readonly")
+        assert ts is not None
+        assert "read-only" in ts["description"].lower()
+
+    def test_full_file_toolset_still_grants_writes(self):
+        # Adding file_readonly must not narrow the writable `file` toolset.
+        tools = resolve_toolset("file")
+        assert {"read_file", "write_file", "patch", "search_files"} <= set(tools)
+
+
 class TestResolveToolset:
     def test_leaf_toolset(self):
         tools = resolve_toolset("web")

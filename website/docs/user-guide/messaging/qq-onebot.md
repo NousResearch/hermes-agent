@@ -88,9 +88,22 @@ Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEB
 
 If the bridge uses an access token, set the same value in `access_token` (Hermes sends it as `Authorization: Bearer <token>` on the reverse connection; forward mode includes it in the handshake headers).
 
-## dm / group access policy
+### NapCat-side setup (required)
 
-`dm_policy` and `group_policy` each take one of three values:
+After enabling the plugin you **must also configure the bridge** — the plugin cannot connect by itself:
+
+- **reverse mode (recommended, NapCat dials in)** — in NapCat's network settings add a **WebSocket client**:
+  - report URL: `ws://<hermes-host-ip>:<port>/ws` (e.g. `ws://192.168.1.100:8643/ws`; use the LAN IP, not `127.0.0.1`, when Hermes and NapCat are on different machines)
+  - token: same value as `access_token` on the Hermes side (leave both empty if no token)
+  - message post format: **array** is recommended (segment-array parsing first, CQ string only as fallback)
+- **forward mode (Hermes dials out)** — in NapCat's network settings enable the **WebSocket server** (default `0.0.0.0:3001`), then set the plugin's `url` to `ws://<napcat-host-ip>:3001` (`ws://127.0.0.1:3001` when same host) and keep tokens identical.
+
+The bridge must be on a network Hermes can reach (same LAN / routable); WS connection, image downloads and file resolution all depend on that path.
+
+## dm / group access policy (choose at setup)
+
+Both policies **must be chosen when you first configure the plugin** — the
+defaults only make sense after you pick one of the three options for each:
 
 | Value | dm_policy (private) | group_policy (group) |
 |---|---|---|
@@ -98,12 +111,18 @@ If the bridge uses an access token, set the same value in `access_token` (Hermes
 | `allowlist` | only `allow_from` ids can DM (admin not required) | only `group_allow_from` groups can chat |
 | `disabled` | all DMs rejected | all group messages ignored |
 
-Suggested setups:
+> ⚠️ **At least one admin must be set at setup** (`admin_users` or the
+> `ONEBOT_ALLOWED_USERS` env var). With `dm_policy: open` (the default) only
+> admins can DM, and slash commands are admin-only — with no admin configured
+> nobody can talk to the bot. For quick dev testing use
+> `ONEBOT_ALLOW_ALL_USERS=true`.
 
-- personal bot → `dm_policy: open` + `admin_users` set (only you can DM)
-- a few friends → `dm_policy: allowlist` + `allow_from: [...]`
-- group bot → `group_policy: open` (default `require_mention: true` keeps it quiet)
-- specific groups only → `group_policy: allowlist` + `group_allow_from`
+Which option is right for you:
+
+- **personal bot** → `dm_policy: open` + `admin_users: [<your QQ>]` — only you can DM
+- **a few friends** → `dm_policy: allowlist` + `allow_from: [<QQ1>, <QQ2>]` — non-admins in the list can DM too
+- **group bot** → `group_policy: open` (default `require_mention: true` keeps it quiet: members must @ or reply to trigger)
+- **specific groups only** → `group_policy: allowlist` + `group_allow_from: [<group_id>]`
 
 ### Access tiers (admin / restricted member)
 
@@ -128,31 +147,40 @@ Enforcement points:
 
 With `require_mention: true` (default), the bot only responds in groups when it is explicitly @'d or when the message replies to an existing message. Set it to `false` to respond to every group message (noisy — not recommended for large groups). When no `bot_qq` is configured the bot learns its own id from OneBot meta events, so mention detection works out of the box.
 
-## Long replies
+## Long replies (three tiers, fully configurable)
+
+Reply length is handled in three tiers — both thresholds are user-configurable
+(`split_length` and `text_image_threshold` in the platform `extra` block):
 
 - **≤ `split_length`** (default 100) characters: sent as a single text message.
 - **`split_length` – `text_image_threshold`** (default 150): split into multiple messages, breaking at sentence boundaries (`。！？!?；;\\n`) so sentences are never cut in half.
 - **> `text_image_threshold`**: rendered as a black-on-white text image (800 px wide, CJK-aware font fallback chain) and sent as a single image message. Falls back to text chunks if rendering fails.
 
-Set `text_image_threshold: 0` to disable the image path.
+Set `text_image_threshold: 0` to disable the image path (everything splits as text);
+raise/lower either value to tune the trade-off between message count and card rendering.
 
 The text-image renderer is an AstrBot-style **element-based Markdown renderer**: bold / italic / strikethrough / inline code / code blocks / headers / quotes / lists and **tables** (AstrBot itself has no table element) are all drawn natively. Chinese typography rules are honored — punctuation never starts a line (行首禁则), inline styles wrap as a whole line, literal `\\n` in plain text becomes a real line break (inside inline code it becomes a space; `\\\\n` is kept), and inline code uses a light-blue pill with a monospace font for Latin/digits and glyph-level fallback for CJK. When the reply target's nickname is known, the card gets an AstrBot-style blue top bar (`To <nickname>`, Klein blue #002FA7, white text at **twice the body font size**, ~68 px tall), matching AstrBot's card header proportions.
 
-### Font dependencies
+### Font dependencies (auto-install one-liner)
 
-The card renderer needs three font families (CJK / monospace / color emoji), auto-registered from the system; missing glyphs render as tofu boxes.
+The card renderer needs three font families (CJK / monospace / color emoji),
+auto-registered from the system; missing glyphs render as tofu boxes.
 
-| Font | Provides | Used for |
+| Dependency | Provides (auto-registered path) | Used for |
 |---|---|---|
-| CJK (Noto Sans CJK, WenQuanYi…) | e.g. `NotoSansCJK-Regular.ttc` | Chinese body/headers (ttc SC face auto-selected, JP/Mono fallback) |
-| Monospace | `DejaVuSansMono.ttf` | code blocks / inline code |
-| Color emoji | `NotoColorEmoji.ttf` | emoji |
+| `fonts-noto-cjk` | `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` | Chinese body/headers (ttc SC face auto-selected, JP/Mono fallback) |
+| `fonts-dejavu-core` | `/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf` | code blocks / inline code monospace |
+| `fonts-noto-color-emoji` | `/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf` | color emoji |
+| optional `fonts-wqy-zenhei` / `fonts-wqy-microhei` | `/usr/share/fonts/truetype/wqy/*.ttc` | CJK fallback if Noto is missing |
+| optional `fonts-unifont` | `/usr/share/fonts/opentype/unifont/*.otf` | last-resort fallback |
 
-Linux (Debian/Ubuntu):
+Linux (Debian/Ubuntu) — one command covers all required fonts:
 
 ```sh
 sudo apt install fonts-noto-cjk fonts-dejavu-core fonts-noto-color-emoji
 ```
+
+macOS needs nothing (system Hiragino Sans GB / Songti SC, Menlo and Apple Color Emoji are picked up automatically). The renderer runs an ink self-check: font families without usable glyphs are dropped and fall back silently instead of producing tofu cards.
 
 ## Markdown & voice
 

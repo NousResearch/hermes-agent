@@ -1283,6 +1283,42 @@ def _warn_once_per_provider(
     logger.warning(msg, *args)
 
 
+_API_MODE_ALIASES = {
+    # Values accepted by earlier releases (and natural spellings) mapped to
+    # the canonical transport names consumed by agent_init. Before this map
+    # existed, an unrecognized api_mode was silently ignored and the
+    # transport fell through to hostname-based guessing, so a config that
+    # said ``api_mode: openai`` (valid on older releases) could flip to
+    # ``codex_responses`` after an update and break the provider (#66543
+    # discussion; observed live against api.actual.inc).
+    "openai": "chat_completions",
+    "openai_chat": "chat_completions",
+    "openai-chat": "chat_completions",
+    "chat-completions": "chat_completions",
+    "chatcompletions": "chat_completions",
+    "responses": "codex_responses",
+    "openai_responses": "codex_responses",
+    "openai-responses": "codex_responses",
+    "anthropic": "anthropic_messages",
+    "anthropic-messages": "anthropic_messages",
+    "messages": "anthropic_messages",
+    "bedrock": "bedrock_converse",
+    "bedrock-converse": "bedrock_converse",
+}
+
+
+def _canonical_api_mode(api_mode: str) -> str:
+    """Map legacy/alias ``api_mode`` spellings to canonical transport names.
+
+    Unknown values pass through unchanged (callers keep their existing
+    fall-through behavior); known aliases are rewritten so downstream
+    consumers (``agent_init``'s accepted-set check, runtime resolution)
+    see a canonical name instead of silently discarding the user's intent.
+    """
+    cleaned = api_mode.strip()
+    return _API_MODE_ALIASES.get(cleaned.lower(), cleaned)
+
+
 def _normalize_custom_provider_entry(
     entry: Any,
     *,
@@ -1403,7 +1439,7 @@ def _normalize_custom_provider_entry(
 
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():
-        normalized["api_mode"] = api_mode.strip()
+        normalized["api_mode"] = _canonical_api_mode(api_mode)
 
     model_name = entry.get("model") or entry.get("default_model")
     if isinstance(model_name, str) and model_name.strip():

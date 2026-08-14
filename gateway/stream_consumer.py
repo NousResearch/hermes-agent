@@ -2712,11 +2712,12 @@ class GatewayStreamConsumer:
             # draft(final=true) — that would seal the live stream with
             # interim text and orphan the true final into a plain-send
             # duplicate (live finding, 2026-08-16 canary).
-            _md = dict(self.metadata) if self.metadata else {}
+            _md = self._metadata_for_send(final=False) or {}
             _md["_interim_send"] = True
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self._initial_reply_to_id,
                 metadata=_md,
             )
             # Note: do NOT set _already_sent = True here.

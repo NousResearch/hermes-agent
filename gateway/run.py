@@ -30069,6 +30069,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and source.thread_id
                 and event_message_id
             )
+            or (
+                # Buzz has no native thread_id; threading is always via reply-to
+                # the triggering event id (channel clutter otherwise).
+                str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
+                and event_message_id
+            )
             or _relay_prospective_thread_id
             else None
         )

@@ -900,6 +900,29 @@ class TestBuzzAdapterSend:
         assert args[args.index("--reply-to") + 1] == "buzz-event-123"
 
     @pytest.mark.asyncio
+    async def test_send_uses_metadata_reply_to_message_id(self):
+        """Gateway stream/progress pass reply anchors via metadata.
+
+        Without honoring reply_to_message_id, mid-turn commentary posts as
+        new top-level channel messages instead of thread replies.
+        """
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-reply", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "threaded reply",
+            metadata={"reply_to_message_id": "root-event-abc"},
+        )
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert "--reply-to" in args
+        assert args[args.index("--reply-to") + 1] == "root-event-abc"
+
+    @pytest.mark.asyncio
     async def test_send_prefers_stable_thread_root_over_latest_reply(self):
         adapter = _make_adapter()
         cli = _ScriptedCli()
@@ -915,6 +938,7 @@ class TestBuzzAdapterSend:
 
         args, _stdin = cli.calls[0]
         assert args[args.index("--reply-to") + 1] == "stable-root"
+
 
 
     @pytest.mark.asyncio

@@ -795,8 +795,13 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
+        # Prefer the stable thread anchor from metadata.thread_id (Slack-style),
+        # then metadata.reply_to_message_id (gateway stream consumer /
+        # progress sends), then the explicit reply_to argument.  Without
+        # reply_to_message_id, interim commentary posts flat in the channel.
+        meta = metadata or {}
         reply_target = self._resolve_reply_anchor(
-            (metadata or {}).get("thread_id") or reply_to
+            meta.get("thread_id") or meta.get("reply_to_message_id") or reply_to
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]

@@ -13,7 +13,13 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import (
+    get_hermes_home,
+    get_skills_dir,
+    is_wsl,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from typing import List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1718,6 +1724,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    skills_dir_override: "Path | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1739,13 +1746,44 @@ def build_skills_system_prompt(
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
     """
-    skills_dir = get_skills_dir()
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    # Home resolution is EXPLICIT when a caller passes skills_dir_override
+    # (the agent knows its own profile home from its session_db path). This
+    # avoids the ContextVar-on-a-thread trap: build threads that didn't bind
+    # HERMES_HOME would otherwise fall back to the launch (default) home and
+    # leak the default profile's skills into a bot's prompt (confirmed: a
+    # no-override thread builds default's full index). Snapshot + external
+    # dirs are scoped to the same home so nothing reads ambient state.
+    if skills_dir_override is not None:
+        skills_dir = Path(skills_dir_override)
+        _home_token = set_hermes_home_override(str(skills_dir.parent))
+    else:
+        skills_dir = get_skills_dir()
+        _home_token = None
+    try:
+        external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists() and not external_dirs:
-        return ""
+        if not skills_dir.exists() and not external_dirs:
+            return ""
 
-    # ── Layer 1: in-process LRU cache ─────────────────────────────────
+        return _build_skills_system_prompt_inner(
+            skills_dir,
+            external_dirs,
+            available_tools,
+            available_toolsets,
+            compact_categories,
+        )
+    finally:
+        if _home_token is not None:
+            reset_hermes_home_override(_home_token)
+
+
+def _build_skills_system_prompt_inner(
+    skills_dir: "Path",
+    external_dirs: "list[Path]",
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+    compact_categories: "frozenset[str] | None",
+) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()

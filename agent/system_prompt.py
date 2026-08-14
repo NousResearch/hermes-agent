@@ -51,6 +51,7 @@ from agent.prompt_builder import (
 )
 from agent.runtime_cwd import resolve_context_cwd
 from hermes_constants import get_hermes_home
+from pathlib import Path
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,32 @@ def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
     return [block] if block else []
 
 
+def _agent_home(agent: Any) -> Optional[Path]:
+    """The agent's OWN profile home, resolved from its dedicated session_db.
+
+    The agent's ``_session_db.db_path`` is ``<home>/state.db`` — ground truth
+    for which profile this agent belongs to, independent of any HERMES_HOME
+    ContextVar (which a build thread can lose: ContextVars don't propagate
+    into ``threading.Thread``, so an unbound build falls back to the launch
+    home and leaks the default profile's skills/identity into a bot prompt).
+    Returns None when it can't be resolved so callers fall back to ambient.
+    """
+    try:
+        db = getattr(agent, "_session_db", None)
+        db_path = getattr(db, "db_path", None)
+        if db_path:
+            return Path(db_path).parent
+    except Exception:
+        pass
+    return None
+
+
+def _agent_skills_dir(agent: Any) -> Optional[Path]:
+    """The agent's own ``<home>/skills`` dir, or None to use ambient home."""
+    home = _agent_home(agent)
+    return (home / "skills") if home is not None else None
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -435,6 +462,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            skills_dir_override=_agent_skills_dir(agent),
         )
     else:
         skills_prompt = ""
@@ -514,15 +542,35 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # mid-session, so this doesn't break the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
     # for the matching tool-side guard.
+    #
+    # Resolve from the agent's OWN home first (its session_db path), not the
+    # ambient HERMES_HOME: on a build thread that lost the ContextVar this
+    # line would otherwise print "default" for a bot profile — the same
+    # thread-fallback bug that leaked default's skills index.
+    _agent_home_path = _agent_home(agent)
+    active_profile = "default"
     try:
-        from agent.file_safety import _resolve_active_profile_name
-        active_profile = _resolve_active_profile_name()
+        if _agent_home_path is not None:
+            root = get_hermes_home()
+            try:
+                rel = _agent_home_path.resolve().relative_to((root / "profiles").resolve())
+                active_profile = rel.parts[0] if rel.parts else "default"
+            except (ValueError, OSError):
+                # Home IS the launch root (default) or unrelatable → default.
+                active_profile = "default"
+        else:
+            from agent.file_safety import _resolve_active_profile_name
+            active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
+    # Home string for the message text: prefer the agent's own home so the
+    # paths named match the profile just resolved.
+    _home_str = str(_agent_home_path if _agent_home_path is not None else get_hermes_home())
+    _root_str = str(get_hermes_home())
     if active_profile == "default":
         post_workspace_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "
-            "under " + str(get_hermes_home()) + "/profiles/<name>/. Each profile has its own "
+            "under " + _root_str + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
@@ -531,9 +579,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     else:
         post_workspace_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
-            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
-            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
+            f"and writes {_home_str}/. The default "
+            f"profile's data lives at {_root_str}/skills/, {_root_str}/plugins/, "
+            f"{_root_str}/cron/, {_root_str}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "

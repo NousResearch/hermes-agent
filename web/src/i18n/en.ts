@@ -107,6 +107,8 @@ export const en: Translations = {
     diskElevatedBanner:
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
     dismiss: "Dismiss",
+    dashboardOffline: "Dashboard backend is unreachable.",
+    dashboardRetrying: "Retrying automatically…",
   },
 
   status: {

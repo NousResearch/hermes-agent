@@ -246,12 +246,72 @@ class TestValidateSignature:
         })
         assert adapter._validate_signature(req, body, secret) is False
 
-    def test_validate_generic_v1_signature_accepts(self):
-        """Legacy generic senders sign the raw body (X-Webhook-Signature)."""
+    def test_v1_signature_rejected_by_default(self):
+        """V1 (body-only HMAC) is rejected by default because it has no
+        timestamp binding and is therefore replayable. A captured
+        (body, signature) pair must not validate, regardless of how much
+        time has passed (SECURITY-CLASS-a93a9b33ab551b86)."""
         adapter = _make_adapter()
         body = b'{"event": "push"}'
         secret = "generic-secret"
-        req = _mock_request(headers={"X-Webhook-Signature": _generic_signature(body, secret)})
+        sig = _generic_signature(body, secret)
+        req = _mock_request(
+            headers={"X-Webhook-Signature": sig},
+            match_info={"route_name": "test-route"},
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+        # A replay of the same pair is also rejected (no time dependency).
+        replayed = _mock_request(
+            headers={"X-Webhook-Signature": sig},
+            match_info={"route_name": "test-route"},
+        )
+        assert adapter._validate_signature(replayed, body, secret) is False
+
+    def test_v1_signature_accepted_with_explicit_allow_legacy_v1(self):
+        """A route that explicitly sets ``allow_legacy_v1: true`` opts in to
+        the legacy body-only HMAC during migration. The signature is still
+        validated, and the operator is warned once per route."""
+        adapter = _make_adapter(
+            routes={"legacy-route": {"prompt": "test", "allow_legacy_v1": True}},
+            secret="generic-secret",
+        )
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        sig = _generic_signature(body, secret)
+        req = _mock_request(
+            headers={"X-Webhook-Signature": sig},
+            match_info={"route_name": "legacy-route"},
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_v1_signature_wrong_secret_rejected_even_with_allow_legacy_v1(self):
+        """Even with ``allow_legacy_v1: true``, a wrong signature is rejected."""
+        adapter = _make_adapter(
+            routes={"legacy-route": {"prompt": "test", "allow_legacy_v1": True}},
+            secret="generic-secret",
+        )
+        body = b'{"event": "push"}'
+        sig = _generic_signature(body, "wrong-secret")
+        req = _mock_request(
+            headers={"X-Webhook-Signature": sig},
+            match_info={"route_name": "legacy-route"},
+        )
+        assert adapter._validate_signature(req, body, "generic-secret") is False
+
+    def test_v2_signature_still_accepted(self):
+        """V2 signatures (with timestamp) are unaffected by the V1 default
+        rejection — they were never replayable."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(
+            headers={
+                "X-Webhook-Signature-V2": sig,
+                "X-Webhook-Timestamp": timestamp,
+            },
+        )
         assert adapter._validate_signature(req, body, secret) is True
 
 

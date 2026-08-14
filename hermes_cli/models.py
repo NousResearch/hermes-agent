@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -5257,7 +5258,7 @@ def validate_requested_model(
     """
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
-    if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
+    if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
     requested_for_lookup = requested
     if normalized == "copilot":

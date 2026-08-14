@@ -324,7 +324,7 @@ def _get_model_config() -> Dict[str, Any]:
             cfg["default"] = cfg["model"]
         default = (cfg.get("default") or "").strip()
         base_url = (cfg.get("base_url") or "").strip()
-        is_local = "localhost" in base_url or "127.0.0.1" in base_url
+        is_local = base_url_hostname(base_url) in ("localhost", "127.0.0.1")
         is_fallback = not default
         if is_local and is_fallback and base_url:
             detected = _auto_detect_local_model(base_url)

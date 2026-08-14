@@ -1875,7 +1875,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home, get_hermes_home_override
-from utils import atomic_json_write, is_truthy_value
+from utils import atomic_json_write, base_url_hostname, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -20132,7 +20132,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ]
 
         # Show endpoint for local/custom setups
-        if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
+        if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)

@@ -348,19 +348,25 @@ _comment_watermark: dict[str, int] = {}
 
 
 def inject_new_comments_from_env(agent: Any) -> bool:
-    """Fold new operator comments on the current worker's task into ``agent``.
+    """Fold new kanban comments on the current worker's task into ``agent``.
 
     Best-effort and self-gating: no-op unless this process is a kanban worker
-    (``HERMES_KANBAN_TASK`` set) and ``agent`` exposes ``steer``. Returns True
-    if a steer was injected, else False. Never raises into the agent loop.
+    (``HERMES_KANBAN_TASK`` set) and ``agent`` exposes ``kanban_note``.
+    Returns True if a note was injected, else False. Never raises into the
+    agent loop.
 
-    The first poll only *seeds* the watermark to the newest existing comment —
-    those are already in the worker's context — so only comments added after
+    The first poll only *seeds* the watermark to the newest existing comment
+    those are already in the worker's context, so only comments added after
     the run started are injected. The worker's own authored comments (matched
     by ``HERMES_PROFILE``) are skipped to avoid echoing itself.
+
+    Delivered via ``agent.kanban_note()``, which wraps the text in its own
+    KANBAN_COMMENT_MARKER_OPEN/_CLOSE envelope, never the user-steer marker,
+    and with the real comment author, not a hardcoded fallback that could be
+    misread as a system directive.
     """
     tid = os.environ.get("HERMES_KANBAN_TASK")
-    if not tid or agent is None or not hasattr(agent, "steer"):
+    if not tid or agent is None or not hasattr(agent, "kanban_note"):
         return False
     global _comment_poll_last_attempt
     import time as _time
@@ -399,18 +405,21 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     if not fresh:
         return False
 
-    lines = [f"- {c.author or 'operator'}: {c.body.strip()}" for c in fresh]
+    # Honest per-comment attribution: an empty/None author renders as an
+    # explicit placeholder, never as "operator". That word previously
+    # implied user-level authority no kanban comment actually carries.
+    lines = [f"- {c.author or 'unknown'}: {c.body.strip()}" for c in fresh]
     note = (
-        "New note"
+        "New comment"
         + ("s" if len(fresh) > 1 else "")
-        + " on your kanban task from the operator (delivered mid-run). "
-        + "Take it into account for the work you're doing right now:\n"
+        + " on your kanban task (delivered mid-run). This is kanban comment "
+        + "thread content, not a message from the user:\n"
         + "\n".join(lines)
     )
     try:
-        return bool(agent.steer(note))
+        return bool(agent.kanban_note(note))
     except Exception:
-        logger.debug("comment-inject: steer failed", exc_info=True)
+        logger.debug("comment-inject: note delivery failed", exc_info=True)
         return False
 
 

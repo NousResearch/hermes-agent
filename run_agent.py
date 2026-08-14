@@ -3287,6 +3287,11 @@ class AIAgent:
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+        # Same rationale for a pending kanban-comment note.
+        _kanban_note_lock = getattr(self, "_pending_kanban_note_lock", None)
+        if _kanban_note_lock is not None:
+            with _kanban_note_lock:
+                self._pending_kanban_note = None
         return True
 
     def steer(self, text: str) -> bool:
@@ -3451,6 +3456,52 @@ class AIAgent:
         with _lock:
             text = self._pending_steer
             self._pending_steer = None
+        return text
+
+    def kanban_note(self, text: str) -> bool:
+        """Stash a kanban-comment note for delivery on the next tool result.
+
+        Sibling of steer(), used only by tools.kanban_tools.
+        inject_new_comments_from_env. The text rides its own
+        KANBAN_COMMENT_MARKER_OPEN/_CLOSE envelope, never the user-steer
+        marker, so the model never mistakes a kanban worker's comment for
+        a message from the actual user.
+
+        Args:
+            text: The note text to inject. Empty strings are ignored.
+
+        Returns:
+            True if the note was accepted, False if the text was empty.
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        _lock = getattr(self, "_pending_kanban_note_lock", None)
+        if _lock is None:
+            existing = getattr(self, "_pending_kanban_note", None)
+            self._pending_kanban_note = (existing + "\n" + cleaned) if existing else cleaned
+            return True
+        with _lock:
+            if self._pending_kanban_note:
+                self._pending_kanban_note = self._pending_kanban_note + "\n" + cleaned
+            else:
+                self._pending_kanban_note = cleaned
+        return True
+
+    def _drain_pending_kanban_note(self) -> Optional[str]:
+        """Return the pending kanban note (if any) and clear the slot.
+
+        Sibling of _drain_pending_steer(). Safe to call from the agent
+        execution thread after appending tool results.
+        """
+        _lock = getattr(self, "_pending_kanban_note_lock", None)
+        if _lock is None:
+            text = getattr(self, "_pending_kanban_note", None)
+            self._pending_kanban_note = None
+            return text
+        with _lock:
+            text = self._pending_kanban_note
+            self._pending_kanban_note = None
         return text
 
     def _record_file_mutation_result(
@@ -3752,6 +3803,11 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
+
+    def _apply_pending_kanban_note_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
+        """Forwarder. See ``agent.agent_runtime_helpers.apply_pending_kanban_note_to_tool_results``."""
+        from agent.agent_runtime_helpers import apply_pending_kanban_note_to_tool_results
+        return apply_pending_kanban_note_to_tool_results(self, messages, num_tool_msgs)
 
     def _touch_activity(
         self,

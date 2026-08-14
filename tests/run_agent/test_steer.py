@@ -11,7 +11,12 @@ import threading
 
 import pytest
 
-from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
+from agent.prompt_builder import (
+    KANBAN_COMMENT_MARKER_OPEN,
+    STEER_MARKER_OPEN,
+    format_kanban_comment_marker,
+    format_steer_marker,
+)
 from run_agent import AIAgent
 
 
@@ -23,6 +28,8 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._pending_steer = None
     agent._pending_steer_lock = threading.Lock()
+    agent._pending_kanban_note = None
+    agent._pending_kanban_note_lock = threading.Lock()
     agent._pending_redirect = None
     agent._pending_redirect_lock = threading.Lock()
     agent._model_request_active = threading.Event()
@@ -423,6 +430,123 @@ class TestSteerInjection:
         assert new_content[1]["type"] == "text"
         assert "extra note" in new_content[1]["text"]
 
+
+
+class TestKanbanNoteAcceptance:
+    def test_accepts_non_empty_text(self):
+        agent = _bare_agent()
+        assert agent.kanban_note("reviewer: please double check retries") is True
+        assert agent._pending_kanban_note == "reviewer: please double check retries"
+
+    def test_rejects_empty_text(self):
+        agent = _bare_agent()
+        assert agent.kanban_note("") is False
+        assert agent.kanban_note("   ") is False
+        assert agent._pending_kanban_note is None
+
+
+class TestKanbanNoteDrain:
+    def test_drain_returns_and_clears(self):
+        agent = _bare_agent()
+        agent.kanban_note("hello")
+        assert agent._drain_pending_kanban_note() == "hello"
+        assert agent._pending_kanban_note is None
+
+
+class TestKanbanNoteInjection:
+    """Kanban comments must ride their own envelope, never the user-steer
+    marker. That is the actual trust boundary this fix establishes."""
+
+    def test_appends_to_last_tool_result(self):
+        agent = _bare_agent()
+        agent.kanban_note("reviewer: please double check auth.log")
+        messages = [
+            {"role": "user", "content": "what's in /var/log?"},
+            {"role": "assistant", "tool_calls": [{"id": "a"}, {"id": "b"}]},
+            {"role": "tool", "content": "ls output A", "tool_call_id": "a"},
+            {"role": "tool", "content": "ls output B", "tool_call_id": "b"},
+        ]
+        agent._apply_pending_kanban_note_to_tool_results(messages, num_tool_msgs=2)
+        assert messages[2]["content"] == "ls output A"
+        assert "ls output B" in messages[3]["content"]
+        assert KANBAN_COMMENT_MARKER_OPEN in messages[3]["content"]
+        assert STEER_MARKER_OPEN not in messages[3]["content"]
+        assert "please double check auth.log" in messages[3]["content"]
+        assert agent._pending_kanban_note is None
+
+    def test_no_op_when_no_note_pending(self):
+        agent = _bare_agent()
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "a"},
+        ]
+        agent._apply_pending_kanban_note_to_tool_results(messages, num_tool_msgs=1)
+        assert messages[-1]["content"] == "output"
+
+    def test_marker_is_distinct_from_steer_marker(self):
+        """A kanban comment must never be labeled as a message from the
+        user. That would let a comment author borrow the user's authority.
+        """
+        agent = _bare_agent()
+        agent.kanban_note("worker: heads up, tests are flaky on CI")
+        messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
+        agent._apply_pending_kanban_note_to_tool_results(messages, num_tool_msgs=1)
+        content = messages[-1]["content"]
+        assert KANBAN_COMMENT_MARKER_OPEN in content
+        assert STEER_MARKER_OPEN not in content
+        assert "heads up, tests are flaky on CI" in content
+
+    def test_steer_and_kanban_note_coexist_in_same_batch(self):
+        """A genuine user /steer and a kanban comment landing in the same
+        tool batch must both be delivered, each in its own envelope.
+        """
+        agent = _bare_agent()
+        agent.steer("focus on the retry path")
+        agent.kanban_note("worker: found a flaky test in the same area")
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        agent._apply_pending_kanban_note_to_tool_results(messages, num_tool_msgs=1)
+        content = messages[-1]["content"]
+        assert STEER_MARKER_OPEN in content
+        assert KANBAN_COMMENT_MARKER_OPEN in content
+        assert "focus on the retry path" in content
+        assert "found a flaky test" in content
+
+    def test_multimodal_content_list_preserved(self):
+        agent = _bare_agent()
+        agent.kanban_note("extra note")
+        original_blocks = [{"type": "text", "text": "existing output"}]
+        messages = [
+            {"role": "tool", "content": list(original_blocks), "tool_call_id": "1"}
+        ]
+        agent._apply_pending_kanban_note_to_tool_results(messages, num_tool_msgs=1)
+        new_content = messages[-1]["content"]
+        assert isinstance(new_content, list)
+        assert len(new_content) == 2
+        assert new_content[0] == {"type": "text", "text": "existing output"}
+        assert new_content[1]["type"] == "text"
+        assert "extra note" in new_content[1]["text"]
+
+
+class TestKanbanNoteClearedOnInterrupt:
+    def test_clear_interrupt_drops_pending_kanban_note(self):
+        """Same rationale as the pending-steer case: a hard interrupt means
+        the agent's next tool iteration won't happen, so a stale note
+        should not surface later."""
+        agent = _bare_agent()
+        agent._interrupt_requested = True
+        agent._interrupt_message = None
+        agent._interrupt_thread_signal_pending = False
+        agent._execution_thread_id = None
+        agent._tool_worker_threads = None
+        agent._tool_worker_threads_lock = None
+
+        agent.kanban_note("will be dropped")
+        agent._pending_redirect = None
+        assert agent._pending_kanban_note == "will be dropped"
+
+        agent.clear_interrupt()
+        assert agent._pending_kanban_note is None
 
 
 class TestSteerThreadSafety:

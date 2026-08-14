@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
@@ -26,6 +25,65 @@ from typing import Any, Callable, Dict, List
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
+
+
+def _codex_request_failure_details(error: BaseException) -> tuple[int | None, str]:
+    """Return the serialized request size and exception class chain.
+
+    OpenAI connection exceptions retain the final ``httpx.Request``. Reading
+    its already-buffered content gives us the exact byte count handed to the
+    transport without logging any request content. The class-only chain keeps
+    the underlying transport failure visible without exposing URLs or payloads
+    from exception messages.
+    """
+    request_body_bytes: int | None = None
+    exception_classes: list[str] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        exception_classes.append(type(current).__name__)
+
+        if request_body_bytes is None:
+            try:
+                request = getattr(current, "request", None)
+            except Exception:
+                request = None
+            if request is not None:
+                try:
+                    content = request.content
+                except Exception:
+                    content = None
+                if isinstance(content, str):
+                    request_body_bytes = len(content.encode("utf-8"))
+                elif isinstance(content, (bytes, bytearray, memoryview)):
+                    request_body_bytes = len(content)
+
+        cause = current.__cause__
+        if cause is None and not current.__suppress_context__:
+            cause = current.__context__
+        current = cause
+
+    return request_body_bytes, " <- ".join(exception_classes)
+
+
+def _log_codex_request_failure(
+    agent: Any,
+    error: BaseException,
+    *,
+    stream_opened: bool,
+) -> None:
+    request_body_bytes, exception_chain = _codex_request_failure_details(error)
+    logger.warning(
+        "Codex Responses request failed: "
+        "serialized_request_body_bytes=%s stream_opened=%s "
+        "exception_chain=%s model=%s",
+        request_body_bytes if request_body_bytes is not None else "unknown",
+        str(stream_opened).lower(),
+        exception_chain,
+        getattr(agent, "model", "unknown"),
+    )
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -1028,6 +1086,10 @@ def _consume_codex_event_stream(
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
+    # Last reasoning summary_index seen. The Responses stream delimits summary
+    # parts by this index and gives each part no separator of its own, so a
+    # change of index is where the blank line belongs.
+    active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -1121,6 +1183,17 @@ def _consume_codex_event_stream(
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
             if reasoning_text and on_reasoning_delta is not None:
+                # Summary parts stream one after another with no separator of
+                # their own; summary_index is the boundary the wire gives us.
+                summary_index = _event_field(event, "summary_index")
+                if (
+                    summary_index is not None
+                    and active_summary_index is not None
+                    and summary_index != active_summary_index
+                ):
+                    reasoning_text = f"\n\n{reasoning_text}"
+                if summary_index is not None:
+                    active_summary_index = summary_index
                 try:
                     on_reasoning_delta(reasoning_text)
                 except Exception:
@@ -1239,6 +1312,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     the terminal event's ``output`` field.
     """
     import httpx as _httpx
+    from openai import APIConnectionError as _APIConnectionError
 
     from agent import relay_llm
 
@@ -1342,6 +1416,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     exc,
                 )
                 continue
+            _log_codex_request_failure(
+                agent,
+                exc,
+                stream_opened=writer_token["value"] is not None,
+            )
+            raise
+        except _APIConnectionError as exc:
+            _log_codex_request_failure(
+                agent,
+                exc,
+                stream_opened=writer_token["value"] is not None,
+            )
             raise
 
         def _interrupt_or_superseded() -> bool:
@@ -1366,12 +1452,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_event=_on_event,
                     interrupt_check=_interrupt_or_superseded,
                 )
-                # The terminal SSE frame is contractually last. Request the
-                # end-of-stream marker so Relay can run its response finalizer
-                # and close the physical attempt scope before Hermes returns.
-                if not agent._interrupt_requested:
-                    for _ignored in event_stream:
-                        pass
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(
@@ -1381,11 +1461,60 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         agent._client_log_context(), exc,
                     )
                     continue
+                _log_codex_request_failure(
+                    agent,
+                    exc,
+                    stream_opened=writer_token["value"] is not None,
+                )
                 raise
             except RuntimeError:
                 if event_stream.final_response is not None:
                     return event_stream.final_response
                 raise
+            except _APIConnectionError as exc:
+                _log_codex_request_failure(
+                    agent,
+                    exc,
+                    stream_opened=writer_token["value"] is not None,
+                )
+                raise
+
+            # A terminal response has already been assembled at this point
+            # (``final`` is built), so a transport error while draining the
+            # rest of the iterator — done only to let Relay run its response
+            # finalizer — must NOT discard it or trigger a new physical
+            # request. Record it as a non-fatal finalization warning and
+            # still return the already-completed, already-billed response.
+            if not agent._interrupt_requested:
+                try:
+                    for _ignored in event_stream:
+                        pass
+                except (
+                    _httpx.RemoteProtocolError,
+                    _httpx.ReadTimeout,
+                    _httpx.ConnectError,
+                    ConnectionError,
+                ) as exc:
+                    logger.warning(
+                        "Codex Responses stream transport finalization failed "
+                        "after a terminal response was already received; "
+                        "returning the completed response instead of "
+                        "retrying. %s error=%s",
+                        agent._client_log_context(), exc,
+                    )
+                except _APIConnectionError as exc:
+                    _log_codex_request_failure(
+                        agent,
+                        exc,
+                        stream_opened=writer_token["value"] is not None,
+                    )
+                    logger.warning(
+                        "Codex Responses stream transport finalization failed "
+                        "after a terminal response was already received; "
+                        "returning the completed response instead of "
+                        "retrying. %s error=%s",
+                        agent._client_log_context(), exc,
+                    )
 
             if final.status in {"incomplete", "failed"}:
                 logger.warning(

@@ -193,6 +193,12 @@ class VideoGenProvider(abc.ABC):
         or :func:`error_response`. ``kwargs`` may contain forward-compat
         parameters future versions of the schema will expose —
         implementations MUST ignore unknown keys (no TypeError).
+
+        Known optional kwarg: ``upscale`` (bool) — when true, the caller
+        requests a post-generation high-resolution pass through the
+        backend's video upscaler. Providers without an upscaler simply
+        ignore it; providers that honor it should report ``upscaled: True``
+        in the response ``extra``.
         """
 
 

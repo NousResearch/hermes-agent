@@ -134,13 +134,15 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
   "status": "completed",
   "model": "hermes-agent",
   "output": [
-    {"type": "function_call", "name": "terminal", "arguments": "{\"command\": \"ls\"}", "call_id": "call_1"},
-    {"type": "function_call_output", "call_id": "call_1", "output": "README.md src/ tests/"},
+    {"type": "function_call", "status": "completed", "name": "terminal", "arguments": "{\"command\": \"ls\"}", "call_id": "call_1"},
+    {"type": "function_call_output", "status": "completed", "call_id": "call_1", "output": "README.md src/ tests/"},
     {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Your project has..."}]}
   ],
   "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
 }
 ```
+
+Tool calls in the `output` array were already executed server-side by the Hermes agent — they are replayed with `"status": "completed"` for structured tool UI, never as pending calls for the client to execute.
 
 **Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
 

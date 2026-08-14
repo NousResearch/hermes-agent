@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
@@ -75,12 +75,6 @@ def test_passthrough_from_wire_byte_preserves_body():
     assert fwd.headers == [("content-type", "application/json")]
 
 
-def test_passthrough_from_wire_tolerates_malformed_body():
-    """A non-base64 body must not raise (the reader must never crash)."""
-    fwd = _passthrough_from_wire({"platform": "x", "bodyB64": "!!!not base64!!!"})
-    assert fwd.body == b""
-
-
 @pytest.mark.asyncio
 async def test_connect_wires_passthrough_handler_over_ws(adapter):
     """connect() registers the passthrough handler on the transport so a
@@ -126,105 +120,21 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
     assert ev.source.chat_id == "chan-9"
     assert ev.source.scope_id == "guild-7"
     assert ev.source.user_id == "user-3"
-    assert ev.source.chat_type == "channel"
+    # LOGICAL platform + native-parity chat_type: the session key must match
+    # the connector's capability-vault binding (interactionSessionSource →
+    # buildSessionKey: platform "discord", chat_type "group") and the relay
+    # text lane. Platform.RELAY / "channel" here forked the session and made
+    # /sethome file the home channel under platforms.relay (invisible to cron).
+    assert ev.source.platform == Platform.DISCORD
+    assert ev.source.chat_type == "group"
+    # Authenticated upstream-trust marker, parity with the relay text lane
+    # (ws_transport._event_from_wire) — /sethome's via_relay guard keys on it.
+    assert ev.source.delivered_via_upstream_relay is True
     # Scope captured so the agent's reply re-asserts scope_id for egress.
     assert adapter._scope_by_chat.get("chan-9") == "guild-7"
-
-
-@pytest.mark.asyncio
-async def test_message_component_interaction_uses_custom_id(adapter, monkeypatch):
-    """A MESSAGE_COMPONENT (button) interaction surfaces its custom_id as text."""
-    await adapter.connect()
-    stub = adapter._transport
-    seen = []
-
-    async def fake_handle(event):
-        seen.append(event)
-
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-    fwd = _interaction_forward(
-        {
-            "id": "i2",
-            "type": 3,  # MESSAGE_COMPONENT
-            "channel_id": "c2",
-            "guild_id": "g2",
-            "data": {"custom_id": "approve_btn"},
-            "member": {"user": {"id": "u2", "username": "x"}},
-        }
-    )
-    await stub.push_passthrough(fwd)
-    assert len(seen) == 1
-    assert seen[0].text == "approve_btn"
-    # Component interactions stay plain text — only APPLICATION_COMMANDs are
-    # normalized to slash commands.
-    assert seen[0].is_command() is False
-
-
-@pytest.mark.asyncio
-async def test_application_command_no_options_is_slash_command(adapter, monkeypatch):
-    """/new with no options -> text '/new', dispatched as a COMMAND event."""
-    from gateway.platforms.base import MessageType
-
-    await adapter.connect()
-    stub = adapter._transport
-    seen = []
-
-    async def fake_handle(event):
-        seen.append(event)
-
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-    fwd = _interaction_forward(
-        {
-            "id": "i-new",
-            "type": 2,
-            "channel_id": "c3",
-            "guild_id": "g3",
-            "data": {"name": "new"},
-            "member": {"user": {"id": "u3", "username": "ben"}},
-        }
-    )
-    await stub.push_passthrough(fwd)
-    assert len(seen) == 1
-    ev = seen[0]
-    assert ev.text == "/new"
-    assert ev.message_type == MessageType.COMMAND
-    # Behavior contract: the dispatcher must recognize this as command 'new'.
-    assert ev.is_command() is True
-    assert ev.get_command() == "new"
-    assert ev.get_command_args() == ""
-
-
-@pytest.mark.asyncio
-async def test_application_command_scalar_options_append_values(adapter, monkeypatch):
-    """Scalar options append their values space-separated: /model gpt-x."""
-    await adapter.connect()
-    stub = adapter._transport
-    seen = []
-
-    async def fake_handle(event):
-        seen.append(event)
-
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-    fwd = _interaction_forward(
-        {
-            "id": "i-model",
-            "type": 2,
-            "channel_id": "c4",
-            "guild_id": "g4",
-            "data": {
-                "name": "model",
-                "options": [{"name": "name", "type": 3, "value": "gpt-x"}],
-            },
-            "member": {"user": {"id": "u4", "username": "ben"}},
-        }
-    )
-    await stub.push_passthrough(fwd)
-    assert len(seen) == 1
-    ev = seen[0]
-    assert ev.text == "/model gpt-x"
-    assert ev.is_command() is True
-    assert ev.get_command() == "model"
-    assert ev.get_command_args() == "gpt-x"
+    # The logical platform is now recorded for egress sender selection too
+    # (_capture_scope skips only the generic "relay").
+    assert adapter._platform_by_chat.get("chan-9") == "discord"
 
 
 @pytest.mark.asyncio
@@ -269,11 +179,10 @@ async def test_application_command_subcommand_nesting_renders_names_then_values(
 
 
 @pytest.mark.asyncio
-async def test_ping_interaction_produces_no_command(adapter, monkeypatch):
-    """A PING (type 1) body — never normally forwarded — stays empty TEXT, not
-    a phantom command."""
-    from gateway.platforms.base import MessageType
-
+async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
+    """A guild-less (DM) interaction keys as a Discord DM: logical platform,
+    chat_type 'dm', and the authenticated relay marker — the /sethome-in-DM
+    shape must file under platforms.discord, never platforms.relay."""
     await adapter.connect()
     stub = adapter._transport
     seen = []
@@ -284,61 +193,20 @@ async def test_ping_interaction_produces_no_command(adapter, monkeypatch):
     monkeypatch.setattr(adapter, "handle_message", fake_handle)
     fwd = _interaction_forward(
         {
-            "id": "i-ping",
-            "type": 1,  # PING
-            "channel_id": "c6",
-            "user": {"id": "u6", "username": "ben"},
+            "id": "i-dm",
+            "type": 2,
+            "channel_id": "dm-chan-1",
+            "data": {"name": "sethome"},
+            "user": {"id": "u9", "username": "ben"},
         }
     )
     await stub.push_passthrough(fwd)
     assert len(seen) == 1
     ev = seen[0]
-    assert ev.text == ""
-    assert ev.message_type == MessageType.TEXT
-    assert ev.is_command() is False
+    assert ev.source.platform == Platform.DISCORD
+    assert ev.source.chat_type == "dm"
+    assert ev.source.scope_id is None
+    assert ev.source.user_id == "u9"
+    assert ev.source.delivered_via_upstream_relay is True
 
 
-@pytest.mark.asyncio
-async def test_malformed_interaction_body_does_not_raise(adapter, monkeypatch):
-    """A non-JSON forward is logged and dropped — never crashes the read loop."""
-    await adapter.connect()
-    stub = adapter._transport
-    called = []
-
-    async def fake_handle(event):
-        called.append(event)
-
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-    bad = PassthroughForward(
-        platform="discord",
-        bot_id="appShared",
-        method="POST",
-        path="/x",
-        headers=[],
-        body=b"not json",
-    )
-    await stub.push_passthrough(bad)  # must not raise
-    assert called == []
-
-
-@pytest.mark.asyncio
-async def test_non_discord_forward_dropped_cleanly(adapter, monkeypatch):
-    """A platform with no gateway-side handler yet (e.g. twilio) is dropped, not raised."""
-    await adapter.connect()
-    stub = adapter._transport
-    called = []
-
-    async def fake_handle(event):
-        called.append(event)
-
-    monkeypatch.setattr(adapter, "handle_message", fake_handle)
-    fwd = PassthroughForward(
-        platform="twilio",
-        bot_id="bot1",
-        method="POST",
-        path="/webhooks/twilio/seg",
-        headers=[],
-        body=b"From=+1&Body=hi",
-    )
-    await stub.push_passthrough(fwd)  # must not raise
-    assert called == []

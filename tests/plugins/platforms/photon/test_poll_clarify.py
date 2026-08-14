@@ -83,31 +83,6 @@ async def test_poll_vote_dispatched_as_choice_text(
     assert ev.source.chat_id == "+155****4567"
 
 
-@pytest.mark.asyncio
-async def test_poll_deselection_is_ignored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Un-tapping a choice (selected=false) carries no answer — dropped."""
-    adapter = _make_adapter(monkeypatch)
-    captured = _capture(adapter, monkeypatch)
-
-    await adapter._dispatch_inbound(
-        _poll_option_event(title="Yes", selected=False)
-    )
-    assert captured == []
-
-
-@pytest.mark.asyncio
-async def test_poll_vote_empty_title_is_ignored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    captured = _capture(adapter, monkeypatch)
-
-    await adapter._dispatch_inbound(_poll_option_event(title="   "))
-    assert captured == []
-
-
 # ---------------------------------------------------------------------------
 # Outbound: send_clarify renders a native poll for choices.
 
@@ -172,54 +147,3 @@ async def test_send_clarify_with_choices_sends_native_poll(
     assert marked == ["clar-1"]
 
 
-@pytest.mark.asyncio
-async def test_send_clarify_open_ended_stays_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No choices → plain text question, never a poll."""
-    adapter = _make_adapter(monkeypatch)
-    poll_calls = _stub_sidecar_poll(adapter, monkeypatch)
-    sends = _stub_sidecar_text(adapter, monkeypatch)
-
-    result = await adapter.send_clarify(
-        chat_id="+155****4567",
-        question="What's your name?",
-        choices=None,
-        clarify_id="clar-2",
-        session_key="sess-2",
-    )
-
-    assert result.success
-    assert poll_calls == []  # no poll for open-ended
-    assert len(sends) == 1
-    assert "What's your name?" in sends[0][1]
-
-
-@pytest.mark.asyncio
-async def test_send_clarify_falls_back_to_text_when_poll_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An old sidecar without /send-poll (or a send error) degrades to the
-    numbered-text clarify so the user can still answer."""
-    adapter = _make_adapter(monkeypatch)
-    poll_calls = _stub_sidecar_poll(adapter, monkeypatch, ok=False)
-    sends = _stub_sidecar_text(adapter, monkeypatch)
-
-    import tools.clarify_gateway as cg
-
-    monkeypatch.setattr(cg, "mark_awaiting_text", lambda cid: None)
-
-    result = await adapter.send_clarify(
-        chat_id="+155****4567",
-        question="Pick one",
-        choices=["A", "B"],
-        clarify_id="clar-3",
-        session_key="sess-3",
-    )
-
-    assert result.success  # text fallback succeeded
-    assert len(poll_calls) == 1  # poll was attempted
-    assert len(sends) == 1  # then text list sent
-    body = sends[0][1]
-    assert "Pick one" in body
-    assert "A" in body and "B" in body

@@ -766,7 +766,15 @@ class MemoryStore:
         if not path.exists():
             return "", True
         try:
-            return path.read_text(encoding="utf-8"), True
+            # utf-8-sig strips a leading UTF-8 BOM (Notepad-edited memory
+            # files on Windows) and is byte-identical to utf-8 otherwise.
+            # Plain utf-8 kept U+FEFF glued to the first entry, corrupting
+            # matching/dedup for that entry forever (#10878 / PR #10888).
+            # Decode errors stay STRICT on purpose: errors="replace" would
+            # hand read-modify-write callers a lossy view that a subsequent
+            # save persists over the real bytes — the wipe class documented
+            # above. Undecodable bytes must surface as read_ok=False.
+            return path.read_text(encoding="utf-8-sig"), True
         except (OSError, IOError, UnicodeDecodeError):
             return "", False
 

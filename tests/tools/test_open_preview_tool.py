@@ -1,10 +1,11 @@
-"""Tests for the desktop-gated ``open_preview`` tool."""
+"""Tests for the GUI-surface ``open_preview`` tool."""
 
 import json
 
 import pytest
 
 from tools import desktop_ui, open_preview_tool as op
+from tools.registry import registry
 
 
 @pytest.fixture(autouse=True)
@@ -15,56 +16,15 @@ def _reset_emitter():
     desktop_ui.set_emitter(None)
 
 
-def test_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal/close_terminal)."""
+def test_lives_in_the_gui_surface_toolset(monkeypatch):
+    """Reaches a desktop client on ANY backend, including one with no
+    HERMES_DESKTOP in its environment (URL / cloud gateways)."""
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert op.check_open_preview_requirements() is False
+    entry = registry.get_entry("open_preview")
 
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert op.check_open_preview_requirements() is True
-
-
-def test_requires_url():
-    desktop_ui.set_emitter(lambda *a: None)
-    assert json.loads(op.open_preview_tool("   "))["error"]
-
-
-def test_desktop_only_without_emitter():
-    """No emitter wired (CLI/messaging) → clear desktop-only error, no raise."""
-    result = json.loads(op.open_preview_tool("https://example.com"))
-    assert "desktop" in result["error"].lower()
-
-
-def test_emits_preview_open(monkeypatch):
-    calls = []
-    desktop_ui.set_emitter(lambda sid, event, payload: calls.append((event, payload)))
-
-    out = json.loads(op.open_preview_tool("https://example.com/app", label="Docs"))
-
-    assert out == {"success": True, "url": "https://example.com/app", "label": "Docs"}
-    assert calls == [("preview.open", {"url": "https://example.com/app", "label": "Docs"})]
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("www.cnn.com", "https://www.cnn.com"),
-        ("example.com/path", "https://example.com/path"),
-        ("localhost:3000", "http://localhost:3000"),
-        ("127.0.0.1:8080/x", "http://127.0.0.1:8080/x"),
-        ("https://already.example", "https://already.example"),
-        ("/abs/path/index.html", "/abs/path/index.html"),
-        ("./rel/page.html", "./rel/page.html"),
-        ("`https://tick.example`", "https://tick.example"),
-    ],
-)
-def test_normalizes_bare_targets(raw, expected):
-    seen = {}
-    desktop_ui.set_emitter(lambda sid, event, payload: seen.update(payload))
-
-    op.open_preview_tool(raw)
-
-    assert seen["url"] == expected
+    assert entry is not None
+    assert entry.toolset == "desktop_ui"
+    assert entry.check_fn is None
 
 
 def test_emitter_failure_is_reported():

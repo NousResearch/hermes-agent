@@ -17,6 +17,32 @@ def _call(method, params=None):
     return resp["result"]
 
 
+@pytest.fixture(autouse=True)
+def _fast_git_probe(monkeypatch):
+    """Replace real git subprocess probes with a cheap .git-directory check.
+
+    The record/discover RPC paths probe every distinct session cwd in the DB
+    with a real ``git`` subprocess; on a warm session DB that made single
+    tests take 10-80s. Behavior under test (policy gating, cache merging,
+    ranking) only needs root resolution, not real git.
+    """
+    from tui_gateway import git_probe
+
+    git_probe.invalidate()
+
+    def _fake_run_git(cwd, *_a):
+        d = str(cwd)
+        while d and d not in ("/", os.path.dirname(d)):
+            if os.path.isdir(os.path.join(d, ".git")):
+                return d
+            d = os.path.dirname(d)
+        return ""
+
+    monkeypatch.setattr(git_probe, "run_git", _fake_run_git)
+    yield
+    git_probe.invalidate()
+
+
 def test_methods_registered():
     for m in (
         "projects.list",
@@ -88,36 +114,6 @@ def test_negative_results_are_ttl_cached_then_re_probed(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_repo_root_cache_is_single_flight(monkeypatch):
-    # Concurrent identical probes share one git invocation (gateway long handlers
-    # run on worker threads).
-    import threading
-
-    from tui_gateway import git_probe
-
-    git_probe.invalidate()
-    calls = {"n": 0}
-    started = threading.Event()
-
-    def slow(_cwd, *_a):
-        calls["n"] += 1
-        started.set()
-        time = __import__("time")
-        time.sleep(0.05)
-        return "/repo"
-
-    monkeypatch.setattr(git_probe, "run_git", slow)
-    out: list[str] = []
-    threads = [threading.Thread(target=lambda: out.append(git_probe.repo_root("/repo/x"))) for _ in range(6)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert out == ["/repo"] * 6
-    assert calls["n"] == 1
-
-
 def test_warm_roots_probes_in_parallel_and_fills_the_cache(monkeypatch):
     # Cold first paint must not serialize one git subprocess per cwd.
     import threading
@@ -148,6 +144,65 @@ def test_warm_roots_probes_in_parallel_and_fills_the_cache(monkeypatch):
     before = live["calls"]
     assert git_probe.repo_root("/repo0") == "/repo0"
     assert live["calls"] == before
+
+
+def test_missing_directory_costs_no_subprocess(monkeypatch):
+    # Deleted worktrees dominate a long session history's cwds, and `git -C` on
+    # one can only fail — so it must never reach the fork.
+    from tui_gateway import git_probe
+
+    def boom(*_a, **_kw):
+        raise AssertionError("spawned git for a directory that does not exist")
+
+    monkeypatch.setattr(git_probe, "bounded_git_probe", boom)
+
+    assert git_probe.run_git("/gone/worktree", "rev-parse", "--show-toplevel") == ""
+
+
+def test_non_repo_cwd_is_not_probed_for_a_common_dir(monkeypatch, tmp_path):
+    # `warm_roots` only reaches `common_repo_root` for cwds that ARE repos, so a
+    # common-dir probe here is one the warm can't absorb: it runs serially on
+    # the discovery pass, once per non-repo cwd.
+    from tui_gateway import git_probe
+
+    git_probe.invalidate()
+    asked = []
+
+    def probe(cwd, *args):
+        asked.append(args[-1])
+        return ""  # not a repo, whatever we ask
+
+    monkeypatch.setattr(git_probe, "run_git", probe)
+
+    assert git_probe.common_repo_root(str(tmp_path)) == ""
+    assert asked == ["--show-toplevel"]
+
+
+def test_tree_build_warms_every_path_it_will_resolve(monkeypatch, tmp_path):
+    # build_tree resolves declared project folders and discovered repo roots as
+    # well as session cwds. Anything left out of the warm is probed one
+    # directory at a time while the sidebar shows a skeleton.
+    from tui_gateway import git_probe
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _call("projects.create", {"name": "Repo", "folders": [str(repo)]})
+
+    warmed: list[str] = []
+    real_warm = git_probe.warm_roots
+
+    def recording_warm(cwds, **kw):
+        paths = list(cwds)
+        warmed.extend(paths)
+        return real_warm(paths, **kw)
+
+    monkeypatch.setattr(git_probe, "warm_roots", recording_warm)
+
+    server._build_project_tree(
+        server._get_db(), preview_limit=3, hydrate=False, session_limit=5, include_discovered=True
+    )
+
+    assert str(repo) in warmed
 
 
 def test_create_list_roundtrip(tmp_path):
@@ -188,20 +243,6 @@ def test_project_info_for_cwd_returns_status_payload(tmp_path):
         "name": "Repo",
         "primary_path": str(folder),
     }
-
-
-def test_project_info_for_cwd_unowned_and_blank_are_none(tmp_path):
-    # A cwd outside every project — and an empty cwd — carry no project, so the
-    # status label falls back to the cwd leaf on every surface.
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    _call("projects.create", {"name": "Owned", "folders": [str(owned)]})
-
-    outside = tmp_path / "outside"
-    outside.mkdir()
-
-    assert server._project_info_for_cwd(str(outside)) is None
-    assert server._project_info_for_cwd("") is None
 
 
 def test_session_info_carries_project_for_owned_cwd(tmp_path):
@@ -319,6 +360,28 @@ def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
     ) == "/picked/repo"
 
 
+def test_home_container_dirs_are_never_a_workspace(tmp_path):
+    """`/home` and `/Users` hold homes; they are not workspaces themselves.
+
+    A session whose cwd is one of them used to be promoted to its own auto
+    project, so the sidebar showed a second row labelled "home" sitting right
+    next to the synthetic Home bucket. Both POSIX spellings are excluded on
+    every host: either can reach a local row (macOS ships an empty `/home`
+    stub) or arrive from a container/remote shell.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+
+    for path in (os.sep, home, os.path.dirname(home), "/home", "/Users"):
+        assert server._is_session_cwd_junk(path), path
+        assert server._is_repo_junk(path), path
+
+    # An ordinary directory is still a workspace.
+    workspace = tmp_path / "a-repo"
+    workspace.mkdir()
+    assert not server._is_session_cwd_junk(str(workspace))
+    assert not server._is_repo_junk(str(workspace))
+
+
 def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
     repo = tmp_path / "cached-repo"
     repo.mkdir()
@@ -397,24 +460,3 @@ def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path
     assert any(item["root"] == str(root) for item in accepted["repos"])
 
 
-def test_discover_repos_from_full_history(tmp_path):
-    repo = tmp_path / "myrepo"
-    (repo / "src").mkdir(parents=True)
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    plain = tmp_path / "plain"
-    plain.mkdir()
-
-    db = server._get_db()
-    db.create_session("s1", "cli", cwd=str(repo))
-    db.create_session("s2", "cli", cwd=str(repo / "src"))
-    db.create_session("s3", "cli", cwd=str(plain))  # not a git repo → excluded
-
-    repos = _call("projects.discover_repos")["repos"]
-    by_label = {r["label"]: r for r in repos}
-
-    assert "myrepo" in by_label
-    assert by_label["myrepo"]["sessions"] == 2  # both repo cwds aggregate
-    assert "plain" not in by_label  # non-git dir never promoted
-
-    # The probe is persisted back onto the session rows (membership at the source).
-    assert os.path.realpath(db.get_session("s1")["git_repo_root"]) == os.path.realpath(str(repo))

@@ -192,7 +192,7 @@ platform network disconnect as an event-loop failure.
 |---------|-------------|
 | `/new` or `/reset` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
-| `/personality [name]` | Set a personality |
+| `/personality [name]` | Set a personality (`none` to reset) |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
@@ -520,14 +520,15 @@ When the agent running a background session uses `terminal(background=true)` to 
 
 ```yaml
 display:
-  background_process_notifications: all    # all | result | error | off
+  background_process_notifications: concise    # concise | all | result | error | off
 ```
 
 | Mode | What you receive |
 |------|-----------------|
-| `all` | Running-output updates **and** the final completion message (default) |
-| `result` | Only the final completion message (regardless of exit code) |
-| `error` | Only the final message when the exit code is non-zero |
+| `concise` | One-line status message on completion; failures append a short output tail (default) |
+| `all` | Running-output updates **and** the final raw-output message |
+| `result` | Only the final raw-output completion message (regardless of exit code) |
+| `error` | Only the final raw-output message when the exit code is non-zero |
 | `off` | No process watcher messages at all |
 
 You can also set this via environment variable:
@@ -803,4 +804,5 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Raft Setup](raft.md)
 - [IRC Setup](irc.md)
 - [Buzz Setup](buzz.md)
+- [A2A (Agent-to-Agent) Setup](a2a.md)
 - [Webhooks](webhooks.md)

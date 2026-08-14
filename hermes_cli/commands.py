@@ -17,10 +17,11 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from utils import is_truthy_value
+from hermes_constants import INDICATOR_STYLES
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,15 @@ class CommandDef:
     # normal handler (e.g. /goal's control-verb whitelist, /queue's FIFO
     # enqueue, /model's custom busy-reject text).
     busy_handler: str | None = None
+    # Registry-owned shared execution (thin slice, informational commands).
+    # Names a key in ``hermes_cli.slash_exec.EXECUTORS`` — a pure formatter
+    # producing the canonical, surface-independent core text.  Surfaces
+    # resolve it via ``hermes_cli.slash_exec.run_execute`` and apply only
+    # their own decoration (Rich markup, emoji/markdown, telegramize).  A
+    # string key (not a callable) keeps this module import-light: the
+    # gateway can import commands.py without prompt_toolkit and without
+    # pulling in executor dependencies.
+    execute: str | None = None
 
 
 # Valid values for CommandDef.busy_policy (see field docs above).
@@ -123,8 +133,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
                cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
+    CommandDef("export", "Export a profile (config, skills, theme) to a shareable archive", "Configuration",
+               cli_only=True, args_hint="[profile] [-o output.tar.gz]"),
+    CommandDef("import", "Import a shared profile archive as a new profile", "Configuration",
+               cli_only=True, args_hint="<archive.tar.gz> [--name <name>]"),
     CommandDef("stop", "Kill all running background processes", "Session",
                busy_policy="interrupt_then_dispatch", busy_handler="stop"),
+    CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
+               gateway_only=True, args_hint="[reason | off]",
+               busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
@@ -143,8 +160,18 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]",
+               args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                busy_policy="dispatch", busy_handler="goal"),
+    CommandDef("heartbeat", "Set a recurring prompt that re-enters this session when idle", "Session",
+               aliases=("hb",), args_hint="[every <interval> <prompt> | status | pause | resume | clear]",
+               subcommands=("status", "pause", "resume", "clear"),
+               busy_policy="dispatch"),
+    CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
+               args_hint="[focus instructions]"),
+    CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",
+               aliases=("proactive",),
+               args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
+               busy_policy="dispatch", busy_handler="loop"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
@@ -153,13 +180,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("egress", "Show Docker egress proxy status", "Session",
                args_hint="[status]", subcommands=("status",),
-               busy_policy="dispatch", busy_handler="egress"),
+               busy_policy="dispatch", busy_handler="egress",
+               execute="egress"),
     CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
-               busy_policy="dispatch"),
+               busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -216,8 +244,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
-               cli_only=True, args_hint="[kaomoji|emoji|unicode|ascii]",
-               subcommands=("kaomoji", "emoji", "unicode", "ascii")),
+               cli_only=True, args_hint=f"[{'|'.join(INDICATOR_STYLES)}]",
+               subcommands=INDICATOR_STYLES),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
     CommandDef("wake", "Toggle the 'Hey Hermes' wake word listener", "Configuration",
@@ -242,7 +270,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
-               "Tools & Skills"),
+               "Tools & Skills", execute="bundles"),
     CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
                cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
     CommandDef("hatch", "Generate a new petdex pet from a description",
@@ -277,16 +305,18 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
-               cli_only=True, args_hint="[connect|disconnect|status]",
-               subcommands=("connect", "disconnect", "status")),
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP, or switch to Browser Use mode", "Tools & Skills",
+               cli_only=True, args_hint="[connect|disconnect|status|use]",
+               subcommands=("connect", "disconnect", "status", "use")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
-               gateway_only=True, args_hint="[page]", busy_policy="dispatch"),
-    CommandDef("help", "Show available commands", "Info", busy_policy="dispatch"),
+               gateway_only=True, args_hint="[page]", busy_policy="dispatch",
+               execute="gateway_commands"),
+    CommandDef("help", "Show available commands", "Info", busy_policy="dispatch",
+               execute="gateway_help"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
     CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
@@ -309,7 +339,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                busy_policy="dispatch"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
-               busy_policy="dispatch"),
+               busy_policy="dispatch", execute="version"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
                args_hint="[nous|local]"),
 
@@ -1244,7 +1274,19 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
+#   - heartbeat: session heartbeat management; reached via /hermes heartbeat
+#     on Slack. Added at the 50-cap — a native slot would clamp /insights.
+#   - refine: on-demand memory/skill review; reached via /hermes refine on
+#     Slack. Added at the 50-cap — a native slot would clamp an existing
+#     native slash.
+#   - pause: global emergency stop; reached via /hermes pause [off] on
+#     Slack. Added at the 50-cap — a native slot would clamp /platform.
+#   - whoami: one-off identity lookup; reached via /hermes whoami on Slack.
+#     Demoted when /loop claimed a native slot (loop is a recurring
+#     interactive surface; whoami is a rare debug lookup) — without this
+#     entry /loop tips the registry past the 50-cap and silently clamps
+#     /platform, breaking Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1748,7 +1790,14 @@ class SlashCommandCompleter(Completer):
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
-                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        try:
+                            rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        except ValueError:
+                            # Windows: relpath raises for paths on a different
+                            # mount than cwd — device paths (\\.\nul, \\.\con)
+                            # or another drive letter. One bad entry must not
+                            # crash the @ autocomplete event loop (#42016).
+                            continue
                         files.append(rel)
                     break
             except (subprocess.TimeoutExpired, OSError):
@@ -1989,15 +2038,16 @@ class SlashCommandCompleter(Completer):
 
     @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
-        """Yield completions for /personality from configured personalities."""
+        """Yield completions for /personality via hermes_cli.personality."""
         try:
-            # Resolve from the same source the runtime applies personalities —
-            # agent.personalities via the CLI config (which ships the built-ins).
-            # load_config()'s schema has no agent.personalities, so the completer
-            # used to come back empty even with personalities available.
+            # Single owner: built-ins + user overrides from agent.personalities.
             from cli import load_cli_config
+            from hermes_cli.personality import (
+                available_personalities,
+                describe_personality,
+            )
 
-            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
+            personalities = available_personalities(load_cli_config())
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -2007,15 +2057,11 @@ class SlashCommandCompleter(Completer):
                 )
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
-                    if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                    else:
-                        meta = str(prompt)[:50]
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
                         display=name,
-                        display_meta=meta,
+                        display_meta=describe_personality(prompt),
                     )
         except Exception:
             pass
@@ -2171,8 +2217,12 @@ class SlashCommandAutoSuggest(AutoSuggest):
 
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the command name: /upd → suggest "ate"
+            # Prefer the SHORTEST matching command so a short, high-frequency
+            # command keeps its ghost text when a longer command shares its
+            # prefix (e.g. /he → "lp" for /help, not "artbeat" for
+            # /heartbeat; type one more letter to steer).
             word = text[1:].lower()
-            for cmd in COMMANDS:
+            for cmd in sorted(COMMANDS, key=len):
                 if self._completer is not None and not self._completer._command_allowed(cmd):
                     continue
                 cmd_name = cmd[1:]  # strip leading /

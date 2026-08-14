@@ -69,6 +69,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
+    "ai-gateway",
     "kilocode",
 })
 
@@ -106,6 +107,19 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "custom",
     "gemini",
     "xai",
+})
+
+# Providers whose API serves ``vendor/model`` ids but whose endpoint can also
+# front arbitrary self-hosted models, so a bare name cannot be prefixed
+# blindly. A bare id is repaired only when the curated catalogue for that
+# provider holds exactly one entry ending in ``/<name>`` — a lookup, not a
+# guess. NVIDIA NIM is the case in hand: build.nvidia.com serves
+# ``nvidia/nemotron-…`` (and third-party ``z-ai/glm-…``), while the same
+# provider id also points at local NIM containers with their own naming.
+# Without this repair a bare ``nemotron-3-ultra-550b-a55b`` reaches the API
+# and returns a bare ``404 page not found`` that never names the model (#78796).
+_CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
+    "nvidia",
 })
 
 # Providers whose APIs require lowercase model IDs.  Xiaomi's
@@ -349,6 +363,63 @@ def _prepend_vendor(model_name: str) -> str:
     return model_name
 
 
+def _repair_prefix_from_catalogue(model_name: str, provider: str) -> str:
+    """Restore a dropped ``vendor/`` prefix using the provider's catalogue.
+
+    Unlike :func:`_prepend_vendor`, this never guesses from the model's name
+    shape — it only repairs a bare id that matches **exactly one** curated
+    entry for this provider modulo the prefix. That keeps self-hosted models
+    behind the same provider id (local NIM containers, proxies) untouched,
+    since they aren't in the catalogue.
+
+    Examples::
+
+        >>> _repair_prefix_from_catalogue("nemotron-3-ultra-550b-a55b", "nvidia")
+        'nvidia/nemotron-3-ultra-550b-a55b'
+        >>> _repair_prefix_from_catalogue("my-local-nim", "nvidia")
+        'my-local-nim'
+    """
+    if "/" in model_name:
+        return model_name
+    try:
+        from hermes_cli.models import _PROVIDER_MODELS
+    except Exception:
+        return model_name
+
+    catalogue = _PROVIDER_MODELS.get(provider) or []
+    # Compare against the catalogue's own suffix, tag included: a bare
+    # ``…:free`` id must resolve to the ``:free`` entry, not its paid sibling.
+    needle = model_name.strip().lower()
+    matches = {
+        entry
+        for entry in catalogue
+        if "/" in entry and entry.split("/", 1)[1].strip().lower() == needle
+    }
+    if len(matches) == 1:
+        return matches.pop()
+    return model_name
+
+
+def suggest_prefixed_model_id(provider: str, model_name: str) -> Optional[str]:
+    """Return the prefixed catalogue id for a bare *model_name*, if unambiguous.
+
+    The diagnostic counterpart to :func:`_repair_prefix_from_catalogue`: used
+    to explain a provider's content-free 404 when the configured id lost its
+    ``vendor/`` prefix. Returns ``None`` when the name already has a prefix,
+    the provider has no curated catalogue, or nothing matches — so callers can
+    stay silent rather than guess (#78796).
+    """
+    name = (model_name or "").strip()
+    if not name or "/" in name:
+        return None
+    try:
+        canonical = _normalize_provider_alias(provider)
+    except Exception:
+        return None
+    repaired = _repair_prefix_from_catalogue(name, canonical)
+    return repaired if repaired != name else None
+
+
 # ---------------------------------------------------------------------------
 # Main normalisation entry point
 # ---------------------------------------------------------------------------
@@ -490,6 +561,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         if provider in _LOWERCASE_MODEL_PROVIDERS:
             result = result.lower()
         return result
+
+    # --- Catalogue-backed prefix repair: restore a dropped ``vendor/`` on a
+    #     bare id that matches exactly one curated entry.  Unknown names (a
+    #     local NIM container, a proxied model) pass through untouched. ---
+    if provider in _CATALOGUE_PREFIX_REPAIR_PROVIDERS:
+        return _repair_prefix_from_catalogue(name, provider)
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:

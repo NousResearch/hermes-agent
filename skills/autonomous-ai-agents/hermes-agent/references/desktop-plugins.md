@@ -7,6 +7,19 @@ changes. A plugin can also talk to its own Python backend namespace
 (`ctx.rest`/`ctx.socket` → `/api/plugins/<id>`); the general Python plugin
 system (`~/.hermes/plugins/`) is otherwise documented separately.
 
+There are TWO on-disk doors, same contract and hot reload:
+
+- `$HERMES_HOME/desktop-plugins/<id>/plugin.js` — standalone desktop plugin.
+  Loads enabled by default.
+- `$HERMES_HOME/plugins/<id>/desktop/plugin.js` — the desktop HALF of a
+  unified agent-plugin package: the same folder that carries the Python
+  plugin (`plugin.yaml`) and its `dashboard/plugin_api.py` backend ships its
+  desktop UI beside them, so one feature installs/uninstalls as one folder.
+  This half is OPT-IN: it inventories in Settings → Plugins but stays off
+  until the user toggles it (matching the Python half's `plugins.enabled`
+  gate). Tell the user to flip it on after installing — don't debug a
+  "plugin not appearing" report before checking that toggle.
+
 Full human reference (every export, area payloads, backend, security):
 `website/docs/developer-guide/desktop-plugin-sdk.md`.
 
@@ -71,6 +84,14 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
+- `ctx.os` — the curated OS door, attributed to your plugin:
+  `ctx.os.notify({ title, body?, silent? })` posts a native OS notification.
+  Fires only while the user is away from Hermes (use `host.notify` for the
+  in-app toast); gated by Settings ▸ Notifications ▸ "Plugin notifications"
+  and throttled per plugin — reserve it for genuinely notable events.
+  `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
+  `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
+  capability isn't available.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
   to your plugin (never edit core `en.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them

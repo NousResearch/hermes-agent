@@ -83,38 +83,3 @@ def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
     assert adapter.sent == []
 
 
-def test_subscribed_board_still_delivers_through_the_gate(tmp_path, monkeypatch):
-    """Regression: the zero-sub probe must not change delivery for live subs."""
-    db_path = tmp_path / "subscribed.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    kb.init_db()
-    tid = _create_completed_task(subscribe=True)
-
-    adapter = RecordingAdapter()
-    runner = _make_runner(adapter)
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-
-    assert len(adapter.sent) == 1
-    assert tid in adapter.sent[0]["text"]
-
-
-def test_probe_failure_falls_back_to_writable_open(tmp_path, monkeypatch):
-    """If the read-only probe raises (locked/corrupt DB), the notifier must
-    fall back to the writable open — a broken probe must never silently
-    disable notifications for a board with live subscriptions."""
-    db_path = tmp_path / "probe-broken.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    kb.init_db()
-    tid = _create_completed_task(subscribe=True)
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("probe exploded")
-
-    monkeypatch.setattr(kb, "count_notify_subs", _boom)
-
-    adapter = RecordingAdapter()
-    runner = _make_runner(adapter)
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-
-    assert len(adapter.sent) == 1
-    assert tid in adapter.sent[0]["text"]

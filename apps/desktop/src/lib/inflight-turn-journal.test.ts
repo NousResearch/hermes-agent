@@ -10,7 +10,8 @@ import {
   recoverInFlightTurnJournal
 } from '@/lib/inflight-turn-journal'
 
-const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
+const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
+const LEGACY_STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
 
 function user(id: string, text: string): ChatMessage {
   return { id, role: 'user', parts: [{ type: 'text', text }] }
@@ -112,11 +113,52 @@ describe('persistInFlightTurnState', () => {
     persistInFlightTurnState(journalState())
     vi.advanceTimersByTime(400)
 
-    const raw = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!)
-    raw.entries['stored-1'].updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(raw))
+    const raw = JSON.parse(window.localStorage.getItem(`${STORAGE_PREFIX}stored-1`)!)
+    raw.updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
+    window.localStorage.setItem(`${STORAGE_PREFIX}stored-1`, JSON.stringify(raw))
 
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  it('writes each session under its own key, untouched by other sessions settling', () => {
+    persistInFlightTurnState(journalState())
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-2' }))
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(`${STORAGE_PREFIX}stored-1`)).not.toBeNull()
+    expect(window.localStorage.getItem(`${STORAGE_PREFIX}stored-2`)).not.toBeNull()
+
+    clearInFlightTurnJournal('stored-2')
+
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+    expect(readInFlightTurnJournal('stored-2')).toBeNull()
+  })
+
+  it('recovers entries journaled by the v1 single-key store', () => {
+    // A pre-upgrade crash leaves a v1 store behind; the first journal touch
+    // after the upgrade must still recover its turns.
+    window.localStorage.setItem(
+      LEGACY_STORAGE_KEY,
+      JSON.stringify({
+        entries: {
+          'stored-legacy': {
+            messages: [user('u1', 'legacy prompt'), assistant('a1', 'legacy partial', { pending: true })],
+            streamId: 'a1',
+            turnStartedAt: 500,
+            updatedAt: Date.now()
+          }
+        },
+        version: 1
+      })
+    )
+
+    const entry = readInFlightTurnJournal('stored-legacy')
+
+    expect(entry?.streamId).toBe('a1')
+    expect(entry?.messages).toHaveLength(2)
+    expect(window.localStorage.getItem(LEGACY_STORAGE_KEY)).toBeNull()
+
+    clearInFlightTurnJournal('stored-legacy')
   })
 })
 
@@ -179,7 +221,9 @@ describe('recoverInFlightTurnJournal', () => {
   it('overlays the backend text-only projection instead of dropping local tool progress', () => {
     // Sweeper regression on #44339: a backend `inflight` assistant snapshot
     // (text only) used to mark the richer local tail "caught up" and delete
-    // locally recorded tool calls.
+    // locally recorded tool calls. After #76444, longer text wins only when it
+    // is a strict extension of the journal answer (flat thinking dumps must
+    // not replace structured answer text).
     journalEntry([
       user('u1', 'do the thing'),
       assistantWithTool('assistant-stream-old', 'local part', { pending: true })
@@ -187,7 +231,7 @@ describe('recoverInFlightTurnJournal', () => {
 
     const base = [
       user('db-u1', 'do the thing'),
-      assistant('assistant-stream-rt9', 'longer partial text from the backend snapshot', { pending: true })
+      assistant('assistant-stream-rt9', 'local part and more from the backend snapshot', { pending: true })
     ]
 
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
@@ -200,11 +244,30 @@ describe('recoverInFlightTurnJournal', () => {
     // Keeps the BASE projection row id so live deltas keep landing on it.
     expect(merged.id).toBe('assistant-stream-rt9')
     expect(result.streamId).toBe('assistant-stream-rt9')
-    // Journal structure survives; the longer backend text wins.
+    // Journal structure survives; strict-extension backend text wins.
     expect(merged.parts[0]).toMatchObject({ type: 'tool-call', toolName: 'terminal' })
-    expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'longer partial text from the backend snapshot' })
+    expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'local part and more from the backend snapshot' })
     // Still in flight — the journal must NOT be cleared.
     expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  it('keeps journal answer text when a longer flat dump is not a strict extension (#76444)', () => {
+    journalEntry([user('u1', 'do the thing'), assistantWithTool('assistant-stream-old', 'partial', { pending: true })])
+
+    const base = [
+      user('db-u1', 'do the thing'),
+      assistant(
+        'assistant-stream-rt9',
+        'thinking chatter\nRan terminal\npartial and unrelated dump longer than answer',
+        { pending: true }
+      )
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+    const merged = result.messages.at(-1)!
+
+    expect(merged.parts[0]).toMatchObject({ type: 'tool-call', toolName: 'terminal' })
+    expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'partial' })
   })
 
   it('keeps the journal text when it is longer than the projection text', () => {

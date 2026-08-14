@@ -5,8 +5,9 @@
  *    `HermesPlugin` registers automatically (vite glob — drop a folder in).
  *    None ship in-tree today; reference/demo plugins live in the companion
  *    `hermes-example-plugins` repo.
- *  - RUNTIME: the on-disk door (`<hermes home>/desktop-plugins/<name>/plugin.js`)
- *    — the agent's/user's door, watched + hot-reloaded by the runtime loader.
+ *  - RUNTIME: the on-disk doors (`<hermes home>/desktop-plugins/<name>/plugin.js`
+ *    and the unified-package half `<hermes home>/plugins/<name>/desktop/plugin.js`)
+ *    — the agent's/user's doors, watched + hot-reloaded by the runtime loader.
  */
 
 import { createPluginContext, type HermesPlugin } from './plugin'
@@ -40,7 +41,13 @@ export function discoverBundledPlugins(): void {
     // Same inventory + live-toggle contract as runtime plugins: each bundled
     // plugin publishes a record with activate/deactivate handles, and a
     // persisted disable survives boots by skipping registration here.
-    const record = { id: plugin.id, name: plugin.name ?? plugin.id, kind: 'bundled' as const }
+    const record = {
+      id: plugin.id,
+      name: plugin.name ?? plugin.id,
+      description: plugin.description,
+      kind: 'bundled' as const
+    }
+
     let disposers: (() => void)[] = []
 
     const activate = () => {

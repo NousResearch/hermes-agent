@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret, is_multiplex_active
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -572,7 +573,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         # Docker venv the package isn't present until ensure() runs, but
         # ensure() only runs once the provider is loaded — which this gates.
         # Mirrors honcho/mem0, which check config only. No network calls.
-        return bool(os.environ.get("SUPERMEMORY_API_KEY", ""))
+        return bool(get_secret("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
         # Only prompt for the API key during `hermes memory setup`.
@@ -595,7 +596,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
         del provider_config
         hermes_home = str(get_hermes_home())
-        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
         status = _probe_supermemory_connection(api_key, hermes_home)
         return {"summary": _format_connection_summary(status)}
 
@@ -630,7 +631,15 @@ class SupermemoryMemoryProvider(MemoryProvider):
         # Make the freshly-entered key visible to the connection probe below.
         # (Checks the VALUE of SUPERMEMORY_API_KEY, not whether the key string
         # happens to name some unrelated env var.)
-        if api_key and os.environ.get("SUPERMEMORY_API_KEY") != api_key:
+        # Single-profile convenience only: never write a profile's key into
+        # the process-global environ under a multiplexed gateway — sibling
+        # profiles' turns (and any subprocess spawned with env=os.environ)
+        # would inherit it.
+        if (
+            api_key
+            and not is_multiplex_active()
+            and os.environ.get("SUPERMEMORY_API_KEY") != api_key
+        ):
             os.environ["SUPERMEMORY_API_KEY"] = api_key
 
         status = _probe_supermemory_connection(api_key, hermes_home)
@@ -647,7 +656,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)
-        self._api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
 
         # Resolve container tag: env var > config > default.
         # Supports {identity} template for profile-scoped containers.

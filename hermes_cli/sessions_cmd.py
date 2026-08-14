@@ -208,7 +208,15 @@ def cmd_sessions(args, sessions_parser=None):
             return 0
         if allow_partial and report.get("verified"):
             counts = report.get("verification", {}).get("table_counts", {})
-            print(f"✓ Partial recovery output verified at: {output}")
+            if report.get("best_effort"):
+                print(f"✓ BEST-EFFORT page-level salvage verified at: {output}")
+                print(
+                    "  The source table schemas were unreadable; rows were "
+                    "rebuilt from raw pages via sqlite3 .recover and mapped "
+                    "heuristically."
+                )
+            else:
+                print(f"✓ Partial recovery output verified at: {output}")
             print(
                 "  Recovered "
                 f"{int(counts.get('sessions') or 0):,} sessions and "
@@ -950,8 +958,7 @@ def cmd_sessions(args, sessions_parser=None):
         for row in candidates:
             session_id = row["id"]
             typed = describe_skill_invocation(row["content"]) or ""
-            first_reply = db.get_first_assistant_text(session_id) or ""
-            new_title = generate_title(typed, first_reply)
+            new_title = generate_title(typed)
             if not new_title or new_title == row["title"]:
                 continue
             if not _is_titlelike(new_title):
@@ -1038,6 +1045,26 @@ def cmd_sessions(args, sessions_parser=None):
             f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
             f"({_size_delta_label(saved)})"
         )
+
+    elif action == "clean-markers":
+        if args.dry_run:
+            print("Dry run — scanning for stale tool-call marker rows (#78148)…")
+        else:
+            print("Scanning for stale tool-call marker rows (#78148)…")
+        report = db.purge_stale_tool_call_markers(
+            dry_run=args.dry_run, backup=not args.no_backup
+        )
+        if report["rows_affected"] == 0:
+            print("✓ No affected rows found — nothing to clean.")
+        elif args.dry_run:
+            print(
+                f"Would clear {report['rows_affected']} row(s): "
+                f"ids {report['row_ids']}"
+            )
+        else:
+            if report["backup_path"]:
+                print(f"  backup: {report['backup_path']}")
+            print(f"✓ Cleared {report['rows_affected']} row(s).")
 
     elif action == "optimize-storage":
         db_path = db.db_path
@@ -1138,6 +1165,52 @@ def cmd_sessions(args, sessions_parser=None):
         if result.get("vacuumed") is False:
             print("  (VACUUM was skipped or failed — run "
                   "`hermes sessions optimize` later to reclaim freed space.)")
+
+    elif action == "repair-routing":
+        records = db.find_orphaned_gateway_sessions(
+            max_gap_s=getattr(args, "max_gap_seconds", None)
+        )
+        adoptable = [r for r in records if r["adoptable"]]
+        for record in records:
+            print(f"{record['orphan_id']}  ({record['source']}, "
+                  f"{record['message_count']} messages)")
+            if record["adoptable"]:
+                print(f"  → adopt into {record['session_key']} "
+                      f"(from {record['donor_id']}, "
+                      f"evidence: {record['evidence']})")
+            else:
+                print(f"  ✗ not repairable — {record['reason']}")
+
+        if not records:
+            print("✓ No gateway sessions are missing their routing identity.")
+        elif not adoptable:
+            print(f"\n{len(records)} orphaned session(s) found, none "
+                  "unambiguously repairable. Nothing to do.")
+        elif not getattr(args, "apply", False):
+            print(f"\n{len(adoptable)} of {len(records)} orphaned session(s) "
+                  "can be repaired. Re-run with --apply to perform them.")
+        else:
+            # A running gateway holds the old routing mapping in memory and
+            # would write it back over the repair on its next save.
+            print("\nStop the gateway before applying — a running gateway "
+                  "still holds the old routing mapping in memory.")
+            if _confirm_prompt(
+                f"Adopt {len(adoptable)} orphaned session(s)? [y/N] "
+            ):
+                repaired = 0
+                for record in adoptable:
+                    if db.adopt_orphaned_gateway_session(
+                        record["orphan_id"], record["donor_id"]
+                    ):
+                        repaired += 1
+                        print(f"✓ {record['orphan_id']} now owns "
+                              f"{record['session_key']}")
+                    else:
+                        print(f"✗ {record['orphan_id']} was not adopted "
+                              "(the row changed since it was reported)")
+                print(f"\nRepaired {repaired} of {len(adoptable)} session(s).")
+            else:
+                print("Aborted — nothing was changed.")
 
     elif action == "stats":
         total = db.session_count()

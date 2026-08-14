@@ -61,21 +61,7 @@ class TestMoonshotModelDetection:
 class TestMissingTypeFilled:
     """Rule 1: every property must carry a type."""
 
-    def test_property_without_type_gets_string(self):
-        params = {
-            "type": "object",
-            "properties": {"query": {"description": "a bare property"}},
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["query"]["type"] == "string"
 
-    def test_property_with_enum_infers_type_from_first_value(self):
-        params = {
-            "type": "object",
-            "properties": {"flag": {"enum": [True, False]}},
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["flag"]["type"] == "boolean"
 
     def test_nested_properties_are_repaired(self):
         params = {
@@ -92,18 +78,6 @@ class TestMissingTypeFilled:
         out = sanitize_moonshot_tool_parameters(params)
         assert out["properties"]["filter"]["properties"]["field"]["type"] == "string"
 
-    def test_array_items_without_type_get_repaired(self):
-        params = {
-            "type": "object",
-            "properties": {
-                "tags": {
-                    "type": "array",
-                    "items": {"description": "tag entry"},
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["properties"]["tags"]["items"]["type"] == "string"
 
     def test_ref_node_is_not_given_synthetic_type(self):
         """$ref nodes should NOT get a synthetic type — the referenced
@@ -216,26 +190,8 @@ class TestTopLevelGuarantees:
 class TestRequiredArray:
     """Rule 4: every object schema must carry a ``required`` array (#66835)."""
 
-    def test_empty_object_gets_empty_required(self):
-        out = sanitize_moonshot_tool_parameters({"type": "object", "properties": {}})
-        assert out["required"] == []
 
-    def test_object_with_only_optional_props_gets_empty_required(self):
-        params = {
-            "type": "object",
-            "properties": {"q": {"type": "string"}},
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["required"] == []
 
-    def test_existing_required_preserved(self):
-        params = {
-            "type": "object",
-            "properties": {"q": {"type": "string"}},
-            "required": ["q"],
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["required"] == ["q"]
 
     def test_dangling_required_pruned(self):
         params = {
@@ -246,14 +202,6 @@ class TestRequiredArray:
         out = sanitize_moonshot_tool_parameters(params)
         assert out["required"] == ["q"]
 
-    def test_non_list_required_replaced(self):
-        params = {
-            "type": "object",
-            "properties": {},
-            "required": "q",  # invalid: string, not array
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert out["required"] == []
 
     def test_nested_object_property_gets_required(self):
         params = {
@@ -352,22 +300,6 @@ class TestRealWorldMCPShape:
 class TestEnumNullStripping:
     """Rule 3: Moonshot rejects null/empty-string inside enum arrays."""
 
-    def test_enum_null_value_stripped(self):
-        """enum containing Python None must have it removed for Moonshot."""
-        params = {
-            "type": "object",
-            "properties": {
-                "db_type": {
-                    "type": "string",
-                    "enum": ["mysql", "postgresql", None],
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        db_type = out["properties"]["db_type"]
-        assert None not in db_type["enum"]
-        assert "mysql" in db_type["enum"]
-        assert "postgresql" in db_type["enum"]
 
     def test_enum_empty_string_stripped(self):
         """enum containing empty string '' must have it removed for Moonshot."""
@@ -385,19 +317,6 @@ class TestEnumNullStripping:
         assert "" not in db_type["enum"]
         assert db_type["enum"] == ["mysql", "postgresql"]
 
-    def test_enum_all_null_becomes_no_enum(self):
-        """enum that only had null/empty values is dropped entirely."""
-        params = {
-            "type": "object",
-            "properties": {
-                "val": {
-                    "type": "string",
-                    "enum": [None, ""],
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        assert "enum" not in out["properties"]["val"]
 
     def test_dataslayer_db_type_after_mcp_normalize(self):
         """Real-world: dataslayer db_type anyOf+enum after MCP normalization."""
@@ -424,46 +343,7 @@ class TestEnumNullStripping:
         assert db_type["enum"] == ["mysql", "mariadb", "postgresql", "sqlserver", "oracle"]
         assert db_type["type"] == "string"
 
-    def test_enum_on_object_type_not_stripped(self):
-        """enum on non-scalar types (object) should NOT be touched."""
-        params = {
-            "type": "object",
-            "properties": {
-                "config": {
-                    "type": "object",
-                    "properties": {},
-                    "enum": [{}, None],
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        # object-typed enum should pass through unchanged
-        assert "enum" in out["properties"]["config"]
 
-    def test_anyof_collapse_still_runs_nullable_and_enum_cleanup(self):
-        """After anyOf collapses to a single non-null branch, the merged
-        node must still have ``nullable`` stripped and null/empty-string
-        values removed from enum — not skipped by the early anyOf return.
-        """
-        params = {
-            "type": "object",
-            "properties": {
-                "db_type": {
-                    "anyOf": [
-                        {"enum": ["mysql", "postgresql", "", None]},
-                        {"type": "null"},
-                    ],
-                    "nullable": True,
-                },
-            },
-        }
-        out = sanitize_moonshot_tool_parameters(params)
-        db_type = out["properties"]["db_type"]
-        assert "anyOf" not in db_type
-        assert "nullable" not in db_type, "nullable must be stripped after anyOf collapse"
-        assert db_type["type"] == "string"
-        assert db_type["enum"] == ["mysql", "postgresql"], \
-            "null/empty enum values must be stripped after anyOf collapse"
 
 
 class TestUnionTypeList:

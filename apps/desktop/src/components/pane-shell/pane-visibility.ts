@@ -42,9 +42,12 @@ export const PaneGroupContext = createContext(NO_PANE_GROUP)
 
 export const usePaneGroup = (): string => useContext(PaneGroupContext)
 
+/** Whether an element belongs to an inactive keep-alive pane. */
+export const isElementInHiddenPane = (element: Element): boolean => Boolean(element.closest(HIDDEN_PANE))
+
 /** `querySelectorAll` minus anything inside an inactive tab. */
 export const queryAllVisible = <T extends HTMLElement>(selector: string, root: ParentNode = document): T[] =>
-  [...root.querySelectorAll<T>(selector)].filter(el => !el.closest(HIDDEN_PANE))
+  [...root.querySelectorAll<T>(selector)].filter(el => !isElementInHiddenPane(el))
 
 /** `querySelector` minus anything inside an inactive tab. */
 export const queryVisible = <T extends HTMLElement>(selector: string, root: ParentNode = document): null | T =>

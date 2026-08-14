@@ -108,6 +108,8 @@ _BILLING_PATTERNS = [
     "credit balance",
     "credits exhausted",
     "credits have been exhausted",
+    "requires available credits",
+    "account balance is too low",
     "no usable credits",
     "top up your credits",
     "payment required",
@@ -139,6 +141,7 @@ _BILLING_ERROR_CODES = frozenset({
     "no_usable_credits",
     "balance_depleted",
     "model_not_supported_on_free_tier",
+    "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
@@ -339,6 +342,32 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no endpoints found that support tool use",
 ]
 
+
+def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
+    """True when a bare model id is only known to the provider as ``vendor/id``.
+
+    Some providers answer a malformed model id with a naked 404 that names
+    nothing — NVIDIA NIM returns ``404 page not found`` for a bare
+    ``nemotron-3-ultra-550b-a55b``, indistinguishable from a bad endpoint
+    path. Consulting the curated catalogue tells the two apart: if the id
+    carries no ``/`` but the catalogue has exactly one entry ending in
+    ``/<id>``, the prefix was dropped and the failure is deterministic.
+
+    Never guesses — an id absent from the catalogue (a local NIM container,
+    a proxied model) returns False so genuine endpoint problems keep their
+    retryable ``unknown`` classification.
+    """
+    name = (model or "").strip()
+    if not name or "/" in name:
+        return False
+    try:
+        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+        return bool(suggest_prefixed_model_id((provider or "").strip(), name))
+    except Exception:
+        return False
+
+
 # Malformed-message-array 400s.  Deterministic request-shape rejections that
 # describe the *transcript* being invalid, not a parameter.  The canonical
 # case: a stream dies mid-response and Hermes persists a content-less
@@ -354,6 +383,12 @@ _MODEL_NOT_FOUND_PATTERNS = [
 # loop stops looping.  The empty-stub creation is the root cause (fixed in
 # chat_completion_helpers); this pattern stops the misclassification symptom
 # for transcripts that already contain a poisoned stub.
+# Qwen/vLLM chat-template raise_exception("No user query found in messages")
+# — shared between _INVALID_MESSAGE_BODY_PATTERNS (→ format_error) and the
+# llama.cpp grammar exclusion guard below. Keeping a single constant prevents
+# the two sites from silently drifting if the phrase is ever changed.
+_NO_USER_QUERY_SIGNAL = "no user query found"
+
 _INVALID_MESSAGE_BODY_PATTERNS = [
     "must have non-empty content",
     "messages must have non-empty",
@@ -361,6 +396,15 @@ _INVALID_MESSAGE_BODY_PATTERNS = [
     "text content blocks must be non-empty",
     "content field is required",
     "messages: at least one message is required",
+    # Qwen / vLLM chat templates raise this when the request has no surviving
+    # non-empty user turn (oversized session truncation, compression that
+    # dropped the only user message, or a resumed lineage that opens with
+    # assistant/tool). Deterministic — compression cannot invent a user
+    # query the template already rejected. Fail fast as format_error so we
+    # do not thrash the compression loop or mis-route into llama.cpp
+    # grammar recovery when local engines wrap the raise_exception as
+    # applyPromptTemplate / "Unable to generate parser for this template".
+    _NO_USER_QUERY_SIGNAL,
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -606,6 +650,7 @@ def classify_api_error(
     """Classify an API error into a structured recovery recommendation.
 
     Priority-ordered pipeline:
+      0. Plugin ``transform_api_error_classification`` hooks (first valid result wins)
       1. Special-case provider-specific patterns (thinking sigs, tier gates)
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
@@ -688,6 +733,41 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    # ── 0. Plugin classifiers (first valid result wins) ─────────────
+    #
+    # Consulted BEFORE the built-in pipeline so a provider plugin can both
+    # add classifications the core patterns miss and correct ones they get
+    # wrong for its provider (see the ``transform_api_error_classification`` entry in
+    # hermes_cli.plugins.VALID_HOOKS for the callback contract). Callback
+    # exceptions are isolated inside invoke_hook and malformed returns are
+    # dropped by the helper, so a broken plugin can never break
+    # classification — the guard here only covers import/dispatch failure.
+    try:
+        from hermes_cli.plugins import get_plugin_error_classification
+        plugin_classification = get_plugin_error_classification(
+            provider=provider,
+            model=model,
+            status_code=status_code,
+            error_type=error_type,
+            error_code=error_code,
+            error_message=error_msg,
+            error_body=body,
+            error=error,
+            approx_tokens=approx_tokens,
+            context_length=context_length,
+            num_messages=num_messages,
+        )
+    except Exception as exc:
+        logger.debug("Plugin error classification unavailable: %s", exc)
+        plugin_classification = None
+    if plugin_classification is not None:
+        reason = plugin_classification.pop("reason")
+        logger.info(
+            "API error classified by plugin hook: %s (provider=%s, status=%s)",
+            reason.value, provider, status_code,
+        )
+        return _result(reason, **plugin_classification)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
@@ -777,9 +857,16 @@ def classify_api_error(
     # recognizable phrases; on match we strip ``pattern``/``format`` from
     # ``self.tools`` in the retry loop and retry once. Cloud providers are
     # unaffected — they accept these keywords and we never hit this branch.
-    if (
-        status_code == 400
-        and (
+    #
+    # Exclude Qwen/vLLM template raise_exception("No user query found…")
+    # wrapped by some local engines as applyPromptTemplate / "Unable to
+    # generate parser for this template". That is a poisoned transcript
+    # shape (handled via _INVALID_MESSAGE_BODY_PATTERNS → format_error),
+    # not a tool-schema grammar rejection — matching it here strips
+    # pattern/format keywords and retries uselessly while the real fix
+    # is /new (or a successful compression that preserves a user turn).
+    if status_code == 400:
+        _llama_cpp_grammar_hit = (
             "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg
             or (
@@ -787,6 +874,11 @@ def classify_api_error(
                 and "template" in error_msg
             )
         )
+    else:
+        _llama_cpp_grammar_hit = False
+    if (
+        _llama_cpp_grammar_hit
+        and _NO_USER_QUERY_SIGNAL not in error_msg
     ):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,
@@ -835,6 +927,19 @@ def classify_api_error(
         )
         if classified is not None:
             return classified
+
+    # Local MoA streaming compatibility errors are adapter-shape bugs, not a
+    # provider outage. Falling back to another model would silently switch the
+    # user's selected MoA route to a single-model answer (#55933 follow-up).
+    if provider_lower == "moa" and (
+        "'types.SimpleNamespace' object is not iterable" in str(error)
+        or "'types.SimpleNamespace' object has no attribute 'index'" in str(error)
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=False,
+        )
 
     # Local MoA config drift is deterministic: a persisted session can retain
     # a preset name that was later renamed/deleted. Retrying the same lookup
@@ -1043,6 +1148,18 @@ def _classify_by_status(
                 should_fallback=False,
             )
         if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
+        # A bare id that the provider's catalogue only knows in prefixed form
+        # is a malformed model id, not a routing glitch — NVIDIA NIM answers
+        # one with a naked ``404 page not found`` that names nothing, so the
+        # generic branch below burns three retries and reports what looks
+        # like an outage (#78796). Deterministic: don't retry, and let the
+        # model_not_found surface carry the real cause.
+        if _model_id_missing_known_prefix(model, provider):
             return result_fn(
                 FailoverReason.model_not_found,
                 retryable=False,

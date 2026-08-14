@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
+import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, setCurrentCwd } from '@/store/session'
 import {
@@ -91,18 +92,26 @@ export function rehydrateLiveSessionStatuses(
 
     const existing = $sessionStates.get()[runtimeSessionId]
 
+    // A turn we just submitted is not yet running as far as the backend is
+    // concerned, so the snapshot honestly reports it idle — but the local
+    // stream is already waiting on its first token, and it is the newer
+    // information. The stream path refuses to clear busy in exactly this window
+    // (`awaitingResponse && !sawAssistantPayload`); without the same refusal
+    // here a poll lands between submit and first token and darkens the row.
+    const busy = working || Boolean(existing?.awaitingResponse && !existing.sawAssistantPayload)
+
     // Avoid re-arming the watchdog on every poll. Publish only when the
     // authoritative live snapshot differs from the renderer mirror; normal
     // gateway events continue to own subsequent transitions.
     if (
       !existing ||
       existing.storedSessionId !== storedSessionId ||
-      existing.busy !== working ||
+      existing.busy !== busy ||
       existing.needsInput !== needsInput
     ) {
       publishSessionState(runtimeSessionId, {
         ...(existing ?? createClientSessionState(storedSessionId)),
-        busy: working,
+        busy,
         needsInput,
         storedSessionId
       })
@@ -180,7 +189,10 @@ interface BackgroundSyncParams {
 }
 
 /** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
- *  re-focus. Returns nothing — meant to live inside an effect. */
+ *  re-focus. On battery the cadence stretches (see store/power) — these are
+ *  safety-net refreshes, not the live path, so they're the right thing to slow
+ *  when the machine is spending its charge. Returns nothing — meant to live
+ *  inside an effect. */
 function visiblePoll(intervalMs: number, tick: () => void): () => void {
   const run = () => {
     if (document.visibilityState === 'visible') {
@@ -188,10 +200,17 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
     }
   }
 
-  const intervalId = window.setInterval(run, intervalMs)
+  let intervalId = window.setInterval(run, batteryPollInterval(intervalMs, $onBattery.get()))
+
+  const unsubscribeBattery = $onBattery.listen(onBattery => {
+    window.clearInterval(intervalId)
+    intervalId = window.setInterval(run, batteryPollInterval(intervalMs, onBattery))
+  })
+
   document.addEventListener('visibilitychange', run)
 
   return () => {
+    unsubscribeBattery()
     window.clearInterval(intervalId)
     document.removeEventListener('visibilitychange', run)
   }

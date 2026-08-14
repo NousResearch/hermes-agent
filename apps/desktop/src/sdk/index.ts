@@ -20,12 +20,13 @@
 
 import { atom, type ReadableAtom } from 'nanostores'
 
+import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
-import { $gateway } from '@/store/gateway'
+import { $gateway, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -87,6 +88,68 @@ export const host = {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
   },
 
+  /** Open a stored session the way core surfaces do (focus an existing
+   *  tile/main, else load into main). When `profile` names a non-active
+   *  profile, its backend is activated first so the resume routes to the
+   *  right state.db — the same soft profile swap the unified sidebar does.
+   *  `keepAllProfilesScope` (default true) keeps the Sessions sidebar in the
+   *  unified all-profiles view instead of narrowing it to the target
+   *  profile's sessions — a cross-profile open from a plugin surface is a
+   *  navigation, not a scope choice; pass false to also scope the sidebar. */
+  /** Pre-dial a profile's gateway socket in the background — pool-only, no
+   *  activation, no navigation, no scope change (openGatewayForProfile; it
+   *  already no-ops for shared-remote routes and the primary). Roster UIs
+   *  call this after mount so the FIRST click on an agent doesn't pay the
+   *  whole backend spawn + socket dial latency. Fire-and-forget: failures
+   *  are swallowed — the click path re-runs its own ensure and surfaces
+   *  errors properly. */
+  warmProfile: (profile: string): void => {
+    const name = (profile ?? '').trim()
+
+    if (!name || name === $activeGatewayProfile.get()) {
+      return
+    }
+
+    void openGatewayForProfile(name).catch(() => undefined)
+  },
+
+  openSession: async (
+    storedSessionId: string,
+    options: { intent?: OpenSessionIntent; keepAllProfilesScope?: boolean; profile?: null | string } = {}
+  ): Promise<void> => {
+    const profile = (options.profile ?? '').trim()
+
+    if (profile && profile !== $activeGatewayProfile.get()) {
+      await ensureGatewayProfile(profile)
+
+      if (options.keepAllProfilesScope !== false) {
+        setShowAllProfiles(true)
+      }
+    }
+
+    openSession(
+      storedSessionId,
+      (to: string, opts?: { replace?: boolean }) => {
+        const target = to.startsWith('#') ? to : `#${to}`
+
+        if (opts?.replace) {
+          window.location.replace(target)
+        } else {
+          window.location.hash = target
+        }
+      },
+      options.intent ?? 'in-place'
+    )
+  },
+
+  /** Start a fresh chat draft, optionally pointed at another profile (its
+   *  backend spins up in the background — same door the sidebar's per-profile
+   *  "+" uses). */
+  newChat: (profile?: null | string): void => {
+    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+    window.location.hash = '#/'
+  },
+
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.
    *  Listeners are isolated; a throw can't affect app dispatch. */
@@ -122,6 +185,18 @@ export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddlewar
 
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+/** THE model catalog menu — the same searchable, provider-grouped, family-
+ *  collapsing picker the chat composer uses, including the per-row
+ *  thinking/effort/fast submenu. Drive it with a `ModelMenuController`: the
+ *  menu renders and navigates, your controller decides what a selection MEANS
+ *  (write to a session, hold a per-task override, …). Never fork it — a copy
+ *  drifts from the composer the first time either side changes. */
+export {
+  ModelCatalogMenu,
+  type ModelChoice,
+  ModelMenuCloseContext,
+  type ModelMenuController
+} from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
@@ -164,6 +239,7 @@ export {
 } from '@/components/ui/dropdown-menu'
 export { EmptyState } from '@/components/ui/empty-state'
 export { ErrorState } from '@/components/ui/error-state'
+export { FadeScroll } from '@/components/ui/fade-scroll'
 export { GlyphSpinner } from '@/components/ui/glyph-spinner'
 export { Input } from '@/components/ui/input'
 export { Kbd, KbdGroup } from '@/components/ui/kbd'
@@ -183,16 +259,18 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
-
-// -- contracts ----------------------------------------------------------------
-
 export type {
   HermesPlugin,
   PluginContext,
   PluginContribution,
+  PluginNativeNotificationInput,
+  PluginOs,
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+
+// -- contracts ----------------------------------------------------------------
+
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -200,6 +278,9 @@ export type {
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 export type { Contribution } from '@/contrib/types'
+/** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
+ *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
+export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
  *  `ctx.storage` and resolved against the app's active locale — no core edit. */
@@ -213,6 +294,9 @@ export {
   useI18n,
   usePluginI18n
 } from '@/i18n'
+/** THE compact-number formatter — every user-facing count/token figure goes
+ *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
+export { compactNumber } from '@/lib/format'
 export { triggerHaptic as haptic } from '@/lib/haptics'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
@@ -221,12 +305,21 @@ export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
  *  authors) + its translucent tag fill — so plugin-rendered identities read
  *  the same hue as everywhere else. */
 export { profileColor, profileColorSoft } from '@/lib/profile-color'
-
-export const PANES_AREA = 'panes'
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+
+export const PANES_AREA = 'panes'
+/** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
+ *  thinking depth uses the same scale and spelling as the rest of the app. */
+export {
+  DEFAULT_REASONING_EFFORT,
+  REASONING_EFFORT_VALUES,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+  reasoningEffortLabel
+} from '@/lib/reasoning-effort'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
@@ -234,8 +327,6 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-/** Canonical time formatting — every timestamp/age string in the app comes
- *  from these (localized `Intl` under the hood). Don't hand-roll "Xm ago". */
 export { coarseElapsed, fmtDateTime, fmtDayTime, relativeTime } from '@/lib/time'
 export { cn } from '@/lib/utils'
 export { THEMES_AREA } from '@/themes/user-themes'

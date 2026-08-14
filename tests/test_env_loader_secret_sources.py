@@ -135,6 +135,117 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     )
 
 
+def test_cold_profile_bitwarden_uses_profile_bootstrap_without_global_env(
+    tmp_path, monkeypatch
+):
+    """Real Bitwarden adapter reads its token from the profile-local view."""
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "BWS_ACCESS_TOKEN=profile-bootstrap\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+    from agent.secret_sources import registry as reg_module
+
+    captured = {}
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {"ANTHROPIC_API_KEY": "profile-provider-key"}, []
+
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fake_fetch)
+    reg_module._reset_registry_for_tests()
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "ANTHROPIC_API_KEY": "profile-provider-key"
+    }
+    assert captured["access_token"] == "profile-bootstrap"
+    assert os.environ.get("BWS_ACCESS_TOKEN") is None
+    assert os.environ.get("ANTHROPIC_API_KEY") is None
+
+
+def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
+    """The .op.env bootstrap file must feed cold-profile hydration.
+
+    load_hermes_dotenv() reads <home>/.op.env for OP_SERVICE_ACCOUNT_TOKEN
+    (the documented gitignored 1Password bootstrap); hydration must mirror
+    that or a cold profile using the supported .op.env flow fails 1Password
+    resolution (sweeper review on #74549). .env wins on conflict.
+    """
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    (tmp_path / ".env").write_text("UNRELATED=x\n", encoding="utf-8")
+    (tmp_path / ".op.env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=ops_from-op-env\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    seen_env = {}
+
+    def _capture_apply_all(_cfg, home_path, environ=None):
+        from agent.secret_sources.registry import ApplyReport
+        seen_env.update(environ or {})
+        return ApplyReport(sources=[], provenance={})
+
+    monkeypatch.setattr(reg_module, "apply_all", _capture_apply_all)
+    reg_module._reset_registry_for_tests()
+
+    env_loader.hydrate_profile_secret_sources(tmp_path)
+
+    assert seen_env.get("OP_SERVICE_ACCOUNT_TOKEN") == "ops_from-op-env"
+    # Never leaked into the process env.
+    assert os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") is None
+
+
+def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
+    """.env takes precedence over .op.env for the same key (setdefault)."""
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    (tmp_path / ".env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=ops_from-dotenv\n", encoding="utf-8"
+    )
+    (tmp_path / ".op.env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=ops_from-op-env\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    seen_env = {}
+
+    def _capture_apply_all(_cfg, home_path, environ=None):
+        from agent.secret_sources.registry import ApplyReport
+        seen_env.update(environ or {})
+        return ApplyReport(sources=[], provenance={})
+
+    monkeypatch.setattr(reg_module, "apply_all", _capture_apply_all)
+    reg_module._reset_registry_for_tests()
+
+    env_loader.hydrate_profile_secret_sources(tmp_path)
+
+    assert seen_env.get("OP_SERVICE_ACCOUNT_TOKEN") == "ops_from-dotenv"
+
+
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
     """Disabled Bitwarden config must not touch the source map."""
 

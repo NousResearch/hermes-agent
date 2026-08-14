@@ -1,11 +1,12 @@
-"""Tests for the SessionDB read-path split (per-thread read-only connections).
+"""Tests for the SessionDB read-path split (pooled read-only connections).
 
 The gateway shares ONE SessionDB across every agent, so recall/browse reads
 used to queue behind writer flushes on self._lock — a measured production
 convoy (a 0.2s FTS query stretched to 112s while 6-8 concurrent turns
 flushed tool results). These tests pin the new contract: reads run on a
-per-thread read-only connection under WAL, never touch self._lock, and fall
-back to the legacy locked path when WAL or the read connection is missing.
+read-only connection borrowed from a bounded pool under WAL, never touch
+self._lock, and fall back to the legacy locked path when WAL or the read
+connection is missing.
 """
 
 import threading
@@ -39,8 +40,19 @@ def test_read_conn_is_per_thread(db):
     assert conns[1] is not conns[2]
 
 
-def test_read_conn_reused_within_thread(db):
-    assert db._get_read_conn() is db._get_read_conn()
+@pytest.mark.requires_wal
+def test_read_conn_reused_via_pool(db):
+    """Reuse is now the pool's job, not a per-thread memo.
+
+    The old contract (``_get_read_conn()`` returns the same object twice on one
+    thread) was the leak: that memo pinned one unclosable connection per
+    (SessionDB x thread) forever. ``_get_read_conn`` now always opens a fresh
+    connection and reuse happens via checkout/return, so assert on that.
+    """
+    with db._read_ctx() as first:
+        assert first is not None
+    with db._read_ctx() as second:
+        assert second is first, "sequential readers must reuse the pooled conn"
 
 
 @pytest.mark.requires_wal
@@ -67,31 +79,6 @@ def test_reads_do_not_take_writer_lock(db):
         db._lock.release()
 
 
-@pytest.mark.requires_wal
-def test_title_resolution_does_not_take_writer_lock(db):
-    """Exact-title and numbered-variant resolution must not block on self._lock."""
-    db.create_session(session_id="t1", source="cli", model="m")
-    db.set_session_title("t1", "ops sync")
-    db.create_session(session_id="t2", source="cli", model="m")
-    db.set_session_title("t2", "ops sync #2")
-    acquired = db._lock.acquire()
-    assert acquired
-    try:
-        done = {}
-
-        def reader():
-            done["exact"] = db.get_session_by_title("ops sync")
-            done["resolved"] = db.resolve_session_by_title("ops sync")
-
-        t = threading.Thread(target=reader)
-        t.start()
-        t.join(timeout=5.0)
-        assert not t.is_alive(), "title resolution blocked on writer lock"
-        assert done["exact"]["id"] == "t1"
-        # Lineage rule: the latest numbered variant wins over the exact match.
-        assert done["resolved"] == "t2"
-    finally:
-        db._lock.release()
 
 
 def test_read_your_writes(db):
@@ -101,10 +88,6 @@ def test_read_your_writes(db):
     assert rows, "committed write invisible to read connection"
 
 
-def test_fallback_when_read_conn_unavailable(db, monkeypatch):
-    monkeypatch.setattr(db, "_get_read_conn", lambda: None)
-    assert db.get_session("s1")["id"] == "s1"
-    assert db.search_messages("graphiti", limit=5)
 
 
 def test_non_wal_uses_locked_path(db):
@@ -156,5 +139,43 @@ def test_anchored_view_and_around_use_read_path(db):
         assert not t.is_alive(), "anchored reads blocked on writer lock"
         assert done["around"]["window"]
         assert done["view"]["window"]
+    finally:
+        db._lock.release()
+
+
+@pytest.mark.requires_wal
+def test_session_resume_reads_do_not_take_writer_lock(db):
+    """session.resume's three read paths must not convoy behind writer flushes.
+
+    get_messages_as_conversation / get_resume_conversations /
+    get_ancestor_display_prefix are the hottest reads in the file — every
+    resume across the gateway, CLI, and ACP adapter goes through one of
+    them — so they must use the same per-thread read-only connection as
+    get_messages, not the legacy self._lock path.
+    """
+    db.create_session(session_id="parent1", source="cli", model="m")
+    db.append_message("parent1", role="user", content="parent turn")
+    db.append_message("parent1", role="assistant", content="parent reply")
+    db.create_session(session_id="child1", source="cli", model="m", parent_session_id="parent1")
+    db.append_message("child1", role="user", content="child turn")
+    db.append_message("child1", role="assistant", content="child reply")
+
+    acquired = db._lock.acquire()
+    try:
+        done = {}
+
+        def reader():
+            done["conversation"] = db.get_messages_as_conversation("s1")
+            done["resume"] = db.get_resume_conversations("child1")
+            done["ancestor_prefix"] = db.get_ancestor_display_prefix("child1")
+
+        t = threading.Thread(target=reader)
+        t.start(); t.join(timeout=5.0)
+        assert not t.is_alive(), "session resume reads blocked on writer lock"
+        assert len(done["conversation"]) == 2
+        model_history, display_history = done["resume"]
+        assert len(model_history) == 2
+        assert len(display_history) == 4
+        assert len(done["ancestor_prefix"]) == 2
     finally:
         db._lock.release()

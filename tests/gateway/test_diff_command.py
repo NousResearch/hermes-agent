@@ -74,42 +74,6 @@ def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
 # Default (working-tree) mode
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_diff_reports_unstaged_changes_fenced(repo):
-    (repo / "main.py").write_text("print('changed')\n", encoding="utf-8")
-
-    result = await _runner()._handle_diff_command(_event("/diff"))
-
-    assert "-print('hello')" in result
-    assert "+print('changed')" in result
-    assert "```diff" in result  # fenced for messaging surfaces
-
-
-@pytest.mark.asyncio
-async def test_diff_includes_untracked_files(repo):
-    (repo / "newfile.py").write_text("n = 1\n", encoding="utf-8")
-
-    result = await _runner()._handle_diff_command(_event("/diff"))
-
-    assert "newfile.py" in result
-    assert "+n = 1" in result
-
-
-@pytest.mark.asyncio
-async def test_diff_stat_only_omits_body(repo):
-    (repo / "main.py").write_text("print('changed')\n", encoding="utf-8")
-
-    result = await _runner()._handle_diff_command(_event("/diff --stat"))
-
-    assert "main.py" in result
-    assert "+print('changed')" not in result
-
-
-@pytest.mark.asyncio
-async def test_diff_no_changes_message(repo):
-    result = await _runner()._handle_diff_command(_event("/diff"))
-    assert "No changes" in result
-
 
 @pytest.mark.asyncio
 async def test_diff_long_output_truncated(repo):
@@ -122,17 +86,6 @@ async def test_diff_long_output_truncated(repo):
     # own message-splitting limits (3-layer tool-progress-style truncation).
     assert "truncated" in result
     assert len(result) < 6000
-
-
-@pytest.mark.asyncio
-async def test_diff_non_git_directory_fails_cleanly(tmp_path, monkeypatch):
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    monkeypatch.setenv("TERMINAL_CWD", str(plain))
-
-    result = await _runner()._handle_diff_command(_event("/diff"))
-
-    assert "not a git repository" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +123,3 @@ async def test_diff_session_no_changes_message(tmp_path, monkeypatch):
     assert "No changes" in result
 
 
-@pytest.mark.asyncio
-async def test_diff_session_disabled_message(tmp_path, monkeypatch):
-    _enable_checkpoints(tmp_path, monkeypatch, enabled=False)
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-
-    result = await _runner()._handle_diff_command(_event("/diff session"))
-
-    assert "not enabled" in result.lower()

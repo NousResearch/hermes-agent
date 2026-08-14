@@ -55,7 +55,7 @@ def register_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Even attempt servers marked manual-install (best effort)",
     )
 
-    sub_restart = sub.add_parser(
+    sub.add_parser(
         "restart",
         help="Tear down running LSP clients (next edit re-spawns)",
     )

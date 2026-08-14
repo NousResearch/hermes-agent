@@ -233,6 +233,18 @@ class GitFileBody(BaseModel):
     file: Optional[str] = None
 
 
+class GitPrListBody(BaseModel):
+    path: str
+    branches: List[str] = []
+    # PRs a session recovered from its transcript, which we know by number
+    # rather than by the branch it came from.
+    numbers: List[int] = []
+
+
+class SessionPrScanBody(BaseModel):
+    ids: List[str] = []
+
+
 class GitCommitBody(BaseModel):
     path: str
     message: str
@@ -428,12 +440,15 @@ class MCPCatalogInstall(BaseModel):
 
 class PairingApprove(BaseModel):
     platform: str
-    code: str
+    code: str = ""
+    request_id: str = ""
+    profile: Optional[str] = None
 
 
 class PairingRevoke(BaseModel):
     platform: str
     user_id: str
+    profile: Optional[str] = None
 
 
 # --- from web_server.py (originally lines 13793-13804) ---
@@ -573,6 +588,22 @@ class ProfileCreate(BaseModel):
 
 class ProfileRename(BaseModel):
     new_name: str
+
+
+class ProfileExport(BaseModel):
+    # Optional extra root-level files to stage into the archive, filename →
+    # text content (e.g. desktop.json — the desktop appearance overlay).
+    extra_files: Dict[str, str] = {}
+    # Where to write the archive. Empty → a staging path under HERMES_HOME.
+    output: str = ""
+
+
+class ProfileImport(BaseModel):
+    # Path to a profile .tar.gz on the backend's filesystem (the desktop's
+    # local/pooled backends share the machine with the picker dialog).
+    archive: str
+    # Override the profile name inferred from the archive root.
+    name: Optional[str] = None
 
 
 class ProfileSoulUpdate(BaseModel):

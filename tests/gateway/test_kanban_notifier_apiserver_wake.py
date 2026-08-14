@@ -3,10 +3,9 @@
 Covers the wrong-session-wake / silent-loss fixes:
 * a SendResult(success=False) return (the API server's send() stub) rewinds
   the cursor instead of advancing past a never-delivered event;
-* api_server subscriptions wake the creator's REAL session via the
-  /v1/chat/completions self-post (raw task.session_id), never via
-  handle_message (which would run under a build_session_key()-derived key
-  that never matches the raw X-Hermes-Session-Id session real turns use).
+* api_server subscriptions wake their ``chat_id`` delivery destinations via
+  the /v1/chat/completions self-post, never task ``session_id`` provenance or
+  handle_message (which would derive a different session key).
 """
 
 import asyncio
@@ -69,6 +68,7 @@ def _make_runner(adapters):
     runner._running = True
     runner.adapters = adapters
     runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
     return runner
 
 
@@ -100,33 +100,13 @@ def _unseen_terminal_events(tid, platform, chat_id):
         conn.close()
 
 
-def test_sendresult_failure_rewinds_cursor(tmp_path, monkeypatch):
-    """SendResult(success=False) without an exception must count as a failed
-    delivery — cursor rewound, event retried on the next tick. Previously the
-    cursor advanced and the event was permanently lost."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "softfail.db"))
-    kb.init_db()
-    tid = _create_completed_subscription("telegram", "chat-1")
-
-    adapter = SoftFailAdapter()
-    runner = _make_runner({Platform.TELEGRAM: adapter})
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-
-    assert adapter.attempts >= 1
-    assert [ev.kind for ev in _unseen_terminal_events(tid, "telegram", "chat-1")] == [
-        "completed"
-    ]
-
-
-def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
-    """An api_server subscription wakes the creator's REAL session by
-    self-posting with the task's raw session_id — never handle_message (which
-    would run the wake under a build_session_key()-derived key that can't
-    match the raw X-Hermes-Session-Id session)."""
+def test_apiserver_sub_wakes_subscription_destination_via_self_post(tmp_path, monkeypatch):
+    """An api_server subscription wakes its chat_id destination, not the
+    task's worker-session provenance or a build_session_key()-derived session."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver.db"))
     kb.init_db()
     tid = _create_completed_subscription(
-        "api_server", "raw-sid-123", session_id="raw-sid-123",
+        "api_server", "origin-session", session_id="worker-session",
     )
 
     posts = []
@@ -146,74 +126,94 @@ def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
         "api_server wake must not go through handle_message (wrong-session bug)"
     )
     assert len(posts) == 1
-    assert posts[0]["session_id"] == "raw-sid-123"
-    assert tid in posts[0]["text"]
+    assert posts[0]["session_id"] == "origin-session"
+    assert all(post["session_id"] != "worker-session" for post in posts)
+    wake_text = posts[0]["text"]
+    assert tid in wake_text
+    # Graph-safe wake turn (#70752): the synthetic turn must carry the
+    # worker's completion handoff and the don't-recreate guidance so a
+    # woken orchestrator doesn't re-decompose existing work.
+    assert "done once" in wake_text, "creator wake must carry the worker handoff"
+    assert "not a request to decompose" in wake_text.lower()
+    assert "do not recreate" in wake_text.lower()
     # The wake self-post IS the delivery on this path (no separate text-ping
     # fallback is attempted for stateless api_server subs) — cursor advances
     # once the wake succeeds.
-    assert _unseen_terminal_events(tid, "api_server", "raw-sid-123") == []
+    assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
 
 
-def test_apiserver_failed_self_post_rewinds_cursor(tmp_path, monkeypatch):
-    """A failed/exhausted wake self-post must NOT advance the cursor: on the
-    api_server path the self-post IS the delivery, so advancing first would
-    permanently lose the event behind a best-effort except. The claim is
-    rewound and the event stays visible for the next tick's retry."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver_fail.db"))
+def test_apiserver_subscriptions_have_independent_wake_destinations(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-multi.db"))
     kb.init_db()
-    tid = _create_completed_subscription(
-        "api_server", "raw-sid-999", session_id="raw-sid-999",
-    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="notify both",
+            assignee="worker",
+            session_id="worker-session",
+        )
+        for chat_id in ("origin-a", "origin-b"):
+            kb.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="api_server",
+                chat_id=chat_id,
+            )
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
 
-    async def failing_self_post(adapter, *, text, session_id):
-        raise RuntimeError("self-post exhausted retries")
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append({"text": text, "session_id": session_id})
 
     import gateway.wake as wake_mod
 
-    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", failing_self_post)
-
-    adapter = ApiServerLikeAdapter()
-    runner = _make_runner({Platform.API_SERVER: adapter})
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    runner = _make_runner({Platform.API_SERVER: ApiServerLikeAdapter()})
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    # Event NOT lost: the cursor was rewound, so the completed event is still
-    # unseen and will be re-claimed (and the self-post retried) next tick.
-    assert [ev.kind for ev in _unseen_terminal_events(tid, "api_server", "raw-sid-999")] == [
-        "completed"
-    ]
-    # And the failure was counted toward the drop threshold.
-    assert list(runner._kanban_sub_fail_counts.values()) == [1]
+    assert sorted(post["session_id"] for post in posts) == ["origin-a", "origin-b"]
+    assert all(post["session_id"] != "worker-session" for post in posts)
+    assert _unseen_terminal_events(tid, "api_server", "origin-a") == []
+    assert _unseen_terminal_events(tid, "api_server", "origin-b") == []
 
 
-def test_apiserver_self_post_succeeds_after_earlier_failure(tmp_path, monkeypatch):
-    """The rewound event is retried on the next tick; a successful self-post
-    then advances the cursor and clears the failure counter."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver_retry.db"))
+def test_apiserver_wake_failure_rewinds_then_retries_destination(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-retry.db"))
     kb.init_db()
     tid = _create_completed_subscription(
-        "api_server", "raw-sid-777", session_id="raw-sid-777",
+        "api_server", "origin-session", session_id="worker-session",
     )
+    attempted_sessions = []
 
-    calls = {"n": 0}
-
-    async def flaky_self_post(adapter, *, text, session_id):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("transient outage")
+    async def fail_once_then_succeed(adapter, *, text, session_id):
+        attempted_sessions.append(session_id)
+        if len(attempted_sessions) == 1:
+            raise RuntimeError("simulated wake failure")
 
     import gateway.wake as wake_mod
 
-    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", flaky_self_post)
+    monkeypatch.setattr(
+        wake_mod,
+        "_self_post_chat_completion",
+        fail_once_then_succeed,
+    )
+    runner = _make_runner({Platform.API_SERVER: ApiServerLikeAdapter()})
 
-    adapter = ApiServerLikeAdapter()
-    runner = _make_runner({Platform.API_SERVER: adapter})
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-    assert calls["n"] == 1
-    assert len(_unseen_terminal_events(tid, "api_server", "raw-sid-777")) == 1
+    assert _unseen_terminal_events(tid, "api_server", "origin-session")
 
-    # Second tick: the re-claimed event's self-post succeeds → cursor advances.
     runner._running = True
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-    assert calls["n"] == 2
-    assert _unseen_terminal_events(tid, "api_server", "raw-sid-777") == []
-    assert runner._kanban_sub_fail_counts == {}
+
+    assert attempted_sessions == ["origin-session", "origin-session"]
+    assert "worker-session" not in attempted_sessions
+    assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
+

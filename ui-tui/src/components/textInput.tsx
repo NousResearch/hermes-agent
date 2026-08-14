@@ -322,6 +322,53 @@ export function resolveCursorLayout(display: string, cur: number, curRefCurrent:
 }
 
 /**
+ * Readline `unix-line-discard` (Ctrl+U / Cmd+Backspace): kill backward to
+ * the start of the *current logical line*, not to the start of the whole
+ * buffer. In single-line input the two are identical; in multiline input
+ * they are not, and repeating the keystroke walks up one line at a time.
+ *
+ * When the cursor already sits at a line start, consume the preceding
+ * newline so a repeat press makes progress instead of wedging — this is
+ * what makes "repeat to clear across lines" work.
+ */
+export function killToLineStart(value: string, cursor: number): { value: string; cursor: number } {
+  const start = value.lastIndexOf('\n', Math.max(0, cursor - 1)) + 1
+  const from = start === cursor && cursor > 0 ? start - 1 : start
+
+  return { value: value.slice(0, from) + value.slice(cursor), cursor: from }
+}
+
+/**
+ * Readline `kill-line` (Ctrl+K / Cmd+ForwardDelete): kill forward to the
+ * end of the current logical line. At a line end, consume the newline so a
+ * repeat press joins the next line rather than doing nothing.
+ */
+export function killToLineEnd(value: string, cursor: number): { value: string; cursor: number } {
+  const nl = value.indexOf('\n', cursor)
+  const to = nl < 0 ? value.length : nl === cursor ? nl + 1 : nl
+
+  return { value: value.slice(0, cursor) + value.slice(to), cursor }
+}
+
+/**
+ * True when a Backspace / ForwardDelete keystroke should kill to the line
+ * boundary rather than delete a single word.
+ *
+ * Only the *super* bit qualifies. It is tempting to reuse `isActionMod`,
+ * but that accepts `key.meta` on macOS — and hermes-ink reports Option as
+ * `meta`, so Option+Backspace (delete-word, the macOS standard) would be
+ * swallowed. On Linux/Windows `isActionMod` is `key.ctrl`, and
+ * Ctrl+Backspace is delete-word there too. `super` is set only by kitty
+ * CSI-u / xterm modifyOtherKeys, where it unambiguously means Cmd.
+ *
+ * Terminals that instead rewrite Cmd+Backspace to Ctrl+U are handled by
+ * the `isMacActionFallback` kill-to-start path, not by this predicate.
+ */
+export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean {
+  return key.super === true
+}
+
+/**
  * Pure computation for the fast-echo backspace bypass: given the
  * current value/cursor (already validated by `canFastBackspaceShape`),
  * returns what the new value/cursor should be, the exact stdout write
@@ -1198,7 +1245,11 @@ export function TextInput({
         v = v.slice(0, range.start) + v.slice(range.end)
         c = range.start
       } else if (k.backspace && c > 0) {
-        if (wordMod) {
+        if (isLineKillModifier(k)) {
+          // Cmd+Backspace — kill backward to start of line, matching the
+          // Ctrl+U (unix-line-discard) path below.
+          ;({ cursor: c, value: v } = killToLineStart(v, c))
+        } else if (wordMod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
@@ -1222,7 +1273,10 @@ export function TextInput({
           c = t
         }
       } else if (delFwd && c < v.length) {
-        if (wordMod) {
+        if (isLineKillModifier(k)) {
+          // Cmd+ForwardDelete — kill to end of line, matching Ctrl+K.
+          ;({ cursor: c, value: v } = killToLineEnd(v, c))
+        } else if (wordMod) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)
         } else {
@@ -1245,15 +1299,14 @@ export function TextInput({
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
         } else {
-          v = v.slice(c)
-          c = 0
+          ;({ cursor: c, value: v } = killToLineStart(v, c))
         }
       } else if (actionKillToEnd) {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
           c = range.start
         } else {
-          v = v.slice(0, c)
+          ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
@@ -1487,6 +1540,7 @@ export const shouldPassThroughToGlobalHandler = (
 ): boolean =>
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
+  (key.ctrl && input === 'o') ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

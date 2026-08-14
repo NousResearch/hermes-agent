@@ -470,13 +470,18 @@ def approvals_command(args) -> int:
     sub = getattr(args, "approvals_command", None)
     if sub == "suggest":
         return suggest_command(args)
+    if sub == "test":
+        from hermes_cli.approvals_test import approvals_test_command
+        return approvals_test_command(args)
     print(
         "usage: hermes approvals <subcommand>\n"
         "\n"
         "subcommands:\n"
         "  suggest    Mine past approval decisions into a proposed\n"
         "             command_allowlist (dry by default; --apply N,M to merge)\n"
+        "  test       Dry-run the approval verdict for a command without\n"
+        "             executing it (exit 0 allow / 2 ask / 3 deny)\n"
         "\n"
-        "Run `hermes approvals suggest -h` for details."
+        "Run `hermes approvals <subcommand> -h` for details."
     )
     return 1

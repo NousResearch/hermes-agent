@@ -1,4 +1,10 @@
-"""Tests for /personality none — clearing personality overlay."""
+"""Tests for /personality none — clearing personality overlay.
+
+Updated for the single-owner unification (hermes_cli.personality): built-ins
+always exist, resolution reads config (agent.personalities overlays), and
+persistence flows exclusively through persist_personality().
+"""
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 import yaml
@@ -10,64 +16,62 @@ class TestCLIPersonalityNone:
 
     def _make_cli(self, personalities=None):
         from cli import HermesCLI
+        from hermes_cli.personality import available_personalities
+
         cli = HermesCLI.__new__(HermesCLI)
-        cli.personalities = personalities or {
+        user = personalities or {
             "helpful": "You are helpful.",
             "concise": "You are concise.",
         }
+        cli.config = {"agent": {"personalities": user}}
+        cli.personalities = available_personalities(cli.config)
         cli.system_prompt = "You are kawaii~"
         cli.agent = MagicMock()
         cli.console = MagicMock()
         return cli
 
-    def test_none_clears_system_prompt(self):
+    def test_set_persists_display_personality_not_system_prompt(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
-            cli._handle_personality_command("/personality none")
-        assert cli.system_prompt == ""
+        saves = []
 
-    def test_default_clears_system_prompt(self):
-        cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
-            cli._handle_personality_command("/personality default")
-        assert cli.system_prompt == ""
+        def _persist(name):
+            saves.append(("display.personality", name))
+            return True
 
-    def test_neutral_clears_system_prompt(self):
-        cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
-            cli._handle_personality_command("/personality neutral")
-        assert cli.system_prompt == ""
-
-    def test_none_forces_agent_reinit(self):
-        cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
-            cli._handle_personality_command("/personality none")
-        assert cli.agent is None
-
-    def test_none_saves_to_config(self):
-        cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True) as mock_save:
-            cli._handle_personality_command("/personality none")
-        mock_save.assert_called_once_with("agent.system_prompt", "")
-
-    def test_known_personality_still_works(self):
-        cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        with patch("hermes_cli.personality.persist_personality", side_effect=_persist):
             cli._handle_personality_command("/personality helpful")
+
         assert cli.system_prompt == "You are helpful."
+        assert ("display.personality", "helpful") in saves
+        assert not any(k == "agent.system_prompt" for k, _ in saves)
 
-    def test_unknown_personality_shows_none_in_available(self, capsys):
+    def test_neutral_restores_manual_system_prompt_without_wiping_config(self):
         cli = self._make_cli()
-        cli._handle_personality_command("/personality nonexistent")
-        output = capsys.readouterr().out
-        assert "none" in output.lower()
+        saves = []
 
-    def test_list_shows_none_option(self):
-        cli = self._make_cli()
-        with patch("builtins.print") as mock_print:
-            cli._handle_personality_command("/personality")
-        output = " ".join(str(c) for c in mock_print.call_args_list)
-        assert "none" in output.lower()
+        def _persist(name):
+            saves.append(("display.personality", name))
+            return True
+
+        with (
+            patch("hermes_cli.personality.persist_personality", side_effect=_persist),
+            patch(
+                "hermes_cli.config.read_raw_config",
+                return_value={"agent": {"system_prompt": "manual forever"}},
+            ),
+        ):
+            cli._handle_personality_command("/personality neutral")
+
+        assert cli.system_prompt == "manual forever"
+        assert ("display.personality", "") in saves
+        assert not any(k == "agent.system_prompt" for k, _ in saves)
+
+    def test_builtin_personality_works_without_config_entry(self):
+        # Built-ins come from hermes_cli.personality, not from config.
+        cli = self._make_cli(personalities={})
+        with patch("hermes_cli.personality.persist_personality", return_value=True):
+            cli._handle_personality_command("/personality kawaii")
+        assert "kawaii" in cli.system_prompt.lower()
 
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
@@ -91,45 +95,60 @@ class TestGatewayPersonalityNone:
         }
         return runner
 
-    @pytest.mark.asyncio
-    async def test_none_clears_ephemeral_prompt(self, tmp_path):
-        runner = self._make_runner()
-        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}, "system_prompt": "kawaii"}}
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
-
-        with patch("gateway.run._hermes_home", tmp_path):
-            event = self._make_event("none")
-            result = await runner._handle_personality_command(event)
-
-        assert runner._ephemeral_system_prompt == ""
-        assert "cleared" in result.lower()
+    def _gateway_env(self, tmp_path):
+        # The gateway reads via _load_gateway_config (rooted at
+        # gateway.run._hermes_home) and persists via persist_personality
+        # (rooted at HERMES_HOME) — point both at the same tmp dir.
+        return (
+            patch("gateway.run._hermes_home", tmp_path),
+            patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+        )
 
     @pytest.mark.asyncio
     async def test_default_clears_ephemeral_prompt(self, tmp_path):
         runner = self._make_runner()
-        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_data = {
+            "agent": {
+                "system_prompt": "manual forever",
+                "personalities": {"helpful": "You are helpful."},
+            },
+            "display": {"personality": "helpful"},
+        }
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
-        with patch("gateway.run._hermes_home", tmp_path):
+        p1, p2 = self._gateway_env(tmp_path)
+        with p1, p2:
             event = self._make_event("default")
             result = await runner._handle_personality_command(event)
 
-        assert runner._ephemeral_system_prompt == ""
+        saved = yaml.safe_load(config_file.read_text())
+        assert saved["agent"]["system_prompt"] == "manual forever"
+        assert saved.get("display", {}).get("personality", None) == ""
+        assert runner._ephemeral_system_prompt == "manual forever"
 
     @pytest.mark.asyncio
-    async def test_list_includes_none(self, tmp_path):
+    async def test_set_persists_display_personality_not_system_prompt(self, tmp_path):
         runner = self._make_runner()
-        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_data = {
+            "agent": {
+                "system_prompt": "manual forever",
+                "personalities": {"helpful": "You are helpful."},
+            }
+        }
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
-        with patch("gateway.run._hermes_home", tmp_path):
-            event = self._make_event("")
+        p1, p2 = self._gateway_env(tmp_path)
+        with p1, p2:
+            event = self._make_event("helpful")
             result = await runner._handle_personality_command(event)
 
-        assert "none" in result.lower()
+        saved = yaml.safe_load(config_file.read_text())
+        assert saved["agent"]["system_prompt"] == "manual forever"
+        assert saved["display"]["personality"] == "helpful"
+        assert runner._ephemeral_system_prompt == "You are helpful."
+        assert "helpful" in result.lower()
 
     @pytest.mark.asyncio
     async def test_unknown_shows_none_in_available(self, tmp_path):
@@ -138,23 +157,27 @@ class TestGatewayPersonalityNone:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
-        with patch("gateway.run._hermes_home", tmp_path):
+        p1, p2 = self._gateway_env(tmp_path)
+        with p1, p2:
             event = self._make_event("nonexistent")
             result = await runner._handle_personality_command(event)
 
         assert "none" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_empty_personality_list_uses_profile_display_path(self, tmp_path):
+    async def test_empty_personality_list_still_lists_builtins(self, tmp_path):
+        # Built-ins are always available — an empty agent.personalities no
+        # longer means "no personalities configured".
         runner = self._make_runner(personalities={})
         (tmp_path / "config.yaml").write_text(yaml.dump({"agent": {"personalities": {}}}))
 
-        with patch("gateway.run._hermes_home", tmp_path), \
-             patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+        p1, p2 = self._gateway_env(tmp_path)
+        with p1, p2:
             event = self._make_event("")
             result = await runner._handle_personality_command(event)
 
-        assert result == "No personalities configured in `~/.hermes/profiles/coder/config.yaml`"
+        assert "kawaii" in result.lower()
+        assert "pirate" in result.lower()
 
 
 class TestPersonalityDictFormat:
@@ -162,8 +185,11 @@ class TestPersonalityDictFormat:
 
     def _make_cli(self, personalities):
         from cli import HermesCLI
+        from hermes_cli.personality import available_personalities
+
         cli = HermesCLI.__new__(HermesCLI)
-        cli.personalities = personalities
+        cli.config = {"agent": {"personalities": personalities}}
+        cli.personalities = available_personalities(cli.config)
         cli.system_prompt = ""
         cli.agent = None
         cli.console = MagicMock()
@@ -178,20 +204,9 @@ class TestPersonalityDictFormat:
                 "style": "concise",
             }
         })
-        with patch("cli.save_config_value", return_value=True):
+        with patch("hermes_cli.personality.persist_personality", return_value=True):
             cli._handle_personality_command("/personality coder")
         assert "You are an expert programmer." in cli.system_prompt
-
-    def test_dict_personality_includes_tone(self):
-        cli = self._make_cli({
-            "coder": {
-                "system_prompt": "You are an expert programmer.",
-                "tone": "technical and precise",
-            }
-        })
-        with patch("cli.save_config_value", return_value=True):
-            cli._handle_personality_command("/personality coder")
-        assert "Tone: technical and precise" in cli.system_prompt
 
     def test_dict_personality_includes_style(self):
         cli = self._make_cli({
@@ -200,13 +215,13 @@ class TestPersonalityDictFormat:
                 "style": "use code examples",
             }
         })
-        with patch("cli.save_config_value", return_value=True):
+        with patch("hermes_cli.personality.persist_personality", return_value=True):
             cli._handle_personality_command("/personality coder")
         assert "Style: use code examples" in cli.system_prompt
 
     def test_string_personality_still_works(self):
         cli = self._make_cli({"helper": "You are helpful."})
-        with patch("cli.save_config_value", return_value=True):
+        with patch("hermes_cli.personality.persist_personality", return_value=True):
             cli._handle_personality_command("/personality helper")
         assert cli.system_prompt == "You are helpful."
 

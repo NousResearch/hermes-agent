@@ -8,6 +8,7 @@ import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
+import { $sessions, lineageAliases } from './session'
 import { $sessionStates } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
@@ -41,32 +42,38 @@ export interface ComposerStatusItem {
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
 
 // Stored session ids that have at least one RUNNING background process. The
-// sidebar row reads this for a pulsing gray dot — distinct from the accent
-// pulse of an active LLM turn — so the user can tell at a glance "this session
-// has something chugging along in the background" even when the turn is idle.
+// sidebar row reads this for a hollow dot — distinct from the filled dot of an
+// active LLM turn — so the user can tell at a glance "this session has
+// something chugging along in the background" even when the turn is idle.
 //
 // $backgroundStatusBySession is keyed by RUNTIME session id (gateway events
 // and process.list both speak that); the sidebar row knows only the STORED id.
-// $sessionStates bridges the two: runtime id → state.storedSessionId.
+// $sessionStates bridges the two: runtime id → state.storedSessionId, then
+// lineageAliases covers whichever tip of that conversation a surface holds.
 // Perf: recomputes on every $sessionStates change (message deltas, tens/sec),
 // but the background-running set rarely moves. `stableArray` keeps the prior
 // reference when unchanged so rows reading this don't re-render per token.
 let backgroundRunningIds: readonly string[] = []
-export const $backgroundRunningSessionIds = computed([$backgroundStatusBySession, $sessionStates], (bg, states) => {
-  const ids = new Set<string>()
+export const $backgroundRunningSessionIds = computed(
+  [$backgroundStatusBySession, $sessionStates, $sessions],
+  (bg, states, sessions) => {
+    const ids = new Set<string>()
 
-  for (const [runtimeId, items] of Object.entries(bg)) {
-    if (items.some(i => i.state === 'running')) {
-      const storedId = states[runtimeId]?.storedSessionId
+    for (const [runtimeId, items] of Object.entries(bg)) {
+      if (!items.some(i => i.state === 'running')) {
+        continue
+      }
 
-      if (storedId) {
-        ids.add(storedId)
+      // Same fresh-chat fallback as the working/attention projections: before a
+      // conversation is persisted its runtime id is the id surfaces key on.
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        ids.add(alias)
       }
     }
-  }
 
-  return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
-})
+    return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
+  }
+)
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.

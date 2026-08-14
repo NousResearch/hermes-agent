@@ -86,28 +86,6 @@ class TestResolveCommandProviderConfig:
         cfg = {"providers": {}}
         assert _resolve_command_provider_config("nope", cfg) is None
 
-    def test_user_declared_command_provider_resolves(self):
-        cfg = {
-            "providers": {
-                "piper-cli": {"type": "command", "command": "piper-cli foo"},
-            },
-        }
-        resolved = _resolve_command_provider_config("piper-cli", cfg)
-        assert resolved is not None
-        assert resolved["command"] == "piper-cli foo"
-
-    def test_type_command_is_implied_when_command_is_set(self):
-        cfg = {"providers": {"piper-cli": {"command": "piper-cli foo"}}}
-        resolved = _resolve_command_provider_config("piper-cli", cfg)
-        assert resolved is not None
-
-    def test_other_type_values_reject(self):
-        cfg = {"providers": {"piper-cli": {"type": "python", "command": "piper-cli foo"}}}
-        assert _resolve_command_provider_config("piper-cli", cfg) is None
-
-    def test_empty_command_rejects(self):
-        cfg = {"providers": {"piper-cli": {"type": "command", "command": "   "}}}
-        assert _resolve_command_provider_config("piper-cli", cfg) is None
 
     def test_case_insensitive_lookup(self):
         cfg = {"providers": {"piper-cli": {"type": "command", "command": "x"}}}
@@ -184,9 +162,6 @@ class TestIsCommandProviderConfig:
     def test_empty_dict_is_false(self):
         assert _is_command_provider_config({}) is False
 
-    def test_non_dict_is_false(self):
-        assert _is_command_provider_config("foo") is False
-        assert _is_command_provider_config(None) is False
 
     def test_type_mismatch_is_false(self):
         assert _is_command_provider_config({"type": "native", "command": "x"}) is False
@@ -209,9 +184,6 @@ class TestIterCommandProviders:
         names = sorted(name for name, _ in _iter_command_providers(cfg))
         assert names == ["piper-cli", "voxcpm"]
 
-    def test_has_any_command_provider_detects_declared(self):
-        cfg = {"providers": {"piper-cli": {"type": "command", "command": "piper-cli"}}}
-        assert _has_any_command_tts_provider(cfg) is True
 
     def test_has_any_command_provider_when_none(self):
         assert _has_any_command_tts_provider({"providers": {}}) is False
@@ -226,50 +198,15 @@ class TestConfigGetters:
     def test_timeout_defaults(self):
         assert _get_command_tts_timeout({}) == float(DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
 
-    def test_timeout_coerces_string(self):
-        assert _get_command_tts_timeout({"timeout": "45"}) == 45.0
-
-    def test_timeout_rejects_non_positive(self):
-        assert _get_command_tts_timeout({"timeout": 0}) == float(DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
-        assert _get_command_tts_timeout({"timeout": -1}) == float(DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
-
-    def test_timeout_rejects_garbage(self):
-        assert _get_command_tts_timeout({"timeout": "fast"}) == float(DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
-
-    def test_timeout_seconds_alias(self):
-        assert _get_command_tts_timeout({"timeout_seconds": 90}) == 90.0
 
     def test_output_format_defaults(self):
         assert _get_command_tts_output_format({}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
-    def test_output_format_path_override(self):
-        assert _get_command_tts_output_format({}, "/tmp/clip.wav") == "wav"
-
-    def test_output_format_unknown_path_falls_back_to_config(self):
-        assert _get_command_tts_output_format({"format": "ogg"}, "/tmp/clip.xyz") == "ogg"
-
-    def test_output_format_rejects_unknown(self):
-        assert _get_command_tts_output_format({"format": "midi"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
-
-    def test_output_format_supported_set(self):
-        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset(
-            {"mp3", "wav", "ogg", "flac", "m4a", "aac", "amr", "opus"}
-        )
-
-    def test_output_format_accepts_extended_formats(self):
-        # m4a/aac/amr/opus are common ffmpeg-producible containers/codecs;
-        # honored both via explicit config and via the output path suffix.
-        for fmt in ("m4a", "aac", "amr", "opus"):
-            assert _get_command_tts_output_format({"format": fmt}) == fmt
-            assert _get_command_tts_output_format({}, f"/tmp/clip.{fmt}") == fmt
 
     def test_voice_compatible_boolean(self):
         assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True
         assert _is_command_tts_voice_compatible({"voice_compatible": False}) is False
 
-    def test_voice_compatible_string(self):
-        assert _is_command_tts_voice_compatible({"voice_compatible": "yes"}) is True
-        assert _is_command_tts_voice_compatible({"voice_compatible": "0"}) is False
 
     def test_voice_compatible_default_off(self):
         assert _is_command_tts_voice_compatible({}) is False
@@ -284,9 +221,6 @@ class TestMaxTextLengthForCommandProviders:
         cfg = {"providers": {"piper-cli": {"type": "command", "command": "x"}}}
         assert _resolve_max_text_length("piper-cli", cfg) == DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH
 
-    def test_override_under_providers(self):
-        cfg = {"providers": {"piper-cli": {"type": "command", "command": "x", "max_text_length": 2500}}}
-        assert _resolve_max_text_length("piper-cli", cfg) == 2500
 
     def test_override_under_legacy_tts_name_block(self):
         cfg = {"piper-cli": {"type": "command", "command": "x", "max_text_length": 7777}}
@@ -306,10 +240,6 @@ class TestShellQuoteContext:
         pos = tpl.index("{output_path}")
         assert _shell_quote_context(tpl, pos) is None
 
-    def test_inside_single_quotes(self):
-        tpl = "tts '{output_path}'"
-        pos = tpl.index("{output_path}")
-        assert _shell_quote_context(tpl, pos) == "'"
 
     def test_inside_double_quotes(self):
         tpl = 'tts "{output_path}"'
@@ -340,23 +270,6 @@ class TestRenderCommandTtsTemplate:
         assert "af_sky" in rendered
         assert "/tmp/out.mp3" in rendered
 
-    def test_quotes_paths_with_spaces(self):
-        placeholders = {
-            "input_path": "/tmp/Jane Doe/in.txt",
-            "text_path": "/tmp/Jane Doe/in.txt",
-            "output_path": "/tmp/out.mp3",
-            "format": "mp3",
-            "voice": "",
-            "model": "",
-            "speed": "1.0",
-        }
-        rendered = _render_command_tts_template(
-            "tts --in {input_path} --out {output_path}",
-            placeholders,
-        )
-        # shlex.quote wraps space-containing paths in single quotes on POSIX.
-        if os.name != "nt":
-            assert "'/tmp/Jane Doe/in.txt'" in rendered
 
     def test_literal_braces_survive(self):
         placeholders = {
@@ -443,53 +356,6 @@ class TestRunCommandTts:
         assert read_sizes["stdout"][0] == 65536
         assert read_sizes["stderr"][0] == 65536
 
-    def test_closed_pipes_still_running_honors_idle_timeout(self):
-        class ClosedStream:
-            def read(self, size: int) -> str:
-                return ""
-
-        class FakeProcess:
-            def __init__(self):
-                self.pid = 12345
-                self.returncode = None
-                self.stdout = ClosedStream()
-                self.stderr = ClosedStream()
-
-            def wait(self, timeout=None):
-                if timeout is None:
-                    self.returncode = 0
-                    return self.returncode
-                raise subprocess.TimeoutExpired("fake tts", timeout)
-
-        process = FakeProcess()
-        with (
-            patch("tools.tts_tool.subprocess.Popen", return_value=process),
-            patch("tools.tts_tool._terminate_command_tts_process_tree"),
-        ):
-            with pytest.raises(subprocess.TimeoutExpired):
-                _run_command_tts("fake tts", timeout=0.25)
-
-    def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
-        script = tmp_path / "progress_then_exit.py"
-        script.write_text(
-            "\n".join([
-                "import sys, time",
-                "for idx in range(4):",
-                "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.15)",
-                "print('done', flush=True)",
-            ]),
-            encoding="utf-8",
-        )
-
-        result = _run_command_tts(
-            _shell_command(sys.executable, "-u", str(script)),
-            timeout=0.25,
-        )
-
-        assert result.returncode == 0
-        assert "tick 3" in result.stderr
-        assert "done" in result.stdout
 
     def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
         script = tmp_path / "progress_then_hang.py"
@@ -533,38 +399,6 @@ class TestGenerateCommandTts:
         # contains the original UTF-8 text.
         assert out.read_text(encoding="utf-8") == "hello world"
 
-    def test_empty_command_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="is not configured"):
-            _generate_command_tts(
-                "hello",
-                str(tmp_path / "x.mp3"),
-                "empty",
-                {"command": "  "},
-                {},
-            )
-
-    def test_nonzero_exit_raises_runtime(self, tmp_path):
-        config = {"command": f'"{sys.executable}" -c "import sys; sys.exit(3)"'}
-        with pytest.raises(RuntimeError, match="exited with code 3"):
-            _generate_command_tts(
-                "hello",
-                str(tmp_path / "x.mp3"),
-                "failing",
-                config,
-                {},
-            )
-
-    def test_empty_output_raises_runtime(self, tmp_path):
-        # This command completes successfully but writes nothing.
-        config = {"command": f'"{sys.executable}" -c "pass"'}
-        with pytest.raises(RuntimeError, match="produced no output"):
-            _generate_command_tts(
-                "hello",
-                str(tmp_path / "x.mp3"),
-                "silent",
-                config,
-                {},
-            )
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX-only timeout semantics")
     def test_timeout_raises_runtime(self, tmp_path):

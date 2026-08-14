@@ -19,6 +19,7 @@ releases it.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_DIR_NAME = ".hermes-runtime"
 _VENV_NAME = "venv"
+_ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
 
 # ---------------------------------------------------------------------------
@@ -382,10 +384,35 @@ def update_managed_uv(
 # ---------------------------------------------------------------------------
 
 
+def _reload_hermes_constants():
+    """Re-execute ``hermes_constants`` from disk and return the fresh module.
+
+    ``hermes update`` imports ``hermes_constants`` from the OLD checkout,
+    ``git pull`` then replaces that file, and this freshly-pulled module runs
+    its lazy imports against the module object Python already cached in
+    ``sys.modules`` — the pre-upgrade one. A symbol added by the update is
+    absent there while the file named in the resulting ``ImportError`` plainly
+    contains it, which is what made this read as a contradiction:
+
+        cannot import name 'venv_python_path' from 'hermes_constants'
+        (~/.hermes/hermes-agent/hermes_constants.py)
+
+    Reloading picks up the definitions actually on disk, so callers keep using
+    the shared helper instead of hand-rolling a second copy of its logic. Same
+    update-boundary class as the ``ensure_uv()`` arity skew on :class:`_UvResult`.
+    """
+    import hermes_constants
+
+    return importlib.reload(hermes_constants)
+
+
 def _venv_python(venv_dir: Path) -> Path:
-    if platform.system() == "Windows":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
+    windows = platform.system() == "Windows"
+    try:
+        from hermes_constants import venv_python_path
+    except ImportError:
+        venv_python_path = _reload_hermes_constants().venv_python_path
+    return venv_python_path(venv_dir, windows=windows)
 
 
 def _remove_tree(path: Path, *, boundary: Path) -> None:
@@ -749,6 +776,10 @@ def _stage_candidate_venv(
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
         return None
+    # Locked sync must see project [tool.uv] exclude-newer; --no-config /
+    # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
+    sync_env = dict(env)
+    sync_env.pop("UV_NO_CONFIG", None)
     synced = subprocess.run(
         [
             uv_bin,
@@ -758,10 +789,9 @@ def _stage_candidate_venv(
             "--locked",
             "--python",
             str(_venv_python(candidate)),
-            "--no-config",
         ],
         cwd=project_root,
-        env=env,
+        env=sync_env,
         check=False,
     )
     if synced.returncode != 0:
@@ -986,6 +1016,70 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     return after != before
 
 
+def _default_live_venv(root: Path) -> Path:
+    """Return the venv that runtime repair should target for *root*.
+
+    Managed installs create ``<checkout>/venv``, but uv-default and dev
+    checkouts use ``<checkout>/.venv``.  Historically only ``venv`` was
+    probed, so a ``.venv`` install linking a vulnerable SQLite returned
+    ``not-applicable`` on every ``hermes update`` and stayed on
+    journal_mode=DELETE forever — even though the WAL fallback warning
+    promises that ``hermes update`` repairs the runtime (issue class:
+    2,600x slower ``state.db`` appends under DELETE).
+
+    ``venv`` wins when it holds an interpreter (managed layout takes
+    precedence); otherwise fall back to ``.venv`` when that one does.
+    When neither has an interpreter, return the ``venv`` path so the
+    caller's existing ``not-applicable`` handling fires unchanged.
+    """
+    primary = root / _VENV_NAME
+    if _venv_python(primary).is_file():
+        return primary
+    fallback = root / _ALT_VENV_NAME
+    if _venv_python(fallback).is_file():
+        return fallback
+    return primary
+
+
+def _sweep_stale_runtime_backups(
+    live: Path,
+    *,
+    root: Path,
+    keep: Path | None = None,
+    min_age_seconds: float = 3600.0,
+) -> None:
+    """Remove leftover ``venv.stale.runtime-*`` backups next to *live*.
+
+    A successful runtime repair parks the previous venv as
+    ``<live>.stale.runtime-<token>``; historically nothing ever reclaimed
+    those, so each repair leaked a full venv (~1 GB) at the project root
+    forever (issue #73109).  On POSIX, deleting the tree is safe even while
+    an older process still maps files from it — open FDs and mmaps keep
+    their inodes alive; the directory entry is what goes away.
+
+    ``min_age_seconds`` guards against racing a concurrent repair in
+    another process: a backup parked seconds ago may still be that
+    repair's rollback path, so only clearly-old markers are swept.
+    ``keep`` exempts the backup the current repair just created.
+    Best-effort: never raises.
+    """
+    try:
+        candidates = list(live.parent.glob(f"{live.name}.stale.runtime-*"))
+    except OSError:
+        return
+    now = time.time()
+    for candidate in candidates:
+        if keep is not None and candidate == keep:
+            continue
+        try:
+            age = now - candidate.stat().st_mtime
+        except OSError:
+            continue
+        if age < min_age_seconds:
+            continue
+        _remove_tree(candidate, boundary=root)
+
+
 def repair_vulnerable_runtime(
     uv_bin: str,
     *,
@@ -998,7 +1092,7 @@ def repair_vulnerable_runtime(
     post-cutover smoke failures restore the parked venv synchronously.
     """
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
-    live = Path(venv_dir) if venv_dir is not None else root / _VENV_NAME
+    live = Path(venv_dir) if venv_dir is not None else _default_live_venv(root)
     live_python = _venv_python(live)
     if not (root / "pyproject.toml").is_file() or not live_python.is_file():
         return RuntimeRepairResult("not-applicable")
@@ -1010,6 +1104,13 @@ def repair_vulnerable_runtime(
             f"could not probe live interpreter {live_python}",
         )
     if not current.wal_reset_vulnerable:
+        # The runtime is already fixed — any venv.stale.runtime-* markers
+        # next to the live venv are leftovers from a past repair (or from
+        # a build predating the post-repair cleanup) and will never be
+        # rolled back to. Sweep them so they don't leak ~1 GB each
+        # forever (issue #73109). Age-gated to avoid racing an in-flight
+        # repair in a sibling process.
+        _sweep_stale_runtime_backups(live, root=root)
         return RuntimeRepairResult(
             "safe",
             sqlite_before=current.sqlite_version_string,
@@ -1124,11 +1225,8 @@ def repair_vulnerable_runtime(
             "  ✓ Managed Python runtime repaired "
             f"(SQLite {current.sqlite_version_string} → {final_version})"
         )
-        if backup is not None:
-            print(
-                f"  ℹ Previous venv parked at {backup.name}; "
-                "keep it until all older Hermes processes have exited."
-            )
+        if backup is not None and backup.exists():
+            _remove_tree(backup, boundary=root)
         return RuntimeRepairResult(
             "repaired",
             sqlite_before=current.sqlite_version_string,

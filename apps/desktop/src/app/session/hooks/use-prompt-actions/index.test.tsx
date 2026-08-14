@@ -8,6 +8,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
@@ -16,12 +17,14 @@ import {
   $currentUsage,
   $messages,
   $sessions,
+  $terminalBackend,
   $turnStartedAt,
   setCurrentUsage,
   setMessages,
   setSessions
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './utils'
@@ -321,6 +324,48 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
   })
 }
 
+// The HUD floats over the app the user is really working in, so the gateway
+// turns this flag into a per-turn hint: read the window underneath and work in
+// it, rather than reaching for Hermes's own browser and panes.
+describe('usePromptActions HUD surface', () => {
+  afterEach(() => {
+    cleanup()
+    $hudMode.set(false)
+    vi.restoreAllMocks()
+  })
+
+  async function submitFrom(window: 'app' | 'hud') {
+    $hudMode.set(window === 'hud')
+
+    const submitted: (Record<string, unknown> | undefined)[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText("what's under you rn?")
+
+    return submitted[0]
+  }
+
+  it('tags a message typed into the HUD', async () => {
+    expect(await submitFrom('hud')).toMatchObject({ surface: 'hud' })
+  })
+
+  it('says nothing about the surface from the app window', async () => {
+    expect(await submitFrom('app')).not.toHaveProperty('surface')
+  })
+})
+
 describe('usePromptActions slash session targeting', () => {
   const STORED_SESSION_ID = 'stored-db-xyz789'
   const RECOVERED_SESSION_ID = 'rt-recovered-456'
@@ -424,6 +469,114 @@ describe('usePromptActions slash session targeting', () => {
 
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(calls).not.toContain('slash.exec')
+  })
+})
+
+describe('usePromptActions /wake', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+    resetWakeWordState()
+  })
+
+  afterEach(() => {
+    cleanup()
+    resetWakeWordState()
+    vi.restoreAllMocks()
+  })
+
+  it('starts the GUI-owned listener through wake.start and never spawns the slash worker', async () => {
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+      if (method === 'wake.start') {
+        return {
+          owner_surface: 'gui',
+          phrase: 'hey hermes',
+          provider: 'openwakeword',
+          started: true
+        } as never
+      }
+
+      if (method === 'wake.status') {
+        return {
+          available: true,
+          configured_surface: 'gui',
+          enabled: true,
+          input_device: {
+            hostapi: 'Windows WASAPI',
+            name: 'Microphone Array',
+            selector: 'Microphone Array'
+          },
+          listening: true,
+          owner_surface: 'gui',
+          phrase: 'hey hermes',
+          provider: 'openwakeword'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/wake on')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'wake.start',
+      { client_capture: true, persist: true, surface: 'gui' },
+      180_000
+    )
+    expect(requestGateway).toHaveBeenCalledWith('wake.status', { client_capture: true, surface: 'gui' })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    expect($wakeWord.get()).toMatchObject({ available: true, enabled: true, listening: true })
+    expect(renderedSeedTexts(seeds).join('\n')).toContain('Input: Microphone Array (Windows WASAPI)')
+  })
+
+  it('uses gateway truth for a bare toggle and stops through wake.stop', async () => {
+    let statusCalls = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'wake.status') {
+        statusCalls += 1
+
+        return {
+          available: true,
+          enabled: statusCalls === 1,
+          listening: statusCalls === 1,
+          owner_surface: statusCalls === 1 ? 'gui' : null,
+          phrase: 'hey hermes',
+          provider: 'openwakeword'
+        } as never
+      }
+
+      if (method === 'wake.stop') {
+        return { disabled_persisted: true, stopped: true } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/wake')
+
+    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(['wake.status', 'wake.stop', 'wake.status'])
+    expect(requestGateway).toHaveBeenCalledWith('wake.stop', { persist: true })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    expect($wakeWord.get()).toMatchObject({ enabled: false, listening: false })
   })
 })
 
@@ -1692,7 +1845,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-session-b',
-      source: 'desktop'
+      source: 'desktop',
+      omit_messages: true
     })
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
@@ -1828,7 +1982,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // Must resume the correct stored session to get the right runtime id.
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-session-a',
-      source: 'desktop'
+      source: 'desktop',
+      omit_messages: true
     })
     // The prompt must land in the resumed session, NOT the foreground.
     expect(requestGateway).toHaveBeenCalledWith(
@@ -2089,7 +2244,7 @@ describe('usePromptActions redirectPrompt', () => {
     expect(await handle!.redirectPrompt('reconnect nudge')).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'reconnect nudge' })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'reconnect nudge' })
     expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
   })
@@ -2137,7 +2292,9 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        confirm_truncate: true,
         truncate_before_user_ordinal: 0,
+        truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
       1_800_000
@@ -2205,7 +2362,9 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        confirm_truncate: true,
         truncate_before_user_ordinal: 0,
+        truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
       1_800_000
@@ -2251,7 +2410,9 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        confirm_truncate: true,
         truncate_before_user_ordinal: 0,
+        truncate_before_message_id: 'u1',
         confirm_empty_truncate: true
       },
       1_800_000
@@ -2419,6 +2580,56 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
+  })
+
+  it('uploads file bytes when the terminal backend is a container (docker)', async () => {
+    // Container backends have their own filesystem: the host drop path would
+    // dangle inside the sandbox, so the bytes must cross via file.attach's
+    // data_url pipeline and be staged into a bind-mounted cache dir (#76577).
+    $connection.set({ mode: 'local' } as never)
+    $terminalBackend.set('docker')
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/root/.hermes/attachments/report.txt',
+          ref_text: '@file:/root/.hermes/attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('summarize', { attachments: [fileAttachment()] })).toBe(true)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/alice/Downloads/report.txt')
+    expect(calls[0]).toEqual({
+      method: 'file.attach',
+      params: {
+        data_url: 'data:text/plain;base64,aGVsbG8=',
+        name: 'report.txt',
+        path: '/Users/alice/Downloads/report.txt',
+        session_id: RUNTIME_SESSION_ID
+      }
+    })
+
+    // Don't leak the container-backend state into later tests.
+    $terminalBackend.set('')
   })
 
   it('passes a path-less @file: ref straight through (no path = nothing to upload)', async () => {
@@ -2630,7 +2841,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
   })
 
@@ -2674,7 +2885,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     )
 
     expect(await handle!.submitText('message after wake')).toBe(true)
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'work' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true,
+      profile: 'work'
+    })
 
     setSessions(() => [])
   })
@@ -2721,7 +2937,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     )
 
     expect(await handle!.submitText('message after wake')).toBe(true)
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'work' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true,
+      profile: 'work'
+    })
 
     vi.mocked(getSession).mockReset()
     setSessions(() => [])
@@ -2782,7 +3003,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[2]?.params).toEqual({
       queued: true,
       session_id: RECOVERED_SESSION_ID,
@@ -2830,7 +3055,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
   })
 
@@ -2962,7 +3191,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
@@ -3005,7 +3238,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[0]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[1]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
   })
 
@@ -3316,7 +3553,8 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
     expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
       session_id: STORED_SESSION_A,
-      source: 'desktop'
+      source: 'desktop',
+      omit_messages: true
     })
   })
 
@@ -4134,6 +4372,85 @@ describe('uploadComposerAttachment remote read failures', () => {
         { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
       )
     ).rejects.toThrow('ENOENT: no such file')
+  })
+})
+
+describe('uploadComposerAttachment preview reuse', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('reuses the chip previewUrl instead of re-reading the image off disk', async () => {
+    // attachImagePath already read the full file for the thumbnail; submit
+    // must not pay the disk read + IPC round-trip a second time.
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/gw/images/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'image:shot.png',
+        kind: 'image',
+        label: 'shot.png',
+        path: '/local/shot.png',
+        previewUrl: 'data:image/png;base64,ZnJvbS1wcmV2aWV3'
+      },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'ZnJvbS1wcmV2aWV3',
+      filename: 'shot.png',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(uploaded.path).toBe('/gw/images/shot.png')
+  })
+
+  it('falls back to the disk read when previewUrl is not a base64 data URL', async () => {
+    // A non-data previewUrl (e.g. a gateway media URL) carries no bytes —
+    // the upload must still read the real file.
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/gw/images/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    await uploadComposerAttachment(
+      {
+        id: 'image:shot.png',
+        kind: 'image',
+        label: 'shot.png',
+        path: '/local/shot.png',
+        previewUrl: 'https://gateway.example/media/shot.png'
+      },
+      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('/local/shot.png')
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'ZnJvbS1kaXNr',
+      filename: 'shot.png',
+      session_id: RUNTIME_SESSION_ID
+    })
   })
 })
 

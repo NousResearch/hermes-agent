@@ -230,6 +230,21 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         scopes=list(auth_raw.get("scopes") or []),
         env_var=auth_raw.get("env_var"),
     )
+    if t_type == "http" and a_type == "api_key":
+        # _build_server_config emits an Authorization header referencing
+        # ${MCP_<NAME>_API_KEY} (via _bearer_auth_headers), but install_entry
+        # only persists the env vars DECLARED in auth.env. Enforce the naming
+        # contract at parse time, or a manifest declaring e.g. N8N_API_KEY
+        # would install cleanly yet send a literal-placeholder header (401)
+        # at connect time.
+        from hermes_cli.mcp_config import _env_key_for_server
+
+        _required_key = _env_key_for_server(name)
+        if not any(spec.name == _required_key for spec in env_list):
+            raise CatalogError(
+                f"{path}: http + api_key auth requires auth.env to declare "
+                f"'{_required_key}' (the key the Authorization header references)"
+            )
 
     tools_raw = data.get("tools") or {}
     if not isinstance(tools_raw, dict):
@@ -506,6 +521,10 @@ def _build_server_config(
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+        elif entry.auth.type == "api_key":
+            from hermes_cli.mcp_config import _bearer_auth_headers
+
+            cfg["headers"] = _bearer_auth_headers(entry.name)
     return cfg
 
 

@@ -141,27 +141,6 @@ class TestInPlaceCompaction:
             roles = [m["role"] for m in compressed if m.get("role") != "system"]
             assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
 
-    def test_in_place_skips_redundant_preflush(self):
-        """In-place must NOT pre-flush current-turn messages: replace_messages
-        rewrites the whole row, so a flush would INSERT rows it immediately
-        deletes (wasted writes). The current-turn tail survives via the
-        compressor's `compressed` output, not the flush."""
-        from hermes_state import SessionDB
-        from agent.conversation_compression import compress_context
-
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
-            _seed(db, "ip_flush", "f")
-            agent = _make_agent(db, "ip_flush", in_place=True)
-            calls = {"n": 0}
-            agent._flush_messages_to_session_db = lambda *a, **k: calls.__setitem__(
-                "n", calls["n"] + 1
-            )
-            compress_context(
-                agent, [{"role": "user", "content": "x"}] * 8,
-                approx_tokens=100_000, system_message="sys",
-            )
-            assert calls["n"] == 0
 
     def test_rotation_still_preflushes(self):
         """Rotation MUST pre-flush so current-turn messages survive in the
@@ -206,13 +185,16 @@ class TestRotationFallbackWhenFlagOff:
 
             # Identity rotated to a fresh id.
             assert agent.session_id != sid
-            # Old session ended via compression; continuation forked + renamed.
+            # Old session ended via compression; continuation forked and
+            # carries the SAME name. Compression is an internal detail — the
+            # conversation didn't change topic, so it must not be renumbered
+            # into "my-research #2" and shown as a separate piece of work.
             assert db.get_session(sid)["end_reason"] == "compression"
             child = db._conn.execute(
                 "SELECT id, title FROM sessions WHERE parent_session_id = ?", (sid,)
             ).fetchall()
             assert len(child) == 1
-            assert child[0]["title"] == "my-research #2"
+            assert child[0]["title"] == "my-research"
             # The compacted child is persisted atomically at the rotation
             # boundary, so a headless process killed before finalization can
             # still resume it without duplicating the two handoff messages.

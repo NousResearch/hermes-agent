@@ -29,6 +29,7 @@ import {
   $sessions,
   $yoloActive,
   resolveComposerSessionKey,
+  setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
@@ -36,6 +37,15 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import {
+  applyWakeStartResult,
+  applyWakeStatus,
+  applyWakeStopResult,
+  type WakeInputDeviceStatus,
+  type WakeStartResponse,
+  type WakeStatusResponse,
+  type WakeStopResponse
+} from '@/store/wake-word'
 
 import type {
   BrowserManageResponse,
@@ -53,13 +63,51 @@ import {
   renderCommandsCatalog,
   renderRpcResult,
   slashStatusText,
-  type SubmitTextOptions
+  type SubmitTextOptions,
+  withSessionNotFoundResume
 } from './utils'
 
 // Manual compression is LLM-bound and routinely outlives the desktop's 30s
 // default WS request timeout on large sessions — give it the TUI client's
 // 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
 const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+const WAKE_START_TIMEOUT_MS = 180_000
+
+const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
+  if (!device) {
+    return 'system default'
+  }
+
+  const selector = device.selector
+  const name = device.name?.trim() || (selector == null ? 'system default' : String(selector))
+
+  return device.hostapi?.trim() ? `${name} (${device.hostapi.trim()})` : name
+}
+
+const renderWakeStatus = (status: WakeStatusResponse): string => {
+  const lines = [
+    'Wake Word Status',
+    `State: ${status.listening ? 'LISTENING' : 'OFF'}`,
+    `Phrase: "${status.phrase?.trim() || 'hey hermes'}"`,
+    `Provider: ${status.provider?.trim() || 'unknown'}`,
+    `Surface: ${status.owner_surface?.trim() || status.configured_surface?.trim() || 'auto'}`,
+    `Input: ${wakeDeviceLabel(status.input_device)}`
+  ]
+
+  if (status.audio_silent) {
+    lines.push('Audio: silent')
+  }
+
+  if (status.input_device?.error?.trim()) {
+    lines.push(`Input error: ${status.input_device.error.trim()}`)
+  }
+
+  if (status.hint?.trim()) {
+    lines.push(`Hint: ${status.hint.trim()}`)
+  }
+
+  return lines.join('\n')
+}
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -453,7 +501,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          let sessionId = initialSessionId
           const focusTopic = ctx.arg.trim()
           const noticeId = `session-compress:${sessionId}`
 
@@ -472,14 +521,40 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           try {
-            const result = await requestGateway<SessionCompressResponse>(
-              'session.compress',
+            // Same stale-runtime recovery as prompt.submit: after sleep/wake a
+            // dead id 404s session.compress while plain chat still works, so
+            // /compress reported "session not found" on a healthy session.
+            // NOT alsoTimeout — compress is legitimately LLM-slow and a
+            // timeout here must not be retried as a dead session.
+            const { result, sessionId: liveSessionId } = await withSessionNotFoundResume(
+              sessionId,
+              storedSessionId,
+              liveId =>
+                requestGateway<SessionCompressResponse>(
+                  'session.compress',
+                  {
+                    session_id: liveId,
+                    ...(focusTopic ? { focus_topic: focusTopic } : {})
+                  },
+                  SESSION_COMPRESS_TIMEOUT_MS
+                ),
               {
-                session_id: sessionId,
-                ...(focusTopic ? { focus_topic: focusTopic } : {})
-              },
-              SESSION_COMPRESS_TIMEOUT_MS
+                requestGateway,
+                onRecovered: recoveredId => {
+                  // Move the in-flight claim onto the live id so the coalesce
+                  // guard releases the right key in `finally`.
+                  compressInFlightRef.current.delete(sessionId)
+                  compressInFlightRef.current.add(recoveredId)
+
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
             )
+
+            sessionId = liveSessionId
 
             // Replace the transcript with the post-compress history so the
             // summarized bubbles actually disappear. `messages` is the same
@@ -590,6 +665,71 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
           } catch {
             notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
+          }
+        },
+        // /wake must stay in the gateway process that owns the Desktop wake
+        // lease. Sending it through slash.exec creates a separate HermesCLI in
+        // the slash worker, which can claim the machine-wide microphone lock
+        // while the Desktop UI still reports the GUI listener as off.
+        wake: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput } = resolved
+          const requested = ctx.arg.trim().toLowerCase()
+
+          if (requested && !['on', 'off', 'status'].includes(requested)) {
+            renderSlashOutput('usage: /wake [on|off|status]')
+
+            return
+          }
+
+          const status = async (): Promise<WakeStatusResponse> => {
+            const current = await requestGateway<WakeStatusResponse>('wake.status', {
+              client_capture: true,
+              surface: 'gui'
+            })
+
+            applyWakeStatus(current)
+
+            return current
+          }
+
+          try {
+            let action = requested
+
+            // Bare /wake is an authoritative toggle. Query the gateway instead
+            // of trusting a potentially stale renderer cache.
+            if (!action) {
+              action = (await status()).listening ? 'off' : 'on'
+            }
+
+            if (action === 'on') {
+              const started = await requestGateway<WakeStartResponse>(
+                'wake.start',
+                { persist: true, surface: 'gui', client_capture: true },
+                WAKE_START_TIMEOUT_MS
+              )
+
+              applyWakeStartResult(started)
+
+              if (!started?.started) {
+                renderSlashOutput(
+                  `Failed to start wake word: ${started?.hint?.trim() || started?.reason?.trim() || 'unknown error'}`
+                )
+
+                return
+              }
+            } else if (action === 'off') {
+              applyWakeStopResult(await requestGateway<WakeStopResponse>('wake.stop', { persist: true }))
+            }
+
+            renderSlashOutput(renderWakeStatus(await status()))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         // /handoff hands this session to a messaging platform. The platform is

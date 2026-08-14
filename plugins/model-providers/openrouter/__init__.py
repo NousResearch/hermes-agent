@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from agent.portal_tags import get_conversation_context
+from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -47,6 +48,43 @@ def _anthropic_reasoning_is_mandatory(model: str | None) -> bool:
 
 class OpenRouterProfile(ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
+
+    @staticmethod
+    def _clamp_reasoning_to_catalog(cfg: dict[str, Any], model: str | None) -> dict[str, Any]:
+        """Clamp ``cfg["effort"]`` to the model's catalog-advertised levels.
+
+        OpenRouter's /v1/models entries publish ``reasoning.supported_efforts``
+        per model (ported from PrimeIntellect-ai/prime-agent#1258). Sending an
+        unsupported effort (e.g. ``ultra`` to a route that stops at ``high``)
+        yields provider 4xx errors; clamp to the nearest LOWER supported level
+        instead. No-op when the catalog is unreachable, the model is unlisted,
+        or no supported_efforts list is published (None = all levels accepted).
+        """
+        effort = cfg.get("effort")
+        if not effort or cfg.get("enabled") is False:
+            return cfg
+        try:
+            from hermes_cli.models import (
+                clamp_reasoning_effort_to_supported,
+                openrouter_model_reasoning_capabilities,
+            )
+            caps = openrouter_model_reasoning_capabilities(model)
+            if not caps or not caps.get("supports_reasoning"):
+                return cfg
+            clamped = clamp_reasoning_effort_to_supported(
+                effort, caps.get("supported_efforts")
+            )
+        except Exception:
+            return cfg
+        if clamped and clamped != effort:
+            logger.debug(
+                "openrouter: clamped reasoning effort %r → %r for %s "
+                "(catalog supported_efforts=%s)",
+                effort, clamped, model, caps.get("supported_efforts"),
+            )
+            cfg = dict(cfg)
+            cfg["effort"] = clamped
+        return cfg
 
     def fetch_models(
         self,
@@ -95,7 +133,7 @@ class OpenRouterProfile(ProviderProfile):
         # (f2f4df064d). The ambient value is the session-lineage ROOT, so it
         # also stays stable for installs that opt out of the default
         # ``compression.in_place: true`` and across delegate-subagent trees.
-        sticky_key = get_conversation_context() or session_id
+        sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
         if sticky_key:
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
@@ -174,7 +212,9 @@ class OpenRouterProfile(ProviderProfile):
                 if cfg.get("enabled", True) is not False and effort and effort != "none":
                     top_level["verbosity"] = effort
             elif reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+                extra_body["reasoning"] = self._clamp_reasoning_to_catalog(
+                    dict(reasoning_config), model
+                )
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
@@ -182,7 +222,7 @@ class OpenRouterProfile(ProviderProfile):
         # backend server via this header, and aux calls pass no session_id, so
         # reading the ambient conversation keeps compression/vision/MoA traffic
         # on the same Grok backend as the conversation it belongs to.
-        grok_conv_id = get_conversation_context() or session_id
+        grok_conv_id = _cache_scope_from_session_id(get_conversation_context() or session_id)
         if grok_conv_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
             extra_headers["x-grok-conv-id"] = grok_conv_id
         if extra_headers:
@@ -204,7 +244,7 @@ openrouter = OpenRouterProfile(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
         "deepseek/deepseek-chat",
-        "google/gemini-3.6-flash",
+        "google/gemini-3.7-flash",
         "qwen/qwen3-plus",
     ),
 )

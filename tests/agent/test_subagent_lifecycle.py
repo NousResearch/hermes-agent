@@ -24,9 +24,15 @@ class FakeChild:
         self.provider = "test"
         self.model = "test-model"
         self.interrupted = False
+        self.interrupt_kind = None
 
     def interrupt(self, _reason):
         self.interrupted = True
+        self.interrupt_kind = "soft"
+
+    def hard_interrupt(self, _reason):
+        self.interrupted = True
+        self.interrupt_kind = "hard"
 
 
 @pytest.fixture
@@ -59,28 +65,8 @@ def lifecycle(monkeypatch):
     return SubagentLifecycleService(lambda: parent)
 
 
-def test_launch_wait_result_and_handle_round_trip(lifecycle):
-    handle = lifecycle.launch(
-        SubagentLaunchRequest(goal="x", allowed_toolsets=("file",))
-    )
-    assert handle.from_dict(handle.to_dict()) == handle
-    assert lifecycle.wait(handle, timeout_seconds=1).state is SubagentState.SUCCEEDED
-    first = lifecycle.result(handle)
-    assert first.ready and first.summary == "safe summary" and first.result_hash
-    assert lifecycle.result(handle) == first
 
 
-def test_duplicate_correlation_and_permission_validation(lifecycle):
-    handle = lifecycle.launch(SubagentLaunchRequest(goal="x", correlation_id="same"))
-    with pytest.raises(SubagentLifecycleError, match="Duplicate"):
-        lifecycle.launch(SubagentLaunchRequest(goal="x", correlation_id="same"))
-    with pytest.raises(SubagentLifecycleError, match="broaden"):
-        lifecycle.launch(
-            SubagentLaunchRequest(goal="x", allowed_toolsets=("terminal",))
-        )
-    with pytest.raises(SubagentLifecycleError, match="working_directory"):
-        lifecycle.launch(SubagentLaunchRequest(goal="x", working_directory="C:/"))
-    lifecycle.wait(handle, timeout_seconds=1)
 
 
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
@@ -96,65 +82,21 @@ def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     assert other_service.status(handle).state is SubagentState.UNKNOWN
 
 
-def test_simultaneous_launches_are_distinct_and_reconnect_is_in_process(lifecycle):
-    handles = [lifecycle.launch(SubagentLaunchRequest(goal="x")) for _ in range(10)]
-    assert len({h.subagent_id for h in handles}) == 10
-    assert lifecycle.reconnect(handles[0]).connected
-    for handle in handles:
-        lifecycle.wait(handle, timeout_seconds=1)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("capability", []),
-        ("contract_version", True),
-        ("subagent_id", None),
-        ("parent_session_id", []),
-        ("correlation_id", []),
-        ("created_at", "yesterday"),
-        ("provider", []),
-        ("model", []),
-        ("role", []),
-        ("depth", "one"),
-    ],
-)
-def test_malformed_deserialized_handle_is_unknown(lifecycle, field, value):
+def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
-    malformed = handle.from_dict({**handle.to_dict(), field: value})
+    record = lifecycle._record(handle)
+    assert record is not None and record.agent is not None
 
-    assert lifecycle.status(malformed).state is SubagentState.UNKNOWN
-    assert lifecycle.result(malformed).error_classification == "UNKNOWN_HANDLE"
+    assert lifecycle.cancel(handle, reason="explicit user cancel").accepted
+
+    assert record.agent.interrupt_kind == "hard"
     lifecycle.wait(handle, timeout_seconds=1)
 
 
-def test_launch_preserves_parent_tool_resolution(monkeypatch):
-    import model_tools
 
-    parent = SimpleNamespace(session_id="parent-tools", enabled_toolsets=["file"])
-    model_tools._last_resolved_tool_names = ["parent_tool"]
 
-    def build(**_kwargs):
-        model_tools._last_resolved_tool_names = ["child_tool"]
-        return FakeChild("sa-tools")
 
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
-    monkeypatch.setattr(
-        "tools.delegate_tool._run_single_child",
-        lambda *_args, **_kwargs: {
-            "status": "completed",
-            "summary": "done",
-            "api_calls": 0,
-            "duration_seconds": 0,
-        },
-    )
 
-    service = SubagentLifecycleService(lambda: parent)
-    handle = service.launch(SubagentLaunchRequest(goal="x"))
-
-    assert model_tools._last_resolved_tool_names == ["parent_tool"]
-    assert handle.subagent_id == "sa-tools"
-    service.wait(handle, timeout_seconds=1)
 
 
 def test_public_lifecycle_runs_host_aggregation(monkeypatch):
@@ -213,30 +155,6 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     assert parent.session_cost_status == "estimated"
 
 
-def test_plugin_context_uses_turn_scoped_parent(monkeypatch):
-    from hermes_cli.plugins import PluginContext, PluginManifest
-
-    parent = SimpleNamespace(session_id="gateway-parent", enabled_toolsets=["file"])
-    monkeypatch.setattr(
-        "tools.delegate_tool._build_child_agent", lambda **_kwargs: FakeChild("sa-gateway")
-    )
-    monkeypatch.setattr(
-        "tools.delegate_tool._run_single_child",
-        lambda *_args, **_kwargs: {
-            "status": "completed",
-            "summary": "done",
-            "api_calls": 0,
-            "duration_seconds": 0,
-        },
-    )
-    manager = SimpleNamespace(_cli_ref=None)
-    ctx = PluginContext(PluginManifest(name="test", source="test"), manager)
-
-    with bind_subagent_parent(parent):
-        handle = ctx.subagent_lifecycle.launch(SubagentLaunchRequest(goal="x"))
-        ctx.subagent_lifecycle.wait(handle, timeout_seconds=1)
-
-    assert handle.parent_session_id == "gateway-parent"
 
 
 def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):

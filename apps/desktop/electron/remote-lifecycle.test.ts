@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { profileSshOverride } from './connection-config'
 import {
   buildSpawnCommand,
   cleanupStale,
@@ -111,14 +112,38 @@ test('locateHermes falls back to the login-shell command -v probe', async () => 
   assert.equal(await locateHermes(ssh, ''), '/home/u/.local/bin/hermes')
 })
 
-test('locateHermes canonicalizes an installer wrapper to its executable target', async () => {
+test('locateHermes preserves an installer wrapper instead of resolving its interpreter', async () => {
+  // install.sh venv mode writes: exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "$@",
+  // where $HERMES_BIN is the venv python. The old canonicalization returned
+  // that interpreter, so `<python> --version` printed "Python x.y.z" and
+  // `<python> serve --help` failed outright (#74411). The wrapper itself is
+  // executable and forwards args correctly — return it untouched.
   const ssh = fakeSsh([
     [/command -v hermes/, '/home/u/.local/bin/hermes\n'],
     [/\[ -x .*\.local\/bin\/hermes/, 'OK'],
-    [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/hermes\n']
+    // If the removed python3 wrapper-parser were ever reintroduced, this rule
+    // would reward it with an interpreter path and the assertions below fail.
+    [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/python\n']
   ])
 
-  assert.equal(await locateHermes(ssh, ''), '/home/u/.hermes/hermes-agent/venv/bin/hermes')
+  assert.equal(await locateHermes(ssh, ''), '/home/u/.local/bin/hermes')
+  assert.ok(
+    !ssh.calls.some(cmd => cmd.includes('python3 -c')),
+    'locateHermes must not shell out to a python3 parser to rewrite the launcher'
+  )
+})
+
+test('locateHermes returns an explicit remoteHermesPath unchanged', async () => {
+  // The override half of #74411: an explicit remoteHermesPath pointing at a
+  // wrapper was also canonicalized to its interpreter, so overriding to
+  // ~/.local/bin/hermes changed nothing for affected users.
+  const ssh = fakeSsh([
+    [/\[ -x .*\.local\/bin\/hermes/, 'OK'],
+    [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/python\n']
+  ])
+
+  assert.equal(await locateHermes(ssh, '~/.local/bin/hermes'), '~/.local/bin/hermes')
+  assert.ok(!ssh.calls.some(cmd => cmd.includes('python3 -c')), 'an explicit remoteHermesPath must never be rewritten')
 })
 
 test('locateHermes falls back to ~/.local/bin/hermes when the login-shell probe misses', async () => {
@@ -420,6 +445,51 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
   assert.equal(result.tokenFingerprint, fingerprintToken('the-served-token'))
 })
 
+test('managed SSH maps a local scope to a different non-default remote profile', async () => {
+  const localScope = 'work'
+
+  const sshConfig = profileSshOverride(
+    {
+      profiles: {
+        [localScope]: {
+          mode: 'ssh',
+          host: 'remote-box',
+          remoteProfile: 'writer_2'
+        }
+      }
+    },
+    localScope
+  )
+
+  assert.equal(sshConfig?.remoteProfile, 'writer_2')
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '778\n'],
+    [/kill -0 778/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_BACKEND_READY port=52000\n']
+  ])
+
+  await connect(
+    connectDeps(ssh, {
+      profile: sshConfig?.remoteProfile,
+      adoptServedToken: async () => 'mapped-profile-token'
+    })
+  )
+
+  const spawn = ssh.calls.find(command => /setsid|nohup/.test(command)) || ''
+  assert.match(spawn, /--profile\b/)
+  assert.ok(spawn.includes('writer_2'))
+  assert.match(spawn, /serve\s+--isolated/)
+  assert.match(spawn, /\.hermes\/desktop-ssh\/[0-9a-f]{32}\/[0-9a-f]{16}\.token/)
+  assert.ok(!spawn.includes(' work'), 'the local Desktop scope must not become the remote profile')
+})
+
 test('connect() reuses a healthy dashboard when fingerprint + probe pass', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
@@ -438,6 +508,36 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
   assert.equal(result.remotePort, 40000)
   // never spawned
   assert.ok(!ssh.calls.some(c => /setsid/.test(c)), 'reuse path must not spawn a new dashboard')
+})
+
+test('connect() respawns when the requested remote profile differs from the lockfile profile', async () => {
+  const reuseToken = 'stored-token'
+  const lock = ownedLock({ profile: 'desktop-work', tokenFingerprint: fingerprintToken(reuseToken) })
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE'],
+    [/print\("OWNED"/, 'OWNED\n'],
+    [/kill 333/, ''],
+    [/--version/, 'Hermes Agent v0.18.2\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '890\n'],
+    [/kill -0 890/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=52050\n']
+  ])
+
+  const result = await connect(
+    connectDeps(ssh, { profile: 'default', reuseToken, adoptServedToken: async () => 'fresh' })
+  )
+
+  assert.equal(result.reused, false)
+  assert.ok(
+    ssh.calls.some(c => /setsid/.test(c)),
+    'profile mismatch must spawn a fresh dashboard'
+  )
 })
 
 test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {
@@ -730,6 +830,12 @@ test('buildSpawnCommand always uses serve, never dashboard', () => {
   assert.doesNotMatch(cmd, /\bdashboard\b/)
   assert.doesNotMatch(cmd, /--skip-build/)
   assert.doesNotMatch(cmd, /--no-open/)
+})
+
+test('buildSpawnCommand raises the SSH child file limit before execing Hermes', () => {
+  const cmd = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.match(cmd, /ulimit -n 65536 2>\/dev\/null \|\| true; exec env HERMES_DESKTOP=1/)
+  assert.ok(cmd.indexOf('ulimit -n 65536') < cmd.indexOf('serve --isolated'))
 })
 
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {

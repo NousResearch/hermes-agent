@@ -12,6 +12,7 @@ Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
+import json
 import logging
 import os
 import re
@@ -23,7 +24,6 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+    "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-5", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
     "opencode-go": ["kimi-k3", "kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.6-plus", "qwen3.5-plus"],
@@ -394,6 +395,25 @@ def _prompt_api_key(var: dict):
 
 def _print_setup_summary(config: dict, hermes_home):
     """Print the setup completion summary."""
+    # Provider readiness — the one thing setup absolutely must produce.
+    # Previously a user could cancel the API-key prompt mid-wizard (Enter →
+    # "Cancelled."), watch the wizard continue through Terminal/Gateway/Tools,
+    # and exit "successfully" with NO working model — believing they were set
+    # up. Say so loudly instead (consumer-onboarding audit finding #7).
+    try:
+        from hermes_cli.auth import resolve_provider
+
+        resolve_provider()
+        _provider_ready = True
+    except Exception:
+        _provider_ready = False
+    if not _provider_ready:
+        print()
+        print_warning("No inference provider is configured — Hermes cannot chat yet.")
+        print_info("  Finish this one step with either of:")
+        print_info("    hermes model            (pick any provider/model)")
+        print_info("    hermes setup --portal   (Nous Portal OAuth, no API key)")
+
     # Tool availability summary
     print()
     print_header("Tool Availability Summary")
@@ -744,6 +764,102 @@ def _prompt_container_resources(config: dict):
         pass
 
 
+def _prompt_vercel_sandbox_settings(config: dict):
+    """Prompt for Vercel Sandbox settings without exposing unsupported disk sizing."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Vercel Sandbox settings:")
+    print_info("  Filesystem persistence uses Vercel snapshots.")
+    print_info("  Snapshots restore files only; live processes do not continue after sandbox recreation.")
+
+    from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+
+    current_runtime = terminal.get("vercel_runtime") or "node24"
+    supported_label = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+    runtime = prompt(f"  Runtime ({supported_label})", current_runtime).strip() or current_runtime
+    if runtime not in _SUPPORTED_VERCEL_RUNTIMES:
+        print_warning(f"Unsupported Vercel runtime '{runtime}', keeping {current_runtime}.")
+        runtime = current_runtime if current_runtime in _SUPPORTED_VERCEL_RUNTIMES else "node24"
+    terminal["vercel_runtime"] = runtime
+    save_env_value("TERMINAL_VERCEL_RUNTIME", runtime)
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    terminal["container_persistent"] = prompt(
+        "  Persist filesystem with snapshots? (yes/no)", persist_label
+    ).lower() in {"yes", "true", "y", "1"}
+
+    current_cpu = terminal.get("container_cpu", 1)
+    cpu_str = prompt("  CPU cores", str(current_cpu))
+    try:
+        terminal["container_cpu"] = float(cpu_str)
+    except ValueError:
+        pass
+
+    current_mem = terminal.get("container_memory", 5120)
+    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
+    try:
+        terminal["container_memory"] = int(mem_str)
+    except ValueError:
+        pass
+
+    if terminal.get("container_disk", 51200) not in {0, 51200}:
+        print_warning("Vercel Sandbox does not support custom disk sizing; resetting container_disk to 51200.")
+    terminal["container_disk"] = 51200
+
+    print()
+    print_info("Vercel authentication:")
+    print_info("  Use a long-lived Vercel access token plus project/team IDs.")
+    linked_project = _read_nearest_vercel_project()
+    if linked_project:
+        print_info("  Found defaults in nearest .vercel/project.json.")
+
+    remove_env_value("VERCEL_OIDC_TOKEN")
+    token = prompt("    Vercel access token", get_env_value("VERCEL_TOKEN") or "", password=True)
+    project = prompt(
+        "    Vercel project ID",
+        get_env_value("VERCEL_PROJECT_ID") or linked_project.get("projectId", ""),
+    )
+    team = prompt(
+        "    Vercel team ID",
+        get_env_value("VERCEL_TEAM_ID") or linked_project.get("orgId", ""),
+    )
+    if token:
+        save_env_value("VERCEL_TOKEN", token)
+    if project:
+        save_env_value("VERCEL_PROJECT_ID", project)
+    if team:
+        save_env_value("VERCEL_TEAM_ID", team)
+
+
+def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
+    """Read project/team defaults from the nearest Vercel link file."""
+    current = (start or Path.cwd()).resolve()
+    if current.is_file():
+        current = current.parent
+
+    for directory in (current, *current.parents):
+        project_file = directory / ".vercel" / "project.json"
+        if not project_file.exists():
+            continue
+        try:
+            data = json.loads(project_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            key: value
+            for key, value in {
+                "projectId": data.get("projectId"),
+                "orgId": data.get("orgId"),
+            }.items()
+            if isinstance(value, str) and value.strip()
+        }
+    return {}
+
+
 # Tool categories and provider config are now in tools_config.py (shared
 # between `hermes tools` and `hermes setup tools`).
 
@@ -795,17 +911,12 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     config.clear()
     config.update(_refreshed)
 
-    # Derive the selected provider for downstream steps (vision setup).
-    selected_provider = None
-    _m = config.get("model")
-    if isinstance(_m, dict):
-        selected_provider = _m.get("provider")
-
     # Credential rotation, vision-backend selection, and TTS provider are no
     # longer prompted here. They have safe defaults (rotation off, vision
     # auto-detected from the main provider, TTS = Edge) and are configurable
     # on demand via `hermes auth add`, `hermes setup` vision, and
     # `hermes setup tts`. This keeps both quick and full setup thin.
+
 
     # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
@@ -880,8 +991,6 @@ def _install_neutts_deps() -> bool:
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
-    import subprocess
-    import sys
 
     wheel_url = (
         "https://github.com/KittenML/KittenTTS/releases/download/"
@@ -1230,11 +1339,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1442,6 +1552,46 @@ def setup_terminal_backend(config: dict):
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
 
+    elif selected_backend == "vercel_sandbox":
+        print_success("Terminal backend: Vercel Sandbox")
+        print_info("Cloud microVM sandboxes with snapshot-backed filesystem persistence.")
+        print_info("Requires the optional SDK: pip install 'hermes-agent[vercel]'")
+
+        try:
+            __import__("vercel")
+        except ImportError:
+            print_info("Installing vercel SDK...")
+            import subprocess
+
+            # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
+            # which() misses the uv Hermes installed. Bootstrapping one is
+            # welcome here — this is the interactive setup wizard, already
+            # mid-install, and the alternative tier is a pip that a `uv venv`
+            # venv may not even have.
+            from hermes_cli.managed_uv import ensure_uv
+
+            uv_bin = ensure_uv()
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "vercel"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "vercel"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("vercel SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[vercel]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        _prompt_vercel_sandbox_settings(config)
+
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
         print_info("Run commands on a remote machine via SSH.")
@@ -1495,6 +1645,8 @@ def setup_terminal_backend(config: dict):
     save_env_value("TERMINAL_ENV", selected_backend)
     if selected_backend == "modal":
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
+    if selected_backend == "vercel_sandbox":
+        save_env_value("TERMINAL_VERCEL_RUNTIME", config["terminal"].get("vercel_runtime", "node24"))
     save_config(config)
     print()
     print_success(f"Terminal backend set to: {selected_backend}")
@@ -2023,10 +2175,9 @@ def setup_gateway(config: dict):
 
     if not selected:
         print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
-        return
-
-    for idx in selected:
-        _configure_platform(platforms[idx])
+    else:
+        for idx in selected:
+            _configure_platform(platforms[idx])
 
     # ── Gateway Service Setup ──
     # Count any platform (built-in or plugin) the user configured during this
@@ -2078,160 +2229,67 @@ def setup_gateway(config: dict):
                     f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>"
                 )
 
-        # Offer to install the gateway as a system service
-        import platform as _platform
+    # ── Gateway Service Setup ──
+    # Runs UNCONDITIONALLY — even with zero platforms configured. A gateway
+    # without platforms is a supported mode (cron scheduler keeps running,
+    # and adapters come up automatically once tokens are added later, e.g.
+    # via `hermes import` or `hermes setup gateway`). Gating this on
+    # messaging config was the bug that left install-then-import machines
+    # with registered cron jobs and restored bot tokens but no process to
+    # serve them.
+    from hermes_cli.gateway import (
+        _is_service_running,
+        supports_systemd_services,
+        ensure_gateway_service,
+        systemd_restart,
+        launchd_restart,
+        UserSystemdUnavailableError,
+        SystemScopeRequiresRootError,
+        _system_scope_wizard_would_need_root,
+        _print_system_scope_remediation,
+    )
+    import platform as _platform
 
-        _is_linux = _platform.system() == "Linux"
-        _is_macos = _platform.system() == "Darwin"
-        _is_windows = _platform.system() == "Windows"
+    _is_macos = _platform.system() == "Darwin"
+    _is_windows = _platform.system() == "Windows"
+    supports_systemd = supports_systemd_services()
 
-        from hermes_cli.gateway import (
-            _is_service_installed,
-            _is_service_running,
-            supports_systemd_services,
-            has_conflicting_systemd_units,
-            has_legacy_hermes_units,
-            install_linux_gateway_from_setup,
-            print_systemd_scope_conflict_warning,
-            print_legacy_unit_warning,
-            systemd_start,
-            systemd_restart,
-            launchd_install,
-            launchd_start,
-            launchd_restart,
-            UserSystemdUnavailableError,
-            SystemScopeRequiresRootError,
-            _system_scope_wizard_would_need_root,
-            _print_system_scope_remediation,
-        )
-
-        service_installed = _is_service_installed()
-        service_running = _is_service_running()
-        supports_systemd = supports_systemd_services()
-        supports_service_manager = supports_systemd or _is_macos or _is_windows
-
-        print()
-        if supports_systemd and has_conflicting_systemd_units():
-            print_systemd_scope_conflict_warning()
-            print()
-
-        if supports_systemd and has_legacy_hermes_units():
-            print_legacy_unit_warning()
-            print()
-
-        if service_running:
-            if supports_systemd and _system_scope_wizard_would_need_root():
+    print()
+    if _is_service_running():
+        # Already running: only offer a restart when this setup pass may
+        # have changed platform config — a restart interrupts any active
+        # session, so it stays behind a prompt.
+        if supports_systemd and _system_scope_wizard_would_need_root():
+            _print_system_scope_remediation("restart")
+        elif any_messaging and prompt_yes_no(
+            "  Restart the gateway to pick up changes?", True
+        ):
+            try:
+                if supports_systemd:
+                    systemd_restart()
+                elif _is_macos:
+                    launchd_restart()
+                elif _is_windows:
+                    from hermes_cli import gateway_windows
+                    gateway_windows.restart()
+            except UserSystemdUnavailableError as e:
+                print_error("  Restart failed — user systemd not reachable:")
+                for line in str(e).splitlines():
+                    print(f"  {line}")
+            except SystemScopeRequiresRootError as e:
+                # Defense in depth: the pre-check above should have
+                # caught this, but a race (unit file appearing mid-run)
+                # could still land here. Previously this exited the
+                # whole wizard via sys.exit(1).
+                print_error(f"  Restart failed: {e}")
                 _print_system_scope_remediation("restart")
-            elif prompt_yes_no("  Restart the gateway to pick up changes?", True):
-                try:
-                    if supports_systemd:
-                        systemd_restart()
-                    elif _is_macos:
-                        launchd_restart()
-                    elif _is_windows:
-                        from hermes_cli import gateway_windows
-                        gateway_windows.restart()
-                except UserSystemdUnavailableError as e:
-                    print_error("  Restart failed — user systemd not reachable:")
-                    for line in str(e).splitlines():
-                        print(f"  {line}")
-                except SystemScopeRequiresRootError as e:
-                    # Defense in depth: the pre-check above should have
-                    # caught this, but a race (unit file appearing mid-run)
-                    # could still land here. Previously this exited the
-                    # whole wizard via sys.exit(1).
-                    print_error(f"  Restart failed: {e}")
-                    _print_system_scope_remediation("restart")
-                except Exception as e:
-                    print_error(f"  Restart failed: {e}")
-        elif service_installed:
-            if supports_systemd and _system_scope_wizard_would_need_root():
-                _print_system_scope_remediation("start")
-            elif prompt_yes_no("  Start the gateway service?", True):
-                try:
-                    if supports_systemd:
-                        systemd_start()
-                    elif _is_macos:
-                        launchd_start()
-                    elif _is_windows:
-                        from hermes_cli import gateway_windows
-                        gateway_windows.start()
-                except UserSystemdUnavailableError as e:
-                    print_error("  Start failed — user systemd not reachable:")
-                    for line in str(e).splitlines():
-                        print(f"  {line}")
-                except SystemScopeRequiresRootError as e:
-                    print_error(f"  Start failed: {e}")
-                    _print_system_scope_remediation("start")
-                except Exception as e:
-                    print_error(f"  Start failed: {e}")
-        elif supports_service_manager:
-            if supports_systemd:
-                svc_name = "systemd"
-            elif _is_macos:
-                svc_name = "launchd"
-            else:
-                svc_name = "Scheduled Task"
-            if prompt_yes_no(
-                f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
-                True,
-            ):
-                try:
-                    installed_scope = None
-                    did_install = False
-                    started_inline = False
-                    if supports_systemd:
-                        installed_scope, did_install = install_linux_gateway_from_setup(force=False)
-                    elif _is_macos:
-                        launchd_install(force=False)
-                        did_install = True
-                    else:
-                        # gateway_windows.install() registers the Scheduled
-                        # Task AND starts it immediately (via schtasks /Run
-                        # or a direct spawn fallback), so no separate start
-                        # prompt is needed here.
-                        from hermes_cli import gateway_windows
-                        gateway_windows.install(force=False)
-                        did_install = True
-                        started_inline = True
-                    print()
-                    if did_install and not started_inline and prompt_yes_no("  Start the service now?", True):
-                        try:
-                            if supports_systemd:
-                                systemd_start(system=installed_scope == "system")
-                            elif _is_macos:
-                                launchd_start()
-                        except UserSystemdUnavailableError as e:
-                            print_error("  Start failed — user systemd not reachable:")
-                            for line in str(e).splitlines():
-                                print(f"  {line}")
-                        except SystemScopeRequiresRootError as e:
-                            print_error(f"  Start failed: {e}")
-                            _print_system_scope_remediation("start")
-                        except Exception as e:
-                            print_error(f"  Start failed: {e}")
-                except Exception as e:
-                    print_error(f"  Install failed: {e}")
-                    print_info("  You can try manually: hermes gateway install")
-            else:
-                print_info("  You can install later: hermes gateway install")
-                if supports_systemd and os.geteuid() == 0:  # windows-footgun: ok — guarded by supports_systemd (Linux only)
-                    print_info("  Or as a boot-time service: hermes gateway install --system")
-                print_info("  Or run in foreground:  hermes gateway")
-        else:
-            from hermes_constants import is_container
-            if is_container():
-                print_info("Start the gateway to bring your bots online:")
-                print_info("   hermes gateway run          # Run as container main process")
-                print_info("")
-                print_info("For automatic restarts, use a Docker restart policy:")
-                print_info("   docker run --restart unless-stopped ...")
-                print_info("   docker restart <container>  # Manual restart")
-            else:
-                print_info("Start the gateway to bring your bots online:")
-                print_info("   hermes gateway              # Run in foreground")
+            except Exception as e:
+                print_error(f"  Restart failed: {e}")
+    else:
+        # Not running: install (if needed) and start, no questions asked.
+        ensure_gateway_service(context="setup")
 
-        print_info("━" * 50)
+    print_info("━" * 50)
 
 
 # =============================================================================
@@ -3004,6 +3062,11 @@ def run_setup_wizard(args):
     # Section 4: Messaging Platforms
     if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
         setup_gateway(config)
+    else:
+        # Section skipped (migrated config) — still make sure the gateway
+        # service exists so cron jobs and migrated platforms actually run.
+        from hermes_cli.gateway import ensure_gateway_service
+        ensure_gateway_service(context="setup")
 
     # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
@@ -3079,6 +3142,12 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     if gateway_choice == 0:
         setup_gateway(config)
         save_config(config)
+    else:
+        # Messaging skipped — still install/start the gateway service so cron
+        # jobs run and platforms come alive as soon as tokens are added later
+        # (e.g. via `hermes import` from another machine).
+        from hermes_cli.gateway import ensure_gateway_service
+        ensure_gateway_service(context="setup")
 
     print()
     print_success("Setup complete! You're ready to go.")
@@ -3177,7 +3246,6 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
 
     Either way nothing is enabled that the user did not explicitly choose.
     """
-    from hermes_cli.config import load_config
 
     print()
     print_header("Blank Slate Setup")

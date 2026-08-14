@@ -20,7 +20,8 @@ to the agent.
 ## How it works
 
 1. With `wake_word.enabled: true` (or after `/wake on`), a lightweight hotword
-   detector listens on your default microphone.
+   detector listens on your configured input device, or the process default
+   microphone when `wake_word.input_device` is unset.
 2. When it hears the wake phrase it pauses itself (freeing the mic), starts a new
    session, and records one utterance with voice mode's silence detection.
 3. Your speech is transcribed and sent to the agent. After it replies, the
@@ -33,6 +34,43 @@ On the desktop app, a hands-free voice conversation can be ended by simply
 spoken command ends the conversation instead of being sent to the agent. Only a
 whole-utterance stop command matches, so a real request like "stop the docker
 container" still goes through normally.
+
+
+
+## Remote desktop (client capture)
+
+When the desktop app connects to a **remote** Hermes backend (for example a
+headless Docker host or a machine in another room), the backend often has **no
+microphone**. Server-side PortAudio then fails with “Failed to open the
+wake-word microphone.”
+
+Hermes supports **client capture** for that case:
+
+1. The desktop arms wake with `capture: client` (automatic for the GUI when the
+   backend has no local input device, or set explicitly below).
+2. openWakeWord still runs **on the backend** (same engines, same models).
+3. The desktop opens the **local Mac/PC microphone**, resamples to 16 kHz mono
+   int16, and streams short frames via the `wake.feed` RPC.
+4. On detection the backend emits `wake.detected` as usual; the desktop starts
+   the normal voice pipeline on the client mic.
+
+```yaml
+wake_word:
+  enabled: true
+  capture: auto    # auto | local | client
+  # auto   — local PortAudio unless the desktop arms with client_capture
+  # local  — always open the backend mic (CLI/TUI default)
+  # client — always expect wake.feed PCM from the desktop (remote-friendly)
+```
+
+The desktop GUI always passes `client_capture: true` on `wake.start`, so remote
+backends without a mic arm in client mode automatically. CLI and TUI keep local
+capture unless you set `capture: client` explicitly.
+
+Privacy note: with client capture, wake PCM travels over the authenticated
+desktop↔backend WebSocket (same channel as the rest of the session). Detection
+still does not send audio to third-party wake APIs; the engine is local to the
+backend process.
 
 ## Engines
 
@@ -80,6 +118,8 @@ wake_word:
 wake_word:
   enabled: false
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
+  input_device: null           # PortAudio input index or device-name substring; null = process default
+  capture: auto               # auto | local | client — where PCM is captured (see Remote desktop)
   provider: openwakeword      # "openwakeword" (free, local) | "sherpa" (free, any phrase) | "porcupine"
   phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
@@ -94,6 +134,11 @@ wake_word:
 
 `sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
 `openwakeword` and `porcupine` blocks select the actual detection model.
+
+`input_device` is passed directly to the wake listener's PortAudio
+(`sounddevice`) stream. Use either a numeric device index or an unambiguous
+device-name substring. This setting only changes wake-word capture; desktop
+push-to-talk still uses the desktop application's microphone path.
 
 ### Reducing false triggers on ambient speech
 
@@ -263,6 +308,27 @@ but the phrase never fires. Hermes detects this (`/wake status` shows
 Fix: System Settings → Privacy & Security → Microphone → enable the Hermes
 backend (it may appear as your terminal, `python`, or Hermes), then toggle the
 wake word off and on.
+
+### "Listening" but receives silence (Windows)
+
+Desktop push-to-talk and wake-word capture use different microphone paths.
+Push-to-talk uses the desktop application's browser capture, while the
+wake-word listener opens a PortAudio stream in the Python backend. One can work
+while the other selects a silent or unusable Windows input.
+
+`/wake status` reports the selected input device and Windows audio host API.
+When it reports silence, set `wake_word.input_device` to the numeric index or an
+unambiguous name of the working PortAudio input, then toggle the wake word:
+
+```bash
+hermes config set wake_word.input_device "Microphone Array"
+```
+
+Use `null` to return to the process default:
+
+```bash
+hermes config set wake_word.input_device null
+```
 
 ## Notes & limits
 

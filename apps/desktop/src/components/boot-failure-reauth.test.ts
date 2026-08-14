@@ -20,6 +20,8 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     remoteOauthConnected: false,
     remoteTokenPreview: null,
     remoteTokenSet: false,
+    secureTokenStorage: true,
+    remoteTokenPlainText: false,
     remoteUrl: 'https://box:9119',
     cloudOrg: '',
     sshHost: '',
@@ -27,6 +29,7 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     sshPort: null,
     sshKeyPath: '',
     sshRemoteHermesPath: '',
+    sshRemoteProfile: '',
     ...overrides
   }
 }

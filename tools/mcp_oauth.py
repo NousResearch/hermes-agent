@@ -1220,6 +1220,61 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     return OAuthClientMetadata.model_validate(metadata_kwargs)
 
 
+def _invalidate_tokens_on_client_change(
+    storage: "HermesTokenStorage",
+    new_client_id: str,
+    new_client_secret: str | None,
+) -> None:
+    """Drop cached tokens when the configured OAuth client identity changes.
+
+    Tokens are minted for a specific ``client_id``: after the user edits
+    ``oauth.client_id`` / ``oauth.client_secret`` in config.yaml (or switches
+    from dynamic registration to a pre-registered client), the old tokens are
+    unusable — the token endpoint rejects their refresh with
+    ``invalid_client``. Pre-registered clients are deliberately exempt from
+    the ``invalid_client`` auto-poison path (config-supplied identity can't
+    be healed by re-registration), so without this check the stale tokens
+    wedge every request until the user manually wipes
+    ``~/.hermes/mcp-tokens/<server>.*``.
+
+    Compares the on-disk ``client.json`` identity against the incoming
+    config identity BEFORE the new client info overwrites it. Matching
+    identity is a no-op so live sessions and valid tokens are preserved.
+    Port of cline/cline#12983's "invalidate tokens when OAuth client
+    changes" invariant.
+    """
+    existing = _read_json(storage._client_info_path())
+    if not isinstance(existing, dict):
+        return
+    old_client_id = existing.get("client_id")
+    if not old_client_id:
+        return
+    old_client_secret = existing.get("client_secret") or None
+    if old_client_id == new_client_id and old_client_secret == (
+        new_client_secret or None
+    ):
+        return
+    removed = False
+    for path in (storage._tokens_path(), storage._meta_path()):
+        try:
+            if path.exists():
+                path.unlink()
+                removed = True
+        except OSError as exc:  # non-fatal — stale tokens fail later anyway
+            logger.warning(
+                "MCP OAuth '%s': could not remove stale %s after client "
+                "change: %s", storage._server_name, path.name, exc,
+            )
+    if removed:
+        logger.warning(
+            "MCP OAuth '%s': configured OAuth client changed (client_id %r "
+            "-> %r); discarded tokens minted under the previous client. "
+            "Re-authorize with: hermes mcp login %s",
+            storage._server_name, old_client_id, new_client_id,
+            storage._server_name,
+        )
+
+
 def _maybe_preregister_client(
     storage: "HermesTokenStorage",
     cfg: dict,
@@ -1231,6 +1286,9 @@ def _maybe_preregister_client(
         return
     if OAuthClientInformationFull is None:
         _ensure_sdk_loaded()
+    _invalidate_tokens_on_client_change(
+        storage, client_id, cfg.get("client_secret")
+    )
     port = cfg["_resolved_port"]
     redirect_uri = _resolve_redirect_uri(cfg, port)
 

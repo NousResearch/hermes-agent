@@ -38,8 +38,32 @@ reference.
 from __future__ import annotations
 
 import copy
-import os
 from typing import Any, Callable, Dict, List, Tuple
+
+#: Auto-migration support floor. Configs whose on-disk ``_config_version`` is
+#: below this are NOT auto-migrated any more (policy decision, July 2026):
+#: v12 predates roughly two years of releases, and carrying the sub-v12
+#: migration steps (plus the env bridges they consumed, e.g.
+#: HERMES_TOOL_PROGRESS*) forever is not worth it. Below-floor configs are
+#: left byte-for-byte untouched — the process continues with the config as-is
+#: (defaults deep-merged at read time, matching the non-fatal posture used
+#: for unparseable configs) and a clear message tells the user how to
+#: proceed. The removed steps were the <12 targets: v4 (tool-progress .env →
+#: config.yaml), v5 (timezone seed), v9 (clear ANTHROPIC_TOKEN).
+SUPPORT_FLOOR_VERSION = 12
+
+
+def support_floor_message() -> str:
+    """Human-facing explanation shown when a config is below the floor."""
+    from hermes_constants import display_hermes_home
+
+    return (
+        f"This config predates version {SUPPORT_FLOOR_VERSION} (~2 years old) "
+        "and can no longer be auto-migrated. Back up "
+        f"{display_hermes_home()}/config.yaml and run `hermes setup` to "
+        f"regenerate, or manually set _config_version: {SUPPORT_FLOOR_VERSION} "
+        "after reviewing the changelog."
+    )
 
 
 def _cfg():
@@ -47,73 +71,6 @@ def _cfg():
     from hermes_cli import config
 
     return config
-
-
-def _migrate_to_4(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    get_env_value = _c.get_env_value
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    display = config.get("display", {})
-    if not isinstance(display, dict):
-        display = {}
-    if "tool_progress" not in display:
-        old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
-        old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
-        if old_enabled and old_enabled.lower() in {"false", "0", "no"}:
-            display["tool_progress"] = "off"
-            results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
-        elif old_mode and old_mode.lower() in {"new", "all", "verbose"}:
-            display["tool_progress"] = old_mode.lower()
-            results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
-        else:
-            display["tool_progress"] = "all"
-            results["config_added"].append("display.tool_progress=all (default)")
-        config["display"] = display
-        _persist_migration(config)
-        if not quiet:
-            print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
-
-
-def _migrate_to_5(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 4 → 5: add timezone field ──
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    if "timezone" not in config:
-        old_tz = os.getenv("HERMES_TIMEZONE", "")
-        if old_tz and old_tz.strip():
-            config["timezone"] = old_tz.strip()
-            results["config_added"].append(f"timezone={old_tz.strip()} (from HERMES_TIMEZONE)")
-        else:
-            config["timezone"] = ""
-            results["config_added"].append("timezone= (empty, uses server-local)")
-        _persist_migration(config)
-        if not quiet:
-            tz_display = config["timezone"] or "(server-local)"
-            print(f"  ✓ Added timezone to config.yaml: {tz_display}")
-
-
-def _migrate_to_9(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
-    # The new Anthropic auth flow no longer uses this env var.
-    _c = _cfg()
-    get_env_value = _c.get_env_value
-    save_env_value = _c.save_env_value
-
-    try:
-        old_token = get_env_value("ANTHROPIC_TOKEN")
-        if old_token:
-            save_env_value("ANTHROPIC_TOKEN", "")
-            if not quiet:
-                print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
-    except Exception:
-        pass
 
 
 def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
@@ -687,14 +644,124 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 33 → 34: one-time personality reset (post-#81946 unification) ──
+    # Personality persistence used to be split per surface: the TUI/desktop
+    # wrote the NAME to display.personality while the CLI/gateway wrote the
+    # rendered TEXT into agent.system_prompt (and their "/personality none"
+    # only blanked the text, leaving the name behind). When #81946 made
+    # display.personality authoritative everywhere, stale names written years
+    # ago resurrected personalities users had already turned off ("kawaii
+    # defaults on after updating"). There is no way to know which of the two
+    # divergent fields reflects the user's intent, so reset the selection to
+    # none once and tell the user how to re-enable it. Two scrubs:
+    #
+    # 1. display.personality → "" (announce the old name).
+    # 2. agent.system_prompt → "" ONLY when it verbatim-equals the rendered
+    #    text of a known personality — that shape was written by the old
+    #    CLI/gateway /personality, never typed by hand. Any other text is a
+    #    user-owned manual prompt and is never touched.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    from hermes_cli.personality import (
+        available_personalities,
+        normalize_personality_name,
+        prompt_text,
+        render_personality_prompt,
+    )
+
+    config = read_raw_config()
+    touched = False
+
+    raw_display = config.get("display")
+    old_name = ""
+    if isinstance(raw_display, dict):
+        old_name = normalize_personality_name(raw_display.get("personality", ""))
+        if old_name:
+            raw_display["personality"] = ""
+            config["display"] = raw_display
+            touched = True
+
+    raw_agent = config.get("agent")
+    scrubbed_text = False
+    if isinstance(raw_agent, dict):
+        manual = prompt_text(raw_agent.get("system_prompt", ""))
+        if manual:
+            rendered = {
+                render_personality_prompt(defn)
+                for defn in available_personalities(config).values()
+            }
+            if manual in rendered:
+                raw_agent["system_prompt"] = ""
+                config["agent"] = raw_agent
+                touched = True
+                scrubbed_text = True
+
+    if touched:
+        _persist_migration(config)
+        results["config_added"].append("display.personality=none (one-time reset)")
+        if not quiet:
+            if old_name:
+                print(
+                    f"  ✓ Personality reset to none (was '{old_name}'). Personality "
+                    "state was previously saved inconsistently across surfaces and "
+                    "could re-enable a personality you had turned off. "
+                    f"Run /personality {old_name} to turn it back on."
+                )
+            if scrubbed_text:
+                print(
+                    "  ✓ Removed personality text from agent.system_prompt (written "
+                    "by an older /personality). That field is now reserved for "
+                    "manual system prompts; personalities live in display.personality."
+                )
+
+
+def _migrate_to_35(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 34 → 35: background process notifications → concise ──
+    # The old default mode 'all' pushed the raw output tail of every finished
+    # background process into the chat ("[Background process proc_x finished
+    # with exit code 0~ Here's the final output: ...]" walls). The new
+    # 'concise' mode renders a one-line status message instead (with a short
+    # output tail on failures) and is the new default. Move users still on
+    # 'all' — the old implicit default, almost never chosen on purpose — to
+    # 'concise'. Explicit non-default choices (result / error / off) are the
+    # user's own and are preserved. Users with the key unset inherit the new
+    # default automatically at read time (no write needed).
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_display = config.get("display")
+    if isinstance(raw_display, dict):
+        raw_val = raw_display.get("background_process_notifications")
+        if isinstance(raw_val, str) and raw_val.strip().lower() == "all":
+            raw_display["background_process_notifications"] = "concise"
+            config["display"] = raw_display
+            _persist_migration(config)
+            results["config_added"].append(
+                "display.background_process_notifications=concise (was: all)"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Background process notifications switched from 'all' to "
+                    "'concise' — completions now show a one-line status message "
+                    "instead of the raw output dump. Set "
+                    "display.background_process_notifications: all to restore "
+                    "the old behavior."
+                )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: version captured before the ladder started. Order matters: later steps may
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
-    (4, _migrate_to_4),
-    (5, _migrate_to_5),
-    (9, _migrate_to_9),
+    # v12 is the support floor: configs already AT v12 (or newer) still get
+    # every remaining step below. Only configs BELOW 12 are refused by the
+    # floor gate in run_migrations().
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
@@ -708,6 +775,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (31, _migrate_to_31),
     (32, _migrate_to_32),
     (33, _migrate_to_33),
+    (34, _migrate_to_34),
+    (35, _migrate_to_35),
 )
 
 

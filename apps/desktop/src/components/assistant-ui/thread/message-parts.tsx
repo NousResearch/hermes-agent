@@ -8,6 +8,8 @@ import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useSta
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
+import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
@@ -16,6 +18,7 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
+import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 
@@ -53,6 +56,25 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
     return null
   }
 
+  // An inter-agent delivery run through the terminal tool renders as the
+  // compact "Messaged X" / "Message from X" notices, not a transcript row
+  // (Grok-bots parity; the receiving side already renders notices via
+  // AGENT_MESSAGE_RE). Non-delivery terminal calls fall through unchanged.
+  if (props.toolName === 'terminal' && !props.isError) {
+    const command = typeof props.args?.command === 'string' ? props.args.command : ''
+
+    if (deliveryTargetFromCommand(command)) {
+      return <AgentDeliveryNotice {...props} />
+    }
+  }
+
+  // A reaction's UI is the emoji landing on the bubble (message.reaction
+  // event) — a "React To Message" tool block next to it would be the agent
+  // narrating its own tapback. Failures still render so they're debuggable.
+  if (props.toolName === 'react_to_message' && !props.isError) {
+    return null
+  }
+
   if (props.toolName === 'delegate_task') {
     return <DelegateToolPart {...props} />
   }
@@ -63,6 +85,10 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
 
   if (props.toolName === 'clarify') {
     return <ClarifyTool {...props} />
+  }
+
+  if (props.toolName === 'setup_mcp') {
+    return <McpSetupTool {...props} />
   }
 
   return <ToolFallback {...props} />
@@ -242,7 +268,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       disableArtifacts
       isRunning={status.type === 'running' || messageRunning}
-      text={text.trimStart()}
+      text={separateGluedReasoningBlocks(text.trimStart())}
     />
   )
 }

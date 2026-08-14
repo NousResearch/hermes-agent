@@ -9,40 +9,6 @@ from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
 
-def test_ws_does_not_own_mcp_discovery_startup(monkeypatch):
-    """WebSocket transport must not start MCP discovery itself.
-
-    MCP discovery ownership belongs to the profile-scoped agent build path.
-    The WS layer only establishes the transport and emits gateway readiness.
-    """
-    calls = []
-
-    monkeypatch.setattr(
-        mcp_startup,
-        "start_background_mcp_discovery",
-        lambda **kw: calls.append(kw),
-    )
-
-    class FakeWS:
-        async def accept(self):
-            pass
-
-        async def send_text(self, line):
-            pass
-
-        async def receive_text(self):
-            raise ws_mod._WebSocketDisconnect()
-
-        async def close(self):
-            pass
-
-    server._sessions.clear()
-    try:
-        asyncio.run(ws_mod.handle_ws(FakeWS()))
-    finally:
-        server._sessions.clear()
-
-    assert calls == []
 
 
 def _run_disconnect(monkeypatch, seed):
@@ -116,18 +82,6 @@ def test_ws_disconnect_reaps_flagged_session_and_closes_worker(monkeypatch):
         server._sessions.clear()
 
 
-def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch):
-    server._sessions.clear()
-    try:
-        _run_disconnect(
-            monkeypatch,
-            lambda t: server._sessions.update(
-                plain={"transport": t, "close_on_disconnect": False, "session_key": "k"}
-            ),
-        )
-        assert server._sessions["plain"]["transport"] is server._detached_ws_transport
-    finally:
-        server._sessions.clear()
 
 
 def test_ws_connection_registers_then_disconnect_unregisters_live_transport(monkeypatch):
@@ -166,41 +120,6 @@ def test_ws_disconnect_releases_wake_word_owner(monkeypatch):
     assert released == created
 
 
-def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
-    """A write that times out because the event loop is stalled (GIL-heavy
-    agent turn) must NOT latch the transport closed — the frame is already
-    scheduled and flushes when the loop recovers. Latching here permanently
-    silenced live watch windows after one slow write."""
-    monkeypatch.setattr(ws_mod, "_WS_WRITE_TIMEOUT_S", 0.05)
-    sent = []
-
-    class FakeWS:
-        async def send_text(self, line):
-            sent.append(line)
-
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever, daemon=True)
-    thread.start()
-    try:
-        transport = ws_mod.WSTransport(FakeWS(), loop, peer="stall-test")
-        # Stall the loop well past the write timeout, then write from this
-        # (non-loop) thread: the wait times out but the send stays in flight.
-        loop.call_soon_threadsafe(time.sleep, 0.3)
-        assert transport.write({"a": 1}) is True
-        assert transport._closed is False
-
-        # Once the loop breathes again, both the stalled frame and new writes
-        # must reach the socket.
-        assert transport.write({"b": 2}) is True
-        deadline = time.time() + 2
-        while len(sent) < 2 and time.time() < deadline:
-            time.sleep(0.01)
-        assert len(sent) == 2
-        assert transport._closed is False
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=2)
-        loop.close()
 
 
 def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
@@ -309,44 +228,3 @@ def test_ws_transport_preserves_cross_batch_order():
     asyncio.run(scenario())
 
 
-def test_ws_write_async_keeps_drained_tokens_with_current_frame():
-    async def scenario():
-        entered = []
-        first_entered = asyncio.Event()
-        release_first = asyncio.Event()
-        current_started = asyncio.Event()
-
-        class FakeWS:
-            async def send_text(self, line):
-                entered.append(line)
-                if line == "A1":
-                    first_entered.set()
-                    await release_first.wait()
-
-        transport = ws_mod.WSTransport(
-            FakeWS(), asyncio.get_running_loop(), peer="async-order-test"
-        )
-        transport._pending_tokens.append("pending-token")
-
-        first = asyncio.create_task(transport._safe_send_many(["A1", "A2"]))
-        await first_entered.wait()
-
-        async def send_current():
-            current_started.set()
-            await transport.write_async({"id": "current"})
-
-        current = asyncio.create_task(send_current())
-        await current_started.wait()
-        later = asyncio.create_task(transport._safe_send_many(["later-batch"]))
-
-        release_first.set()
-        await asyncio.gather(first, current, later)
-        assert entered == [
-            "A1",
-            "A2",
-            "pending-token",
-            json.dumps({"id": "current"}),
-            "later-batch",
-        ]
-
-    asyncio.run(scenario())

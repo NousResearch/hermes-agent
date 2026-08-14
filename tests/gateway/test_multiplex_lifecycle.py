@@ -1,6 +1,8 @@
 """Phase 4: lifecycle guard + per-profile observability."""
 import pytest
 
+from gateway.config import GatewayConfig
+
 
 class TestServedProfilesStatus:
     def test_write_and_read_served_profiles(self, tmp_path, monkeypatch):
@@ -17,27 +19,30 @@ class TestServedProfilesStatus:
         finally:
             importlib.reload(status)
 
-    def test_served_profiles_absent_by_default(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import importlib
-        import gateway.status as status
-        importlib.reload(status)
-        try:
-            status.write_runtime_status(gateway_state="running")
-            rec = status.read_runtime_status()
-            assert "served_profiles" not in rec
-        finally:
-            importlib.reload(status)
+
+def test_cron_profile_homes_follow_allowlist(tmp_path, monkeypatch):
+    """The helper wired into in-process cron returns only selected profiles."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    for name in ("worker", "guest"):
+        (default_home / "profiles" / name).mkdir(parents=True)
+
+    import gateway.run as gateway_run
+
+    homes = gateway_run._multiplex_profile_homes(
+        GatewayConfig(
+            multiplex_profiles=True,
+            multiplex_profile_allowlist=["worker"],
+        )
+    )
+
+    assert [name for name, _home in homes] == ["default", "worker"]
 
 
 class TestNamedProfileMultiplexerGuard:
     """_guard_named_profile_under_multiplexer is inert unless all conditions hold."""
 
-    def test_inert_for_default_profile(self, monkeypatch):
-        from hermes_cli import gateway as gw
-        monkeypatch.setattr(gw, "_profile_suffix", lambda: "")
-        # Should return without raising (default profile => guard N/A).
-        gw._guard_named_profile_under_multiplexer(force=False)
 
     def test_force_bypasses(self, monkeypatch):
         from hermes_cli import gateway as gw
@@ -68,37 +73,50 @@ class TestNamedProfileMultiplexerGuard:
         monkeypatch.setattr(status, "_pid_from_record", lambda rec: 12345)
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
 
-    def test_env_forces_guard_even_without_config(self, monkeypatch, tmp_path):
-        """GATEWAY_MULTIPLEX_PROFILES=true must trip the guard even when the
-        default profile's config.yaml has no multiplex_profiles key — the hosted
-        case where multiplex is forced purely by the env stamp."""
-        from hermes_cli import gateway as gw
-        self._fake_running_default_gateway(monkeypatch, tmp_path)
-        # No config.yaml written → the only signal is the env override.
-        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "true")
-        with pytest.raises(SystemExit):
-            gw._guard_named_profile_under_multiplexer(force=False)
-
-    def test_env_false_disables_guard_over_config_true(self, monkeypatch, tmp_path):
-        """GATEWAY_MULTIPLEX_PROFILES=false wins over a config.yaml opt-in, so
-        the guard stays inert (symmetric with the config precedence)."""
-        from hermes_cli import gateway as gw
+    def test_unset_allowlist_preserves_historical_guard(self, monkeypatch, tmp_path):
         self._fake_running_default_gateway(monkeypatch, tmp_path)
         (tmp_path / "config.yaml").write_text(
-            "multiplex_profiles: true\n", encoding="utf-8"
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
         )
-        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "false")
-        # Env forces OFF → guard must NOT raise.
+
+        from hermes_cli import gateway as gw
+
+        with pytest.raises(SystemExit, match="1"):
+            gw._guard_named_profile_under_multiplexer(force=False)
+
+    def test_served_profile_is_still_guarded(self, monkeypatch, tmp_path):
+        self._fake_running_default_gateway(monkeypatch, tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  multiplex_profiles: true\n"
+            "  multiplex_profile_allowlist:\n"
+            "    - Coder\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli import gateway as gw
+
+        with pytest.raises(SystemExit, match="1"):
+            gw._guard_named_profile_under_multiplexer(force=False)
+
+    @pytest.mark.parametrize(
+        "allowlist_yaml",
+        ["[]", "[worker]", "coder"],
+    )
+    def test_unserved_profile_may_run_standalone(
+        self, monkeypatch, tmp_path, allowlist_yaml
+    ):
+        self._fake_running_default_gateway(monkeypatch, tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  multiplex_profiles: true\n"
+            f"  multiplex_profile_allowlist: {allowlist_yaml}\n",
+            encoding="utf-8",
+        )
+
+        from hermes_cli import gateway as gw
+
         gw._guard_named_profile_under_multiplexer(force=False)
 
-    def test_blank_env_falls_through_to_config_and_raises(self, monkeypatch, tmp_path):
-        """A blank env value must not shadow a config.yaml opt-in: the guard
-        still trips on the config value."""
-        from hermes_cli import gateway as gw
-        self._fake_running_default_gateway(monkeypatch, tmp_path)
-        (tmp_path / "config.yaml").write_text(
-            "multiplex_profiles: true\n", encoding="utf-8"
-        )
-        monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "")
-        with pytest.raises(SystemExit):
-            gw._guard_named_profile_under_multiplexer(force=False)
+

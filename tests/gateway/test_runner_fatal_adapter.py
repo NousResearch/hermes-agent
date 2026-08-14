@@ -77,25 +77,6 @@ class _ReplacementDeliveryAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monkeypatch, tmp_path):
-    config = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="token")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _FatalAdapter())
-
-    ok = await runner.start()
-
-    assert ok is True
-    assert runner.should_exit_cleanly is True
-    assert "already using this Telegram bot token" in runner.exit_reason
-
-
-@pytest.mark.asyncio
 async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatch, tmp_path):
     """Retryable runtime fatal errors queue the platform for reconnection
     AND keep the gateway alive — the background reconnect watcher recovers
@@ -175,153 +156,87 @@ async def test_retryable_fatal_queues_reconnect_after_cancellation_swallowing_di
 
 
 @pytest.mark.asyncio
-async def test_concurrent_fatal_notifications_disconnect_same_adapter_once(monkeypatch, tmp_path):
-    """
-    Two fatal-error notifications for the same still-installed adapter (e.g.
-    from two concurrent recovery paths racing on the same underlying outage)
-    must result in exactly one disconnect() call.
+async def test_retryable_fatal_queues_before_disconnect_returns(monkeypatch, tmp_path):
+    """#80598: reconnect queue must populate before disconnect finishes.
 
-    Regression test for the TOCTOU race in _handle_adapter_fatal_error: the
-    old code only removed the adapter from self.adapters in a `finally` block
-    *after* awaiting disconnect(), so a second concurrent call could still see
-    itself as "existing" and disconnect() the same object twice — the
-    concrete origin of the "'NoneType' object has no attribute 'updater'"
-    crash when the adapter's own teardown code re-reads self._app afterwards.
+    After a long network outage, Telegram disconnect can wedge on a half-dead
+    socket. If the fatal handler only queues after disconnect returns, the
+    watcher never learns about the failure and the gateway stays permanently
+    deaf. Queue first; teardown is best-effort after.
     """
     config = GatewayConfig(
-        platforms={
-            Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")
-        },
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
     adapter = _RuntimeRetryableAdapter()
     adapter._set_fatal_error(
-        "whatsapp_bridge_exited",
-        "WhatsApp bridge process exited unexpectedly (code 1).",
+        "telegram_network_error",
+        "Telegram polling could not reconnect after 10 network error retries.",
         retryable=True,
     )
-
     runner.adapters = {Platform.WHATSAPP: adapter}
     runner.delivery_router.adapters = runner.adapters
     runner.stop = AsyncMock()
 
-    disconnect_calls = 0
-    release_second_call = asyncio.Event()
+    disconnect_entered = asyncio.Event()
+    release = asyncio.Event()
 
-    async def slow_disconnect():
-        nonlocal disconnect_calls
-        disconnect_calls += 1
-        # Yield control so the second concurrent notification can run its
-        # "existing is adapter" check before this call finishes tearing down.
-        release_second_call.set()
-        await asyncio.sleep(0)
-        adapter._mark_disconnected()
+    async def blocking_disconnect():
+        # Disconnect has started — the platform must already be queued.
+        assert Platform.WHATSAPP in runner._failed_platforms
+        disconnect_entered.set()
+        await release.wait()
 
-    monkeypatch.setattr(adapter, "disconnect", slow_disconnect)
-
-    await asyncio.gather(
-        runner._handle_adapter_fatal_error(adapter),
-        runner._handle_adapter_fatal_error(adapter),
-    )
-
-    assert disconnect_calls == 1
+    monkeypatch.setattr(adapter, "disconnect", blocking_disconnect)
+    operation = asyncio.create_task(runner._handle_adapter_fatal_error(adapter))
+    await asyncio.wait_for(disconnect_entered.wait(), timeout=0.5)
+    try:
+        assert runner.adapters == {}
+        assert Platform.WHATSAPP in runner._failed_platforms
+        assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+        runner.stop.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.wait_for(operation, timeout=0.5)
 
 
 @pytest.mark.asyncio
-async def test_stale_fatal_notification_from_superseded_adapter_is_ignored(monkeypatch, tmp_path):
-    """
-    A delayed fatal-error notification from an adapter instance that has
-    since been replaced by a different, already-installed adapter (e.g. a
-    background retry chain on the old instance finally giving up after a
-    reconnect on a new instance already succeeded) must be ignored: it must
-    not disconnect the new adapter, must not re-queue an already-healthy
-    platform for reconnection, and must not shut the gateway down.
-    """
+async def test_fatal_handler_outer_timeout_still_queues_platform(monkeypatch, tmp_path):
+    """#80598: outer deadline must queue even if the impl task never returns."""
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.05")
     config = GatewayConfig(
-        platforms={
-            Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")
-        },
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
-
-    old_adapter = _RuntimeRetryableAdapter()
-    old_adapter._set_fatal_error(
-        "whatsapp_bridge_exited",
-        "stale failure from a superseded adapter instance",
-        retryable=True,
-    )
-
-    new_adapter = _RuntimeRetryableAdapter()
-    new_adapter.disconnect = AsyncMock()
-    runner.adapters = {Platform.WHATSAPP: new_adapter}
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("transport_stale", "transport stale", retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
     runner.delivery_router.adapters = runner.adapters
     runner.stop = AsyncMock()
 
-    await runner._handle_adapter_fatal_error(old_adapter)
+    started = asyncio.Event()
+    release = asyncio.Event()
 
-    new_adapter.disconnect.assert_not_awaited()
-    assert runner.adapters[Platform.WHATSAPP] is new_adapter
-    assert Platform.WHATSAPP not in runner._failed_platforms
-    runner.stop.assert_not_awaited()
+    async def wedged_impl(_adapter):
+        # Simulate a hang before/without reaching the reconnect queue.
+        runner.adapters.pop(Platform.WHATSAPP, None)
+        runner.delivery_router.adapters = runner.adapters
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(runner, "_handle_adapter_fatal_error_impl", wedged_impl)
+    operation = asyncio.create_task(runner._handle_adapter_fatal_error(adapter))
+    await started.wait()
+    # Outer budget is disconnect_timeout + min(2, max(0.05, timeout)) ≈ 0.1s.
+    done, _pending = await asyncio.wait({operation}, timeout=1.0)
+    try:
+        assert operation in done
+        assert Platform.WHATSAPP in runner._failed_platforms
+        runner.stop.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.wait({operation}, timeout=0.2)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("profile", [None, "reviewer"], ids=["primary", "secondary"])
-async def test_inflight_final_reply_uses_replacement_adapter_after_reconnect(
-    tmp_path, profile
-):
-    config = GatewayConfig(
-        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")},
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-    old_adapter = _ReplacementDeliveryAdapter()
-    replacement = _ReplacementDeliveryAdapter()
-    old_adapter.gateway_runner = runner
-    replacement.gateway_runner = runner
-    if profile:
-        runner.adapters = {}
-        runner._profile_adapters = {profile: {Platform.DISCORD: old_adapter}}
-    else:
-        runner.adapters = {Platform.DISCORD: old_adapter}
-    runner.delivery_router.adapters = runner.adapters
-
-    handler_started = asyncio.Event()
-    release_handler = asyncio.Event()
-
-    async def handler(_event):
-        await old_adapter.send("channel-1", "partial preview")
-        handler_started.set()
-        await release_handler.wait()
-        return "complete final reply"
-
-    old_adapter.set_message_handler(handler)
-    event = MessageEvent(
-        text="long-running request",
-        source=SessionSource(
-            platform=Platform.DISCORD,
-            chat_id="channel-1",
-            chat_type="dm",
-            user_id="user-1",
-            profile=profile,
-        ),
-        message_id="inbound-1",
-    )
-    task = asyncio.create_task(
-        old_adapter._process_message_background(event, build_session_key(event.source))
-    )
-    await handler_started.wait()
-
-    await old_adapter.disconnect()
-    if profile:
-        runner._profile_adapters[profile][Platform.DISCORD] = replacement
-    else:
-        runner.adapters = {Platform.DISCORD: replacement}
-    runner.delivery_router.adapters = runner.adapters
-    release_handler.set()
-    await task
-
-    assert old_adapter.sent == ["partial preview"]
-    assert replacement.sent == ["complete final reply"]

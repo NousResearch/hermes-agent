@@ -72,8 +72,11 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
     data["colors"][key] = value
     data.setdefault("name", target)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    # Atomic write: write_text truncates with no fsync; safe_load("") → None
+    # → {} would permanently lose the palette on the next set (#51356, #16743).
+    from utils import atomic_yaml_write
+
+    atomic_yaml_write(path, data, sort_keys=False)
 
     if target != name:
         _use(target)

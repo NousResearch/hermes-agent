@@ -1,6 +1,32 @@
 # Hermes Agent CLI Configuration
-# Copy this file to cli-config.yaml and customize as needed.
-# This file configures the CLI behavior. Environment variables in .env take precedence.
+# Copy settings from this example into ~/.hermes/config.yaml, or use
+# `hermes config set <section.key> <value>` to update the active profile.
+# This file configures CLI behavior; only documented secret environment
+# variables in .env take precedence over their corresponding settings.
+
+# =============================================================================
+# Database Configuration
+# =============================================================================
+# WAL is the normal default. Hermes automatically falls back to DELETE when
+# SQLite reports that WAL is incompatible with the filesystem. Set this to
+# "delete" explicitly for deployments whose backing filesystem is not WAL
+# crash-safe, such as Linux containers bind-mounted through macOS virtiofs,
+# NFS, or SMB. Hermes will not live-downgrade a database already open in WAL.
+database:
+  journal_mode: "wal"  # Supported values: "wal", "delete"
+  # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
+  # wal_autocheckpoint: 1000     # pages between automatic checkpoints
+  # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
+
+# =============================================================================
+# Runtime Limits
+# =============================================================================
+# Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to
+# this value when the operating system permits it. The value is clamped to the
+# hard limit and never lowers an already higher soft limit. Set to 0, false, or
+# null to disable the adjustment. Default: 4096.
+runtime:
+  nofile_soft_limit: 4096
 
 # =============================================================================
 # Model Configuration
@@ -30,6 +56,7 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "deepinfra"    - DeepInfra (requires: DEEPINFRA_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
+  #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
@@ -140,6 +167,26 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Unified Timeouts (operation deadlines)
+# =============================================================================
+# One place to override Hermes's internal operation deadlines (seconds).
+# Keys are dotted paths resolved by agent/deadline.py:resolve_timeout().
+# Precedence: this section > legacy HERMES_* env var (back-compat) > built-in
+# default. 0 or a negative value disables the bound (unbounded); very large
+# values are clamped to a platform-safe maximum automatically.
+#
+# Currently resolved keys (more paths migrate here over time — see issue #85125):
+#
+# timeouts:
+#   tools:
+#     concurrent_batch: 420   # Deadline for a parallel tool-call batch
+#                             # (legacy env: HERMES_CONCURRENT_TOOL_TIMEOUT_S)
+#     sequential_call: 420    # Deadline for one sequentially-executed tool call.
+#                             # Defaults to concurrent_batch's value so the two
+#                             # executor paths stay in sync; human waits
+#                             # (approval prompts, clarify) never count against it.
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.
@@ -198,6 +245,16 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Kanban Review Dispatch
+# =============================================================================
+# First-class review tasks are dispatched automatically by default. The worker
+# is spawned with the bundled sdlc-review skill and can approve, request changes
+# back to the original implementer, or escalate a genuine external blocker.
+# Disable this only when every review is performed manually from the dashboard.
+kanban:
+  review_dispatch: true
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.
@@ -213,6 +270,8 @@ model:
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
+  # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
+  # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
@@ -357,6 +416,9 @@ terminal:
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
+#   approval:
+#     transport: builtin        # Or an explicitly enabled plugin transport name
+#     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
 
 # =============================================================================
 # Browser Tool Configuration
@@ -482,6 +544,18 @@ compression:
   #   hermes = let Hermes threshold trigger Codex thread/compact/start
   #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
   codex_app_server_auto: native
+
+  # Native OpenAI Responses server-side compaction (default: false). When true,
+  # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
+  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # encrypted checkpoint that Hermes replays on later turns. No other provider,
+  # route, or model is affected. Hermes' local compression stays armed as the
+  # fallback and still handles every non-eligible session.
+  codex_responses_native: false
+
+  # Server-side compaction trigger in input tokens. Clamped below the local
+  # compression threshold at request time so the server compacts first.
+  codex_responses_compact_threshold: 200000
 
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
@@ -633,6 +707,25 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Auto-generated short session titles after the first exchange.
+#   # Each active Discord/Telegram channel can spawn a background title
+#   # call.  Cap concurrency to keep retries during provider incidents
+#   # from amplifying the request burst.  Leave unset for legacy behavior
+#   # (unlimited).
+#   title_generation:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous title calls
+#
+#   # Context compression — summarizes long sessions to shrink the prompt.
+#   # Heavy and often hits the slowest provider chain.  Setting a small
+#   # cap prevents many sessions from compressing simultaneously during
+#   # provider degradation.  Leave unset for legacy behavior (unlimited).
+#   compression:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous compression calls
 
 # =============================================================================
 # Persistent Memory
@@ -788,10 +881,31 @@ agent:
   # API responses.  Only fires after the agent has been idle for this duration.
   # gateway_timeout: 1800
 
+  # Maximum time an alias routing key waits for an active turn holding the same
+  # resolved session lease. On expiry Hermes rejects this inbound message and
+  # asks the user to resend rather than running it without serialization.
+  # Non-positive values fall back to the 1800-second default.
+  # gateway_turn_lease_timeout: 1800
+
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.
   # gateway_timeout_warning: 900
+
+  # Session stall watchdog (seconds). When a busy session has a pending
+  # inbound follow-up and the agent activity clock is idle this long, the
+  # gateway logs a WARNING and notifies the user to try /new. Does not kill
+  # the turn (see gateway_timeout). 0 = disable. Default 300.
+  # session_stall_timeout: 300
+
+  # Related in-agent compression timeouts (they live under the top-level
+  # compression: block, shown here for discoverability next to the stall
+  # watchdog they complement — a hung compression is a common stall cause):
+  # compression:
+  #   context_timeout_seconds: 120          # inactivity budget for in-agent
+  #                                         # compress_context (0 = disable)
+  #   context_total_ceiling_seconds: 600    # absolute cap on the pre-commit
+  #                                         # wait even while tokens stream
 
   # Graceful drain timeout for gateway stop/restart (seconds).
   # Default 0 = no drain: a restart interrupts in-flight agents immediately,
@@ -862,22 +976,19 @@ agent:
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
   
-  # Predefined personalities (use with /personality command)
-  personalities:
-    helpful: "You are a helpful, friendly AI assistant."
-    concise: "You are a concise assistant. Keep responses brief and to the point."
-    technical: "You are a technical expert. Provide detailed, accurate technical information."
-    creative: "You are a creative assistant. Think outside the box and offer innovative solutions."
-    teacher: "You are a patient teacher. Explain concepts clearly with examples."
-    kawaii: "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and ~! Add sparkles and be super enthusiastic about everything! Every response should feel warm and adorable desu~! ヽ(>∀<☆)ノ"
-    catgirl: "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ. Be playful and curious like a cat, nya~!"
-    pirate: "Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!"
-    shakespeare: "Hark! Thou speakest with an assistant most versed in the bardic arts. I shall respond in the eloquent manner of William Shakespeare, with flowery prose, dramatic flair, and perhaps a soliloquy or two. What light through yonder terminal breaks?"
-    surfer: "Duuude! You're chatting with the chillest AI on the web, bro! Everything's gonna be totally rad. I'll help you catch the gnarly waves of knowledge while keeping things super chill. Cowabunga! 🤙"
-    noir: "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?"
-    uwu: "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<"
-    philosopher: "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself."
-    hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
+  # Custom personalities (use with /personality command).
+  # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
+  # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always
+  # available on every surface — defined once in hermes_cli/personality.py.
+  # Entries here ADD new personalities or OVERRIDE a built-in by name.
+  # The active selection is stored in display.personality (never here, and
+  # never in agent.system_prompt — that field is your manual system prompt).
+  personalities: {}
+  #   mentor: "You are a supportive mentor. Guide, don't lecture."
+  #   reviewer:
+  #     system_prompt: "You are a meticulous code reviewer."
+  #     tone: "direct"
+  #     style: "terse"
 
 # =============================================================================
 # Toolsets
@@ -969,6 +1080,11 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   slack:
+#     extra:
+#       # Render live tool calls as Slack-native plan/task cards. This explicit
+#       # opt-in works even though Slack text tool_progress defaults to off.
+#       native_task_cards: false
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
@@ -1134,6 +1250,37 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
+  # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
+  # silence inflates upload time, per-audio-minute billing, and hallucination risk.
+  # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
+  # on any failure the original uploads untouched.
+  # cloud_trim_silence: true   # set false to always upload the original audio
+  # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
+  # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
+  # Optional static transcription prompt: vocabulary/context hints for
+  # prompt-capable backends. Composition is deterministic: this config value
+  # is the base, then `pre_transcription` hooks run in registration order with
+  # last-writer-wins semantics per field.
+  #
+  # Privacy: the final prompt is sent to the configured STT provider alongside
+  # the audio. Do not include secrets or session context you would not send to
+  # that provider.
+  #
+  # Length / truncation contract: Whisper-family backends (local, openai,
+  # groq, deepinfra) only use the final ~224 prompt tokens, so Hermes
+  # truncates longer prompts client-side (keeping the tail) with a WARNING
+  # log — never an error. Other backends own their own validation.
+  #
+  # Provider behavior:
+  #   local (faster-whisper)  -> `initial_prompt`, forwarded unchanged
+  #   openai / groq          -> `prompt`, forwarded unchanged
+  #   mistral                -> `prompt`, forwarded unchanged
+  #   deepinfra              -> OpenAI-compatible `prompt`, unchanged
+  #   local_command/xai/
+  #   elevenlabs             -> unsupported; DEBUG log, then continue
+  #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
+  # prompt: "Hermes, Teknium, Nous Research, kanban"
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
@@ -1143,7 +1290,8 @@ stt:
     #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
     # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
-    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
   language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"
@@ -1171,6 +1319,19 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+
+# "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
+# Full engine/provider options inherit from DEFAULT_CONFIG in
+# hermes_cli/config_defaults.py — only capture placement is documented here.
+# wake_word:
+#   enabled: false
+#   capture: "auto"    # auto | local | client
+#                      # auto: backend PortAudio mic when one exists; a remote
+#                      #       desktop on a mic-less (headless/VPS) backend
+#                      #       streams its own mic via the wake.feed RPC.
+#                      # local: always the backend mic (wake_word.input_device).
+#                      # client: always desktop-streamed PCM (detection stays
+#                      #         on the backend).
 
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from
@@ -1237,6 +1398,10 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Cost tip: keep the parent on a frontier model and pin
+  #                                           # delegation.model to an inexpensive one — children carry the
+  #                                           # vast majority of tokens, so this is where spend is cut while
+  #                                           # planning quality stays with the frontier parent.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
@@ -1335,11 +1500,13 @@ display:
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
+  #   concise: One-line status message on completion; failures include a short
+  #            output tail (default)
   #   off:     No watcher messages at all
-  #   result:  Only the final completion message
-  #   error:   Only the final message when exit code != 0
-  #   all:     Running output updates + final message (default)
-  background_process_notifications: all
+  #   result:  Only the final raw-output completion message
+  #   error:   Only the final raw-output message when exit code != 0
+  #   all:     Running output updates + final raw-output message
+  background_process_notifications: concise
 
 
   # Play terminal bell when agent finishes a response.

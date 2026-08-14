@@ -2,8 +2,8 @@
  * Split node renderer — a flex row/column whose 1px seams double as resize
  * sashes (the seam IS the boundary — junction-owned, never doubled). Sizing
  * is the TRACK MODEL (track-model.ts): fixed tracks keep their declared size,
- * flex tracks share the leftover by weight, and an all-fixed run lets its
- * last track absorb the slack (VS Code style).
+ * flex tracks share the leftover by weight, and an all-fixed run lets an
+ * UNCAPPED last track absorb the slack (capped sidebars stay put).
  */
 
 import { useStore } from '@nanostores/react'
@@ -11,6 +11,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, u
 
 import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
@@ -22,12 +23,16 @@ import {
   $collapsedTreeSides,
   $hiddenTreePanes,
   $narrowViewport,
+  isCollapsePane,
   persistTree,
   presetSplitWeights,
+  setTreeGroupMinimized,
   setTreeSplitWeights
 } from '../store'
 
 import {
+  allFixedAbsorberIndex,
+  COLLAPSED_ZONE_PX,
   computedPx,
   cssMax,
   edgeFixedZone,
@@ -42,6 +47,18 @@ import {
   type TrackContext
 } from './track-model'
 import { TreeNode } from './tree-node'
+
+/** The single group id a subtree resolves to, or null when it holds several
+ *  zones — the sash can only collapse a boundary that IS exactly one zone. */
+function groupIdOf(node: LayoutNode): null | string {
+  if (node.type === 'group') {
+    return node.id
+  }
+
+  const ids = new Set(node.children.map(groupIdOf))
+
+  return ids.size === 1 ? [...ids][0] : null
+}
 
 /**
  * The size overrides for a fixed set of panes, referentially stable until one
@@ -121,10 +138,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const isCollapsed = (child: LayoutNode) => subtreeGone(child, trackCtx) || (isEmptyZone(child) && !editMode)
 
   // Min/max clamps come from a direct GROUP child's panes (the same clamps
-  // the app's Pane props express) — but ONLY when they can speak for the
-  // zone: a fixed track (pure sidebar stack) or a single-pane zone. A sidebar
-  // pane fronted in a mixed flex stack must not cap it. A fixed STACK
-  // aggregates its panes' clamps (largest-tenant semantics, mirroring the
+  // the app's Pane props express). Floors apply to every zone; caps only when
+  // they can speak for the whole zone: a fixed track (pure sidebar stack) or a
+  // single-pane zone — a sidebar pane fronted in a mixed flex stack must not
+  // cap it. Stacks aggregate clamps (largest-tenant semantics, mirroring the
   // max() track basis) — the active tab's caps must never resize the zone.
   const sizingFor = (child: LayoutNode, track: string | null): PaneSizing | null => {
     if (child.type !== 'group' || child.panes.length === 0) {
@@ -133,20 +150,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
     const shownIds = shownPaneIds(child, trackCtx)
 
-    if (track === null && shownIds.length !== 1) {
-      return null
-    }
-
     if (shownIds.length <= 1) {
       return (paneFor(shownIds[0])?.data as PaneSizing | undefined) ?? null
     }
 
-    // Fixed STACK: floors take the largest declared min; caps stay unbounded
-    // unless EVERY pane declares one (a single uncapped tenant uncaps the
-    // zone). Same largest-tenant basis as the track size — never per-tab.
+    // STACKS aggregate floors with largest-tenant semantics (the zone's track
+    // is the max() of its panes' sizes, so its floor is the max() of their
+    // mins) — flex stacks included: the chat zone with session tabs stacked in
+    // must keep the workspace's min width, or a browser sash can crush the
+    // conversation down to the generic 80px floor. Caps only speak for a FIXED
+    // zone; a sidebar pane fronted in a mixed flex stack must not cap it. In a
+    // fixed stack caps stay unbounded unless EVERY pane declares one (a single
+    // uncapped tenant uncaps the zone).
     const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
 
-    const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
+    const cap = (pick: (s: PaneSizing) => string | undefined) =>
+      track !== null && all.every(pick) ? cssMax(all.map(pick)) : undefined
 
     return {
       minWidth: cssMax(all.map(s => s.minWidth)),
@@ -197,6 +216,11 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // Clamps live on the zone's split-child WRAPPER (where we render them).
         const el = zoneEl?.parentElement ?? wrapper
         const cs = window.getComputedStyle(el)
+        // A tool panel (terminal / logs) may be dragged down to its collapsed
+        // header — the generic 80px floor is not its floor. Below that the
+        // release minimizes the zone instead of leaving a useless sliver.
+        const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
+        const floor = toolZone ? COLLAPSED_ZONE_PX : MIN_PANE_PX
 
         return {
           // EVERY shown pane of the zone: the zone's track is the max() of its
@@ -206,8 +230,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
           paneIds: zone ? shownPaneIds(zone, trackCtx) : [],
           fixed: Boolean(zone),
           size: sizeOf(zoneEl ?? wrapper),
-          min: Math.max(MIN_PANE_PX, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
-          max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY)
+          min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
+          max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
+          collapseId: toolZone ? (zone?.id ?? groupIdOf(child)) : null,
+          floor
         }
       }
 
@@ -235,6 +261,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
+      // Webview/iframe guests must not swallow the gesture — without this the
+      // drag froze the moment the pointer entered the in-app browser, so the
+      // seam could only shrink it a few px per press.
+      const releaseGuests = guardGuestPointers()
       // Suppress :root geometry-var writes for the gesture (see geometry.ts —
       // each one restyles the whole document; they republish on release).
       beginSashDrag()
@@ -300,19 +330,40 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       const resize = rafCoalesce(previewShift)
       let lastShift: null | number = null
+      let done = false
 
       const onMove = (ev: PointerEvent) => {
         lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
         resize.push(lastShift)
       }
 
+      // Ends through several racing paths (pointerup, pointercancel, window
+      // blur, lostpointercapture — releasePointerCapture below fires the
+      // latter re-entrantly), so it must run exactly once.
       const cleanup = () => {
+        if (done) {
+          return
+        }
+
+        done = true
         resize.finish()
 
         if (lastShift !== null) {
-          // One store commit; the re-render rewrites `flex` and clears the
-          // preview overrides.
-          applyShift(lastShift)
+          // Dragged a tool panel down to its collapsed header? Fold the zone
+          // to its rail instead of persisting a sliver — and DON'T write the
+          // sliver size, so restoring brings back the size it had before.
+          const collapsedSide =
+            (a.collapseId && a0px + lastShift <= a.floor && a.collapseId) ||
+            (b.collapseId && b0px - lastShift <= b.floor && b.collapseId) ||
+            null
+
+          if (collapsedSide) {
+            setTreeGroupMinimized(collapsedSide, true)
+          } else {
+            // One store commit; the re-render rewrites `flex` and clears the
+            // preview overrides.
+            applyShift(lastShift)
+          }
         } else {
           // Click without movement: nothing will re-render, so put the
           // wrappers' inline styles back exactly as React last wrote them.
@@ -332,6 +383,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // Geometry vars re-enable AFTER the final store commit above, so the
         // release publishes exactly one fresh measurement.
         endSashDrag()
+        releaseGuests()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 
@@ -344,12 +396,16 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         window.removeEventListener('pointermove', onMove, true)
         window.removeEventListener('pointerup', cleanup, true)
         window.removeEventListener('pointercancel', cleanup, true)
+        window.removeEventListener('blur', cleanup)
+        handle.removeEventListener('lostpointercapture', cleanup)
         persistTree()
       }
 
       window.addEventListener('pointermove', onMove, true)
       window.addEventListener('pointerup', cleanup, true)
       window.addEventListener('pointercancel', cleanup, true)
+      window.addEventListener('blur', cleanup)
+      handle.addEventListener('lostpointercapture', cleanup)
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -435,8 +491,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around
   // leaves dead space — e.g. terminal + logs split into two 38vh zones with
-  // the rail above them collapsed). The LAST visible track absorbs the
-  // leftover, VS Code style.
+  // the rail above them collapsed). An UNCAPPED last track absorbs the
+  // leftover; capped sidebars (review/files) keep their max and stay put.
   const isMinimized = (child: LayoutNode) => child.type === 'group' && Boolean(child.minimized)
 
   // SEMANTIC side collapse (titlebar toggles / ⌘B / ⌘J): at the ROOT row,
@@ -474,7 +530,14 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   const growable = tracks.map((_, i) => i).filter(i => !tracks[i].collapsed && !tracks[i].minimized)
   const allFixed = growable.length > 0 && growable.every(i => tracks[i].track !== null)
-  const absorberIndex = allFixed ? growable[growable.length - 1] : -1
+
+  // Only an uncapped fixed track may absorb leftover. A maxWidth/maxHeight
+  // sidebar (review, files, sessions) must keep that clamp — otherwise ⌘G
+  // balloons the rail and sash-remembered sizes become a flex-basis that
+  // grow still expands past.
+  const absorberIndex = allFixed
+    ? allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
+    : -1
 
   // Weights are RATIOS, but CSS flex-grow is absolute: a run whose grows sum
   // below 1 fills only that fraction of the leftover (normalize's flatten
@@ -516,6 +579,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
     >
       {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, track }, i) => {
         const partner = collapsed ? -1 : seamPartner(i)
+        const absorbs = i === absorberIndex
 
         return (
           <div
@@ -531,16 +595,17 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
                       // grow-0 shrink-1 from its preferred basis (it yields
                       // gracefully on tight windows, floored by min-width);
                       // everything else splits the leftover by weight. In an
-                      // all-fixed run the last track grows into the leftover.
-                      flex: track ? `${i === absorberIndex ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
+                      // all-fixed run an UNCAPPED last track grows into the
+                      // leftover; capped sidebars stay at their declared size.
+                      flex: track ? `${absorbs ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
                       // Pane-declared clamps apply along THIS split's axis only
                       // (a rail's width clamp shouldn't constrain its height).
-                      // The absorber drops its max clamp — it exists to fill
-                      // the leftover, and clamping would recreate the gap.
+                      // The absorber is uncapped by selection, so dropping its
+                      // max is a no-op; capped tracks always keep theirs.
                       minWidth: (horizontal && sizing?.minWidth) || 0,
-                      maxWidth: horizontal && i !== absorberIndex ? sizing?.maxWidth : undefined,
+                      maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
                       minHeight: (!horizontal && sizing?.minHeight) || 0,
-                      maxHeight: horizontal || i === absorberIndex ? undefined : sizing?.maxHeight
+                      maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
                     }
             }
           >

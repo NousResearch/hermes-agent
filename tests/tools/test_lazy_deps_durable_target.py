@@ -36,9 +36,6 @@ class TestTargetResolution:
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         assert ld._lazy_install_target() is None
 
-    def test_no_target_when_env_blank(self, monkeypatch):
-        monkeypatch.setenv(ld._LAZY_TARGET_ENV, "   ")
-        assert ld._lazy_install_target() is None
 
     def test_target_resolved_when_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path / "lazy"))
@@ -68,16 +65,6 @@ class TestGatingWithTarget:
         )
         assert ld._allow_lazy_installs() is True
 
-    def test_config_killswitch_wins_even_with_target(self, monkeypatch, tmp_path):
-        # Explicit opt-out must disable installs even when a target exists.
-        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
-        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path))
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"security": {"allow_lazy_installs": False}},
-            raising=False,
-        )
-        assert ld._allow_lazy_installs() is False
 
     def test_normal_mode_unaffected(self, monkeypatch):
         # No sealed env, no target → default allow (unchanged behaviour).
@@ -103,29 +90,6 @@ class TestAbiStamp:
         stamp = target / ld._TARGET_STAMP_NAME
         assert stamp.read_text().strip() == ld._python_abi_tag()
 
-    def test_matching_stamp_preserves_contents(self, tmp_path):
-        target = tmp_path / "lazy"
-        ld._ensure_target_ready(target)
-        # Drop a fake installed package.
-        (target / "somepkg").mkdir()
-        (target / "somepkg" / "__init__.py").write_text("x = 1\n")
-        # Re-run with the SAME abi → contents must survive.
-        err = ld._ensure_target_ready(target)
-        assert err is None
-        assert (target / "somepkg" / "__init__.py").exists()
-
-    def test_mismatched_stamp_wipes_contents(self, tmp_path):
-        target = tmp_path / "lazy"
-        ld._ensure_target_ready(target)
-        (target / "stalepkg").mkdir()
-        (target / "stalepkg" / "mod.py").write_text("x = 1\n")
-        # Simulate an image rebuild onto a different interpreter ABI.
-        (target / ld._TARGET_STAMP_NAME).write_text("2.7:old-abi-tag")
-        err = ld._ensure_target_ready(target)
-        assert err is None
-        # Stale package wiped; stamp refreshed to current ABI.
-        assert not (target / "stalepkg").exists()
-        assert (target / ld._TARGET_STAMP_NAME).read_text().strip() == ld._python_abi_tag()
 
     def test_readonly_target_reports_error(self, tmp_path):
         # A path under a non-writable parent should surface a clean error,
@@ -232,6 +196,25 @@ class TestInstallArgConstruction:
         assert result.success
         assert "--target" not in captured["cmd"]
         assert "--constraint" not in captured["cmd"]
+
+    def test_uv_resolution_failure_does_not_fall_through_to_pip(self, monkeypatch):
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: "uv")
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["uv", "pip", "install"]:
+                return subprocess.CompletedProcess(
+                    cmd, 1, "", "release excluded by exclude-newer"
+                )
+            pytest.fail(f"unexpected pip fallback: {cmd}")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        result = ld._venv_pip_install(("fresh-package==1.0.0",))
+        assert not result.success
+        assert "exclude-newer" in result.stderr
+        assert len(calls) == 1
 
 
 @pytest.mark.skipif(

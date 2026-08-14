@@ -127,6 +127,15 @@ class ChronosCronScheduler(CronScheduler):
         except Exception as e:
             logger.debug("Chronos on_jobs_changed reconcile failed: %s", e)
 
+    def register_job(self, job: Dict[str, Any]) -> None:
+        """Arm the first one-shot for a newly persisted job.
+
+        Unlike full reconciliation, this operation is allowed to raise so the
+        creation surface can report that the local job exists but its external
+        trigger was not registered.
+        """
+        self._arm_one_shot(job)
+
     # -- arming -----------------------------------------------------------
 
     def _arm_one_shot(self, job: Dict[str, Any]) -> None:

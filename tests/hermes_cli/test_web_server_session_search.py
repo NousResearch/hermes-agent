@@ -13,6 +13,11 @@ class _FakeSessionDB:
     """
 
     closed = False
+    opened_read_only = None
+    requested_fields = None
+
+    def __init__(self, *args, **kwargs):
+        type(self).opened_read_only = kwargs.get("read_only")
 
     @staticmethod
     def _source_allowed(row, source=None, sources=None, exclude_sources=None):
@@ -53,8 +58,16 @@ class _FakeSessionDB:
             )
         ][:limit]
 
-    def search_messages(self, query, source_filter=None, exclude_sources=None, limit=20):
+    def search_messages(
+        self,
+        query,
+        source_filter=None,
+        exclude_sources=None,
+        limit=20,
+        fields=None,
+    ):
         assert query == "20260603*"
+        type(self).requested_fields = fields
         rows = [
             {
                 "session_id": "20260603_090200_exact",
@@ -93,10 +106,14 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
+    _FakeSessionDB.opened_read_only = None
+    _FakeSessionDB.requested_fields = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
     response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
 
+    assert _FakeSessionDB.requested_fields is not None
+    assert "context" not in _FakeSessionDB.requested_fields
     # ID match surfaces first; the content hit on the SAME session is deduped
     # by lineage root (not double-listed); the unrelated content hit follows.
     assert response == {
@@ -123,3 +140,4 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
             },
         ]
     }
+    assert _FakeSessionDB.opened_read_only is True

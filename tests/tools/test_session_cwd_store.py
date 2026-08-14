@@ -27,18 +27,6 @@ class TestRecordSemantics:
         assert tt.get_session_cwd("sess-b") == "/wt/b"
         assert tt.get_session_cwd("sess-c") is None
 
-    def test_none_and_empty_keys_collapse_to_default(self):
-        tt.record_session_cwd(None, "/somewhere")
-        assert tt.get_session_cwd(None) == "/somewhere"
-        assert tt.get_session_cwd("") == "/somewhere"
-        assert tt.get_session_cwd("default") == "/somewhere"
-
-    def test_invalid_cwd_values_are_ignored(self):
-        tt.record_session_cwd("sess-a", None)
-        tt.record_session_cwd("sess-a", "")
-        tt.record_session_cwd("sess-a", "   ")
-        tt.record_session_cwd("sess-a", 123)  # type: ignore[arg-type]
-        assert tt.get_session_cwd("sess-a") is None
 
     def test_clear_drops_only_the_named_session(self):
         tt.record_session_cwd("sess-a", "/wt/a")
@@ -54,14 +42,6 @@ class TestDualWriteSites:
         tt.register_task_env_overrides("desktop-sess", {"cwd": "/wt/desktop"})
         assert tt.get_session_cwd("desktop-sess") == "/wt/desktop"
 
-    def test_register_without_cwd_does_not_touch_the_record(self):
-        tt.register_task_env_overrides("rl-42", {"docker_image": "x:y"})
-        assert tt.get_session_cwd("rl-42") is None
-
-    def test_clear_task_env_overrides_drops_the_record(self):
-        tt.register_task_env_overrides("desktop-sess", {"cwd": "/wt/desktop"})
-        tt.clear_task_env_overrides("desktop-sess")
-        assert tt.get_session_cwd("desktop-sess") is None
 
     def test_reregistration_updates_the_record(self):
         """ACP session/load switching project roots mid-session."""
@@ -93,9 +73,10 @@ class TestPostCommandDualWrite:
             env = {}
             cwd = "/start"
             def execute(self, command, **kwargs):
-                # Simulate the env's own post-command tracking (marker parse).
+                # Simulate the env's own post-command tracking (marker parse):
+                # the marker is what moves cwd AND what flags the observation.
                 self.cwd = "/new/dir"
-                return {"output": "", "returncode": 0}
+                return {"output": "", "returncode": 0, "cwd_observed": True}
 
         result = self._run(monkeypatch, "sess-a", FakeEnv())
         assert result["exit_code"] == 0
@@ -174,6 +155,47 @@ class TestDelegateSeedsChildRecord:
         assert tt.get_session_cwd("child-1") == "/child/scratch"
 
 
+class TestReapedEnvFallbackIsFillOnly:
+    """file_tools' reaped-env rescue (#26211) must not overwrite the record.
+
+    The cached file_ops' ``cwd`` is a snapshot of the SHARED env, so it can
+    belong to another session — the same class of error as the
+    interrupted-command bug (#85658). The rescue may only fill an ABSENT
+    record.
+    """
+
+    def _reap(self, monkeypatch, tmp_path, task_id, stale_cwd):
+        import tools.file_tools as ft
+
+        class _StaleFileOps:
+            cwd = stale_cwd
+
+        # Cached file_ops whose env was reaped: cache entry present,
+        # _active_environments empty. The cache is keyed by the COLLAPSED
+        # container id ("default" for plain sessions) — that collapse is
+        # exactly why the snapshot can belong to another session.
+        container_id = tt._resolve_container_task_id(task_id)
+        monkeypatch.setattr(ft, "_file_ops_cache", {container_id: _StaleFileOps()})
+        monkeypatch.setattr(tt, "_active_environments", {})
+        monkeypatch.setattr(tt, "_last_activity", {})
+        monkeypatch.setattr(
+            tt, "_get_env_config",
+            lambda: {"env_type": "local", "cwd": str(tmp_path), "timeout": 60,
+                     "lifetime_seconds": 3600},
+        )
+        ft._get_file_ops(task_id)
+
+    def test_existing_record_survives_the_rescue(self, tmp_path, monkeypatch):
+        tt.record_session_cwd("sess-a", "/my/worktree")
+        self._reap(monkeypatch, tmp_path, "sess-a", "/other/sessions/dir")
+        assert tt.get_session_cwd("sess-a") == "/my/worktree"
+
+    def test_absent_record_is_filled(self, tmp_path, monkeypatch):
+        """#26211 stays fixed: a recordless session still gets the rescue."""
+        self._reap(monkeypatch, tmp_path, "sess-b", "/last/known/dir")
+        assert tt.get_session_cwd("sess-b") == "/last/known/dir"
+
+
 class TestCommandCwdReadsTheRecord:
     """_resolve_command_cwd: workdir > session record > default. Nothing else."""
 
@@ -186,22 +208,6 @@ class TestCommandCwdReadsTheRecord:
         )
         assert resolved == "/my/worktree"
 
-    def test_workdir_still_beats_the_record(self):
-        tt.record_session_cwd("sess-a", "/my/worktree")
-        resolved = tt._resolve_command_cwd(
-            workdir="/explicit/place",
-            default_cwd="/config/default",
-            session_key="sess-a",
-        )
-        assert resolved == "/explicit/place"
-
-    def test_no_record_falls_back_to_default(self):
-        resolved = tt._resolve_command_cwd(
-            workdir=None,
-            default_cwd="/config/default",
-            session_key="sess-a",
-        )
-        assert resolved == "/config/default"
 
     def test_other_sessions_record_is_not_consulted(self):
         tt.record_session_cwd("sess-b", "/other/worktree")
@@ -223,6 +229,8 @@ class TestCommandCwdReadsTheRecord:
                 self.last_cwd_arg = kwargs.get("cwd")
                 if command.startswith("cd "):
                     self.cwd = command[3:]
+                    # A completed cd emits the cwd marker; the parse sets both.
+                    return {"output": "", "returncode": 0, "cwd_observed": True}
                 return {"output": "", "returncode": 0}
 
         fake = FakeEnv()

@@ -1,9 +1,25 @@
+// Register the built-in draft providers with the suggestion bus (side-effect
+// import — the bus itself is provider-agnostic). The repair provider is
+// event-driven and registers through the gateway stream instead.
+import '@/store/suggestion-providers/cron'
+import '@/store/suggestion-providers/mcp'
+import '@/store/suggestion-providers/skill'
+
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import {
+  type ComposerAttachment,
+  type ComposerDraftSyncMode,
+  onComposerDraftSyncRequest,
+  reloadPersistedDrafts,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
+import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
 
 import {
   cloneAttachments,
@@ -21,7 +37,13 @@ import {
   releaseActiveComposer
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
-import { composerPlainText, placeCaretEnd, REF_RE, renderComposerContents } from '../rich-editor'
+import {
+  composerPlainText,
+  normalizeComposerEditorDom,
+  placeCaretEnd,
+  REF_RE,
+  renderComposerContents
+} from '../rich-editor'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -121,7 +143,7 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor) {
-        renderComposerContents(editor, next)
+        renderComposerContents(editor, next, { trailingCommitted: true })
         placeCaretEnd(editor)
       }
 
@@ -137,6 +159,16 @@ export function useComposerDraft({
       const value = text.trim()
 
       if (!value) {
+        return
+      }
+
+      // 'prefix' puts the value at the START of the draft — slash commands
+      // (the skill-suggestion pill) only route when they lead the message.
+      if (mode === 'prefix') {
+        const rest = draftRef.current.trimStart()
+
+        paintDraft(`${value} ${rest}`.trimEnd())
+
         return
       }
 
@@ -237,7 +269,13 @@ export function useComposerDraft({
       return draftRef.current
     }
 
-    const text = composerPlainText(editor)
+    // Same normalize-then-sanitize the rAF flush does. An emptied editor still
+    // holds the placeholder <br> that keeps the contenteditable from collapsing
+    // to a sliver, and that serializes as "\n" — so an editor the user just
+    // cleared would otherwise stash a one-newline draft and come back non-empty.
+    normalizeComposerEditorDom(editor)
+
+    const text = sanitizeComposerInput(composerPlainText(editor))
 
     if (text !== draftRef.current) {
       draftRef.current = text
@@ -261,11 +299,14 @@ export function useComposerDraft({
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
+      // Composer suggestion pills for THIS session's draft (debounced +
+      // change-gated in the bus — this is just a timer reset).
+      sampleComposerDraft(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
       if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
-        renderComposerContents(editor, text)
+        renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
       if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
@@ -375,8 +416,46 @@ export function useComposerDraft({
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
+
+      // Withdraw the outgoing session's draft suggestions (and any pending
+      // sample timer). The incoming session re-earns its own from the draft
+      // restore above — without this a leaving session's "Add GitHub" pill
+      // lingers in the map and re-appears stale on the way back.
+      clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The HUD handoff's two verbs. Entering HUD mode flushes this editor's text
+  // into the shared stash so the HUD's composer boots with it; leaving repaints
+  // from the stash so whatever the HUD typed (or sent, clearing it) is what the
+  // app window shows. The per-session swap effect above can't cover either one:
+  // the session scope doesn't change, so it never re-consults the stash.
+  const syncDraft = (mode: ComposerDraftSyncMode) => {
+    if (mode === 'flush') {
+      window.clearTimeout(draftPersistTimerRef.current)
+      pendingDraftPersistRef.current = null
+      stashAt(draftScopeRef.current, syncDraftFromEditor())
+
+      return
+    }
+
+    reloadPersistedDrafts()
+    const stashed = takeSessionDraft(draftScopeRef.current)
+    loadIntoComposer(stashed.text, stashed.attachments)
+  }
+
+  const syncDraftRef = useRef(syncDraft)
+  syncDraftRef.current = syncDraft
+
+  useEffect(
+    () =>
+      onComposerDraftSyncRequest(({ mode, target: requested }) => {
+        if (requested === target) {
+          syncDraftRef.current(mode)
+        }
+      }),
+    [target]
+  )
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.

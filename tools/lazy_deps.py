@@ -104,7 +104,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Google Vertex AI provider — OAuth2 token minting for the Gemini
     # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
     # google-auth is NOT in [all] so plain installs don't carry it.
-    "provider.vertex": ("google-auth==2.55.1",),
+    "provider.vertex": (
+        "google-auth==2.55.1",
+        "pyasn1==0.6.4",
+    ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
@@ -200,7 +203,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
+    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
@@ -213,22 +216,22 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # backbone. Pin the patched floor here too so the lazy Discord path
         # can't keep an already-installed vulnerable aiohttp satisfying that
         # range — mirrors the messaging extra and platform.slack.
-        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.slack": (
-        "slack-bolt==1.29.0",
+        "slack-bolt==1.30.0",
         "slack-sdk==3.43.0",
-        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.matrix": (
-        "mautrix[encryption]==0.21.0",
+        "mautrix[encryption]==0.21.1",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
         # mautrix (aiohttp>=3,<4) and aiohttp-socks (aiohttp>=3.10.0) only cap
         # aiohttp transitively, so a vulnerable already-installed aiohttp still
         # satisfies both — pin the patched floor here too, like platform.discord.
-        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
@@ -247,17 +250,24 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
+    "terminal.vercel": ("vercel==0.7.2",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
         "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
         "google-auth-oauthlib==1.3.1",
         "google-auth-httplib2==0.3.1",
+        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
+        # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
+        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
@@ -276,14 +286,23 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # for stripped/source-build installs that somehow dropped it. The vision
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
-    "tool.vision": ("Pillow==12.2.0",),
+    "tool.vision": ("Pillow==12.3.0",),
+    # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
+    # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
+    # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),
+    # OpenDocument, RTF, and EPUB. Installed on first read of such a file;
+    # the call site uses prompt=False so read_file never blocks on a prompt.
+    # NOTE: lazy-only for now — no pyproject `doc-extract` extra until the
+    # package clears the uv exclude-newer 14-day quarantine (first release
+    # 2026-08-04); add the mirrored extra then.
+    "tool.doc_extract": ("firecrawl-anydoc==0.1.6",),
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.26.0",
+        "mcp==1.28.1",
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
@@ -722,7 +741,18 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-        uv_bin = shutil.which("uv")
+        # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
+        # which() misses the uv Hermes installed and falls through to the
+        # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
+        # mid-turn to install an optional dependency, and downloading uv +
+        # migrating the Python runtime as a side effect of that is a far bigger
+        # action than the caller asked for. Tier 2 pip covers the no-uv case.
+        try:
+            from hermes_cli.managed_uv import resolve_uv
+
+            uv_bin = resolve_uv() or shutil.which("uv")
+        except Exception:
+            uv_bin = shutil.which("uv")
         if uv_bin:
             try:
                 r = subprocess.run(
@@ -736,7 +766,17 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                         _activate_target_on_syspath(target)
                     return _InstallResult(True, r.stdout or "", r.stderr or "")
                 logger.debug("uv pip install failed: %s", r.stderr)
-            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                # A resolver failure is authoritative. Falling through to pip
+                # here would silently discard uv policy such as exclude-newer
+                # and could install a release that the project quarantined.
+                return _InstallResult(False, r.stdout or "", r.stderr or "")
+            except subprocess.TimeoutExpired as e:
+                logger.debug("uv invocation failed: %s", e)
+                return _InstallResult(False, "", f"uv pip install timed out: {e}")
+            except FileNotFoundError as e:
+                # The resolved uv path disappeared between lookup and spawn.
+                # In that narrow availability failure, the pip tier remains a
+                # valid fallback because uv never evaluated the requirements.
                 logger.debug("uv invocation failed: %s", e)
 
         # Tier 2: python -m pip (with ensurepip bootstrap if needed)
@@ -826,6 +866,35 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if unsupported:
         raise FeatureUnavailable(feature, missing, unsupported)
 
+    # Package-manager installs (NixOS, and any other distro that ships Hermes
+    # from a read-only store) cannot receive lazy pip installs: the venv's
+    # site-packages lives in the store, so the uv -> pip -> ensurepip ladder
+    # below burns ~15s bootstrapping ensurepip only to fail on a read-only
+    # target. Fail fast with an actionable message instead.
+    #
+    # Skipped when a durable install target is configured: the container
+    # deployment sets HERMES_MANAGED=true *and* HERMES_LAZY_INSTALL_TARGET
+    # (a writable volume), where lazy installs legitimately work.
+    #
+    # The reason string starts with "unsupported " on purpose:
+    # refresh_active_features classifies FeatureUnavailable by that prefix and
+    # reports anything else as a hard failure rather than a skip.
+    if _lazy_install_target() is None:
+        try:
+            from hermes_cli.config import get_managed_system
+
+            managed_by = get_managed_system()
+        except Exception:
+            managed_by = ""  # config unreadable — proceed with the install
+        if managed_by:
+            raise FeatureUnavailable(
+                feature, missing,
+                f"unsupported on {managed_by}-managed installs: this build's "
+                f"packages come from {managed_by}, so Hermes cannot install "
+                f"them at runtime. Add the dependencies for {feature!r} via "
+                f"{managed_by} (or run a pip/uv install of Hermes instead)."
+            )
+
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.
     for spec in missing:
@@ -912,12 +981,23 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
-def feature_install_command(feature: str) -> Optional[str]:
-    """Return the ``pip install`` command a user could run manually, or None."""
+def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional[str]:
+    """Return the ``pip install`` command a user could run manually, or None.
+
+    ``venv_pip=True`` targets the running interpreter's pip
+    (``{sys.executable} -m pip install …``) — correct in every layout
+    (default install, ``HERMES_HOME`` overrides, profile installs) and
+    immune to Ubuntu 24.04's PEP 668 ``externally-managed-environment``
+    failure that a bare/system ``pip install`` hint invites.  The default
+    ``uv pip install`` form is kept for contexts that document uv usage.
+    """
     if feature not in LAZY_DEPS:
         return None
     specs = LAZY_DEPS[feature]
-    return "uv pip install " + " ".join(repr(s) for s in specs)
+    joined = " ".join(repr(s) for s in specs)
+    if venv_pip:
+        return f"{sys.executable} -m pip install {joined}"
+    return "uv pip install " + joined
 
 
 @dataclass

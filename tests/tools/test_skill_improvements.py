@@ -164,18 +164,19 @@ word word word
         assert stat.S_IMODE(reference.stat().st_mode) == 0o644
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-    def test_supporting_file_write_preserves_existing_mode(self):
-        """Overwriting a reference must preserve its existing shared mode."""
+    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    def test_supporting_file_write_preserves_existing_mode(self, mode):
+        """Overwriting a reference preserves its existing private or shared mode."""
         _create_skill("mode-skill", SKILL_CONTENT)
         reference = self.skills_dir / "mode-skill" / "references/example.md"
         reference.parent.mkdir()
         reference.write_text("old\n", encoding="utf-8")
-        reference.chmod(0o660)
+        reference.chmod(mode)
 
         result = _write_file("mode-skill", "references/example.md", "new\n")
 
         assert result["success"] is True
-        assert stat.S_IMODE(reference.stat().st_mode) == 0o660
+        assert stat.S_IMODE(reference.stat().st_mode) == mode
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     @pytest.mark.parametrize("mode", [0o600, 0o660])

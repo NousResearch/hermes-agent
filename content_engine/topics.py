@@ -531,6 +531,13 @@ def get_topics(brand: str, count: int = 6, skip_used: bool = True) -> List[Dict]
             except Exception as e:
                 print(f"[topics] mark_signals_used failed: {e}", file=sys.stderr)
 
+        # ── sahil_twitter anti-scripted guardrail ──
+        # No static topic bank fallback. Sahil personal X drafts MUST start
+        # from a current internal activity/live signal or manually supplied
+        # source. No source → no personal X draft.
+        if brand == "sahil_twitter":
+            return topics
+
         # Fill remaining slots with static topics (respecting 30-day skip)
         if len(topics) < count:
             bank = TOPIC_BANKS.get(brand, [])
@@ -588,6 +595,10 @@ def get_topics(brand: str, count: int = 6, skip_used: bool = True) -> List[Dict]
         return topics
 
     # ── Other brands: pure static topics with recency skip ──
+    # sahil_twitter anti-scripted guardrail: no static fallback here either.
+    if brand == "sahil_twitter":
+        return []
+
     topics = []
     bank = TOPIC_BANKS.get(brand, [])
     if bank:

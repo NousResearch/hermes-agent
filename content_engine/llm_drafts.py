@@ -822,7 +822,15 @@ def generate_drafts(brand, topics, platform=None, count_per_topic=1):
             if brand in ("sahil_twitter", "sahil_linkedin") and topic.get("activity_data"):
                 draft = _generate_activity_draft(brand, topic, plat, content_type)
 
-            # -- Static template path (all brands) --
+            # -- sahil_twitter anti-scripted guardrail --
+            # No static template fallback. Sahil personal X drafts MUST start
+            # from a current internal activity/live signal. No activity_data →
+            # no draft. Other brands continue through the static template path.
+            if brand == "sahil_twitter" and draft is None:
+                print(f"[llm_drafts] sahil_twitter/{pillar}: no activity signal; skipping (anti-scripted guard)")
+                continue
+
+            # -- Static template path (all brands except sahil_twitter) --
             if draft is None:
                 body, audit_result = _select_and_fill_template(brand, pillar, variables)
                 if body is None:

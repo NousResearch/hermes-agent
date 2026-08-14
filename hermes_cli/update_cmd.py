@@ -703,7 +703,20 @@ def _discard_staged(staged) -> None:
             logger.warning("could not remove staging path %s: %s", staging, exc)
 
 
-def _commit_staged_replacements(staged) -> None:
+# Locally built artifacts that live INSIDE swapped top-level entries. The
+# GitHub source ZIP carries no build outputs, so a plain swap of ``apps/``
+# deletes the built desktop app (apps/desktop/dist + release, incl. the
+# win-unpacked exe the user launched this update from) and its nested
+# node_modules (#70337). ``_commit_staged_replacements`` grafts these back
+# from the swap backup before the backups are dropped.
+_ZIP_PRESERVE_NESTED: tuple[tuple[str, ...], ...] = (
+    ("apps", "desktop", "dist"),
+    ("apps", "desktop", "release"),
+    ("apps", "desktop", "node_modules"),
+)
+
+
+def _commit_staged_replacements(staged, preserve_nested=None) -> None:
     """Phase 2: swap every staged entry into place, rolling back all on failure.
 
     ``_atomic_replace_dir`` makes each *individual* directory swap safe, but
@@ -752,7 +765,32 @@ def _commit_staged_replacements(staged) -> None:
                 # so say so rather than swallowing it.
                 logger.warning("rollback failed for %s: %s", dst, exc)
         raise
-    # All swaps succeeded — drop the backups (best-effort, never fatal).
+    # All swaps succeeded — graft preserved nested paths (locally built
+    # artifacts the source archive cannot contain) from each entry's backup
+    # into the swapped-in tree. Same-filesystem renames, so this costs
+    # nothing; best-effort, because a failed graft loses a rebuildable
+    # artifact, never the committed update's consistency.
+    for parts in preserve_nested or ():
+        top, rest = parts[0], parts[1:]
+        if not rest:
+            continue  # top-level entries belong in the caller's preserve set
+        for dst, backup in swapped:
+            if not backup or os.path.basename(dst) != top:
+                continue
+            old_sub = os.path.join(backup, *rest)
+            new_sub = os.path.join(dst, *rest)
+            if not os.path.exists(old_sub) or os.path.exists(new_sub):
+                continue
+            try:
+                os.makedirs(os.path.dirname(new_sub), exist_ok=True)
+                os.rename(old_sub, new_sub)
+            except OSError as exc:
+                logger.warning(
+                    "could not preserve %s across ZIP update: %s",
+                    os.path.join(*parts),
+                    exc,
+                )
+    # Drop the backups (best-effort, never fatal).
     for _dst, backup in swapped:
         if backup and os.path.isdir(backup):
             shutil.rmtree(backup, ignore_errors=True)
@@ -902,7 +940,7 @@ def _update_via_zip(args):
             raise
 
         try:
-            _commit_staged_replacements(staged)
+            _commit_staged_replacements(staged, preserve_nested=_ZIP_PRESERVE_NESTED)
         except Exception:
             # The rollback already restored every swapped entry, but staging
             # copies for the not-yet-swapped entries (potentially most of a
@@ -3052,6 +3090,14 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
         "  Close the Hermes desktop app / other Hermes terminals, then re-run:"
     )
     lines.append("    hermes update")
+    lines.append(
+        "  If they persist with everything closed, they are likely orphaned"
+    )
+    lines.append(
+        "  helpers from a previous session (MCP servers, monitoring probes):"
+    )
+    for pid, _name, _cmdline in matches[:6]:
+        lines.append(f"    taskkill /PID {pid} /F")
     lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
 
@@ -3118,6 +3164,61 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
             continue
         if exe.startswith(venv_prefix):
             found.append(ppid)
+    return found
+
+
+def _venv_resident_descendants(pids: list[int]) -> list[int]:
+    """Venv-resident descendants of *pids*, snapshotted while they are alive.
+
+    Stopping a gateway on Windows does not reap the helpers it spawned from
+    the install venv's python — stdio MCP servers, the perfmon probe. A
+    gracefully drained gateway exits before the force-kill pass ever runs,
+    so ``taskkill /T`` never sees its tree; the orphans keep venv ``.pyd``
+    files mapped and dead-end the venv-holder guard downstream on every
+    retry (#61514). Snapshot the descendants up front — a dead pid's
+    children cannot be recovered — and keep only venv-resident ones, so the
+    pause never widens its blast radius beyond processes that actually
+    block the update. Never raises.
+    """
+    if not _m()._is_windows() or not pids:
+        return []
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    venv_dir = _m().PROJECT_ROOT / "venv"
+    try:
+        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
+
+    skip: set[int] = {os.getpid()}
+    try:
+        for anc in psutil.Process().parents():
+            skip.add(int(anc.pid))
+    except Exception:
+        pass
+
+    found: list[int] = []
+    seen: set[int] = set(int(p) for p in pids) | skip
+    for pid in pids:
+        try:
+            children = psutil.Process(int(pid)).children(recursive=True)
+        except Exception:
+            continue
+        for child in children:
+            cpid = int(child.pid)
+            if cpid in seen:
+                continue
+            seen.add(cpid)
+            try:
+                exe = (child.exe() or "").lower()
+                cmdline = " ".join(child.cmdline() or []).lower()
+            except Exception:
+                continue
+            if exe.startswith(venv_prefix) or venv_prefix in cmdline:
+                found.append(cpid)
     return found
 
 
@@ -3380,6 +3481,12 @@ def _pause_windows_gateways_for_update() -> dict | None:
     # update even though the gateway itself is stopped.
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
 
+    # Same pre-drain-snapshot rationale, one hop DOWN instead of up: a
+    # gracefully drained gateway orphans its venv-resident helper children
+    # (stdio MCP servers, the perfmon probe), which then trip the venv-holder
+    # guard downstream and dead-end the update permanently (#61514).
+    helper_pids = _m()._venv_resident_descendants(list(running_pids))
+
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     try:
         drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
@@ -3419,6 +3526,24 @@ def _pause_windows_gateways_for_update() -> dict | None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    # Reap helpers that outlived their gateway. A drained gateway's children
+    # were reparented before any tree kill could reach them; left alive they
+    # hold venv .pyd files and the guard downstream refuses the update.
+    helpers_stopped = []
+    for pid in helper_pids:
+        if pid in force_killed:
+            continue
+        try:
+            terminate_pid(int(pid), force=True)
+            helpers_stopped.append(int(pid))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    if helpers_stopped:
+        print(
+            f"  → Stopped {len(helpers_stopped)} venv helper process(es) "
+            "left behind by paused gateways"
+        )
+
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
     if force_killed:
@@ -3439,6 +3564,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
         "profiles": profiles,
         "unmapped_pids": unmapped_pids,
         "unmapped": unmapped,
+        # Pre-drain snapshot of gateway helper descendants — the venv-holder
+        # guard treats these as stoppable (they are gateway-owned, and the
+        # gateways they belonged to are being resumed after the update).
+        "helper_pids": helper_pids,
     }
 
 def _cold_start_windows_gateway_after_update() -> None:
@@ -3943,6 +4072,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # --force-venv is the explicit escape hatch.
     if _m()._is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders and _windows_gateway_resume:
+            # Holders from the pause's own helper snapshot are gateway-owned
+            # (MCP servers, perfmon probe) — stop them instead of dead-ending
+            # on processes the pause machinery was responsible for (#61514).
+            _known_helpers = set(_windows_gateway_resume.get("helper_pids") or [])
+            _helper_holders = [m for m in _venv_holders if m[0] in _known_helpers]
+            if _helper_holders:
+                from gateway.status import terminate_pid
+
+                print(
+                    f"  ⚠ {len(_helper_holders)} gateway helper process(es) "
+                    "still hold the venv after the pause; stopping them"
+                )
+                for _pid, _name, _cmd in _helper_holders:
+                    try:
+                        terminate_pid(int(_pid), force=True)
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not stop leftover gateway helper %s: %s",
+                            _pid,
+                            exc,
+                        )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             _gateway_holders = _m()._leftover_pausable_gateway_pids(_venv_holders)
             if _gateway_holders is not None:

@@ -2789,6 +2789,23 @@ function forceKillProcessTree(pid) {
   }
 }
 
+// Liveness probe for a PID we just tree-killed. `taskkill /T /F` returns once
+// termination is INITIATED, not completed: a dying python.exe stays in the
+// process table while it unmaps .pyd files (AV / NTFS filter drivers stretch
+// this out), and the venv-blocker scan downstream has no liveness filter — it
+// reports any enumerable venv process as a holder. Waiting for actual exit
+// here is what closes the #74805 first-attempt race.
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+
+    return true
+  } catch (err) {
+    // EPERM ⇒ exists but inaccessible (still alive); ESRCH ⇒ gone.
+    return Boolean(err) && err.code === 'EPERM'
+  }
+}
+
 // Before handing off the update on Windows, the desktop MUST stop every backend
 // it spawned and WAIT for the venv shim to actually unlock. The old code did
 // `hermesProcess.kill('SIGTERM')` + `app.quit()` fire-and-forget: SIGTERM on
@@ -2834,9 +2851,21 @@ async function releaseBackendLock(updateRoot, tag) {
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
 
+  // Every PID we have ever signalled. The unlock gate below must wait for
+  // these to actually LEAVE the process table, not just for the shim to
+  // unlock: the shim probe only covers venv\Scripts\hermes.exe, but the
+  // backend is `python.exe -m hermes_cli.main serve`, which need not hold the
+  // shim at all — so the old shim-only gate could pass on its first iteration
+  // with zero dwell while the killed pythons were still terminating, and the
+  // venv-blocker scan then reported those dying processes as holders,
+  // aborting every first update attempt (#74805).
+  const killedPids = new Set(pids)
+
   while (Date.now() < deadlineMs) {
-    if (!isShimLocked(shim)) {
-      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
+    const lingering = [...killedPids].filter(isPidAlive)
+
+    if (!isShimLocked(shim) && lingering.length === 0) {
+      rememberLog(`[${tag}] venv shim unlocked and backend PID(s) exited; safe to proceed`)
 
       return { unlocked: true }
     }
@@ -2859,10 +2888,24 @@ async function releaseBackendLock(updateRoot, tag) {
     }
 
     for (const pid of stragglers) {
+      killedPids.add(pid)
       forceKillProcessTree(pid)
     }
 
     await new Promise(r => setTimeout(r, 300))
+  }
+
+  // Deadline reached. Keep the old success criterion — an unlocked shim —
+  // rather than inventing a new failure mode for PIDs that linger past 15s;
+  // the venv-blocker re-scan in applyUpdates covers that residue.
+  if (!isShimLocked(shim)) {
+    const lingering = [...killedPids].filter(isPidAlive)
+
+    rememberLog(
+      `[${tag}] proceeding after 15s: venv shim unlocked, but ${lingering.length} killed backend PID(s) still enumerable`
+    )
+
+    return { unlocked: true }
   }
 
   // Do NOT proceed past a held lock: handing off to the updater while another
@@ -3026,7 +3069,23 @@ async function applyUpdates(opts = {}) {
     // malformed output, missing psutil) abort the handoff — never proceed
     // to the detached updater when the venv state is unknown.
     if (IS_WINDOWS) {
-      const scanOutcome = await scanVenvBlockers(updateRoot)
+      // Re-scan before aborting on 'blocked'. Process-table teardown is
+      // asynchronous: even after releaseBackendLock's PID-exit wait, a
+      // grandchild we never tracked (or a process an AV driver is holding in
+      // teardown) can stay enumerable for a few more seconds and read as a
+      // holder. Each scan itself costs seconds (spawns a venv python +
+      // psutil sweep), so two retries with a short dwell give the table
+      // ample time to settle without meaningfully delaying the abort path
+      // when a REAL holder (a user terminal, second window) is present.
+      let scanOutcome = await scanVenvBlockers(updateRoot)
+
+      for (let attempt = 0; scanOutcome.kind === 'blocked' && attempt < 2; attempt++) {
+        rememberLog(
+          `[updates] venv-blocker scan reported ${scanOutcome.result.processes.length} holder(s); re-scanning (attempt ${attempt + 2}/3)`
+        )
+        await new Promise(r => setTimeout(r, 1500))
+        scanOutcome = await scanVenvBlockers(updateRoot)
+      }
 
       if (scanOutcome.kind === 'blocked') {
         const message = formatBlockerMessage(scanOutcome.result)

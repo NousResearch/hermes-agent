@@ -227,6 +227,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         return set()
 
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", fake_wait)
+    # Hermetic: never walk the real process table for descendants — PIDs 101
+    # and 202 may exist on the machine running the tests.
+    monkeypatch.setattr(cli_main, "_venv_resident_descendants", lambda pids: [])
     monkeypatch.setattr(
         gateway_mod,
         "_capture_gateway_argv",
@@ -254,6 +257,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
                 "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
             }
         ],
+        "helper_pids": [],
     }
     assert waited_for == [101]
     assert terminated == [(202, True)]

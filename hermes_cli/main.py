@@ -5163,6 +5163,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _validate_critical_modules_import,
     _venv_core_imports_healthy,
     _venv_launcher_ancestors,
+    _venv_resident_descendants,
     _wait_for_windows_update_gateway_exit,
     _warn_incomplete_gateway_fleet_restart,
     _web_build_toolchain_ready,

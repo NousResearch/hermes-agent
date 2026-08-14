@@ -166,6 +166,24 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     Some(MarkerOwner { pid, age_secs })
 }
 
+/// True when the on-disk marker names THIS process as its owner.
+///
+/// `live_marker_owner` cannot answer this: it deliberately maps
+/// self-ownership to `None` (the #74761 pre-write adoption). The exit-2
+/// self-heal below needs the raw fact, because a `hermes update` child that
+/// refuses over OUR marker is a handoff-recognition failure, not a real
+/// concurrent update.
+fn marker_owned_by_self(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| {
+            raw.lines()
+                .next()
+                .and_then(|line| line.trim().parse::<u32>().ok())
+        })
+        == Some(std::process::id())
+}
+
 /// True when a process with `pid` currently exists.
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
@@ -417,6 +435,40 @@ async fn run_update(app: AppHandle) -> Result<()> {
             "[update] first update attempt failed; retrying once (the fix it just \
              pulled loads on the second run)…",
         );
+        update = run_streamed(
+            &app,
+            &hermes,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
+
+    // Self-owned-marker heal (#75788). Exit 2 means the child refused over a
+    // live update marker with a foreign owner. When that "foreign" owner is
+    // THIS process, the child simply failed to recognize the handoff — a
+    // checkout predating the HERMES_UPDATE_HANDOFF_PID env fix (8c76fe19f)
+    // and the ancestor-pid fallback runs its pre-pull update_lock.py, reads
+    // our marker, and exits 2 every time. The refusal loop is unbreakable
+    // from the user's side because the update being refused is the one that
+    // ships the fix. The marker exists to serialize updates and this process
+    // IS the update: drop our claim and retry once with the marker absent.
+    // The guard re-removes on Drop (idempotent), and the desktop is already
+    // gone at this point, so nothing races the brief marker-free window.
+    if update.exit_code == Some(UPDATE_EXIT_CONCURRENT)
+        && marker_owned_by_self(&crate::paths::update_in_progress_marker())
+    {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] child refused over this updater's own marker (stale \
+             checkout without handoff recognition); clearing the claim and \
+             retrying once…",
+        );
+        _update_marker.complete();
         update = run_streamed(
             &app,
             &hermes,

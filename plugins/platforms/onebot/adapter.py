@@ -704,7 +704,6 @@ class OneBotAdapter(BasePlatformAdapter):
         them. Replies/at are normalized to plain text.
         """
         image_urls = _load_onebot_utils()._CQ_IMAGE_RE.findall(raw)
-        record_urls = _load_onebot_utils()._CQ_RECORD_RE.findall(raw)
         media_urls: List[str] = []
         media_types: List[str] = []
         # 完整解析每个 CQ:image 的 url/file 属性（url 可能为空，需 get_image 换取）
@@ -722,9 +721,29 @@ class OneBotAdapter(BasePlatformAdapter):
                     media_types.append("image")
             except Exception as e:
                 logger.debug("[onebot] image download failed: %s", e)
-        for url in record_urls:
+        # 语音：优先 url 直下；NapCat 私聊语音常无 url（只有 file hash + 容器
+        # 内 path），用 get_record API 以 file hash 换取 base64（2026-08-14）
+        for m in _load_onebot_utils()._CQ_RECORD_ALL_RE.finditer(raw):
+            attrs = {}
+            for kv in m.group(1).split(","):
+                if "=" in kv:
+                    k, _, v = kv.partition("=")
+                    attrs[k.strip()] = _load_onebot_utils()._cq_unescape(v)
+            url = attrs.get("url", "")
+            if not url and attrs.get("file"):
+                try:
+                    data = await self._call_action(
+                        "get_record",
+                        {"file": attrs["file"], "out_format": "wav"},
+                        timeout=15.0,
+                    )
+                    url = data.get("url") or data.get("file") or ""
+                except Exception as e:
+                    logger.debug("[onebot] get_record failed for %s: %s", attrs.get("file"), e)
+            if not url:
+                continue
             try:
-                path = await self._download_audio(_load_onebot_utils()._cq_unescape(url))
+                path = await self._download_audio(url)
                 if path:
                     media_urls.append(path)
                     media_types.append("audio/wav")
@@ -785,9 +804,15 @@ class OneBotAdapter(BasePlatformAdapter):
                 text_parts.append("[图片]")
             elif seg_type == "record":
                 try:
-                    path = await self._download_audio(
-                        data.get("url", "") or data.get("file", "")
-                    )
+                    r_url = data.get("url", "") or ""
+                    if not r_url and data.get("file"):
+                        rdata = await self._call_action(
+                            "get_record",
+                            {"file": data["file"], "out_format": "wav"},
+                            timeout=15.0,
+                        )
+                        r_url = rdata.get("url") or rdata.get("file") or ""
+                    path = await self._download_audio(r_url)
                     if path:
                         media_urls.append(path)
                         media_types.append("audio/wav")

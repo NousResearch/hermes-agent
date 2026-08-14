@@ -23,6 +23,7 @@ _CQ_IMAGE_ALL_RE = re.compile(r"\[CQ:image,([^\]]*)\]")
 _CQ_IMAGE_NOURL_RE = re.compile(r"\[CQ:image(?:,[^\]]*)?\]")
 _CQ_RECORD_RE = re.compile(r"\[CQ:record,[^\]]*?url=([^,\]]+)\]")
 _CQ_RECORD_NOURL_RE = re.compile(r"\[CQ:record(?:,[^\]]*)?\]")
+_CQ_RECORD_ALL_RE = re.compile(r"\[CQ:record,([^\]]*)\]")
 _CQ_REPLY_RE = re.compile(r"\[CQ:reply,id=(\d+)\]")
 _CQ_FACE_RE = re.compile(r"\[CQ:face,id=(\d+)\]")
 # CQ:file —— NapCat 私聊文件属性：file=文件名, file_id=, file_size=, url=

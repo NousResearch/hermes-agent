@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import unquote
 
 try:
     from agent.redact import redact_sensitive_text as _force_redact
@@ -25,6 +26,10 @@ _INTERNAL_ENTRY_KINDS = frozenset({
 _MAX_VISIBLE_MESSAGES = 2_000
 _MAX_VISIBLE_BYTES = 2 * 1024 * 1024
 _DEFAULT_CHUNK_BYTES = 48 * 1024
+_URL_USERINFO_PATTERN = re.compile(r"(?P<prefix>https?://)(?P<userinfo>[^@/\s]+)@")
+_URL_QUERY_VALUE_PATTERN = re.compile(
+    r"(?P<prefix>[?&][^=\s&#]+)(?P<equals>=)(?P<value>[^&#\s]*)"
+)
 
 
 @dataclass(frozen=True)
@@ -144,6 +149,8 @@ def _is_visible_entry(entry: Any) -> bool:
         return False
     if entry.get("inactive"):
         return False
+    if entry.get("rewound") or entry.get("is_rewound"):
+        return False
     if any(
         entry.get(flag)
         for flag in ("branch_marker", "is_branch_marker", "delegate", "is_delegate")
@@ -185,15 +192,46 @@ def _safe_public_text(value: str, hidden_values: set[str]) -> str:
         text = _force_redact(value, force=True)
     except Exception:
         return "[REDACTED]"
-    for hidden in sorted(
-        (item for item in hidden_values if len(item) >= 3), key=len, reverse=True
-    ):
+    hidden_values = _nonempty_hidden_values(hidden_values)
+    text = _redact_url_components(text, hidden_values)
+    for hidden in hidden_values:
         if hidden.isdigit():
             pattern = rf"(?<!\d){re.escape(hidden)}(?!\d)"
         else:
             pattern = rf"(?<![A-Za-z0-9_-]){re.escape(hidden)}(?![A-Za-z0-9_-])"
         text = re.sub(pattern, "[REDACTED]", text, flags=re.IGNORECASE)
     return " ".join(text.split()).strip()
+
+
+def _nonempty_hidden_values(hidden_values: set[str]) -> list[str]:
+    return sorted(
+        (item for item in hidden_values if isinstance(item, str) and item.strip()),
+        key=len,
+        reverse=True,
+    )
+
+
+def _redact_url_components(text: str, hidden_values: list[str]) -> str:
+    def redact_userinfo(match: re.Match[str]) -> str:
+        return (
+            match["prefix"] + _redact_url_value(match["userinfo"], hidden_values) + "@"
+        )
+
+    def redact_query_value(match: re.Match[str]) -> str:
+        return (
+            match["prefix"]
+            + match["equals"]
+            + _redact_url_value(match["value"], hidden_values)
+        )
+
+    text = _URL_USERINFO_PATTERN.sub(redact_userinfo, text)
+    return _URL_QUERY_VALUE_PATTERN.sub(redact_query_value, text)
+
+
+def _redact_url_value(value: str, hidden_values: list[str]) -> str:
+    if any(unquote(value).casefold() == hidden.casefold() for hidden in hidden_values):
+        return "[REDACTED]"
+    return value
 
 
 def _visible_bytes(messages: list[VisibleMessage]) -> int:

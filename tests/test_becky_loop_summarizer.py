@@ -98,8 +98,58 @@ def test_extract_visible_messages_keeps_only_active_public_turns() -> None:
     ]
 
 
-def test_chunk_visible_messages_accepts_exact_outer_limits() -> None:
-    """Changing either outer limit must reject the excess before any provider work."""
+def test_extract_visible_messages_omits_rewound_entries() -> None:
+    """Rewound transcript rows must not be reintroduced to a model prompt."""
+    timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+
+    visible = extract_visible_messages(
+        [
+            {"role": "user", "content": "keep this", "timestamp": timestamp},
+            {
+                "role": "assistant",
+                "content": "rewound turn",
+                "rewound": True,
+                "timestamp": timestamp,
+            },
+            {
+                "role": "user",
+                "content": "also rewound",
+                "is_rewound": True,
+                "timestamp": timestamp,
+            },
+        ],
+        set(),
+    )
+
+    assert [message.text for message in visible] == ["keep this"]
+
+
+def test_extract_visible_messages_redacts_hidden_values_in_url_credentials() -> None:
+    """Short or percent-encoded hidden values cannot leak through URL syntax."""
+    timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+
+    visible = extract_visible_messages(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "An idyllic note remains. https://id@example.test/path?"
+                    "access_token=a%20b&note=idyllic"
+                ),
+                "timestamp": timestamp,
+            }
+        ],
+        {"id", "a b"},
+    )
+
+    assert visible[0].text == (
+        "An idyllic note remains. https://[REDACTED]@example.test/path?"
+        "access_token=[REDACTED]&note=idyllic"
+    )
+
+
+def test_chunk_visible_messages_accepts_exact_message_limit() -> None:
+    """Exactly 2,000 messages remain within the count boundary."""
     messages = [_visible_message(index, "x" * 1_024) for index in range(2_000)]
 
     chunks = chunk_visible_messages(messages)
@@ -109,6 +159,19 @@ def test_chunk_visible_messages_accepts_exact_outer_limits() -> None:
         sum(len(message.text.encode("utf-8")) for message in chunk) <= 48 * 1024
         for chunk in chunks
     )
+
+
+def test_chunk_visible_messages_accepts_exact_two_mebibytes_of_utf8_text() -> None:
+    """The byte limit counts UTF-8 bytes, not Python character count."""
+    messages = [_visible_message(index, "é" * 1_024) for index in range(1_024)]
+
+    chunks = chunk_visible_messages(messages)
+
+    assert (
+        sum(len(message.text.encode("utf-8")) for message in messages)
+        == 2 * 1024 * 1024
+    )
+    assert [message for chunk in chunks for message in chunk] == messages
 
 
 @pytest.mark.parametrize(

@@ -156,6 +156,20 @@ class TestFormatMessageCodeBlocks:
         assert "``````" not in result
         assert "code" in result
 
+    def test_fence_with_crlf_line_endings_is_protected(self, adapter):
+        r"""A fenced block whose lines end in CRLF (``\r\n``) — e.g. content
+        that originated on Windows — must still be protected. The closing-fence
+        anchor tolerates a trailing ``\r`` before the line end; without it the
+        block goes unrecognized and its backticks are escaped into literal
+        ``\``` runs, dropping the code formatting."""
+        text = "```\r\ncode\r\n```\r\n"
+        result = adapter.format_message(text)
+        # Protected as a real fence: the body survives and the fence backticks
+        # are emitted literally, not escaped (which is what an unmatched close
+        # would produce).
+        assert "code" in result
+        assert "\\`" not in result
+
 
 @pytest.mark.asyncio
 async def test_final_send_does_not_retrigger_typing(adapter):

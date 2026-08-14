@@ -4917,6 +4917,9 @@ class TelegramAdapter(BasePlatformAdapter):
         #    indent allowed).  Anchoring to line starts keeps *inline* triple
         #    backticks (e.g. "the syntax is ```x``` inline") from being
         #    swallowed and mangled into broken MarkdownV2 <pre> entities.
+        #    The trailing ``\r?`` on the close lets CRLF-terminated fences
+        #    (Windows-authored content) match too, so they aren't left
+        #    unprotected with their backticks escaped into literals.
         def _protect_fenced(m):
             opening = m.group(1)  # opening fence line, incl. trailing newline
             body = m.group(2)     # code body (may be empty)
@@ -4925,7 +4928,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return _ph(opening + body + closing)
 
         text = re.sub(
-            r'(?m)^([ ]{0,3}`{3}[^\n]*\n)([\s\S]*?)(^[ ]{0,3}`{3})[ \t]*$',
+            r'(?m)^([ ]{0,3}`{3}[^\n]*\n)([\s\S]*?)(^[ ]{0,3}`{3})[ \t]*\r?$',
             _protect_fenced,
             text,
         )

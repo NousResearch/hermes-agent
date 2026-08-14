@@ -67,6 +67,14 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "list", aliases=["ls"], help="List all dynamic subscriptions"
     )
 
+    wh_migrate = webhook_subparsers.add_parser(
+        "migrate-secrets",
+        help="Move legacy plaintext webhook secrets into the profile secret backend",
+    )
+    wh_migrate.add_argument(
+        "--json", action="store_true", help="Emit value-free migration receipts as JSON"
+    )
+
     wh_rm = webhook_subparsers.add_parser(
         "remove", aliases=["rm"], help="Remove a subscription"
     )

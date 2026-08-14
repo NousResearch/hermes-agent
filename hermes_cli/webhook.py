@@ -184,6 +184,10 @@ def webhook_command(args):
         print("Run 'hermes webhook --help' for details.")
         return
 
+    if sub == "migrate-secrets":
+        _cmd_migrate_secrets(args)
+        return
+
     if not _require_webhook_enabled():
         return
 
@@ -361,3 +365,40 @@ def _cmd_test(args):
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+
+# WEBHOOK_REVOLUTION_TASK8_MIGRATION_COMMAND_V1
+def _cmd_migrate_secrets(args):
+    """Migrate every legacy webhook secret, returning value-free receipts."""
+    from hermes_cli.migrations.webhook_secret_refs import (
+        migrate_webhook_config,
+        migrate_webhook_routes,
+    )
+
+    route_path = _subscriptions_path()
+    route_result = {
+        "migrated_routes": [],
+        "receipts": [],
+        "scrubbed_backups": [],
+    }
+    if route_path.exists():
+        backups = tuple(route_path.parent.glob(route_path.name + ".bak*"))
+        route_result = migrate_webhook_routes(
+            route_path,
+            backup_paths=backups,
+        )
+
+    config_path = _hermes_home() / "config.yaml"
+    config_result = {"migrated": False, "receipts": []}
+    if config_path.exists():
+        config_result = migrate_webhook_config(config_path)
+
+    result = {"routes": route_result, "config": config_result}
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(
+            "Webhook secret migration complete: "
+            f"{len(route_result.get('migrated_routes', []))} route(s), "
+            f"config={'migrated' if config_result.get('migrated') else 'unchanged'}."
+        )
+    return result

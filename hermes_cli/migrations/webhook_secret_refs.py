@@ -268,9 +268,9 @@ def migrate_webhook_config(
                     route["secret_ref"] = _reference(str(name), route)
                     route.pop("secret", None)
                     route.pop("secret_value", None)
-        from utils import atomic_yaml_write
+        from hermes_cli.config import atomic_config_write
         try:
-            atomic_yaml_write(path, staged, sort_keys=False)
+            atomic_config_write(path, staged, sort_keys=False)
         except Exception:
             raise WebhookSecretMigrationError(
                 "Atomic config switch failed; source remains available for rollback",

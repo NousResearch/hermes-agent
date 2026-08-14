@@ -541,6 +541,14 @@ class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
         from gateway.webhook_config import resolve_effective_webhook_config
 
         subs_path = resolve_effective_webhook_config().routes_path
+        if subs_path.exists():
+            try:
+                from hermes_cli.migrations.webhook_secret_refs import migrate_webhook_routes
+                migrate_webhook_routes(subs_path)
+            except Exception as exc:
+                # Migration is fail-safe: source remains byte-identical before
+                # the atomic switch, so legacy routes may continue to resolve.
+                logger.warning("[webhook] secret-ref migration deferred: %s", exc)
         if not subs_path.exists():
             if self._dynamic_routes:
                 self._dynamic_routes = {}

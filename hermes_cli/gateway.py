@@ -677,7 +677,7 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "hermes_cli.main"]
     if profile != "default":
         args.extend(["--profile", profile])
-    args.extend(["gateway", "run", "--replace"])
+    args.extend(["gateway", "run"])
     return args
 
 
@@ -4222,7 +4222,6 @@ def generate_launchd_plist() -> str:
         [
             "<string>gateway</string>",
             "<string>run</string>",
-            "<string>--replace</string>",
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)

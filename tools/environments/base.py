@@ -693,6 +693,8 @@ class BaseEnvironment(ABC):
                     parts.append(harden)
             except Exception:
                 parts.append(
+                    "unset -v NPM_TOKEN NPM_AUTH_TOKEN NODE_AUTH_TOKEN "
+                    "PYPI_TOKEN TWINE_PASSWORD CARGO_REGISTRY_TOKEN 2>/dev/null || true\n"
                     "export GIT_TERMINAL_PROMPT=0\n"
                     "export GCM_INTERACTIVE=Never"
                 )

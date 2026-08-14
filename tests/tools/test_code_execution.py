@@ -630,21 +630,62 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
 
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
-        code = (
-            "from hermes_tools import terminal\n"
-            "print('fallback ok')\n"
-        )
+    def test_empty_enabled_tools_denies_all(self):
+        """``enabled_tools=[]`` is an explicit deny-all: no sandbox tool stubs
+        are generated, so ``from hermes_tools import terminal`` raises
+        ImportError. Previously ``[]`` was conflated with ``None`` and
+        broadened to every sandbox tool (#84271)."""
+        code = "from hermes_tools import terminal\nprint('should not reach')\n"
         with patch("model_tools.handle_function_call",
-                    return_value=json.dumps({"ok": True})):
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-empty-deny-all",
+                enabled_tools=[],
+            ))
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_nonoverlapping_tools_deny_all(self):
+        """A non-empty ``enabled_tools`` with no sandbox overlap must not fall
+        back to every sandbox tool — the exact authenticated manifest is used,
+        and an empty intersection denies all (#84271)."""
+        code = "from hermes_tools import terminal\nprint('fallback')\n"
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error", msg=result)
+        self.assertIn(
+            "ImportError",
+            result.get("error", "") + result.get("output", ""),
+        )
+
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_none_enabled_tools_legacy_default(self):
+        """``enabled_tools=None`` keeps the documented legacy default (every
+        sandbox tool) — the mode is explicit (``is None``), not derived from
+        truthiness, so the empty-list deny-all does not shadow it (#84271)."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "r = terminal('echo hi')\n"
+            "print(r.get('output', ''))\n"
+        )
+        with patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code, task_id="test-none-default",
+                enabled_tools=None,
+            ))
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("mock output for: echo hi", result["output"])
 
 
 # ---------------------------------------------------------------------------

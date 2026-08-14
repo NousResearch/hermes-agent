@@ -1076,10 +1076,14 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
+    if enabled_tools is None:
+        # Legacy default: no explicit grant → all sandbox tools.
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    else:
+        # Explicit grant (possibly empty): exact intersection with the allowed
+        # set. An empty list means deny-all — it must not broaden to the
+        # legacy default (SECURITY-CLASS-faf9d60580300e16 / #84271).
+        sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -1333,12 +1337,14 @@ def execute_code(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
+    # Determine which tools the sandbox can call. Tri-state semantics: an
+    # explicit empty list is deny-all, not "fall back to every sandbox tool"
+    # (SECURITY-CLASS-faf9d60580300e16 / #84271).
+    if enabled_tools is None:
+        # Legacy default: no explicit grant → all sandbox tools.
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    else:
+        sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")

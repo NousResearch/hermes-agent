@@ -95,8 +95,8 @@ function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
 /**
  * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
  * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
- * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
+ * stay ordinary clicks, so `opts.onTap` (activate the tile) rides the tab's
+ * gesture; Esc aborts instantly. A stack/
  * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
  * row and MOVES the existing one when its tab is the drag source.
  */

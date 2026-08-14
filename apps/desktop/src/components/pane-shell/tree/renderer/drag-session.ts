@@ -158,7 +158,7 @@ const sameHint = (a: DropHint | null, b: DropHint | null) =>
 /** Double-tap detection for drag handles. Pane handles preventDefault
  *  pointerdown, which suppresses native `dblclick` — so rapid same-handle
  *  taps are detected here instead. */
-const DOUBLE_TAP_MS = 400
+export const DOUBLE_TAP_MS = 400
 let lastTap: { key: string; time: number } | null = null
 
 export interface DoubleTapContext {

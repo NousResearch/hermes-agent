@@ -147,9 +147,8 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
     />
   )
 
-  // FULL-PAGE views (not chat) mark the zone body `data-zone-no-header`: a
-  // page is not a tab-able surface, so the zone's double-click header toggle
-  // stands down while one is showing (see onZoneDoubleClick).
+  // FULL-PAGE views (not chat): a page is not a tab-able surface, so the
+  // zone's tab strip stands down while one is showing (paneChrome.headerVeto).
   const page = (view: ReactNode) => (
     <div className="contents" data-zone-no-header>
       <Suspense fallback={null}>{view}</Suspense>

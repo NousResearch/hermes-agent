@@ -35,6 +35,7 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
+from agent.conversation_text import _join_truncated_parts
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -211,14 +212,6 @@ _API_CALL_MODULES = frozenset({
 })
 
 
-def _join_truncated_parts(parts: List[str]) -> str:
-    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
-    joined = ""
-    for part in parts:
-        if joined and not joined[-1].isspace() and part and not part[0].isspace():
-            joined += "\n"
-        joined += part
-    return joined
 
 
 def _moa_reference_metrics_for_hook(agent: Any) -> Any:

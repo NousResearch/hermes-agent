@@ -8421,6 +8421,65 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_slash_exec_context_routes_to_live_session_without_worker(monkeypatch):
+    """Non-compute-host sessions get /context from the live session state.
+
+    /context moved from _ISOLATED_SESSION_READ_COMMANDS to
+    _LIVE_SESSION_DIRECT_COMMANDS; before that, a normal session's /context
+    fell through to an isolated _SlashWorker, reporting a fresh worker's
+    context instead of the live conversation's. The exploding worker asserts
+    the worker path is never taken; the mirrored usage snapshot asserts the
+    output comes from the live session.
+    """
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("slash worker should not run for live /context")
+
+    server._sessions["sid"] = {
+        # agent=None is a real session state (lazy sessions keep the agent
+        # slot empty until first turn) — _session() would substitute a dummy
+        # SimpleNamespace, which changes the usage-snapshot branch.
+        "agent": None,
+        "session_key": "session-key",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "_metadata_mirror": {
+            "model": "live-model",
+            "provider": "live-provider",
+            "usage": {
+                "model": "live-model",
+                "context_used": 432,
+                "context_max": 1000,
+                "context_percent": 43,
+            },
+        },
+    }
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "/context", "session_id": "sid"},
+            }
+        )
+        assert "result" in resp, resp
+        assert "432" in resp["result"]["output"]
+        assert "live-model" in resp["result"]["output"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 
@@ -15096,7 +15155,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/diff", "session_id": "race-spawn"},
             }
         )
         results.append(resp)

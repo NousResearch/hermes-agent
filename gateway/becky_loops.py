@@ -100,6 +100,12 @@ def _bounded_text(value: Any, limit: int = 500) -> str:
 def _safe_public_text(value: Any, hidden_values: set[str], limit: int = 500) -> str:
     """Bound text while removing known Telegram/session identifiers."""
     text = _redact(str(value or ""))
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        logger.debug("Hermes force redactor unavailable", exc_info=True)
     for hidden in sorted(
         (item for item in hidden_values if item), key=len, reverse=True
     ):
@@ -315,7 +321,9 @@ class BeckyLoopsBridgeServer:
                     not isinstance(frame, str)
                     or len(frame.encode()) > _MAX_REQUEST_BYTES
                 ):
-                    await connection.send(self._error(None, "protocol"))
+                    await connection.send(
+                        json.dumps(self._error(None, "protocol"), separators=(",", ":"))
+                    )
                     await connection.close(code=1009, reason="request too large")
                     return
                 response = await self._dispatch(frame)
@@ -323,7 +331,9 @@ class BeckyLoopsBridgeServer:
                     response, ensure_ascii=False, separators=(",", ":")
                 )
                 if len(encoded.encode()) > _MAX_RESPONSE_BYTES:
-                    await connection.send(self._error(None, "protocol"))
+                    await connection.send(
+                        json.dumps(self._error(None, "protocol"), separators=(",", ":"))
+                    )
                     await connection.close(code=1009, reason="response too large")
                     return
                 await connection.send(encoded)
@@ -441,11 +451,15 @@ class BeckyLoopsBridgeServer:
             str(row.get("thread_id") or ""),
             str(row.get("source_ref") or ""),
         }
+        title = (
+            _safe_public_text(row.get("title") or "Telegram loop", hidden_values, 128)
+            or "Telegram loop"
+        )
+        if title == "[REDACTED]" or title.startswith("«redacted"):
+            title = "Telegram loop"
         return {
             "source_ref": row["source_ref"],
-            "title": _safe_public_text(
-                row.get("title") or "Telegram loop", hidden_values, 128
-            ),
+            "title": title,
             "source_state": row.get("source_state", "active"),
             "revision": row["revision"],
             "message_count": max(0, int(row.get("message_count") or 0)),

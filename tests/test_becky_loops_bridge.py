@@ -216,6 +216,19 @@ async def test_bridge_returns_structured_protocol_errors() -> None:
     assert boolean_id["id"] is None
 
 
+def test_public_text_uses_force_redaction_and_title_fallback() -> None:
+    store = FakeStore()
+    store.rows[0]["title"] = "123456789"
+    server = BeckyLoopsBridgeServer(config=config(), store=store)
+    index = server._public_index(store.rows[0])
+    assert index["title"] == "Telegram loop"
+    redacted = server._summary(
+        store.rows[0],
+        [{"role": "user", "content": "AWS key=AKIA12345678901234", "timestamp": 0}],
+    )
+    assert "AKIA12345678901234" not in json.dumps(redacted)
+
+
 @pytest.mark.asyncio
 async def test_bridge_never_advertises_unproven_topic_control_or_identifiers() -> None:
     store = FakeStore()

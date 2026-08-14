@@ -700,3 +700,69 @@ def test_normalize_usage_clamps_inconsistent_cache_total():
 
     assert normalized.input_tokens == 0
     assert normalized.prompt_tokens == 130
+
+
+def test_normalize_usage_codex_responses_reads_cache_write_tokens():
+    """GPT-5.6+ explicit prompt caching reports cache writes as
+    input_tokens_details.cache_write_tokens (billed at 1.25x), per OpenAI's
+    documented Responses API schema. Before this fix, the codex_responses
+    branch only read the undocumented `cache_creation_tokens` name and always
+    normalized cache writes to 0."""
+    usage = SimpleNamespace(
+        input_tokens=2006,
+        output_tokens=400,
+        input_tokens_details=SimpleNamespace(cached_tokens=1920, cache_write_tokens=50),
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="codex_responses")
+
+    assert normalized.cache_read_tokens == 1920
+    assert normalized.cache_write_tokens == 50
+    assert normalized.input_tokens == 2006 - 1920 - 50
+
+
+def test_normalize_usage_codex_responses_falls_back_to_cache_creation_tokens():
+    """If cache_write_tokens is absent, fall back to the legacy
+    cache_creation_tokens name rather than reporting 0."""
+    usage = SimpleNamespace(
+        input_tokens=1000,
+        output_tokens=100,
+        input_tokens_details=SimpleNamespace(cached_tokens=200, cache_creation_tokens=80),
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="codex_responses")
+
+    assert normalized.cache_write_tokens == 80
+
+
+def test_normalize_usage_reads_qwen_flat_cached_tokens():
+    """Some Alibaba/Qwen regional endpoints report cache reads as a flat
+    `usage.cached_tokens` field with no `prompt_tokens_details` wrapper at
+    all. Before this fix, those responses fell through every branch and
+    normalized to cache_read_tokens=0, undercounting cost."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=300,
+        cached_tokens=1200,
+    )
+
+    normalized = normalize_usage(usage, provider="qwen", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1200
+    assert normalized.input_tokens == 800
+
+
+def test_normalize_usage_nested_details_win_over_qwen_flat_top_level():
+    """When both shapes are present, the nested OpenAI-style value wins and
+    the flat Qwen field is not double-read."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=100,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=900),
+        cached_tokens=1200,
+    )
+
+    normalized = normalize_usage(usage, provider="qwen", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 900
+    assert normalized.input_tokens == 1100

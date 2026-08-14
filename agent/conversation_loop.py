@@ -211,14 +211,33 @@ _API_CALL_MODULES = frozenset({
 })
 
 
-def _join_truncated_parts(parts: List[str]) -> str:
-    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
-    joined = ""
+def _join_truncated_parts(parts: List[str], trailing: str = "") -> str:
+    """Join truncated response parts without gluing text together.
+
+    Each continuation pass of a truncated stream appends its partial text
+    as a separate entry in ``parts``.  Joining them with "" can glue the end
+    of one part directly onto the start of the next (e.g. "index.html"
+    followed by "Review the 5 changes" becomes "index.htmlReview the 5
+    changes").  Insert a newline between two parts only when neither
+    boundary already provides whitespace, so the output stays readable
+    regardless of where the truncation actually cut.  An optional
+    ``trailing`` suffix (the final, untruncated response) receives the same
+    boundary treatment against the last part.
+    """
+    joined: List[str] = []
     for part in parts:
-        if joined and not joined[-1].isspace() and part and not part[0].isspace():
-            joined += "\n"
-        joined += part
-    return joined
+        if not part:
+            continue
+        if joined and not joined[-1][-1].isspace() and not part[0].isspace():
+            joined.append("\n")
+        joined.append(part)
+    if not joined:
+        return trailing
+    if trailing:
+        if not joined[-1][-1].isspace() and not trailing[0].isspace():
+            joined.append("\n")
+        joined.append(trailing)
+    return "".join(joined)
 
 
 def _moa_reference_metrics_for_hook(agent: Any) -> Any:
@@ -7515,7 +7534,9 @@ def run_conversation(
                 codex_ack_continuations = 0
 
                 if truncated_response_parts:
-                    final_response = _join_truncated_parts([*truncated_response_parts, final_response])
+                    final_response = _join_truncated_parts(
+                        truncated_response_parts, trailing=final_response
+                    )
                     truncated_response_parts = []
                     length_continue_retries = 0
                     # The continuation recovered, so the fragments stay in the transcript.

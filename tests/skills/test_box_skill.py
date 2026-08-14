@@ -48,7 +48,7 @@ def test_skill_frontmatter_is_valid_and_discoverable(frontmatter: dict):
     assert description.endswith(".")
     assert frontmatter.get("license") == "MIT"
     assert "Chris Kim" in str(frontmatter.get("author"))
-    assert "@iskysun96" in str(frontmatter.get("author"))
+    assert "iskysun96" in str(frontmatter.get("author"))
 
     platforms = frontmatter.get("platforms")
     assert isinstance(platforms, list)

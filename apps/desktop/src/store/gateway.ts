@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 import { HermesGateway } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
-import { setGatewayState } from '@/store/session'
+import { setConnection, setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -177,6 +177,11 @@ async function openSecondary(entry: Secondary): Promise<void> {
   const conn = await desktop.getConnection(entry.profile)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
+
+  if (g.activeKey === entry.profile) {
+    setConnection(conn)
+  }
+
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
 }
 

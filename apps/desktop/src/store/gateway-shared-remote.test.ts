@@ -14,21 +14,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const gatewayMocks = vi.hoisted(() => ({
   connect: vi.fn(async (_wsUrl: string): Promise<void> => {
     throw new Error('dialed a socket for a shared-primary profile')
-  })
+  }),
+  setConnection: vi.fn()
 }))
 
 vi.mock('@/hermes', () => ({
   HermesGateway: class {
     connectionState = 'closed'
-    connect = gatewayMocks.connect
+    connect = async (wsUrl: string): Promise<void> => {
+      await gatewayMocks.connect(wsUrl)
+      this.connectionState = 'open'
+    }
+    close = vi.fn()
     onEvent = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
   }
 }))
-vi.mock('@/store/session', () => ({ setGatewayState: vi.fn() }))
+vi.mock('@/store/session', () => ({
+  setConnection: gatewayMocks.setConnection,
+  setGatewayState: vi.fn()
+}))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
-const { $gateway, configureGatewayRegistry, ensureGatewayForProfile, setPrimaryGateway } = await import('./gateway')
+const {
+  $gateway,
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  ensureActiveGatewayOpen,
+  ensureGatewayForProfile,
+  setPrimaryGateway
+} = await import('./gateway')
 
 type DesktopStub = { getConnection: ReturnType<typeof vi.fn> }
 
@@ -49,6 +64,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  closeSecondaryGateways()
   vi.clearAllMocks()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -94,5 +110,34 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect(gatewayMocks.connect).toHaveBeenCalledOnce()
     expect(gatewayMocks.connect).toHaveBeenCalledWith(remoteWsUrl)
     expect($gateway.get()).not.toBe(primary)
+  })
+
+  it('refreshes the active connection after a pooled profile reconnect succeeds', async () => {
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://worker.invalid',
+      mode: 'remote',
+      profile: 'worker',
+      token: 'fake-test-token',
+      wsUrl: 'wss://worker.invalid/api/ws?token=fake-test-token'
+    }
+
+    const getConnection = vi.fn(async () => connection)
+
+    setPrimaryGateway(makePrimary() as never, 'default')
+    installDesktop({ getConnection })
+
+    gatewayMocks.connect
+      .mockRejectedValueOnce(new Error('temporarily offline'))
+      .mockResolvedValueOnce(undefined)
+
+    await ensureGatewayForProfile('worker')
+
+    expect(gatewayMocks.setConnection).not.toHaveBeenCalled()
+
+    await ensureActiveGatewayOpen()
+
+    expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
+    expect(gatewayMocks.setConnection).toHaveBeenCalledWith(connection)
   })
 })

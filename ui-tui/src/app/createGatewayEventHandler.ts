@@ -50,15 +50,23 @@ const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
 // be silently dropped from the comparison.
 export const usageChanged = (prev: Usage, next: Usage): boolean => {
   const keys = new Set([...Object.keys(prev), ...Object.keys(next)]) as Set<keyof Usage>
+
   for (const key of keys) {
-    if (prev[key] !== next[key]) return true
+    if (prev[key] !== next[key]) {
+      return true
+    }
   }
+
   return false
 }
 
 export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined): Usage => {
-  if (!patch) return prev
+  if (!patch) {
+    return prev
+  }
+
   const merged: Usage = { ...prev, ...patch }
+
   return usageChanged(prev, merged) ? merged : prev
 }
 

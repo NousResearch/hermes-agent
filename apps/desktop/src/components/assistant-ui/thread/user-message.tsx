@@ -1,5 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
-import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
+import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
@@ -13,6 +13,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -76,6 +77,139 @@ export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-
 // render them as a compact system-style notice instead of a user bubble.
 // Shape: see tools/process_registry.py format_process_notification().
 const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
+
+// Agent-to-agent deliveries ("Message from 🤖 <sender>: …", the Bot Mode /
+// multi-profile convention; optional "(@<handle>)" carries the sender's
+// profile name for avatar resolution; legacy "[Message from agent
+// '<sender>'] …" too). They arrive on the user role because the recipient's
+// turn runs on it, but they are NOT the human speaking — render them as a
+// compact attributed timeline notice instead of a user bubble.
+export const AGENT_MESSAGE_RE =
+  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
+
+// sender handle -> avatar data URL (null = known absent). Module-level so a
+// chat full of notices from one bot resolves once. Profiles change rarely;
+// stale entries only persist for the window's lifetime.
+const agentAvatarCache = new Map<string, null | string>()
+const agentAvatarInflight = new Map<string, Promise<null | string>>()
+
+async function resolveAgentAvatar(handle: string): Promise<null | string> {
+  const key = handle.trim().toLowerCase()
+
+  if (!key) {
+    return null
+  }
+
+  if (agentAvatarCache.has(key)) {
+    return agentAvatarCache.get(key) ?? null
+  }
+
+  const inflight = agentAvatarInflight.get(key)
+
+  if (inflight) {
+    return inflight
+  }
+
+  const run = (async (): Promise<null | string> => {
+    try {
+      const gateway = $gateway.get()
+
+      if (!gateway) {
+        return null
+      }
+
+      const res = await gateway.request<{ profiles?: Array<{ has_avatar?: boolean; name: string }> }>(
+        'profiles.list',
+        { include_sessions: false }
+      )
+      const profiles = res?.profiles ?? []
+      let profile = profiles.find(p => p.name.toLowerCase() === key)
+
+      // 'hermes' is the conventional alias for the primary profile.
+      if (!profile && key === 'hermes') {
+        profile = profiles.find(p => p.name === 'default')
+      }
+
+      if (!profile?.has_avatar) {
+        return null
+      }
+
+      const asset = await gateway.request<{ data?: string; found?: boolean }>('profiles.get_asset', {
+        asset: 'avatar',
+        name: profile.name
+      })
+
+      return asset?.found && asset.data ? asset.data : null
+    } catch {
+      // Older gateway (no profiles.* RPCs) or transient failure — the 🤖
+      // glyph fallback is always correct.
+      return null
+    } finally {
+      agentAvatarInflight.delete(key)
+    }
+  })()
+
+  agentAvatarInflight.set(key, run)
+  const out = await run
+  agentAvatarCache.set(key, out)
+
+  return out
+}
+
+const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
+  const match = AGENT_MESSAGE_RE.exec(text)
+  const sender = (match?.[1] || match?.[3] || 'agent').trim()
+  const handle = (match?.[2] || match?.[3] || sender).trim()
+  const body = (match?.[4] || '').trim()
+  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase()) ?? null)
+
+  useEffect(() => {
+    let live = true
+
+    void resolveAgentAvatar(handle).then(url => {
+      if (live && url) {
+        setAvatar(url)
+      }
+    })
+
+    return () => {
+      live = false
+    }
+  }, [handle])
+
+  // Grok-bots shape: an inter-agent delivery is a timeline EVENT, not a
+  // conversation bubble — a subtle centered notice ("Message from 🤖 X"),
+  // with the delivered text one click away instead of shouting in the
+  // transcript. The recipient's reply below it stays a normal assistant
+  // message, so the exchange still reads in order.
+  return (
+    <div
+      className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+      data-slot="aui_agent-message-note"
+    >
+      <span className="flex items-center justify-center gap-1.5">
+        {avatar ? (
+          <img alt="" aria-hidden className="size-4 shrink-0 rounded-full object-cover" src={avatar} />
+        ) : (
+          <span aria-hidden className="text-[0.8125rem] leading-none">
+            🤖
+          </span>
+        )}
+        <span className="wrap-anywhere">Message from {sender}</span>
+      </span>
+      {body && (
+        <details className="self-center">
+          <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
+            show message
+          </summary>
+          <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
+            <UserMessageText text={body} />
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
 
 const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
@@ -225,6 +359,19 @@ export const UserMessage: FC<{
         data-slot="aui_user-message-root"
       >
         <ProcessNotificationNote text={messageText.trim()} />
+      </MessagePrimitive.Root>
+    )
+  }
+
+  // Agent-to-agent delivery, not a human prompt — attributed inter-agent card.
+  if (AGENT_MESSAGE_RE.test(messageText.trim())) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col items-stretch pb-(--conversation-turn-gap)"
+        data-role="user"
+        data-slot="aui_user-message-root"
+      >
+        <AgentMessageNote text={messageText.trim()} />
       </MessagePrimitive.Root>
     )
   }

@@ -106,6 +106,10 @@ def _get_shared_user_plugins_dir() -> Optional[Path]:
         if shared.resolve() == local.resolve():
             return None
         return shared if shared.is_dir() else None
+    except Exception:
+        return None
+
+
 def _get_project_plugins_dir() -> Optional[Path]:
     """Return ``./.hermes/plugins/`` or None if unavailable or not opted in.
 

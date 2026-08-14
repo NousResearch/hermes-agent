@@ -116,6 +116,12 @@ def main() -> int:
     scratch = home / "scratch.txt"
     scratch.write_text("hello from the bench\n")
 
+    image_on_disk = home / "on-disk.png"
+    image_on_disk.write_bytes(png_bytes(args.kb))
+
+    pdf_on_disk = home / "doc.pdf"
+    pdf_on_disk.write_bytes(b"%PDF-1.4\n" + b"0" * 2048 + b"\n%%EOF\n")
+
     calls = [
         (
             "image.attach_bytes",
@@ -126,12 +132,28 @@ def main() -> int:
             },
         ),
         (
+            "image.attach",
+            lambda sid: {"session_id": sid, "path": str(image_on_disk)},
+        ),
+        (
             "file.attach",
             lambda sid: {
                 "session_id": sid,
                 "name": "scratch.txt",
                 "path": str(scratch),
             },
+        ),
+        (
+            "pdf.attach",
+            lambda sid: {"session_id": sid, "path": str(pdf_on_disk)},
+        ),
+        (
+            "clipboard.paste",
+            lambda sid: {"session_id": sid},
+        ),
+        (
+            "image.detach",
+            lambda sid: {"session_id": sid, "path": "/tmp/nothing.png"},
         ),
         (
             "prompt.submit",
@@ -181,7 +203,58 @@ def main() -> int:
         "\ndispatch() returns immediately for pooled handlers, so a pooled timing\n"
         "is the enqueue cost — the work still happens, just off the reader thread."
     )
+
+    _report_surfaces()
     return 0
+
+
+def _report_surfaces() -> None:
+    """Which surfaces can even reach this code path.
+
+    The stall lives in the gateway's session resolver, so a surface is exposed
+    only if it attaches over the gateway. That is a fact about the call graph
+    rather than a timing, so it is read out of the source — and it moves if
+    the call graph moves.
+    """
+    print("\n\n=== which surfaces reach the gateway attach RPCs ===\n")
+
+    root = Path(__file__).resolve().parents[4]
+    attach_rpcs = ("image.attach", "image.attach_bytes", "file.attach", "clipboard.paste")
+
+    surfaces = {
+        "CLI (cli.py)": [root / "cli.py"],
+        "TUI (ui-tui)": sorted((root / "ui-tui" / "src").rglob("*.ts")),
+        "Desktop (apps/desktop)": sorted((root / "apps" / "desktop" / "src").rglob("*.ts")),
+    }
+
+    for label, paths in surfaces.items():
+        hits: set[str] = set()
+
+        for path in paths:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for rpc in attach_rpcs:
+                if f"'{rpc}'" in text or f'"{rpc}"' in text:
+                    hits.add(rpc)
+
+        if hits:
+            print(f"  {label:<24} EXPOSED — calls {', '.join(sorted(hits))}")
+        else:
+            print(f"  {label:<24} not exposed — no gateway attach RPC")
+
+    print(
+        "\n  CLI attaches inline in its own turn path (cli.py → image_routing) with\n"
+        "  the agent already constructed. There is no gateway session to resolve,\n"
+        "  so the stall is structurally unreachable — matching the ~4s report.\n"
+        "\n  The TUI calls the SAME RPCs and was equally exposed. What differed was\n"
+        "  hit rate, not code path: Desktop mints sessions constantly (new chat,\n"
+        "  tabs, tiles), so a paste routinely lands inside the seconds-long window\n"
+        "  while a fresh session's agent is still building. A TUI user launches\n"
+        "  once and the build finishes while they type."
+    )
+    return None
 
 
 if __name__ == "__main__":

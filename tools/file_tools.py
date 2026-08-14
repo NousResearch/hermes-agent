@@ -1638,11 +1638,45 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # Persisted oversized tool results are sensitive, short-lived
+        # artifacts. Enforce their TTL when they are served as well as during
+        # later writes, so a result with no successor cannot remain readable
+        # indefinitely. Scope the mutating check to the active environment's
+        # exact storage directory; reading an unrelated old file must stay
+        # read-only.
+        file_ops = _get_file_ops(task_id)
+        from tools.tool_result_storage import (
+            RESULT_TTL_DAYS,
+            _expire_persisted_result_on_access,
+            _resolve_storage_dir,
+        )
+
+        raw_persisted_dir = _resolve_storage_dir(file_ops.env)
+        if _file_ops_uses_host_paths(file_ops):
+            # macOS exposes /tmp through /private/tmp; compare canonical host
+            # paths so that alias cannot bypass the expiry gate.
+            persisted_dir = os.path.realpath(raw_persisted_dir)
+            resolved_path = os.path.realpath(os.fspath(_resolved))
+        else:
+            # Remote/container paths must not be resolved on the host.
+            persisted_dir = os.path.normpath(raw_persisted_dir)
+            resolved_path = os.path.normpath(os.fspath(_resolved))
+        if (
+            os.path.dirname(resolved_path) == persisted_dir
+            and os.path.basename(resolved_path).endswith(".txt")
+            and _expire_persisted_result_on_access(resolved_path, file_ops.env)
+        ):
+            return tool_error(
+                f"Persisted tool result expired after {RESULT_TTL_DAYS} days "
+                "and was deleted. Re-run the original tool call if the output "
+                "is still needed."
+            )
+
         # ── Special-file type guard (stat-based) ──────────────────────
         # The name blocklist above catches /dev/* and /proc/* aliases; this
         # catches the class — any FIFO/socket/device wherever it lives. A
         # read on a FIFO blocks until the exec timeout: a self-shipped DoS.
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
+        if _file_ops_uses_host_paths(file_ops):
             kind = _special_file_kind(_resolved)
             if kind is not None:
                 return json.dumps({
@@ -1845,7 +1879,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 

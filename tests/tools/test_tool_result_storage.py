@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,7 @@ from tools.tool_result_storage import (
     RESULT_TTL_DAYS,
     STORAGE_DIR,
     _build_persisted_message,
+    _expire_persisted_result_on_access,
     _heredoc_marker,
     _resolve_storage_dir,
     _safe_result_filename,
@@ -80,6 +82,9 @@ class TestWriteToSandbox:
         assert "chmod 700" in cmd
         assert f"-mtime +{RESULT_TTL_DAYS - 1}" in cmd
         assert "rm -f" in cmd
+        assert "chmod 600" in cmd
+        assert "stat -f '%Lp'" in cmd
+        assert "stat -c '%a'" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
@@ -185,6 +190,88 @@ class TestWriteToSandbox:
         target = storage_dir / "escaped.txt"
         assert _write_to_sandbox("private content", str(target), env) is False
         assert not (outside / "escaped.txt").exists()
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="requires POSIX find semantics")
+    def test_access_deletes_expired_result_without_a_later_write(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        target = tmp_path / "expired.txt"
+        target.write_text("sensitive", encoding="utf-8")
+        expired_at = time.time() - ((RESULT_TTL_DAYS * 24 + 1) * 60 * 60)
+        os.utime(target, (expired_at, expired_at))
+
+        assert _expire_persisted_result_on_access(str(target), env) is True
+        assert not target.exists()
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="requires POSIX find semantics")
+    def test_access_retains_recent_result(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        target = tmp_path / "recent.txt"
+        target.write_text("sensitive", encoding="utf-8")
+
+        assert _expire_persisted_result_on_access(str(target), env) is False
+        assert target.read_text(encoding="utf-8") == "sensitive"
+
+    def test_read_interface_enforces_expiry_only_in_active_result_dir(self):
+        from tools.file_tools import read_file_tool
+
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch("tools.file_tools._file_ops_uses_host_paths", return_value=True),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=Path("/private/tmp/hermes-results/expired.txt"),
+            ),
+            patch(
+                "tools.tool_result_storage._resolve_storage_dir",
+                return_value="/tmp/hermes-results",
+            ),
+            patch(
+                "tools.tool_result_storage._expire_persisted_result_on_access",
+                return_value=True,
+            ) as expire,
+        ):
+            result = read_file_tool("/tmp/hermes-results/expired.txt")
+
+        assert "expired after 7 days" in result
+        expire.assert_called_once_with("/private/tmp/hermes-results/expired.txt", env)
+        file_ops.read_file.assert_not_called()
+
+    def test_read_interface_does_not_expire_unrelated_old_file(self):
+        from tools.file_tools import read_file_tool
+
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        read_result = MagicMock()
+        read_result.content = "still here"
+        read_result.error = None
+        read_result.to_dict.return_value = {
+            "content": "still here",
+            "total_lines": 1,
+            "file_size": 10,
+        }
+        file_ops.read_file.return_value = read_result
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=Path("/tmp/other/old.txt"),
+            ),
+            patch(
+                "tools.tool_result_storage._resolve_storage_dir",
+                return_value="/tmp/hermes-results",
+            ),
+            patch("tools.tool_result_storage._expire_persisted_result_on_access") as expire,
+        ):
+            result = read_file_tool("/tmp/other/old.txt")
+
+        assert "still here" in result
+        expire.assert_not_called()
 
 
 class TestResolveStorageDir:

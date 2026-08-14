@@ -276,10 +276,34 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
         f"[ -O {quoted_dir} ] && chmod 700 {quoted_dir} && "
         f"(find {quoted_dir} -type f -name '*.txt' -mtime +{RESULT_TTL_DAYS - 1} "
         "-exec rm -f {} + 2>/dev/null || true) && "
-        f"rm -f {quoted_path} && cat > {quoted_path}"
+        f"rm -f {quoted_path} && cat > {quoted_path} && "
+        f"chmod 600 {quoted_path} && "
+        f"mode=$(stat -f '%Lp' {quoted_path} 2>/dev/null || "
+        f"stat -c '%a' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
     )
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
+
+
+def _expire_persisted_result_on_access(remote_path: str, env) -> bool:
+    """Delete an expired persisted result before it is served.
+
+    Returns True only when an existing result was older than the retention
+    boundary and was successfully removed. Callers restrict this helper to
+    the active environment's resolved ``hermes-results`` directory so an
+    ordinary read can never delete an unrelated old file.
+    """
+    quoted_path = shlex.quote(remote_path)
+    cmd = (
+        f"expired=$(find {quoted_path} -prune -type f "
+        f"-mtime +{RESULT_TTL_DAYS - 1} -print -quit 2>/dev/null) && "
+        "if [ -n \"$expired\" ]; then "
+        f"rm -f {quoted_path} && printf '%s' expired; "
+        "fi"
+    )
+    result = env.execute(cmd, timeout=30)
+    output = result.get("output", result.get("stdout", ""))
+    return result.get("returncode", 1) == 0 and output.strip() == "expired"
 
 
 def _build_persisted_message(

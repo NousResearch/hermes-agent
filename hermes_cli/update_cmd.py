@@ -4170,7 +4170,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
-        # Check if there are updates
+        # Check if there are updates. On shallow checkouts `rev-list --count`
+        # walks the truncated graph and can report the entire remote ancestry
+        # (e.g. "Found 9980 new commit(s)" on a depth-1 install — #53479).
+        # The zero/nonzero gate is still sound (HEAD == origin/<branch> counts
+        # 0), so keep it, but treat the shallow NUMBER as unknown and recover
+        # the real one via the GitHub compare API when possible.
         result = subprocess.run(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=_m().PROJECT_ROOT,
@@ -4179,6 +4184,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         commit_count = int(result.stdout.strip())
+
+        apply_is_shallow = (
+            subprocess.run(
+                git_cmd + ["rev-parse", "--is-shallow-repository"],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            == "true"
+        )
+        if commit_count > 0 and apply_is_shallow:
+            from hermes_cli.banner import _github_compare_behind
+
+            head_sha = subprocess.run(
+                git_cmd + ["rev-parse", "HEAD"],
+                cwd=_m().PROJECT_ROOT, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            target_sha = subprocess.run(
+                git_cmd + ["rev-parse", f"origin/{branch}"],
+                cwd=_m().PROJECT_ROOT, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            counted = _github_compare_behind(head_sha, target_sha)
+            # counted == 0 means local-ahead (remote tip reachable from HEAD):
+            # not behind, fall through to the up-to-date path.
+            commit_count = counted if counted is not None else -1
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -4282,7 +4314,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if commit_count > 0:
+            print(f"→ Found {commit_count} new commit(s)")
+        else:
+            # Shallow checkout, exact count unrecoverable (offline/rate-limited
+            # compare API) — the tips differ, so there IS an update.
+            print("→ Updates available (commit count unknown on this shallow checkout)")
 
         print("→ Pulling updates...")
         update_succeeded = False

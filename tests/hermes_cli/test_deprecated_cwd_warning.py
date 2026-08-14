@@ -72,3 +72,15 @@ class TestDeprecatedCwdWarning:
         warn_deprecated_cwd_env_vars(config={})
 
         assert capsys.readouterr().err == ""
+
+    def test_dotenv_read_failure_is_silent(self, monkeypatch, capsys):
+        import hermes_cli.config as config_module
+
+        def raise_read_error():
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(config_module, "load_env", raise_read_error)
+
+        config_module.warn_deprecated_cwd_env_vars(config={})
+
+        assert capsys.readouterr().err == ""

@@ -121,14 +121,18 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
 
 def _resolve_storage_dir(env) -> str:
     """Return the best temp-backed storage dir for this environment."""
-    get_temp_dir = getattr(env, "get_temp_dir", None)
-    temp_dir = None
-    if callable(get_temp_dir):
-        try:
-            temp_dir = get_temp_dir()
-        except Exception as exc:
-            logger.debug("Could not resolve env temp dir: %s", exc)
-    return f"{temp_dir.rstrip('/') or '/'}/hermes-results" if temp_dir else STORAGE_DIR
+    if env is not None:
+        get_temp_dir = getattr(env, "get_temp_dir", None)
+        if callable(get_temp_dir):
+            try:
+                temp_dir = get_temp_dir()
+            except Exception as exc:
+                logger.debug("Could not resolve env temp dir: %s", exc)
+            else:
+                if isinstance(temp_dir, str) and temp_dir:
+                    temp_dir = temp_dir.rstrip("/") or "/"
+                    return f"{temp_dir}/hermes-results"
+    return STORAGE_DIR
 
 
 def _safe_result_filename(tool_use_id: str) -> str:
@@ -174,8 +178,8 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
         "-exec rm -f {} + 2>/dev/null || true) && "
         f"rm -f {quoted_path} && cat > {quoted_path} && "
         f"chmod 600 {quoted_path} && "
-        f"mode=$(stat -f '%Lp' {quoted_path} 2>/dev/null || "
-        f"stat -c '%a' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
+        f"mode=$(stat -c '%a' {quoted_path} 2>/dev/null || "
+        f"stat -f '%Lp' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
     )
     return env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) == 0
 

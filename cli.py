@@ -224,7 +224,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, fast_safe_load
+from utils import base_url_host_matches, fast_safe_load, is_truthy_value
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -4364,7 +4364,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
-        self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        self.compact = compact if compact is not None else is_truthy_value(
+            CLI_CONFIG["display"].get("compact"), default=False
+        )
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
@@ -4374,7 +4376,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # path hides per-tool lines, and the pre-focus mode is stashed so
         # /focus off restores it. Purely cosmetic — never changes what is sent
         # to the model. See hermes_cli/focus_view.py.
-        self._focus_view_enabled = bool(CLI_CONFIG["display"].get("focus_view", False))
+        self._focus_view_enabled = is_truthy_value(
+            CLI_CONFIG["display"].get("focus_view"), default=False
+        )
         self._focus_saved_tool_progress = None
         self._focus_hidden_lines = 0
         self._focus_last_counted_tool = None
@@ -4391,14 +4395,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
-        self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
+        self.bell_on_complete = is_truthy_value(
+            CLI_CONFIG["display"].get("bell_on_complete"), default=False
+        )
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
-        self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
+        self.reasoning_full = is_truthy_value(
+            CLI_CONFIG["display"].get("reasoning_full"), default=False
+        )
         _configure_output_history(
-            enabled=CLI_CONFIG["display"].get("persistent_output", True),
+            enabled=is_truthy_value(
+                CLI_CONFIG["display"].get("persistent_output"), default=True
+            ),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
         )
         # busy_input_mode: "interrupt" (Enter redirects current run),
@@ -4420,9 +4430,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.verbose = bool(verbose) if verbose is not None else False
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
-        self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        self.streaming_enabled = is_truthy_value(
+            CLI_CONFIG["display"].get("streaming"), default=False
+        )
         # show_timestamps: prefix user and assistant labels with timestamps
-        self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
+        self.show_timestamps = is_truthy_value(
+            CLI_CONFIG["display"].get("timestamps"), default=False
+        )
         self.timestamp_format = CLI_CONFIG["display"].get("timestamp_format", "%H:%M")
         self.final_response_markdown = str(
             CLI_CONFIG["display"].get("final_response_markdown", "strip")
@@ -4431,15 +4445,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.final_response_markdown = "strip"
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
-        self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
+        self._inline_diffs_enabled = is_truthy_value(
+            CLI_CONFIG["display"].get("inline_diffs"), default=True
+        )
 
         # Per-turn accounting (display.turn_summary / display.spinner_token_flow).
         # Both are CLI-only, display-only chrome. The collector rides the
         # tool-progress feed this class already receives, so no agent-loop
         # bookkeeping is involved.
-        self._turn_summary_enabled = bool(CLI_CONFIG["display"].get("turn_summary", True))
-        self._spinner_token_flow_enabled = bool(
-            CLI_CONFIG["display"].get("spinner_token_flow", True)
+        self._turn_summary_enabled = is_truthy_value(
+            CLI_CONFIG["display"].get("turn_summary"), default=True
+        )
+        self._spinner_token_flow_enabled = is_truthy_value(
+            CLI_CONFIG["display"].get("spinner_token_flow"), default=True
         )
         self._turn_summary_collector = None
         self._turn_summary_start = 0.0
@@ -4868,7 +4886,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._status_bar_visible = True
         # Battery read-out in the status bar (toggled via /battery, off by
         # default). Persisted to display.battery so it survives restarts.
-        self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        self._battery_visible = is_truthy_value(
+            CLI_CONFIG["display"].get("battery"), default=False
+        )
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that

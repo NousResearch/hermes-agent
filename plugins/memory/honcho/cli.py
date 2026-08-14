@@ -1037,8 +1037,7 @@ def _preview_peer_resolution(
     return sanitize(user_id)
 
 
-# Picker cap: workspaces holding thousands of peers (public bots) must not
-# stall the CLI on an exhaustive listing.
+# Workspaces holding thousands of peers (public bots) must not stall the CLI.
 _PEERS_MAP_FETCH_CAP = 200
 
 

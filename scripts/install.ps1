@@ -2335,7 +2335,11 @@ print(','.join(scripts))
             if ($webInstallExitCode -eq 0) {
                 Write-Success "[web] extra installed; `hermes dashboard` should now work."
             } else {
-                Write-Warn "Could not install [web] extra. Run manually: `"$pythonExe`" -m pip install -e `".[web]`""
+                if ($usePipFallback) {
+                    Write-Warn "Could not install [web] extra. Run manually: `"$pythonExe`" -m pip install -e `".[web]`""
+                } else {
+                    Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
+                }
             }
         }
         if (-not $webServerSyntaxOk) {

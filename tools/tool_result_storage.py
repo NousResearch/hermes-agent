@@ -205,7 +205,7 @@ def _resolve_storage_dir(env) -> str:
             except Exception as exc:
                 logger.debug("Could not resolve env temp dir: %s", exc)
             else:
-                if temp_dir:
+                if isinstance(temp_dir, str) and temp_dir:
                     temp_dir = temp_dir.rstrip("/") or "/"
                     return f"{temp_dir}/hermes-results"
     return STORAGE_DIR
@@ -278,8 +278,8 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
         "-exec rm -f {} + 2>/dev/null || true) && "
         f"rm -f {quoted_path} && cat > {quoted_path} && "
         f"chmod 600 {quoted_path} && "
-        f"mode=$(stat -f '%Lp' {quoted_path} 2>/dev/null || "
-        f"stat -c '%a' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
+        f"mode=$(stat -c '%a' {quoted_path} 2>/dev/null || "
+        f"stat -f '%Lp' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
     )
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0

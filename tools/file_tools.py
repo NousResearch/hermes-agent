@@ -1651,7 +1651,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             _resolve_storage_dir,
         )
 
-        raw_persisted_dir = _resolve_storage_dir(file_ops.env)
+        file_env = getattr(file_ops, "env", None)
+        raw_persisted_dir = _resolve_storage_dir(file_env)
         if _file_ops_uses_host_paths(file_ops):
             # macOS exposes /tmp through /private/tmp; compare canonical host
             # paths so that alias cannot bypass the expiry gate.
@@ -1667,7 +1668,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         if (
             path_flavor.dirname(resolved_path) == persisted_dir
             and path_flavor.basename(resolved_path).endswith(".txt")
-            and _expire_persisted_result_on_access(resolved_path, file_ops.env)
+            and _expire_persisted_result_on_access(resolved_path, file_env)
         ):
             return tool_error(
                 f"Persisted tool result expired after {RESULT_TTL_DAYS} days "

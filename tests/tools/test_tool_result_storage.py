@@ -84,8 +84,8 @@ class TestWriteToSandbox:
         assert f"-mtime +{RESULT_TTL_DAYS - 1}" in cmd
         assert "rm -f" in cmd
         assert "chmod 600" in cmd
-        assert "stat -f '%Lp'" in cmd
         assert "stat -c '%a'" in cmd
+        assert "stat -f '%Lp'" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).

@@ -6081,9 +6081,25 @@ class BasePlatformAdapter(ABC):
             if not cmd and event.allow_gateway_control:
                 try:
                     from tools import clarify_gateway as _clarify_mod
+                    # Adapter busy guards are isolated per adapter, so their
+                    # active-session keys retain the legacy ``agent:main``
+                    # namespace. Clarify entries, however, are registered by
+                    # the multiplexing runner under the routed profile's
+                    # namespace. Resolve that canonical key for the lookup so
+                    # secondary-profile replies bypass busy handling too.
+                    _clarify_session_key = build_session_key(
+                        event.source,
+                        group_sessions_per_user=self.config.extra.get(
+                            "group_sessions_per_user", True,
+                        ),
+                        thread_sessions_per_user=self.config.extra.get(
+                            "thread_sessions_per_user", False,
+                        ),
+                        profile=event.source.profile,
+                    )
                     _has_text_clarify = (
                         _clarify_mod.get_pending_for_session(
-                            session_key,
+                            _clarify_session_key,
                             include_choice_prompts=True,
                         ) is not None
                     )
@@ -6093,7 +6109,7 @@ class BasePlatformAdapter(ABC):
                 if _has_text_clarify:
                     logger.debug(
                         "[%s] Routing message to clarify text-intercept for %s",
-                        self.name, session_key,
+                        self.name, _clarify_session_key,
                     )
                     try:
                         _thread_meta = _thread_metadata_for_source(

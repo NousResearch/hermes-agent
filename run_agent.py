@@ -8088,6 +8088,7 @@ class AIAgent:
         durable_turn_lease_thread = None
         durable_turn_lease_activity_lock = threading.Lock()
         durable_turn_lease_turn_active = False
+        durable_turn_lease_interrupt_message = None
         token = None
         acct_token = None
         task_started = False
@@ -8100,6 +8101,29 @@ class AIAgent:
                 durable_turn_lease_turn_active = False
                 if durable_turn_lease_stop is not None:
                     durable_turn_lease_stop.set()
+
+        def _clear_durable_turn_lease_interrupt() -> None:
+            """Clear only the interrupt admitted by this turn's refresher."""
+            message = durable_turn_lease_interrupt_message
+            if not message:
+                return
+
+            def _clear_if_owned() -> None:
+                if getattr(self, "_interrupt_message", None) != message:
+                    return
+                self._interrupt_requested = False
+                self._interrupt_message = None
+                getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
+                self._interrupt_thread_signal_pending = False
+                if self._execution_thread_id is not None:
+                    _set_interrupt(False, self._execution_thread_id)
+
+            redirect_lock = getattr(self, "_pending_redirect_lock", None)
+            if redirect_lock is None:
+                _clear_if_owned()
+            else:
+                with redirect_lock:
+                    _clear_if_owned()
 
         try:
             # Serialize the full load -> run -> flush region across Hermes
@@ -8270,12 +8294,14 @@ class AIAgent:
 
                 def _refresh_durable_turn_lease() -> None:
                     def _interrupt_turn(message: str) -> None:
+                        nonlocal durable_turn_lease_interrupt_message
                         with durable_turn_lease_activity_lock:
                             if (
                                 durable_turn_lease_stop.is_set()
                                 or not durable_turn_lease_turn_active
                             ):
                                 return
+                            durable_turn_lease_interrupt_message = message
                             try:
                                 self.interrupt(message, hard_cancel=True)
                             except Exception:
@@ -8316,14 +8342,12 @@ class AIAgent:
                             )
                             return
 
-                with durable_turn_lease_activity_lock:
-                    durable_turn_lease_turn_active = True
                 durable_turn_lease_thread = threading.Thread(
                     target=_refresh_durable_turn_lease,
                     name="session-turn-lease-refresh",
                     daemon=True,
                 )
-                durable_turn_lease_thread.start()
+
 
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
@@ -8367,6 +8391,10 @@ class AIAgent:
             # which may be observed from another thread.
             with bind_subagent_parent(self), scoped_runtime_main({}):
                 try:
+                    if durable_turn_lease_thread is not None:
+                        with durable_turn_lease_activity_lock:
+                            durable_turn_lease_turn_active = True
+                        durable_turn_lease_thread.start()
                     result = run_conversation(
                         self,
                         user_message,
@@ -8385,6 +8413,7 @@ class AIAgent:
                     # those post-loop steps must not receive a late refresh
                     # interrupt that poisons the next turn on this cached agent.
                     _stop_durable_turn_lease_refresher()
+                    _clear_durable_turn_lease_interrupt()
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"

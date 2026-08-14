@@ -300,6 +300,7 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     def track_interrupt(message=None, hard_cancel=False):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
+        agent._interrupt_message = message
 
     agent.interrupt = track_interrupt
 
@@ -349,6 +350,7 @@ def test_run_conversation_interrupts_when_lease_refresh_errors(monkeypatch):
     def track_interrupt(message=None, hard_cancel=False):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
+        agent._interrupt_message = message
 
     agent.interrupt = track_interrupt
 
@@ -391,29 +393,33 @@ def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypat
     agent._session_turn_lease_refresh_interval = 0.01
     refresh_started = threading.Event()
     release_refresh = threading.Event()
+    interrupt_started = threading.Event()
     interrupt_calls = []
 
     def track_interrupt(message=None, hard_cancel=False):
         interrupt_calls.append((message, hard_cancel))
+        interrupt_started.set()
+        release_refresh.wait(timeout=2.0)
         agent._interrupt_requested = True
+        agent._interrupt_message = message
 
     agent.interrupt = track_interrupt
 
     def delayed_refresh_error(session_id, holder, **kwargs):
         refresh_started.set()
-        release_refresh.wait(timeout=2.0)
         raise OSError("database unavailable")
 
     db.refresh_session_turn_lease = delayed_refresh_error
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
         assert refresh_started.wait(timeout=2.0)
+        assert interrupt_started.wait(timeout=2.0)
+        threading.Timer(0.05, release_refresh.set).start()
         return {"final_response": "ok", "messages": history, "failed": False}
 
     original_finish = relay_runtime.SESSION_COORDINATOR.finish_logical_calls
 
     def finish_after_refresh(turn, *, outcome):
-        release_refresh.set()
         time.sleep(0.05)
         return original_finish(turn, outcome=outcome)
 
@@ -431,8 +437,10 @@ def test_refresh_error_after_loop_completion_does_not_poison_next_turn(monkeypat
     )
 
     assert result["final_response"] == "ok"
-    assert interrupt_calls == []
+    assert len(interrupt_calls) == 1
+    assert interrupt_calls[0][1] is True
     assert agent._interrupt_requested is False
+    assert agent._interrupt_message is None
 
 
 def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
@@ -445,6 +453,7 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
     def track_interrupt(message=None, hard_cancel=False):
         interrupt_calls.append((message, hard_cancel))
         agent._interrupt_requested = True
+        agent._interrupt_message = message
 
     agent.interrupt = track_interrupt
 

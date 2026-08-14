@@ -1872,9 +1872,19 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         elif "allow_permanent" in payload:
             payload["choices"] = ["once", "session", "always", "deny"]
     if "command" in payload:
-        from gateway.run import _redact_approval_command
+        # Call agent.redact directly. Do NOT import gateway.run here.
+        # gateway.run pulls agent.turn_context (and a large gateway graph) at
+        # import time. In a long-lived dashboard/TUI process that already has
+        # an older agent.turn_context in sys.modules, that import can raise
+        # ImportError (e.g. missing compression_made_progress). tools.approval
+        # treats notify failure as hard-block: "Failed to send approval
+        # request. Do NOT retry." Same semantics as
+        # gateway.run._redact_approval_command (redact_sensitive_text force=True).
+        from agent.redact import redact_sensitive_text
 
-        payload["command"] = _redact_approval_command(payload.get("command"))
+        payload["command"] = redact_sensitive_text(
+            str(payload.get("command") or ""), force=True
+        )
     _emit("approval.request", sid, payload)
 
 

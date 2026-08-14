@@ -165,7 +165,7 @@ def test_reply_suggester_placeholder_post_no_id_returns_empty():
 
 def test_reply_suggester_short_real_post_returns_suggestions():
     """Genuine short posts with an 'id' (real source tweet) get suggestions.
-    
+
     The old <40-char length gate would have rejected this. The structural
     'id' check correctly permits it — real tweets can be short.
     """

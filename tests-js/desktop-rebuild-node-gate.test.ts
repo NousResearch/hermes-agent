@@ -5,12 +5,22 @@ import { resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 const POSIX = resolve(process.env.POSIX_SH_PATH ?? '../scripts/desktop-update/posix.sh')
+const LIB = resolve(process.env.NODE_VERSION_CHECK_PATH ?? '../scripts/lib/node-version-check.sh')
 
 /** Run posix.sh --self-test-node-gate and return the decision line. */
 function gate(version: string): string {
   return execFileSync('bash', [POSIX, '--self-test-node-gate', '--node-version', version], {
     encoding: 'utf8',
   }).trim()
+}
+
+/** Source the shared lib directly and return its decision for a version. */
+function libGate(version: string): string {
+  const out = execFileSync('bash', ['-c', `source "$1" && node_satisfies_build "$2" && echo compatible || echo incompatible`, 'bash', LIB, version], {
+    encoding: 'utf8',
+  }).trim()
+
+  return out
 }
 
 describe('posix.sh node build gate (--self-test-node-gate)', () => {
@@ -49,5 +59,19 @@ describe('posix.sh node build gate (--self-test-node-gate)', () => {
 describe('posix.sh script exists', () => {
   test('desktop-update/posix.sh is present', () => {
     expect(existsSync(POSIX)).toBe(true)
+  })
+})
+
+describe('shared lib node-version-check.sh (single source of truth)', () => {
+  test('lib exists', () => {
+    expect(existsSync(LIB)).toBe(true)
+  })
+
+  test('lib predicate matches posix.sh self-test gate', () => {
+    const versions = ['v22.21.0', 'v22.22.0', 'v23.0.0', 'v24.0.0', 'v25.0.0', 'v26.0.0']
+
+    for (const v of versions) {
+      expect(libGate(v), `lib gate ${v}`).toBe(gate(v))
+    }
   })
 })

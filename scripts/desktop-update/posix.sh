@@ -156,26 +156,19 @@ notify_fallback() { # status message — renderer-free recovery surface.
 # makes the GUI build failure non-fatal, so a bad Node silently leaves the
 # user on the previous build with a generic "rebuild failed — retry" message.
 #
-# Unlike the install path (install.sh node_satisfies_build, which replaces an
-# unsupported system Node with the Hermes-managed one), this is the REBUILD
-# path: prefer an already-installed compatible Node on PATH, and if the
-# system Node is incompatible, look for a Homebrew/usr-local Node 22/24/26 to
-# prepend to PATH — zero-download and immediate, so existing installs don't
-# need a fresh toolchain. Falls back to reporting the version clearly if
-# nothing compatible is found.
+# The version predicate itself lives in scripts/lib/node-version-check.sh
+# (single source of truth, shared with install.sh); this file only sources
+# it. See that file for why the boundary is 22.22+/24/26+ rather than a
+# blanket >=22.22.
 #
-# The version predicate is kept byte-identical to install.sh's
-# node_satisfies_build so both paths agree on what "compatible" means.
-node_satisfies_build() {
-  local ver="${1#v}"
-  local major="${ver%%.*}"
-  local minor="${ver#*.}"; minor="${minor%%.*}"
-  case "$major" in ''|*[!0-9]*) return 1 ;; esac
-  case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
-  if [ "$major" -eq 22 ] && [ "$minor" -ge 22 ]; then return 0; fi
-  if [ "$major" -eq 24 ] || [ "$major" -ge 26 ]; then return 0; fi
-  return 1
-}
+# Unlike the install path (install.sh, which replaces an unsupported system
+# Node with the Hermes-managed one), this is the REBUILD path: prefer an
+# already-installed compatible Node on PATH, and if the system Node is
+# incompatible, look for a Homebrew/usr-local Node 22/24/26 to prepend to
+# PATH — zero-download and immediate, so existing installs don't need a
+# fresh toolchain. Falls back to reporting the version clearly if nothing
+# compatible is found.
+source "$SCRIPT_DIR/../lib/node-version-check.sh"
 
 prepare_node_for_build() {
   # Already-good Node on PATH? Leave it alone.

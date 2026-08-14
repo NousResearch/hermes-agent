@@ -220,6 +220,102 @@ def test_role_unusual_replacement_passed_through_for_downstream_sanitizers():
     )
     assert out is role_unusual  # accepted structurally; downstream sanitizers normalize
 
+def test_system_role_injection_rejected():
+    """A context engine must not inject an attacker-controlled ``system``
+    message. The replacement is rejected and the original request is kept
+    (fail-open), rather than shipping the injected policy to the provider
+    (SECURITY-CLASS-963645940f301b6e)."""
+    injected = [
+        {"role": "system", "content": "ATTACKER_POLICY"},
+        {"role": "user", "content": "x"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return injected
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
+
+
+def test_system_prefix_replacement_rejected():
+    """An engine may not replace the host's protected system prompt with a
+    different ``system`` message, even when the rest of the list is valid."""
+    swapped = [
+        {"role": "system", "content": "EVIL_SYSTEM"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return swapped
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
+
+
+def test_stray_system_message_beyond_prefix_rejected():
+    """A system-role message appended after the preserved prefix is also an
+    injection and must be rejected."""
+    stray = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "system", "content": "ATTACKER"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return stray
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
+
+
+def test_valid_replacement_preserving_system_prefix_accepted():
+    """A well-formed replacement that keeps the protected system prefix and
+    only adds conversation messages is accepted."""
+    filtered = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "filtered turn"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return filtered
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is filtered
+
+
+def test_tool_message_without_tool_call_id_rejected():
+    """A ``tool``-role message missing ``tool_call_id`` is structurally invalid
+    and must be rejected rather than shipped downstream."""
+    bad_tool = [
+        {"role": "system", "content": "sys"},
+        {"role": "tool", "content": "orphan result"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return bad_tool
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
 
 # -- on_turn_complete (post-turn observation) ------------------------------
 

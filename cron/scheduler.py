@@ -609,6 +609,12 @@ def _inflight_min_allowance_minutes() -> float:
     return _INFLIGHT_MIN_ALLOWANCE_MINUTES
 
 
+# Cache for cron expression interval computation (expression → minutes).
+# A cron expression's cadence never changes, so computing it once per expr
+# avoids repeated croniter evaluation on every 60s tick.
+_cron_interval_cache: dict = {}
+
+
 def _cron_interval_minutes(expr: str) -> Optional[float]:
     """Approximate the natural interval of a cron expression, in minutes.
 
@@ -621,18 +627,26 @@ def _cron_interval_minutes(expr: str) -> Optional[float]:
     jobs.  Falls back to ``None`` (→ floor allowance) if croniter is
     missing or the expression cannot be evaluated.
     """
+    if expr in _cron_interval_cache:
+        return _cron_interval_cache[expr]
+    result = None
     try:
-        from croniter import croniter
-        from datetime import datetime
+        from cron.jobs import _ensure_croniter
 
-        base = datetime.now()
-        it = croniter(expr, base)
-        first = it.get_next(datetime)
-        second = it.get_next(datetime)
-        gap = (second - first).total_seconds() / 60.0
-        return gap if gap > 0 else None
+        if _ensure_croniter():
+            from cron.jobs import croniter as _croniter
+            from datetime import datetime
+
+            base = datetime.now()
+            it = _croniter(expr, base)
+            first = it.get_next(datetime)
+            second = it.get_next(datetime)
+            gap = (second - first).total_seconds() / 60.0
+            result = gap if gap > 0 else None
     except Exception:
-        return None
+        pass
+    _cron_interval_cache[expr] = result
+    return result
 
 
 def _job_interval_minutes(job: dict) -> Optional[float]:
@@ -732,6 +746,10 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     now = time.time()
     stale: list = []
 
+    # Precompute job intervals OUTSIDE _running_lock so croniter evaluation
+    # does not block try_register/release_running_job for other jobs.
+    _intervals = {jid: _job_interval_minutes(j) for jid, j in by_id.items()}
+
     with _running_lock:
         for job_id in list(_running_job_ids):
             started = _running_since.get(job_id)
@@ -741,7 +759,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 _running_since[job_id] = now
                 continue
             age = now - started
-            interval_minutes = _job_interval_minutes(by_id.get(job_id) or {})
+            interval_minutes = _intervals.get(job_id)
             allowance = floor_seconds
             if interval_minutes:
                 allowance = max(allowance, 2.0 * interval_minutes * 60.0)

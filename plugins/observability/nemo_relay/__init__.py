@@ -412,8 +412,35 @@ class _Runtime:
                 state.relay_session,
                 callback,
                 *args,
+                # Bounded: this wrapper serves every mark/event the plugin
+                # emits (turn start/end, approvals, subagent marks), and it
+                # runs synchronously on the agent's conversation thread. The
+                # host default (timeout=None) is an UNBOUNDED native call —
+                # a wedged native Relay pipeline then blocks the agent
+                # between API calls with zero activity ticks until the cron
+                # 600s inactivity kill / gateway idle timeout fires (the
+                # core's scope push/pop/flush sites were bounded for the
+                # same reason after the 2026-08-10 delegation stall; these
+                # plugin marks were the missed sibling class). On breach we
+                # lose one telemetry span, never the agent.
+                timeout=relay_runtime._SCOPE_OP_TIMEOUT,
                 **kwargs,
             )
+        except TimeoutError:
+            # A wedged native pipeline is a session-level condition, not a
+            # one-off: flag it so close_session skips the (potentially very
+            # slow) ATIF export, and warn ONCE so the sick pipeline is
+            # visible before it costs anything bigger.
+            if not state.scope_errored:
+                logger.warning(
+                    "Relay scope operation for session %s exceeded %.0fs; "
+                    "native pipeline appears wedged — further exports for "
+                    "this session will be skipped",
+                    state.session_id,
+                    relay_runtime._SCOPE_OP_TIMEOUT,
+                )
+            state.scope_errored = True
+            raise
         except Exception:
             # A failed scope operation leaves the session's Relay/exporter
             # state unreliable; remember it so close_session can skip the

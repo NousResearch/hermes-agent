@@ -231,6 +231,37 @@ def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Pa
     assert db.get_compression_lock_holder(session_id) is None
 
 
+def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
+    """An in-place persistence failure must not emit a completion edge."""
+    from agent.conversation_compression import COMPACTION_DONE_STATUS
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "FAILED_IN_PLACE_STATUS_TEST"
+    db.create_session(session_id, source="discord")
+    agent = _build_agent_with_db(db, session_id)
+    setattr(agent, "compression_in_place", True)
+    db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
+    status_events: list[tuple[str, str]] = []
+    setattr(
+        agent,
+        "status_callback",
+        lambda event, message: status_events.append((event, message)),
+    )
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+        force=True,
+    )
+
+    db.archive_and_compact.assert_called_once()
+    assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
+    assert getattr(agent, "session_id", None) == session_id
+    assert db.get_compression_lock_holder(session_id) is None
+
+
 def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Path) -> None:
     """Exception paths must stop the heartbeat and release the compression lock."""
     db = SessionDB(db_path=tmp_path / "state.db")

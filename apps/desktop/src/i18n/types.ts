@@ -877,6 +877,7 @@ export interface Translations {
   skills: {
     tabSkills: string
     tabToolsets: string
+    configuringProfile: string
     tabMcp: string
     tabHub: string
     all: string

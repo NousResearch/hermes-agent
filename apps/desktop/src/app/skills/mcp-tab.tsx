@@ -36,7 +36,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { DetailPane, ICON_BUTTON, MASTER_DETAIL_WIDE_COLS } from '../master-detail'
 import { PanelAddButton, PanelEmpty } from '../overlays/panel'
@@ -120,8 +120,8 @@ const probeCache = new Map<string, { at: number; result: McpTestResult }>()
 const serverFingerprint = (server: Record<string, unknown>): string =>
   JSON.stringify([server.url, server.command, server.args, server.env, server.headers, server.transport, server.auth])
 
-const probeKey = (name: string, server: Record<string, unknown> | undefined): string =>
-  `${normalizeProfileKey($activeGatewayProfile.get())}::${name}::${serverFingerprint(server ?? {})}`
+const probeKey = (name: string, server: Record<string, unknown> | undefined, profileKey: string): string =>
+  `${profileKey}::${name}::${serverFingerprint(server ?? {})}`
 
 type Probe = McpTestResult | 'probing'
 
@@ -330,10 +330,19 @@ function scanServerBlocks(text: string): ServerBlock[] {
   return blocks
 }
 
-export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
+export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; profile?: null | string }) {
   const { t } = useI18n()
   const m = t.settings.mcp
   const activeSessionId = useStore($activeSessionId)
+
+  // The profile this tab configures: the Capabilities profile-scope selector's
+  // choice (`profile`) when set, otherwise the app-wide active profile. Every
+  // fetch/save below is scoped to it, and it keys the config/catalog/probe
+  // caches so switching the selector refetches and never shows another
+  // profile's servers (AGENTS.md scope-in-key). When no override is passed this
+  // resolves to $activeGatewayProfile, so behavior is identical to before.
+  const appProfile = useStore($activeGatewayProfile)
+  const scopeProfileKey = normalizeProfileKey(profile ?? appProfile)
 
   // Shared config cache (see use-config-record): revisiting the tab paints the
   // cached record instantly; mutations write through `setConfig` and stay
@@ -346,9 +355,9 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     refetch: refetchConfig,
     dataUpdatedAt: configUpdatedAt,
     errorUpdatedAt: configErroredAt
-  } = useHermesConfigRecord()
+  } = useHermesConfigRecord(profile)
 
-  const setConfig = setHermesConfigCache
+  const setConfig = hermesConfigCacheWriter(profile)
 
   // True from a profile switch until the config query resettles for the new
   // profile. Until then `config` (and thus `servers`) still holds profile A's
@@ -407,11 +416,13 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // enrichment below), so switching between them never re-requests.
   const [leftView, setLeftView] = useState<'catalog' | 'servers'>('servers')
 
-  // Key by active profile — installed/enabled badges are per-profile, so sharing
-  // one cache across profiles would flash the previous profile's state on switch.
+  // Key by the SCOPED profile — installed/enabled badges are per-profile, so
+  // sharing one cache across profiles would flash the previous profile's state
+  // on switch. When no selector override is set this is the active profile,
+  // identical to before.
   const catalogQuery = useQuery({
-    queryKey: [...MCP_CATALOG_KEY, normalizeProfileKey(useStore($activeGatewayProfile))],
-    queryFn: getMcpCatalog,
+    queryKey: [...MCP_CATALOG_KEY, scopeProfileKey],
+    queryFn: () => getMcpCatalog(profile ?? undefined),
     staleTime: 5 * 60_000
   })
 
@@ -538,11 +549,11 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
 
   const runProbe = async (serverName: string) => {
     const epoch = profileEpoch.current
-    const key = probeKey(serverName, servers[serverName])
+    const key = probeKey(serverName, servers[serverName], scopeProfileKey)
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
-      const result = await testMcpServer(serverName)
+      const result = await testMcpServer(serverName, profile ?? undefined)
 
       // Drop the result if the profile changed mid-probe — it belongs to A.
       if (profileEpoch.current !== epoch) {
@@ -573,8 +584,8 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     try {
       const flow = await completeMcpDesktopOAuth({
         serverName,
-        start: authMcpServer,
-        status: getMcpOAuthFlow,
+        start: name => authMcpServer(name, profile ?? undefined),
+        status: flowId => getMcpOAuthFlow(flowId, profile ?? undefined),
         openExternal: url => window.hermesDesktop.openExternal(url)
       })
 
@@ -589,7 +600,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
       // Cache under the POST-auth fingerprint (auth: oauth) on success — that's
       // the config the mount effect will read back, so it hits this entry.
       const probedConfig = result.ok ? { ...servers[serverName], auth: 'oauth' } : servers[serverName]
-      probeCache.set(probeKey(serverName, probedConfig), { at: Date.now(), result })
+      probeCache.set(probeKey(serverName, probedConfig, scopeProfileKey), { at: Date.now(), result })
 
       if (result.ok) {
         // The endpoint persisted `auth: oauth` — mirror it locally.
@@ -640,7 +651,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
         continue
       }
 
-      const cached = probeCache.get(probeKey(serverName, server))
+      const cached = probeCache.get(probeKey(serverName, server, scopeProfileKey))
 
       if (cached && Date.now() - cached.at < PROBE_TTL_MS) {
         setProbes(current => ({ ...current, [serverName]: cached.result }))
@@ -674,7 +685,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // caller must skip its post-await writes.
   const persist = async (nextServers: McpServers): Promise<boolean> => {
     const epoch = profileEpoch.current
-    await saveMcpServers(nextServers)
+    await saveMcpServers(nextServers, profile ?? undefined)
 
     if (profileEpoch.current !== epoch) {
       return false
@@ -991,7 +1002,12 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
               {leftView === 'catalog' ? (
-                <McpCatalog entries={catalog} loading={catalogQuery.isLoading} onInstalled={onCatalogInstalled} />
+                <McpCatalog
+                  entries={catalog}
+                  loading={catalogQuery.isLoading}
+                  onInstalled={onCatalogInstalled}
+                  profile={profile}
+                />
               ) : (
                 <>
                   {names.map(serverName => {
@@ -1329,11 +1345,13 @@ function CatalogTag({ children }: { children: string }) {
 function McpCatalog({
   entries,
   loading,
-  onInstalled
+  onInstalled,
+  profile
 }: {
   entries: McpCatalogEntry[]
   loading: boolean
   onInstalled: () => void
+  profile?: null | string
 }) {
   const { t } = useI18n()
   const m = t.settings.mcp
@@ -1361,7 +1379,7 @@ function McpCatalog({
     setInstalling(entry.name)
 
     try {
-      const res = await installMcpCatalogEntry(entry.name, draft)
+      const res = await installMcpCatalogEntry(entry.name, draft, profile ?? undefined)
 
       // Git-backed entries clone in the background — keep the row busy and poll
       // the action to completion before refetching / re-enabling, so a re-click
@@ -1369,7 +1387,7 @@ function McpCatalog({
       // exit is a real failure — surface it instead of a false success.
       if (res.background && res.action) {
         for (;;) {
-          const status = await getActionStatus(res.action, 1)
+          const status = await getActionStatus(res.action, 1, profile ?? undefined)
 
           if (!status.running) {
             if (status.exit_code !== 0) {

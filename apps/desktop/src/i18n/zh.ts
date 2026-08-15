@@ -1212,6 +1212,7 @@ export const zh: Translations = {
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    configuringProfile: '正在配置：',
     tabMcp: 'MCP',
     tabHub: '浏览技能中心',
     all: '全部',

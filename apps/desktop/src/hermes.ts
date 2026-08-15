@@ -833,9 +833,9 @@ export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   })
 }
 
-export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
+export function getHermesConfigRecord(profile?: null | string): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/config'
   })
 }
@@ -888,9 +888,9 @@ export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {
   })
 }
 
-export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> {
+export function setEnvVar(key: string, value: string, profile?: null | string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/env',
     method: 'PUT',
     body: { key, value }
@@ -950,18 +950,18 @@ export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsRespons
   })
 }
 
-export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
+export function deleteEnvVar(key: string, profile?: null | string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/env',
     method: 'DELETE',
     body: { key }
   })
 }
 
-export function revealEnvVar(key: string): Promise<{ key: string; value: string }> {
+export function revealEnvVar(key: string, profile?: null | string): Promise<{ key: string; value: string }> {
   return window.hermesDesktop.api<{ key: string; value: string }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/env/reveal',
     method: 'POST',
     body: { key }
@@ -983,9 +983,9 @@ export function disconnectOAuthProvider(providerId: string): Promise<{ ok: boole
   })
 }
 
-export function startOAuthLogin(providerId: string): Promise<OAuthStartResponse> {
+export function startOAuthLogin(providerId: string, profile?: null | string): Promise<OAuthStartResponse> {
   return window.hermesDesktop.api<OAuthStartResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
     method: 'POST',
     body: {}
@@ -1001,9 +1001,13 @@ export function submitOAuthCode(providerId: string, sessionId: string, code: str
   })
 }
 
-export function pollOAuthSession(providerId: string, sessionId: string): Promise<OAuthPollResponse> {
+export function pollOAuthSession(
+  providerId: string,
+  sessionId: string,
+  profile?: null | string
+): Promise<OAuthPollResponse> {
   return window.hermesDesktop.api<OAuthPollResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`
   })
 }
@@ -1113,9 +1117,9 @@ export interface McpOAuthFlow {
 
 /** Connect to the server, list its tools, disconnect. Slow (spawns/handshakes
  *  for real) — well past the 15s default fetch timeout. */
-export function testMcpServer(name: string): Promise<McpTestResult> {
+export function testMcpServer(name: string, profile?: null | string): Promise<McpTestResult> {
   return window.hermesDesktop.api<McpTestResult>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
     method: 'POST',
     timeoutMs: 60_000
@@ -1125,9 +1129,12 @@ export function testMcpServer(name: string): Promise<McpTestResult> {
 /** Replace the whole `mcp_servers` map (the mcp.json editor's save). Unlike
  *  `saveHermesConfig`, this REPLACES rather than deep-merges, so deletes,
  *  re-enables (dropping `enabled: false`), and removed nested fields persist. */
-export function saveMcpServers(servers: Record<string, Record<string, unknown>>): Promise<{ ok: boolean }> {
+export function saveMcpServers(
+  servers: Record<string, Record<string, unknown>>,
+  profile?: null | string
+): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/mcp/servers',
     method: 'PUT',
     body: { servers }
@@ -1135,63 +1142,76 @@ export function saveMcpServers(servers: Record<string, Record<string, unknown>>)
 }
 
 /** Start an MCP OAuth flow and return the authorization URL. */
-export function authMcpServer(name: string): Promise<McpOAuthFlow> {
+export function authMcpServer(name: string, profile?: null | string): Promise<McpOAuthFlow> {
   return window.hermesDesktop.api<McpOAuthFlow>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
     method: 'POST',
     timeoutMs: 60_000
   })
 }
 
-export function getMcpOAuthFlow(flowId: string): Promise<McpOAuthFlow> {
+export function getMcpOAuthFlow(flowId: string, profile?: null | string): Promise<McpOAuthFlow> {
   return window.hermesDesktop.api<McpOAuthFlow>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`
   })
 }
 
 /** Cancel an in-flight MCP OAuth flow server-side, freeing the per-server
  *  "already in progress" slot so a retry doesn't 409. */
-export function cancelMcpOAuthFlow(flowId: string): Promise<{ ok: boolean; status: string }> {
+export function cancelMcpOAuthFlow(
+  flowId: string,
+  profile?: null | string
+): Promise<{ ok: boolean; status: string }> {
   return window.hermesDesktop.api<{ ok: boolean; status: string }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
     method: 'DELETE'
   })
 }
 
-export function getToolsets(): Promise<ToolsetInfo[]> {
+// The optional trailing `profile` on every capability fetcher below is the
+// Capabilities view's profile-scope override: it lets the Skills/Tools/MCP
+// panels configure ANY profile without swapping the app-wide active profile.
+// Omitting it (every pre-existing caller) means `profileScoped(undefined)`
+// falls back to the app-wide `_apiProfile`, so behavior is byte-identical.
+export function getToolsets(profile?: null | string): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/tools/toolsets'
   })
 }
 
 export function setToolsetEnabled(
   name: string,
-  enabled: boolean
+  enabled: boolean,
+  profile?: null | string
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
     body: { enabled }
   })
 }
 
-export function getToolsetConfig(name: string): Promise<ToolsetConfig> {
+export function getToolsetConfig(name: string, profile?: null | string): Promise<ToolsetConfig> {
   return window.hermesDesktop.api<ToolsetConfig>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/config`
   })
 }
 
-export function getToolsetModels(name: string, provider?: string): Promise<ToolsetModelsResponse> {
+export function getToolsetModels(
+  name: string,
+  provider?: string,
+  profile?: null | string
+): Promise<ToolsetModelsResponse> {
   const suffix = provider ? `?provider=${encodeURIComponent(provider)}` : ''
 
   return window.hermesDesktop.api<ToolsetModelsResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/models${suffix}`
   })
 }
@@ -1199,10 +1219,11 @@ export function getToolsetModels(name: string, provider?: string): Promise<Tools
 export function selectToolsetModel(
   name: string,
   model: string,
-  provider?: string
+  provider?: string,
+  profile?: null | string
 ): Promise<{ ok: boolean; name: string; model: string }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; model: string }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/model`,
     method: 'PUT',
     body: { model, provider }
@@ -1226,19 +1247,24 @@ export interface SelectToolsetProviderResponse {
 export function selectToolsetProvider(
   name: string,
   provider: string,
-  capability?: 'search' | 'extract'
+  capability?: 'search' | 'extract',
+  profile?: null | string
 ): Promise<SelectToolsetProviderResponse> {
   return window.hermesDesktop.api<SelectToolsetProviderResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
     body: capability ? { provider, capability } : { provider }
   })
 }
 
-export function runToolsetPostSetup(name: string, key: string): Promise<ActionResponse & { key: string }> {
+export function runToolsetPostSetup(
+  name: string,
+  key: string,
+  profile?: null | string
+): Promise<ActionResponse & { key: string }> {
   return window.hermesDesktop.api<ActionResponse & { key: string }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
     method: 'POST',
     body: { key }
@@ -1711,9 +1737,9 @@ export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResp
   })
 }
 
-export function getActionStatus(name: string, lines = 200): Promise<ActionStatusResponse> {
+export function getActionStatus(name: string, lines = 200, profile?: null | string): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
   })
 }
@@ -1873,19 +1899,20 @@ export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ o
   })
 }
 
-export function getMcpCatalog(): Promise<McpCatalogResponse> {
+export function getMcpCatalog(profile?: null | string): Promise<McpCatalogResponse> {
   return window.hermesDesktop.api<McpCatalogResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/mcp/catalog'
   })
 }
 
 export function installMcpCatalogEntry(
   name: string,
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  profile?: null | string
 ): Promise<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/mcp/catalog/install',
     method: 'POST',
     body: { name, env, enable: true },

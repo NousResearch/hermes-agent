@@ -1014,6 +1014,7 @@ export const en: Translations = {
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
+    configuringProfile: 'Configuring:',
     tabMcp: 'MCP',
     tabHub: 'Browse Hub',
     all: 'All',

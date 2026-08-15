@@ -262,6 +262,19 @@ def _validate_operations(
     # Deferred import: breaks the patch_parser ↔ fuzzy_match circular dependency
     from tools.fuzzy_match import fuzzy_find_and_replace
 
+    def _delete_provenance_error(path: str) -> Optional[str]:
+        """Provenance confirmation message for a pre-existing path, if any.
+
+        Fails open on any import/lookup problem: a provenance check must never
+        be the reason a legitimate delete fails.
+        """
+        try:
+            from tools.delete_provenance import check_delete_provenance
+
+            return check_delete_provenance(path)
+        except Exception:
+            return None
+
     errors: List[str] = []
     real_change_count = 0
 
@@ -368,6 +381,14 @@ def _validate_operations(
             if read_err:
                 errors.append(f"{op.file_path}: file not found for deletion")
             else:
+                # #84718 proposal 4: a plan item that outlived the context
+                # justifying it can still reach a delete. Surface the commit
+                # provenance of anything this session did not create before
+                # the first attempt goes through; an identical retry confirms.
+                provenance = _delete_provenance_error(op.file_path)
+                if provenance:
+                    errors.append(provenance)
+                    continue
                 removed_paths.add(op.file_path)
                 pending_content.pop(op.file_path, None)
 

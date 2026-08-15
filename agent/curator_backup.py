@@ -39,6 +39,7 @@ we leave it alone.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
@@ -212,6 +213,89 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
     (dest / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
     )
+
+
+# Per-patch diffs from unattended skill writes (#84718 proposal 5). The
+# pre-run snapshot below covers a curator PASS; it does not cover an individual
+# background-review patch, so the reported trace had a SKILL.md rewritten
+# unattended with no diff and no rollback — the most recent snapshot was eight
+# days older than the edit. Every automated mutation now leaves a diff here.
+_PATCH_DIFF_SUBDIR = "patches"
+# Diffs are for human review, not content archival: cap so a runaway generated
+# skill cannot fill the backup directory.
+_MAX_PATCH_DIFF_CHARS = 200_000
+_MAX_PATCH_DIFFS_KEPT = 200
+
+
+def patch_diffs_dir() -> Path:
+    """Directory holding per-patch diffs from unattended skill writes."""
+    return _backups_dir() / _PATCH_DIFF_SUBDIR
+
+
+def record_patch_diff(
+    skill_name: str,
+    file_label: str,
+    before: str,
+    after: str,
+    *,
+    action: str = "patch",
+    origin: str = "background-review",
+) -> Optional[Path]:
+    """Write a unified diff of an automated skill mutation. Best-effort.
+
+    Returns the diff path, or ``None`` when there was nothing to record or the
+    write failed — a backup must never break the write it documents.
+    """
+    try:
+        if before == after:
+            return None
+        diff = "".join(
+            difflib.unified_diff(
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                fromfile=f"a/{skill_name}/{file_label}",
+                tofile=f"b/{skill_name}/{file_label}",
+                n=3,
+            )
+        )
+        if not diff.strip():
+            return None
+        if len(diff) > _MAX_PATCH_DIFF_CHARS:
+            diff = diff[:_MAX_PATCH_DIFF_CHARS] + "\n...[diff truncated]\n"
+        header = (
+            f"# skill: {skill_name}\n"
+            f"# file: {file_label}\n"
+            f"# action: {action}\n"
+            f"# origin: {origin}\n"
+            f"# recorded_at: {datetime.now(timezone.utc).isoformat()}\n"
+        )
+        dest = patch_diffs_dir()
+        dest.mkdir(parents=True, exist_ok=True)
+        safe_skill = re.sub(r"[^A-Za-z0-9._-]", "-", skill_name)[:60] or "skill"
+        path = dest / f"{_utc_id()}-{safe_skill}-{action}.diff"
+        suffix = 1
+        while path.exists() and suffix < 100:
+            path = dest / f"{_utc_id()}-{safe_skill}-{action}-{suffix:02d}.diff"
+            suffix += 1
+        path.write_text(header + diff, encoding="utf-8")
+        _prune_patch_diffs()
+        return path
+    except (OSError, ValueError, UnicodeError) as exc:
+        logger.debug("curator patch-diff record failed for %s: %s", skill_name, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001 — never break a skill write
+        logger.debug("curator patch-diff record failed (unexpected): %s", exc)
+        return None
+
+
+def _prune_patch_diffs() -> None:
+    """Keep only the newest ``_MAX_PATCH_DIFFS_KEPT`` diffs."""
+    try:
+        files = sorted(patch_diffs_dir().glob("*.diff"))
+        for stale in files[:-_MAX_PATCH_DIFFS_KEPT]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] = None) -> Optional[Path]:

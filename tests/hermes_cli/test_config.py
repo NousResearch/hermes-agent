@@ -1110,10 +1110,16 @@ class TestWriteApprovalMigration:
                         "skills:\n  write_mode: approve\n")
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            loaded = load_config()
             assert raw["memory"]["write_approval"] is True
-            assert raw["skills"]["write_approval"] is True
             assert "write_mode" not in raw["memory"]
-            assert "write_mode" not in raw["skills"]
+            # skills.write_approval defaults to True (#84718 proposal 5), so a
+            # migrated True equals the schema default and is NOT materialised
+            # to disk (lean-config invariant) — the section may disappear
+            # from raw entirely once write_mode is popped. The effective
+            # value still resolves to True via load_config()'s deep-merge.
+            assert "write_mode" not in raw.get("skills", {})
+            assert loaded["skills"]["write_approval"] is True
 
     def test_on_and_off_map_to_false(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

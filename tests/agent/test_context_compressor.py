@@ -725,19 +725,32 @@ class TestNonStringContent:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
 
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
         messages = [
             {"role": "user", "content": "fix the login bug on prod"},
             {"role": "assistant", "content": "on it"},
             {
                 "role": "user",
-                "content": "[Your active task list was preserved across context compression]\n- item",
-                "_todo_snapshot_synthetic": True,
+                "content": f"{TODO_INJECTION_HEADER}\n- item",
             },
         ]
         snapshot = c._latest_user_task_snapshot(messages)
         assert snapshot is not None
         assert "fix the login bug on prod" in snapshot
         assert "task list was preserved" not in snapshot
+
+        legacy_messages = [
+            {"role": "user", "content": "fix the login bug on prod"},
+            {
+                "role": "user",
+                "content": (
+                    "[Your active task list was preserved across context compression]\n"
+                    "- item"
+                ),
+            },
+        ]
+        assert "fix the login bug on prod" in c._latest_user_task_snapshot(legacy_messages)
 
         only_synthetic = [
             {"role": "user", "content": "[System: Your previous response was truncated ...]"},

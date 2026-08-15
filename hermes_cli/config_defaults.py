@@ -1950,15 +1950,22 @@ DEFAULT_CONFIG = {
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
-        #   true            — require approval: stage the write for review
+        #   false           — write freely; the gate is off (pre-gate behaviour)
+        #   true (default)  — require approval: stage the write for review
         #                     instead of committing (a SKILL.md is too large to
         #                     review inline, so skills always stage rather than
         #                     prompt). List with /skills pending, inspect with
         #                     /skills diff <id> (full diff — CLI/dashboard/file,
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
-        "write_approval": False,
+        # Default flipped to true (#84718 proposal 5): a skill edit is a
+        # PERMANENT, global policy change, and the background review fork makes
+        # them unattended. In the reported trace a self-improvement pass
+        # rewrote a SKILL.md from a single noisy episode, generalizing
+        # "capture checkout or invoice" into every future run — no human gate,
+        # and no backup diff to roll back. Staging costs one /skills approve;
+        # not staging costs a policy nobody chose.
+        "write_approval": True,
     },
 
     # Curator — background skill maintenance.

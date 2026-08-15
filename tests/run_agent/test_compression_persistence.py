@@ -303,10 +303,14 @@ class TestFlushAfterCompression:
             messages = [
                 {
                     "role": "user" if i % 2 == 0 else "assistant",
-                    "content": f"message {i} " + "x" * 200,
+                    # The compaction boundary now carries bounded retention
+                    # metadata. Keep enough reclaimable content for the
+                    # provider-less fallback to pass the no-growth fence
+                    # instead of depending on a marginal shrink.
+                    "content": f"message {i} " + "x" * 500,
                     "_db_persisted": True,
                 }
-                for i in range(40)
+                for i in range(80)
             ]
 
             with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):

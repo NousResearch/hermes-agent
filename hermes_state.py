@@ -6125,6 +6125,153 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     # ──────────────────────────────────────────────────────────────────────
+    # Compaction observability (#84718 proposal 6)
+    # ──────────────────────────────────────────────────────────────────────
+    # ``compression_ineffective_count`` and ``rewind_count`` only move when a
+    # guard trips, so a session that was *terminated* by compression still
+    # reports zeros — the reporter of #84718 had to open state.db by hand to
+    # discover that two sessions had compacted, pruned three skills, and
+    # crossed a handoff. These counters record what compaction actually did.
+
+    def record_compaction_stats(
+        self,
+        session_id: str,
+        *,
+        pruned_skills: int = 0,
+        pruned_tool_outputs: int = 0,
+        tokens_reclaimed: int = 0,
+    ) -> None:
+        """Accumulate one completed compaction onto the session row.
+
+        Counts one compaction event and adds its pruned-artifact totals.
+        Negative inputs are clamped to 0 — a compaction that grew the estimate
+        must not subtract from the session's lifetime reclaim total.
+        """
+        if not session_id:
+            return
+        skills = max(0, int(pruned_skills or 0))
+        outputs = max(0, int(pruned_tool_outputs or 0))
+        tokens = max(0, int(tokens_reclaimed or 0))
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET "
+                "compaction_count = COALESCE(compaction_count, 0) + 1, "
+                "compaction_pruned_skills = "
+                "COALESCE(compaction_pruned_skills, 0) + ?, "
+                "compaction_pruned_tool_outputs = "
+                "COALESCE(compaction_pruned_tool_outputs, 0) + ?, "
+                "compaction_tokens_reclaimed = "
+                "COALESCE(compaction_tokens_reclaimed, 0) + ? "
+                "WHERE id = ?",
+                (skills, outputs, tokens, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def get_compaction_stats(self, session_id: str) -> Dict[str, int]:
+        """Return the compaction counters for one session (zeros if unknown).
+
+        Keys use the issue's names (``compaction_count``, ``pruned_skills``,
+        ``pruned_tool_outputs``, ``tokens_reclaimed``) rather than the raw
+        column names, so callers render the vocabulary #84718 asked for.
+        """
+        empty = {
+            "compaction_count": 0,
+            "pruned_skills": 0,
+            "pruned_tool_outputs": 0,
+            "tokens_reclaimed": 0,
+        }
+        if not session_id:
+            return dict(empty)
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return dict(empty)
+            row = conn.execute(
+                "SELECT compaction_count, compaction_pruned_skills, "
+                "compaction_pruned_tool_outputs, compaction_tokens_reclaimed "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return dict(empty)
+        values = (
+            [
+                row["compaction_count"],
+                row["compaction_pruned_skills"],
+                row["compaction_pruned_tool_outputs"],
+                row["compaction_tokens_reclaimed"],
+            ]
+            if isinstance(row, sqlite3.Row)
+            else list(row)
+        )
+        out = dict(empty)
+        for key, value in zip(empty.keys(), values):
+            try:
+                out[key] = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                out[key] = 0
+        return out
+
+    def get_compaction_stats_map(
+        self, session_ids: List[str],
+    ) -> Dict[str, Dict[str, int]]:
+        """Bulk form of ``get_compaction_stats`` for listing views.
+
+        One query for the whole page instead of N primary-key lookups.
+        Sessions with no recorded compaction are omitted, so callers can test
+        membership to decide whether a compaction column is worth rendering.
+        """
+        ids = [str(sid) for sid in (session_ids or []) if sid]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return {}
+            rows = conn.execute(
+                "SELECT id, compaction_count, compaction_pruned_skills, "
+                "compaction_pruned_tool_outputs, compaction_tokens_reclaimed "
+                f"FROM sessions WHERE id IN ({placeholders}) "
+                "AND COALESCE(compaction_count, 0) > 0",
+                ids,
+            ).fetchall()
+        out: Dict[str, Dict[str, int]] = {}
+        for row in rows:
+            values = (
+                [
+                    row["id"],
+                    row["compaction_count"],
+                    row["compaction_pruned_skills"],
+                    row["compaction_pruned_tool_outputs"],
+                    row["compaction_tokens_reclaimed"],
+                ]
+                if isinstance(row, sqlite3.Row)
+                else list(row)
+            )
+            sid = str(values[0] or "")
+            if not sid:
+                continue
+            stats: Dict[str, int] = {}
+            for key, value in zip(
+                (
+                    "compaction_count",
+                    "pruned_skills",
+                    "pruned_tool_outputs",
+                    "tokens_reclaimed",
+                ),
+                values[1:],
+            ):
+                try:
+                    stats[key] = max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    stats[key] = 0
+            out[sid] = stats
+        return out
+
+    # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
     # Atomic per-session locks that prevent two compression paths from

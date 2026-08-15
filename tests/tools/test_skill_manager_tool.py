@@ -30,9 +30,18 @@ from agent.skill_utils import (
 @contextmanager
 def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
-    only the temp directory — not the real ~/.hermes/skills/."""
+    only the temp directory — not the real ~/.hermes/skills/.
+
+    Also disables the write-approval gate. This module tests the direct-commit
+    handlers (guards, lifecycle telemetry, on-disk effects); since #84718
+    flipped ``skills.write_approval`` to true by default, leaving the gate on
+    would stage every write and none of those effects would happen. Gate
+    behaviour itself is covered by tests/tools/test_write_approval.py and
+    tests/tools/test_skill_size_limits.py::TestStagedWriteSizeLimits.
+    """
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch("tools.skill_manager_tool._apply_skill_write_gate", return_value=None):
         yield
 
 
@@ -864,6 +873,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
          patch("tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
          patch("tools.skill_usage._is_curator_managed_record", return_value=True), \
+         patch("tools.skill_manager_tool._apply_skill_write_gate", return_value=None), \
          patch("tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root
 

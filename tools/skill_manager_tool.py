@@ -1428,6 +1428,150 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 )
 
 
+# Actions that rewrite existing guidance. `create` is excluded: there is no
+# prior version to diff, and a brand-new skill is visible in `skills_list`.
+_AUTOMATED_PATCH_ACTIONS = {"edit", "patch", "write_file", "remove_file"}
+
+
+def _automated_patch_target(name: str, file_path: Optional[str]) -> Optional[Path]:
+    """Resolve the file an automated mutation is about to rewrite, if any."""
+    existing = _find_skill(name)
+    if not existing:
+        return None
+    skill_dir = existing["path"]
+    if file_path:
+        target, err = _resolve_skill_target(skill_dir, file_path)
+        return None if err else target
+    return skill_dir / "SKILL.md"
+
+
+def _capture_automated_patch_source(
+    action: str, name: str, file_path: Optional[str],
+) -> "tuple[Optional[str], str]":
+    """Read the pre-write content of an UNATTENDED skill mutation (#84718 #5).
+
+    Returns ``(before_text, file_label)``; ``before_text`` is None whenever
+    nothing should be recorded (foreground write, non-mutating action,
+    unresolvable target). Best-effort and read-only.
+    """
+    if action not in _AUTOMATED_PATCH_ACTIONS:
+        return None, ""
+    try:
+        from tools.skill_provenance import is_background_review
+
+        if not is_background_review():
+            return None, ""
+        target = _automated_patch_target(name, file_path)
+        if target is None or not target.exists():
+            return None, ""
+        return target.read_text(encoding="utf-8"), (file_path or "SKILL.md")
+    except Exception:
+        return None, ""
+
+
+def _record_automated_patch_diff(
+    action: str,
+    name: str,
+    file_path: Optional[str],
+    before: Optional[str],
+    file_label: str,
+) -> None:
+    """Archive the diff of a completed unattended skill mutation (#84718 #5)."""
+    if before is None:
+        return
+    try:
+        from agent.curator_backup import record_patch_diff
+
+        target = _automated_patch_target(name, file_path)
+        after = (
+            target.read_text(encoding="utf-8")
+            if target is not None and target.exists()
+            else ""
+        )
+        record_patch_diff(
+            name, file_label or "SKILL.md", before, after, action=action,
+        )
+    except Exception:
+        pass  # a backup must never break the write it documents
+
+
+def _validate_staged_write_limits(action, name, **payload_kwargs) -> Optional[str]:
+    """Size-limit validation for a write about to be STAGED (#84718 proposal 5).
+
+    The size limits historically lived inside the action handlers, which run
+    only on the direct-commit path — so with the approval gate on, oversized
+    content was staged as ``"success": true`` and the limits that exist to
+    catch runaway generated content never fired. Turning ``write_approval``
+    on by default therefore required moving validation ahead of staging.
+
+    Runs only once the gate has already decided to stage, so the gate-off path
+    pays nothing. Read-only: it resolves and reads files but mutates nothing;
+    the handler's own guards still run on the replay after approval.
+    """
+    content = payload_kwargs.get("content")
+    file_path = payload_kwargs.get("file_path")
+    file_content = payload_kwargs.get("file_content")
+
+    if action in {"create", "edit"} and content is not None:
+        return _validate_content_size(content)
+
+    if action == "write_file" and file_content is not None:
+        content_bytes = len(file_content.encode("utf-8"))
+        if content_bytes > MAX_SKILL_FILE_BYTES:
+            return (
+                f"File content is {content_bytes:,} bytes "
+                f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
+                f"Consider splitting into smaller files."
+            )
+        return _validate_content_size(file_content, label=file_path or "file")
+
+    if action == "patch":
+        # The limit applies to the RESULTING content, not to new_string, so
+        # the replacement has to be simulated. Read-only; anything unresolvable
+        # here falls through to the handler, which reports it properly on the
+        # post-approval replay.
+        old_string = payload_kwargs.get("old_string")
+        new_string = payload_kwargs.get("new_string")
+        if not old_string or new_string is None:
+            return None
+        existing = _find_skill(name)
+        if not existing:
+            return None
+        skill_dir = existing["path"]
+        if file_path:
+            target, err = _resolve_skill_target(skill_dir, file_path)
+            if err or target is None:
+                return None
+        else:
+            target = skill_dir / "SKILL.md"
+        try:
+            current = target.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        try:
+            from tools.fuzzy_match import fuzzy_find_and_replace
+
+            new_content, _count, _strategy, match_error = fuzzy_find_and_replace(
+                current, old_string, new_string,
+                payload_kwargs.get("replace_all", False),
+            )
+        except Exception:
+            return None
+        if match_error or new_content is None:
+            return None
+        if file_path:
+            content_bytes = len(new_content.encode("utf-8"))
+            if content_bytes > MAX_SKILL_FILE_BYTES:
+                return (
+                    f"File content is {content_bytes:,} bytes "
+                    f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
+                    f"Consider splitting into smaller files."
+                )
+        return _validate_content_size(new_content, label=file_path or "SKILL.md")
+
+    return None
+
+
 def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Evaluate the skill write gate. Returns a JSON tool-result string when the
     write should NOT proceed (blocked or staged), or None to perform the real
@@ -1448,6 +1592,13 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+
+    # Validate BEFORE staging (#84718 proposal 5): the handlers that own the
+    # size limits only run on the direct-commit path, so without this an
+    # oversized write is recorded as a staged success and the limit never fires.
+    limit_error = _validate_staged_write_limits(action, name, **payload_kwargs)
+    if limit_error:
+        return tool_error(limit_error, success=False)
 
     # stage — record the full skill_manage kwargs so approval can replay it.
     payload = {"action": action, "name": name}
@@ -1575,6 +1726,16 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
+    # #84718 proposal 5: an unattended skill rewrite is a permanent, global
+    # policy change. Capture the pre-write bytes so a diff can be archived
+    # under .curator_backups/patches/ once the mutation lands — the reported
+    # trace had a SKILL.md patched by the background review with no diff and
+    # no rollback anywhere on disk. Foreground, user-directed writes are not
+    # recorded: the user chose them and saw them happen.
+    _backup_before, _backup_label = _capture_automated_patch_source(
+        action, name, file_path,
+    )
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -1611,6 +1772,9 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        _record_automated_patch_diff(
+            action, name, file_path, _backup_before, _backup_label,
+        )
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)

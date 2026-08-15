@@ -11,6 +11,7 @@ import pytest
 
 from tools.skill_manager_tool import (
     MAX_SKILL_CONTENT_CHARS,
+    _apply_skill_write_gate as _REAL_SKILL_WRITE_GATE,
     _validate_content_size,
     skill_manage,
 )
@@ -18,12 +19,22 @@ from tools.skill_manager_tool import (
 
 @pytest.fixture(autouse=True)
 def isolate_skills(tmp_path, monkeypatch):
-    """Redirect SKILLS_DIR to a temp directory."""
+    """Redirect SKILLS_DIR to a temp directory, with the approval gate off.
+
+    These classes assert the handlers' own limits on the direct-commit path.
+    Since #84718 flipped ``skills.write_approval`` to true by default, the gate
+    would otherwise stage every write and no handler would run. The staged
+    path has its own coverage in ``TestStagedWriteSizeLimits`` below.
+    """
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "tools.skill_manager_tool._apply_skill_write_gate",
+        lambda *a, **k: None,
+    )
     return skills_dir
 
 
@@ -175,3 +186,81 @@ class TestHandPlacedSkillsNoLimit:
         assert "content" in result
         # The full content is returned — no truncation at the storage layer
         assert len(result["content"]) > MAX_SKILL_CONTENT_CHARS
+
+
+class TestStagedWriteSizeLimits:
+    """Size limits fire BEFORE staging, not only on the commit path (#84718).
+
+    The limits used to live inside the action handlers, which run only when
+    the write commits. With ``skills.write_approval`` on — now the default —
+    an oversized write was recorded as ``{"success": true, "staged": true}``
+    and the limit never fired, so the runaway content the limits exist to
+    catch reached the pending queue unchallenged.
+    """
+
+    @pytest.fixture(autouse=True)
+    def gate_on(self, monkeypatch):
+        """Restore the real gate that ``isolate_skills`` turns off, gate ON."""
+        import tools.skill_manager_tool as smt
+        import tools.write_approval as wa
+
+        monkeypatch.setattr(smt, "_apply_skill_write_gate", _REAL_SKILL_WRITE_GATE)
+        monkeypatch.setattr(
+            wa, "write_approval_enabled", lambda subsystem: subsystem == "skills",
+        )
+
+    def _commit(self, **kwargs):
+        """Run a write on the direct-commit path (gate bypassed)."""
+        from tools.skill_manager_tool import _skill_gate_bypass
+
+        token = _skill_gate_bypass.set(True)
+        try:
+            return json.loads(skill_manage(**kwargs))
+        finally:
+            _skill_gate_bypass.reset(token)
+
+    def test_oversized_create_is_rejected_not_staged(self):
+        big = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 500)
+        result = json.loads(skill_manage(action="create", name="too-big", content=big))
+        assert result["success"] is False
+        assert result.get("staged") is not True
+        assert "100,000" in result["error"]
+
+    def test_oversized_edit_is_rejected_not_staged(self):
+        small = _make_skill_content(500)
+        assert self._commit(action="create", name="grow-me", content=small)["success"]
+        big = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 500)
+        result = json.loads(skill_manage(action="edit", name="grow-me", content=big))
+        assert result["success"] is False
+        assert result.get("staged") is not True
+
+    def test_oversized_patch_result_is_rejected_not_staged(self):
+        near_limit = _make_skill_content(MAX_SKILL_CONTENT_CHARS - 50)
+        assert self._commit(action="create", name="near-limit", content=near_limit)["success"]
+        result = json.loads(skill_manage(
+            action="patch",
+            name="near-limit",
+            old_string="# Test Skill",
+            new_string="# Test Skill\n" + ("y" * 200),
+        ))
+        assert result["success"] is False
+        assert result.get("staged") is not True
+        assert "100,000" in result["error"]
+
+    def test_oversized_write_file_is_rejected_not_staged(self):
+        small = _make_skill_content(500)
+        assert self._commit(action="create", name="with-ref", content=small)["success"]
+        result = json.loads(skill_manage(
+            action="write_file",
+            name="with-ref",
+            file_path="references/data.md",
+            file_content="x" * (MAX_SKILL_CONTENT_CHARS + 100),
+        ))
+        assert result["success"] is False
+        assert result.get("staged") is not True
+
+    def test_within_limit_write_still_stages(self):
+        small = _make_skill_content(500)
+        result = json.loads(skill_manage(action="create", name="fits", content=small))
+        assert result["success"] is True
+        assert result["staged"] is True

@@ -33,6 +33,7 @@ def _make_compressor():
     compressor.base_url = "http://localhost"
     compressor.api_key = "test-key"
     compressor.api_mode = "chat_completions"
+    compressor._origin_anchor_text = ""
     return compressor
 
 

@@ -187,8 +187,15 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     # Grounding (761a0b124e) may prepend a deterministic task-snapshot
     # section — pin the contract, not the exact stored string.
     stored_summary = compressor._previous_summary or ""
-    assert stored_summary.endswith("fresh summary")
+    # #84718 proposal 7 appends a pinned "## Originating Request" section
+    # after the fresh summary body, so the summary no longer *ends* with
+    # it verbatim — but it must still be present, and the anchor itself
+    # must come from the live post-restart task, not the decayed
+    # pre-handoff turns this test exists to prove don't fossilize.
+    assert "fresh summary" in stored_summary
     assert old_summary not in stored_summary
+    assert "original task before first compaction" not in stored_summary
+    assert "new user turn after restart" in stored_summary
     assert all(
         "original task before first compaction" not in str(msg.get("content", ""))
         for msg in result
@@ -265,7 +272,11 @@ def test_zero_protect_first_n_still_folds_restart_fossil():
 
     result_text = "\n".join(str(msg.get("content", "")) for msg in result)
     assert old_summary not in result_text
-    assert result_text.index(_SUMMARY_END_MARKER) < result_text.index("active request")
+    # With protect_first_n=0, "active request" is also the sole actionable
+    # turn since the fossil boundary, so #84718's origin anchor legitimately
+    # pins it inside the summary too (before _SUMMARY_END_MARKER). Check the
+    # REAL tail message — its last occurrence — still lands after the marker.
+    assert result_text.index(_SUMMARY_END_MARKER) < result_text.rindex("active request")
     assert sum(
         1 for msg in result if ContextCompressor._is_context_summary_message(msg)
     ) == 1

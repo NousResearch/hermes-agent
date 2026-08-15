@@ -41,7 +41,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
-from tools.todo_tool import TODO_INJECTION_HEADER
+from tools.todo_tool import TODO_INJECTION_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -582,7 +582,7 @@ def _skill_pruned_marker(skill_name: str) -> str:
     """
     return (
         f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compression; "
-        f"reload with skill_view(name='{skill_name}')]"
+        f"reload with skill_view(name='{skill_name}') before any further action]"
     )
 
 
@@ -593,6 +593,107 @@ _SKILL_PRUNED_MARKER_RE = re.compile(
     re.escape(SKILL_PRUNED_MARKER_PREFIX)
     + r"[^\]]*?reload with skill_view\(name='([^']+)'\)"
 )
+
+# Policy digest (#84718 proposal 1). The marker above tells the model its
+# guidance is gone; on its own it leaves the model free to keep executing the
+# surviving todo list with the policy that constrained it deleted. The digest
+# keeps the load-bearing lines — the ``## Workflow`` section plus explicit
+# MUST/NEVER-style rules — inside the pruned row, so the imperative and the
+# policy cross the compaction boundary together.
+_SKILL_DIGEST_HEADING_PREFIX = "[SKILL POLICY DIGEST"
+# Hard cap per skill. Small enough that a 20-skill session cannot rebuild the
+# context the prune just reclaimed; large enough for a workflow plus its rules.
+_SKILL_DIGEST_MAX_CHARS = 1200
+# Per-line cap: one pathological line can't eat the whole budget.
+_SKILL_DIGEST_MAX_LINE_CHARS = 200
+# Total digest budget when digests are re-appended to a compaction summary.
+# Marker re-injection is capped by count (``_MAX_PRUNED_SKILL_MARKERS``);
+# digests are capped by characters because their size is content-dependent.
+_SKILL_DIGEST_REINJECT_BUDGET_CHARS = 4000
+
+_SKILL_DIGEST_WORKFLOW_HEADING_RE = re.compile(
+    r"^\s*(#{1,6})\s*(?:the\s+)?workflow\b", re.IGNORECASE
+)
+_SKILL_DIGEST_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+")
+# Whole-word imperatives, uppercase only: skill authors write "MUST NOT" as a
+# rule and "must" as prose, and matching prose would turn the digest into a
+# paraphrase of the entire skill.
+_SKILL_DIGEST_RULE_RE = re.compile(
+    r"(?<![A-Za-z])(?:MUST NOT|MUST|NEVER|ALWAYS|DO NOT|REQUIRED)(?![A-Za-z])"
+)
+
+
+def _skill_policy_digest(content: str, skill_name: str) -> str:
+    """Return a capped policy digest for a skill body, or ``""``.
+
+    Deterministic and LLM-free: takes the ``## Workflow`` section (up to the
+    next heading at the same or higher level) plus every line carrying an
+    uppercase MUST/NEVER-style rule, in document order, deduplicated, and
+    truncated to ``_SKILL_DIGEST_MAX_CHARS``.
+
+    The block starts with ``[SKILL POLICY DIGEST <name>]`` so
+    ``_extract_skill_digest_block`` can recover it from an already-pruned row
+    on a later compaction pass.
+    """
+    if not isinstance(content, str) or not content.strip():
+        return ""
+
+    picked: list[str] = []
+    seen: set[str] = set()
+
+    def _take(raw: str) -> None:
+        line = raw.strip()
+        if not line or line in seen:
+            return
+        seen.add(line)
+        if len(line) > _SKILL_DIGEST_MAX_LINE_CHARS:
+            line = line[: _SKILL_DIGEST_MAX_LINE_CHARS - 3].rstrip() + "..."
+        picked.append(line)
+
+    workflow_level = 0
+    in_workflow = False
+    for raw in content.splitlines():
+        heading = _SKILL_DIGEST_HEADING_RE.match(raw)
+        if heading:
+            level = len(heading.group(1))
+            if _SKILL_DIGEST_WORKFLOW_HEADING_RE.match(raw):
+                in_workflow = True
+                workflow_level = level
+                _take(raw)
+                continue
+            if in_workflow and level <= workflow_level:
+                in_workflow = False
+        if in_workflow or _SKILL_DIGEST_RULE_RE.search(raw):
+            _take(raw)
+
+    if not picked:
+        return ""
+
+    header = f"{_SKILL_DIGEST_HEADING_PREFIX} {skill_name}]"
+    body: list[str] = []
+    used = len(header)
+    for line in picked:
+        if used + 1 + len(line) > _SKILL_DIGEST_MAX_CHARS:
+            body.append("...[digest truncated]")
+            break
+        body.append(line)
+        used += 1 + len(line)
+    return header + "\n" + "\n".join(body)
+
+
+def _extract_skill_digest_block(text: str, skill_name: str) -> str:
+    """Recover a previously emitted digest block for *skill_name* from *text*."""
+    if not isinstance(text, str):
+        return ""
+    header = f"{_SKILL_DIGEST_HEADING_PREFIX} {skill_name}]"
+    start = text.find(header)
+    if start < 0:
+        return ""
+    rest = text[start + len(header):]
+    end = rest.find(_SKILL_DIGEST_HEADING_PREFIX)
+    if end >= 0:
+        rest = rest[:end]
+    return (header + rest).rstrip()
 
 
 def _extract_pruned_skill_names(text: str) -> list[str]:
@@ -605,21 +706,147 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
     return names
 
 
-def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
-    """Skill names whose instructions are about to be lost in compaction.
+# Cap on a single skill's extracted policy digest (#84718). Matches the
+# 1200-char reference point from the earlier prototype (#86267) — big
+# enough to carry a Workflow section plus a handful of MUST/NEVER lines,
+# small enough that the digest can never approach what the raw 5000+-char
+# skill body it replaces would have cost.
+_MAX_SKILL_POLICY_DIGEST_CHARS = 1200
+_SKILL_POLICY_DIGEST_TRUNCATION_MARKER = "\n... [digest truncated]"
+# A level-2 "## Workflow" heading up to (but not including) the next
+# level-2 heading. ``##[^#]`` excludes level-3+ subheadings so a Workflow
+# section that itself uses ### subsections stays intact.
+_SKILL_POLICY_WORKFLOW_HEADING_RE = re.compile(
+    r"^##\s+Workflow\s*$(.*?)(?=^##[^#]|\Z)", re.MULTILINE | re.DOTALL,
+)
+# Bulleted/numbered lines carrying an explicit MUST/NEVER — the codebase's
+# own convention for hard constraints (see SKILLS_GUIDANCE, KANBAN_GUIDANCE
+# in prompt_builder.py). Case-sensitive on purpose: lower-case "must"/
+# "never" inside ordinary prose is not the deliberate-emphasis signal this
+# is meant to isolate.
+_SKILL_POLICY_IMPERATIVE_LINE_RE = re.compile(
+    r"^\s*(?:[-*]|\d+\.)\s+.*\b(?:MUST|NEVER)\b.*$", re.MULTILINE,
+)
+
+
+def _skill_source_markdown_from_tool_content(raw_tool_content: str) -> str:
+    """Extract the rendered SKILL.md body from a ``skill_view`` tool result.
+
+    ``raw_tool_content`` is the JSON string ``skill_view`` returns
+    (``{"success": True, "content": <markdown>, ...}``). Never raises: a
+    malformed or non-JSON result (error path, historical/replayed call)
+    yields "" rather than aborting compression.
+    """
+    if not raw_tool_content:
+        return ""
+    try:
+        payload = json.loads(raw_tool_content)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    body = payload.get("content")
+    return body if isinstance(body, str) else ""
+
+
+def _build_skill_policy_digest(skill_markdown: str) -> str:
+    """Extract a small, bounded governance digest from a SKILL.md body.
+
+    Pulls the ``## Workflow`` section (the step-by-step procedure) and any
+    standalone MUST/NEVER imperative lines (the hard constraints authors
+    call out explicitly). This is the policy the tombstone marker alone
+    cannot carry: knowing a skill was pruned tells the model to reload it,
+    but says nothing about what it must do differently *before* the reload
+    completes (#84718). Bounded at ``_MAX_SKILL_POLICY_DIGEST_CHARS`` so a
+    verbose skill can't approach the budget compaction pruned it to save.
+    Returns "" when the skill has neither a Workflow section nor MUST/NEVER
+    lines — most skills don't follow that convention yet, and no digest is
+    better than an empty one.
+    """
+    if not skill_markdown:
+        return ""
+    parts: list[str] = []
+    workflow_match = _SKILL_POLICY_WORKFLOW_HEADING_RE.search(skill_markdown)
+    if workflow_match:
+        workflow_body = workflow_match.group(1).strip()
+        if workflow_body:
+            parts.append("Workflow:\n" + workflow_body)
+    seen_imperatives: set[str] = set()
+    imperative_lines: list[str] = []
+    for line in skill_markdown.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped in seen_imperatives:
+            continue
+        if _SKILL_POLICY_IMPERATIVE_LINE_RE.match(stripped):
+            seen_imperatives.add(stripped)
+            imperative_lines.append("- " + stripped.lstrip("-*0123456789. ").strip())
+    if imperative_lines:
+        parts.append("Rules:\n" + "\n".join(imperative_lines))
+    if not parts:
+        return ""
+    digest = "\n\n".join(parts)
+    if len(digest) > _MAX_SKILL_POLICY_DIGEST_CHARS:
+        keep = _MAX_SKILL_POLICY_DIGEST_CHARS - len(_SKILL_POLICY_DIGEST_TRUNCATION_MARKER)
+        digest = digest[:keep].rstrip() + _SKILL_POLICY_DIGEST_TRUNCATION_MARKER
+    return digest
+
+
+# Bracket-delimited like SKILL_PRUNED_MARKER_PREFIX, but the digest body is
+# multi-line so it needs an explicit close tag rather than a single-line
+# marker. One canonical formatter/extractor pair (below) so the emit side
+# and every re-injection site match on the exact same string — the same
+# discipline ``_skill_pruned_marker`` documents for the tombstone marker.
+_SKILL_POLICY_DIGEST_OPEN = "[SKILL_POLICY_DIGEST:"
+_SKILL_POLICY_DIGEST_CLOSE = "[/SKILL_POLICY_DIGEST]"
+_SKILL_POLICY_DIGEST_RE = re.compile(
+    re.escape(_SKILL_POLICY_DIGEST_OPEN)
+    + r"\s*name='([^']+)'\]\n(.*?)\n"
+    + re.escape(_SKILL_POLICY_DIGEST_CLOSE),
+    re.DOTALL,
+)
+
+
+def _format_skill_policy_digest_block(name: str, digest: str) -> str:
+    """Canonical rendering of a skill's policy digest for embedding/re-injection."""
+    return f"{_SKILL_POLICY_DIGEST_OPEN} name='{name}']\n{digest}\n{_SKILL_POLICY_DIGEST_CLOSE}"
+
+
+def _extract_skill_policy_digests(text: str) -> dict[str, str]:
+    """Return ``{skill_name: digest_text}`` for every digest block in *text*."""
+    digests: dict[str, str] = {}
+    for match in _SKILL_POLICY_DIGEST_RE.finditer(text or ""):
+        name, digest = match.group(1), match.group(2)
+        if name not in digests:
+            digests[name] = digest
+    return digests
+
+
+def _scan_ghosted_skills(
+    turns: List[Dict[str, Any]],
+) -> tuple[list[str], dict[str, str]]:
+    """Single pass collecting both ghosted skill names and their policy digests.
 
     Covers BOTH shapes a compacted middle window can carry:
 
     - a ``skill_view`` result already demoted by Phase-1 pruning — the
-      canonical ``[SKILL_PRUNED: ...]`` marker is in the row content;
+      canonical ``[SKILL_PRUNED: ...]`` marker (and, if the skill body had
+      extractable policy, a ``[SKILL_POLICY_DIGEST: ...]`` block right
+      after it) is in the row content;
     - a RAW ``skill_view`` body that was never demoted (it sat inside the
       protected tail of an earlier prune, then aged into the compression
       window). The summarizer will paraphrase the instructions away, which
-      is exactly the ghost-skill failure — so it needs a marker too.
+      is exactly the ghost-skill failure — so it needs a marker (and, if
+      extractable, a digest) too.
+
+    Digests are derived once, from whichever representation of the skill
+    body is still available at scan time (embedded block, or the raw
+    ``skill_view`` result) — never re-derived later, because by the next
+    compaction the raw body is gone for good.
     """
     names: list[str] = []
+    digests: dict[str, str] = {}
 
-    def _add(name: str) -> None:
+    def _add_name(name: str) -> None:
         if name and name not in names:
             names.append(name)
 
@@ -638,7 +865,9 @@ def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
         content = msg.get("content")
         text = content if isinstance(content, str) else _content_text_for_contains(content)
         for name in _extract_pruned_skill_names(text):
-            _add(name)
+            _add_name(name)
+        for name, digest in _extract_skill_policy_digests(text).items():
+            digests.setdefault(name, digest)
         if (
             msg.get("role") == "tool"
             and isinstance(content, str)
@@ -646,31 +875,115 @@ def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
         ):
             skill = call_id_to_skill.get(str(msg.get("tool_call_id") or ""))
             if skill:
-                _add(skill)
+                _add_name(skill)
+                if skill not in digests:
+                    digest = _build_skill_policy_digest(
+                        _skill_source_markdown_from_tool_content(content)
+                    )
+                    if digest:
+                        digests[skill] = digest
+    return names, digests
+
+
+def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
+    """Skill names whose instructions are about to be lost in compaction.
+
+    Thin wrapper over ``_scan_ghosted_skills`` — see there for the two
+    shapes covered.
+    """
+    names, _ = _scan_ghosted_skills(turns)
     return names
+
+
+def _collect_ghosted_skill_digests(turns: List[Dict[str, Any]]) -> dict[str, str]:
+    """Policy digests for the skills about to be summarized away (#84718).
+
+    Same two shapes as ``_collect_ghosted_skill_names``:
+
+    - an already-pruned row carries the digest emitted by
+      ``_summarize_tool_result`` -- recover it verbatim;
+    - a RAW ``skill_view`` body still in the window -- derive the digest from
+      the body, because the summarizer is about to paraphrase it away.
+
+    Newest occurrence wins: a skill reloaded mid-session may have been edited,
+    and the most recent body is the one the model was actually working from.
+    """
+    digests: dict[str, str] = {}
+
+    call_id_to_skill: dict[str, str] = {}
+    for idx, skill in _skill_view_call_sites(turns):
+        msg = turns[idx]
+        for tc in msg.get("tool_calls") or []:
+            tc_fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+            tc_name = tc_fn.get("name", "") if isinstance(tc_fn, dict) else getattr(tc_fn, "name", "")
+            if tc_name != "skill_view":
+                continue
+            cid = tc.get("id", "") if isinstance(tc, dict) else (getattr(tc, "id", "") or "")
+            if cid:
+                call_id_to_skill[cid] = skill
+
+    for msg in turns:
+        content = msg.get("content")
+        text = content if isinstance(content, str) else _content_text_for_contains(content)
+        for name in _extract_pruned_skill_names(text):
+            recovered = _extract_skill_digest_block(text, name)
+            if recovered:
+                digests[name] = recovered
+        if (
+            msg.get("role") == "tool"
+            and isinstance(content, str)
+            and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS
+        ):
+            skill = call_id_to_skill.get(str(msg.get("tool_call_id") or ""))
+            if skill:
+                derived = _skill_policy_digest(content, skill)
+                if derived:
+                    digests[skill] = derived
+    return digests
+
+
+_ORIGIN_ANCHOR_HEADING = "## Originating Request"
+_ORIGIN_ANCHOR_MAX_CHARS = 600
+
+
+def _reinject_origin_anchor(summary: str, anchor_text: str) -> str:
+    """Append the pinned originating request to *summary* when it is missing."""
+    if not anchor_text or _ORIGIN_ANCHOR_HEADING in (summary or ""):
+        return summary
+    block = (
+        "\n\n" + _ORIGIN_ANCHOR_HEADING + "\n"
+        + anchor_text
+        + "\n(The request this whole session descends from, pinned across "
+        "compaction. Reference only -- it was already received; do not answer "
+        "it again. Use it to judge whether preserved plan items still serve "
+        "the task.)"
+    )
+    return summary + _redact_compaction_text(block)
+
+
+def _extract_origin_anchor(summary: str) -> str:
+    """Recover a previously pinned anchor body from *summary*, or an empty string."""
+    if not isinstance(summary, str):
+        return ""
+    start = summary.find(_ORIGIN_ANCHOR_HEADING)
+    if start < 0:
+        return ""
+    body = summary[start + len(_ORIGIN_ANCHOR_HEADING):].lstrip("\n")
+    cut = body.find("\n(The request this whole session descends from")
+    if cut >= 0:
+        body = body[:cut]
+    return body.strip()[:_ORIGIN_ANCHOR_MAX_CHARS]
 
 
 _PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
 
 
-def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
-    """Deterministically restore prune markers the summarizer dropped.
-
-    ``skill_names`` was extracted from the summarizer INPUT before the LLM
-    call. For every skill whose canonical marker (``_skill_pruned_marker``)
-    is absent from the model's output, append it under a ``## Pruned
-    Skills`` section. Presence is checked against the SAME canonical string
-    the emit sites produce — a paraphrased or renamed marker counts as
-    dropped and is restored (the original PR checked the literal
-    ``[SKILL_PRUNED]``, which never matches the emitted ``[SKILL_PRUNED:``
-    form, so it duplicated markers that HAD survived).
-
-    The appended block is plain body text: it never carries a handoff
-    prefix, the merged-summary delimiter, or a start-of-content scaffolding
-    marker, so ``classify_summary_content`` / todo-snapshot flag handling
-    are unaffected. The block is routed through ``_redact_compaction_text``
-    like every other compaction-boundary text.
-    """
+def _reinject_pruned_skill_markers(
+    summary: str,
+    skill_names: list[str],
+    digests: dict[str, str] | None = None,
+) -> str:
+    """Deterministically restore prune markers (and policy digests) the summarizer dropped."""
     if not skill_names:
         return summary
     missing = [
@@ -685,17 +998,29 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
         + "\n".join(lines)
         + "\n(The listed skills' instructions were pruned during context "
         "compression. Reload with the skill_view call in each marker before "
-        "relying on that skill; one reload per skill is enough — ignore any "
+        "relying on that skill; one reload per skill is enough -- ignore any "
         "older markers for the same skill.)"
     )
+    if digests:
+        kept: list[str] = []
+        used = 0
+        for name in missing:
+            digest = digests.get(name)
+            if not digest:
+                continue
+            if used + len(digest) > _SKILL_DIGEST_REINJECT_BUDGET_CHARS:
+                break
+            kept.append(digest)
+            used += len(digest)
+        if kept:
+            block += (
+                "\n\nCapped extracts of the pruned instructions (workflow and "
+                "explicit rules only -- reload the skill for anything else):\n"
+                + "\n\n".join(kept)
+            )
     return summary + _redact_compaction_text(block)
 
 
-# A skill_view call within this many trailing messages counts as "just
-# loaded": its full instruction body must survive the Phase-1 prune even when
-# the token-budget boundary would otherwise demote it (#32106). Distinct from
-# the protected-tail boundary, which is token-based and can land immediately
-# after a bulky just-loaded skill body.
 _SKILL_PRUNE_RECENT_WINDOW = 10
 
 
@@ -1460,10 +1785,15 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             # Ghost-skill defense (#32106): a metadata-only summary makes the
             # model believe the skill is still loaded. The canonical marker
             # tells it the instructions are gone AND how to get them back.
-            return (
+            line = (
                 f"[skill_view] name={name} ({content_len:,} chars) "
                 + _skill_pruned_marker(str(name))
             )
+            # #84718 proposal 1: the marker alone leaves the model executing a
+            # surviving plan with the policy that constrained it deleted. Keep
+            # the workflow + MUST/NEVER rules (hard-capped) alongside it.
+            digest = _skill_policy_digest(content, str(name))
+            return f"{line}\n{digest}" if digest else line
         return f"[skill_view] name={name} ({content_len:,} chars)"
 
     if tool_name in {"skills_list", "skill_manage"}:
@@ -2078,6 +2408,85 @@ class ContextCompressor(ContextEngine):
         except Exception as exc:
             logger.debug("compression ineffective count persist failed (non-sqlite): %s", exc)
 
+    def _capture_origin_anchor(self, messages: List[Dict[str, Any]]) -> None:
+        """Pin the originating request once, then keep it for the session.
+
+        #84718 proposal 7: ``protect_first_n`` is a positional heuristic — the
+        request that framed the whole session survives only by accident of
+        position, and once in-place compaction replaces the head with a
+        summary it stops surviving at all. Captured from the earliest REAL
+        user turn (summary rows are not actionable turns, so a compacted head
+        can never be mistaken for the request), carried forward from the
+        previous summary once one exists, and hard-capped.
+        """
+        if self._origin_anchor_text:
+            return
+        carried = _extract_origin_anchor(self._previous_summary or "")
+        if carried:
+            self._origin_anchor_text = carried
+            return
+        # A handoff summary embedded in ``messages`` marks where a PRIOR
+        # compaction already decided the pre-boundary turns may decay.
+        # Scanning from index 0 would resurrect that decayed request as
+        # the permanent anchor. Only consider turns after the newest
+        # embedded handoff, mirroring how the rest of the compressor
+        # treats that boundary as the effective start of the session.
+        handoff_idx, _ = self._find_latest_context_summary(
+            messages, 0, len(messages)
+        )
+        scan_from = handoff_idx + 1 if handoff_idx is not None else 0
+        for msg in messages[scan_from:]:
+            if not self._is_actionable_user_turn(msg):
+                continue
+            content = msg.get("content")
+            text = (
+                content
+                if isinstance(content, str)
+                else _content_text_for_contains(content)
+            )
+            text = (text or "").strip()
+            if not text:
+                continue
+            # The anchor is pinned into EVERY future summary, so it is the one
+            # compaction artifact a masked credential would ride forever. The
+            # redactor keeps a recognizable prefix (``ghp_aa...aaaa``), which
+            # is fine for a one-shot summary body and wrong for a permanent
+            # anchor — if the request doesn't survive redaction byte-identical,
+            # skip anchoring entirely (pre-#84718 behavior) rather than pin a
+            # partially masked secret or a later, non-originating request.
+            if _redact_compaction_text(text) != text:
+                return
+            if len(text) > _ORIGIN_ANCHOR_MAX_CHARS:
+                text = text[: _ORIGIN_ANCHOR_MAX_CHARS - 3].rstrip() + "..."
+            self._origin_anchor_text = text
+            return
+
+    def _record_compaction_stats(self, tokens_reclaimed: int = 0) -> None:
+        """Flush this compaction's observability counters to the session row.
+
+        #84718 proposal 6: ``compression_ineffective_count`` / ``rewind_count``
+        stay at zero on a session that compaction actually terminated, so the
+        only way to see the boundary was to open ``state.db`` by hand. Written
+        once per completed compaction, best-effort: telemetry must never fail
+        a compaction that already succeeded.
+        """
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        recorder = getattr(session_db, "record_compaction_stats", None)
+        if not session_id or not callable(recorder):
+            return
+        try:
+            recorder(
+                session_id,
+                pruned_skills=self._compaction_event_pruned_skills,
+                pruned_tool_outputs=self._compaction_event_pruned_tool_outputs,
+                tokens_reclaimed=max(0, int(tokens_reclaimed or 0)),
+            )
+        except sqlite3.Error as exc:
+            logger.debug("compaction stats persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compaction stats persist failed (non-sqlite): %s", exc)
+
     def _record_ineffective_compression_verdict(self, count: int) -> None:
         """Set the anti-thrash strike counter, keeping the durable copy in sync.
 
@@ -2590,6 +2999,16 @@ class ContextCompressor(ContextEngine):
         # A committed prune is a prompt-cache boundary. Do not permit the next
         # one until the prompt has regrown the tokens just reclaimed.
         self._proactive_prune_rearm_tokens: int = 0
+        # Per-event compaction observability (#84718 proposal 6). Reset at the
+        # start of every compress() and flushed to the session row when the
+        # boundary completes, so `hermes sessions list` can report what
+        # compaction actually pruned instead of only what a guard tripped on.
+        self._compaction_event_pruned_tool_outputs: int = 0
+        self._compaction_event_pruned_skills: int = 0
+        # Semantic compaction anchor (#84718 proposal 7): the originating
+        # request, captured once and pinned into every summary regardless of
+        # where it sits in the transcript.
+        self._origin_anchor_text: str = ""
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -3254,6 +3673,12 @@ class ContextCompressor(ContextEngine):
             # Already replaced by a prior prune/pressure pass (1-line summary).
             if content.startswith("[") and " chars)" in content and len(content) < 400:
                 return False
+            # A pruned skill_view row carries the canonical marker plus its
+            # capped policy digest (#84718), so it can exceed the 400-char
+            # ceiling above. Re-summarizing it would delete BOTH the digest and
+            # the marker, silently undoing the ghost-skill defense.
+            if content.startswith("[skill_view]") and SKILL_PRUNED_MARKER_PREFIX in content:
+                return False
             if content.startswith("[screenshot removed"):
                 return False
             # Only prune if the content is substantial (default >200 chars; the
@@ -3812,12 +4237,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # exactly like the LLM-summary path.
         _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
+        _pruned_digests = _collect_ghosted_skill_digests(turns_to_summarize)
+        self._compaction_event_pruned_skills = len(_pruned_names)
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         # Re-inject AFTER the size cap: the markers live at the end of the
         # body, exactly where the truncation above cuts.
-        summary = _reinject_pruned_skill_markers(summary, _pruned_names)
+        summary = _reinject_pruned_skill_markers(
+            summary, _pruned_names, _pruned_digests,
+        )
+        summary = _reinject_origin_anchor(summary, self._origin_anchor_text)
         return summary
 
     @classmethod
@@ -3942,6 +4372,18 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if _name not in _pruned_skill_names:
                 _pruned_skill_names.append(_name)
         del _pruned_skill_names[_MAX_PRUNED_SKILL_MARKERS:]
+        # Same reasoning for the policy digests (#84718): the summarizer will
+        # paraphrase them away, so collect deterministically before the call.
+        # A digest carried by the previous summary is a fallback for a skill
+        # whose body has already left the window entirely.
+        _pruned_skill_digests = _collect_ghosted_skill_digests(turns_to_summarize)
+        for _name in _pruned_skill_names:
+            if _name in _pruned_skill_digests:
+                continue
+            _carried = _extract_skill_digest_block(self._previous_summary or "", _name)
+            if _carried:
+                _pruned_skill_digests[_name] = _carried
+        self._compaction_event_pruned_skills = len(_pruned_skill_names)
         content_to_summarize = self._bound_summary_input(content_to_summarize)
         _sanitized_memory_context = sanitize_memory_context(memory_context)
         _serialized_memory_context = json.dumps(
@@ -4284,7 +4726,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary = _redact_compaction_text(content.strip())
             # P2 ghost-skill defense (#32106): deterministically restore any
             # [SKILL_PRUNED: ...] marker the summarizer paraphrased away.
-            summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
+            summary = _reinject_pruned_skill_markers(
+                summary, _pruned_skill_names, _pruned_skill_digests,
+            )
+            summary = _reinject_origin_anchor(summary, self._origin_anchor_text)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
             # Store for iterative updates on next compaction
@@ -4621,8 +5066,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith(
             _BACKGROUND_PROCESS_NOTIFICATION_PREFIX
-        ) or text.startswith(
-            TODO_INJECTION_HEADER + "\n"
+        ) or any(
+            text.startswith(header + "\n") for header in TODO_INJECTION_HEADERS
         ) or text.startswith(
             _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX
         )
@@ -6478,6 +6923,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
         self._last_compression_made_progress = False
+        # Per-event observability accumulators (#84718 proposal 6).
+        self._compaction_event_pruned_tool_outputs = 0
+        self._compaction_event_pruned_skills = 0
         # NOTE: do NOT reset _last_summary_auth_failure or
         # _last_summary_network_failure here.  These flags are set by
         # _generate_summary() on a terminal failure and are already cleared on
@@ -6528,6 +6976,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             messages, protect_tail_count=self.protect_last_n,
             protect_tail_tokens=self.tail_token_budget,
         )
+        self._compaction_event_pruned_tool_outputs = pruned_count
+        # Pin the originating request before any boundary math (#84718 #7).
+        self._capture_origin_anchor(messages)
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
@@ -7198,6 +7649,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         saved_estimate = pre_estimate - new_estimate
         savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
         self._last_compression_savings_pct = savings_pct
+
+        # #84718 proposal 6: record what this boundary actually did. Best-effort
+        # — an observability write must never fail a completed compaction.
+        self._record_compaction_stats(tokens_reclaimed=saved_estimate)
 
         # Message-only savings are diagnostic. The anti-thrashing verdict is
         # owned by the next provider-reported prompt count, which answers the

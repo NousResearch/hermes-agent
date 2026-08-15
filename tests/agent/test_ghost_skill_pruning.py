@@ -18,6 +18,7 @@ Test patterns for the marker emit checks adapted from PR #32375
 (@LeonSGP43) with credit.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
@@ -79,6 +80,7 @@ class TestSkillPrunedMarkerEmit:
         assert summary.startswith("[skill_view] name=docker-management (6,000 chars)")
         assert _skill_pruned_marker("docker-management") in summary
         assert "reload with skill_view(name='docker-management')" in summary
+        assert "before any further action" in summary
 
     def test_small_skill_view_summary_not_marked(self):
         summary = _summarize_tool_result(
@@ -290,9 +292,41 @@ class TestSkillsGuidanceSafetyRule:
         assert "## Skill Safety Rule" in SKILLS_GUIDANCE
         assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
         assert "skill_view(name='...')" in SKILLS_GUIDANCE
+        assert "next action" in SKILLS_GUIDANCE
         # The rule list must use REAL newlines — the original PR hunk risked
         # literal backslash-n escape text rendering into the system prompt.
         assert "\\n" not in SKILLS_GUIDANCE
         assert SKILLS_GUIDANCE.count("\n") >= 6
         for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
             assert rule in SKILLS_GUIDANCE
+
+
+# ─── Retention-parity policy digest (#84718) ────────────────────────────
+#
+# The marker above recovers the POINTER (reload here) but not the POLICY
+# (what the skill said to do). These tests cover the digest that closes
+# that gap: extraction from a real skill_view JSON body, emission at the
+# same prune site the marker uses, and survival through a real compress()
+# call the same way the marker already survives (#32106's P2 layer).
+
+_SAMPLE_SKILL_MARKDOWN = """# pdf-report
+
+Generate polished PDF reports from structured data.
+
+## Workflow
+1. Load the template from templates/report.html.
+2. Render data into the template with Jinja2.
+3. Convert to PDF with weasyprint.
+
+## Rules
+- MUST validate the input schema before rendering — malformed data corrupts layout silently.
+- NEVER embed unsanitized user HTML directly into the template.
+- Keep output under 10MB; downstream email delivery rejects larger files.
+"""
+
+
+def _skill_view_tool_result_json(name, markdown=_SAMPLE_SKILL_MARKDOWN, pad=0):
+    content = markdown + ("x" * pad if pad else "")
+    return json.dumps({"success": True, "name": name, "content": content})
+
+

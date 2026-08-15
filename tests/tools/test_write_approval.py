@@ -36,11 +36,14 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def test_default_gate_is_off(hermes_home):
+def test_default_gate_state(hermes_home):
     from tools import write_approval as wa
-    # Default: gate off → writes flow freely.
+    # Memory: gate off by default → entries are small and reviewable inline.
     assert wa.write_approval_enabled("memory") is False
-    assert wa.write_approval_enabled("skills") is False
+    # Skills: gate ON by default since #84718 — a SKILL.md edit is a permanent,
+    # global policy change, and the background review fork makes them
+    # unattended, so it stages for /skills approve instead of committing.
+    assert wa.write_approval_enabled("skills") is True
 
 
 def test_invalid_subsystem_is_off(hermes_home):

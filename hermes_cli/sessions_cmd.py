@@ -349,29 +349,63 @@ def cmd_sessions(args, sessions_parser=None):
         has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
         has_titles = any(s.get("title") for s in sessions)
 
+        # Compaction observability (#84718 proposal 6). A session that
+        # compaction pruned skills out of — or terminated outright — used to
+        # look identical to one that never compacted, because the only
+        # persisted signals (compression_ineffective_count, rewind_count) move
+        # solely when a guard trips. Rendered as a trailing column, and only
+        # when some listed session actually compacted, so untouched listings
+        # and their column widths read exactly as before.
+        try:
+            _compaction = db.get_compaction_stats_map([s["id"] for s in sessions])
+        except Exception:
+            _compaction = {}
+
+        def _short_count(n):
+            if n >= 1_000_000:
+                return f"{n / 1_000_000:.1f}M"
+            if n >= 1_000:
+                return f"{n / 1_000:.1f}K"
+            return str(n)
+
+        def _compaction_suffix(s):
+            if not _compaction:
+                return ""
+            stats = _compaction.get(s["id"])
+            if not stats:
+                return "  —"
+            return (
+                f"  {stats['compaction_count']}x"
+                f" {stats['pruned_skills']}sk"
+                f" {_short_count(stats['tokens_reclaimed'])}tok"
+            )
+
+        _compaction_header = "  Compaction" if _compaction else ""
+
         if has_ws:
             if has_titles:
-                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}{_compaction_header}")
                 print("─" * 110)
             else:
-                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}{_compaction_header}")
                 print("─" * 100)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 ws = _ws_label(s)[:16]
+                cmpct = _compaction_suffix(s)
                 if has_titles:
                     title = (s.get("title") or "—")[:26]
-                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}{cmpct}")
                 else:
                     preview = s.get("preview", "")[:36]
-                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}{cmpct}")
             return
 
         if has_titles:
-            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}{_compaction_header}")
             print("─" * 110)
         else:
-            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}{_compaction_header}")
             print("─" * 95)
         for s in sessions:
             last_active = _relative_time(s.get("last_active"))
@@ -380,13 +414,14 @@ def cmd_sessions(args, sessions_parser=None):
                 if has_titles
                 else s.get("preview", "")[:48]
             )
+            cmpct = _compaction_suffix(s)
             if has_titles:
                 title = (s.get("title") or "—")[:30]
                 sid = s["id"]
-                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}{cmpct}")
             else:
                 sid = s["id"]
-                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}{cmpct}")
 
     elif action == "export":
         from hermes_cli.session_filters import (

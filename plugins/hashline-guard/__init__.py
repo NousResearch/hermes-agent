@@ -34,11 +34,19 @@ context_hash = _core_mod.context_hash
 raw_offsets = _core_mod.raw_offsets
 
 SCHEMA = {
-    "path": {"type": "string"},
-    "old_string": {"type": "string"},
-    "new_string": {"type": "string"},
-    "expected_hashline": {"type": "string"},
-    "window": {"type": "integer", "default": 2},
+    "name": "anchored_patch",
+    "description": "Atomically read, verify, and apply a content-addressed patch (strict anchor match + expected_hashline pin).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Target file path."},
+            "old_string": {"type": "string", "description": "Anchor text to match."},
+            "new_string": {"type": "string", "description": "Replacement text."},
+            "expected_hashline": {"type": "string", "description": "Pinned hashline for the anchor occurrence."},
+            "window": {"type": "integer", "description": "Surrounding context lines.", "default": 2},
+        },
+        "required": ["path", "old_string", "new_string", "expected_hashline"],
+    },
 }
 
 

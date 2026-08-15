@@ -237,3 +237,21 @@ def test_pre_tool_call_blocks_with_actual_hashline_when_pinned_but_drifted(tmp_p
     assert "Re-pin" in result["message"] or "expected_hashline" in result["message"]
     assert "context_hash()" not in result["message"]
 
+
+
+def test_anchored_patch_schema_is_full_openai_shape():
+    """SCHEMA must expose parameters.properties so coerce_tool_args can coerce."""
+    plugin = _load_plugin()
+    if plugin is None:
+        raise AssertionError("__init__.py not found")
+    s = plugin.SCHEMA
+    assert s.get("name") == "anchored_patch"
+    assert "description" in s
+    params = s.get("parameters") or {}
+    props = params.get("properties") or {}
+    # coerce_tool_args reads properties; window must be typed integer
+    assert props["window"]["type"] == "integer"
+    assert set(params.get("required", [])) == {"path", "old_string", "new_string", "expected_hashline"}
+    # every property has a description (schema-sanitizer / registry contract)
+    for k, v in props.items():
+        assert v.get("description"), f"property {k} missing description"

@@ -20,12 +20,6 @@ class SidebarCacheTests(unittest.TestCase):
         profiles._sidebar_profile_cache_clear()
         self.addCleanup(profiles._sidebar_profile_cache_clear)
 
-    def test_invalid_or_non_finite_ttl_falls_back_to_default(self):
-        for raw in ("invalid", "nan", "inf", "-inf"):
-            with self.subTest(raw=raw):
-                with mock.patch.dict(profiles.os.environ, {"HERMES_DASHBOARD_SIDEBAR_CACHE_TTL": raw}):
-                    self.assertEqual(profiles._read_sidebar_cache_ttl(), 5.0)
-
     def test_profile_cache_uses_db_and_wal_fingerprint_and_defensive_copies(self):
         with tempfile.TemporaryDirectory() as root:
             db_path = Path(root) / "state.db"

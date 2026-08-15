@@ -84,23 +84,10 @@ _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
 
 
-def _read_sidebar_cache_ttl() -> float:
-    """Return the bounded cache lifetime for the expensive sidebar scan."""
-    raw = os.environ.get("HERMES_DASHBOARD_SIDEBAR_CACHE_TTL", "5")
-    try:
-        value = float(raw)
-        if not math.isfinite(value):
-            raise ValueError("non-finite TTL")
-    except (TypeError, ValueError):
-        _log.warning(
-            "invalid HERMES_DASHBOARD_SIDEBAR_CACHE_TTL=%r; using 5s",
-            raw,
-        )
-        value = 5.0
-    return min(max(value, 0.0), 30.0)
-
-
-_SIDEBAR_CACHE_TTL_SECONDS = _read_sidebar_cache_ttl()
+# Bounded cache lifetime for the expensive sidebar scan. Short enough that the
+# UI never shows meaningfully stale data, long enough to coalesce the desktop's
+# reconnect/focus/change poll bursts into one scan.
+_SIDEBAR_CACHE_TTL_SECONDS = 5.0
 _SIDEBAR_CACHE_MAX_ENTRIES = 32
 _SIDEBAR_PROFILE_CACHE_MAX_ENTRIES = 256
 _SIDEBAR_PROFILE_CACHE = OrderedDict()

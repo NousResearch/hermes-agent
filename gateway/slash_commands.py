@@ -246,10 +246,12 @@ class GatewaySlashCommandsMixin:
 
         _old_sid = old_entry.session_id if old_entry else None
 
-        # Fire plugin on_session_finalize hook (session boundary)
+        # Fire plugin on_session_finalize hook (session boundary).
+        # Off-loop + bounded: finalize hooks can block arbitrarily
+        # (observability trace exports) and this handler runs on the
+        # gateway event loop (see GatewayRunner._finalize_session_off_loop).
         try:
-            from hermes_cli.lifecycle import finalize_session
-            finalize_session(
+            await self._finalize_session_off_loop(
                 session_id=_old_sid,
                 platform=source.platform.value if source.platform else "",
                 reason="new_session",

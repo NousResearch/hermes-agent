@@ -10549,15 +10549,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as _e:
                 logger.debug("Shutdown transcript flush failed: %s", _e)
-            try:
-                from hermes_cli.lifecycle import finalize_session
-                finalize_session(
-                    session_id=getattr(agent, "session_id", None),
-                    platform="gateway",
-                    reason="shutdown",
-                )
-            except Exception:
-                pass
+            # Off-loop + bounded: finalize_session fans out to plugin
+            # on_session_finalize hooks that can do arbitrary synchronous
+            # work (e.g. an observability plugin serializing a full-session
+            # trace export). Running it inline on the event loop blocked the
+            # entire shutdown sequence past systemd's TimeoutStopSec on a
+            # multi-day 4.7G session — heartbeats froze and the process was
+            # SIGKILLed mid-export. Same class as the memory-provider hang
+            # below (#53175).
+            await self._finalize_session_off_loop(
+                session_id=getattr(agent, "session_id", None),
+                platform="gateway",
+                reason="shutdown",
+            )
             # Off-loop + bounded: a wedged memory provider here used to hang
             # the whole shutdown so SIGTERM never completed (#53175).
             await self._cleanup_agent_resources_off_loop(
@@ -10635,6 +10639,63 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._deferred_agent_cleanup_tasks = tasks
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+
+    # Bounded budget for one finalize_session() dispatch (plugin
+    # on_session_finalize hooks + core Relay conversation close). Generous
+    # enough for a normal trace-export flush, small enough that a wedged
+    # plugin can never eat the systemd stop window.
+    _FINALIZE_TIMEOUT_S = 10.0
+
+    async def _finalize_session_off_loop(
+        self,
+        *,
+        session_id: Any,
+        platform: str,
+        reason: str,
+        **extra: Any,
+    ) -> None:
+        """Run hermes_cli.lifecycle.finalize_session off the event loop, bounded.
+
+        finalize_session() invokes plugin ``on_session_finalize`` hooks
+        synchronously; a hook doing heavy blocking work (observability trace
+        export, network flush) on the event loop freezes heartbeats, adapters,
+        and the shutdown drain itself. Off-loop + ``wait_for`` keeps the loop
+        live; on timeout the worker thread is left to finish (or leak) on its
+        own and the caller proceeds — mirroring
+        ``_cleanup_agent_resources_off_loop`` (#53175).
+        """
+
+        def _call() -> None:
+            from hermes_cli.lifecycle import finalize_session
+
+            finalize_session(
+                session_id=session_id,
+                platform=platform,
+                reason=reason,
+                **extra,
+            )
+
+        try:
+            await asyncio.wait_for(
+                self._run_in_executor_with_context(_call),
+                timeout=self._FINALIZE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Session finalize hooks (%s, reason=%s) exceeded %ss; "
+                "proceeding without blocking the event loop (the worker "
+                "thread is left to finish on its own).",
+                session_id,
+                reason,
+                self._FINALIZE_TIMEOUT_S,
+            )
+        except Exception as finalize_exc:
+            logger.debug(
+                "Session finalize hooks (%s, reason=%s) failed: %s",
+                session_id,
+                reason,
+                finalize_exc,
+            )
 
     async def _cleanup_agent_resources_off_loop(
         self, agent: Any, *, context: str = ""
@@ -13204,10 +13265,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key, entry in _expired_entries:
                     try:
                         try:
-                            from hermes_cli.lifecycle import finalize_session
                             _parts = key.split(":")
                             _platform = _parts[2] if len(_parts) > 2 else ""
-                            finalize_session(
+                            # Off-loop + bounded: plugin finalize hooks can
+                            # block arbitrarily (see _finalize_session_off_loop)
+                            # and this watcher runs on the gateway event loop.
+                            await self._finalize_session_off_loop(
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",

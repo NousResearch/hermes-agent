@@ -6420,11 +6420,41 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             candidate["origin"]
         )
 
-    ambiguous_names = {
-        registry_name: sorted(origins)
-        for registry_name, origins in origins_by_name.items()
-        if len(origins) > 1
-    }
+    # A generated resource/prompt utility that normalizes onto a server-native
+    # tool's name must not knock that native tool out of the registry: the
+    # native tool is the capability the user connected the server for, while the
+    # generated utility (read_resource/list_resources/list_prompts/get_prompt)
+    # is optional sugar that only matters when the server exposes no such tool
+    # of its own (#87112). Resolve that specific collision in favour of the
+    # native tool — keep it, drop the shadowed utility — and fall back to the
+    # conservative skip-everything only for genuinely ambiguous collisions (two
+    # or more native tools normalizing to one name, which we cannot
+    # disambiguate). The four utility keys are distinct, so a colliding set
+    # holds at most one utility origin.
+    ambiguous_names: Dict[str, List[str]] = {}
+    shadowed_utilities: set[tuple[str, str]] = set()
+    for registry_name, origins in origins_by_name.items():
+        if len(origins) <= 1:
+            continue
+        utility_origins = sorted(
+            o for o in origins if o.startswith("generated utility ")
+        )
+        native_origins = sorted(origins - set(utility_origins))
+        if len(native_origins) == 1 and utility_origins:
+            for util_origin in utility_origins:
+                shadowed_utilities.add((registry_name, util_origin))
+            logger.info(
+                "MCP server '%s': generated utility %s normalizes onto "
+                "server-native %s — keeping the native tool and dropping the "
+                "utility (the utility only applies when the server has no such "
+                "tool of its own)",
+                name,
+                ", ".join(utility_origins),
+                native_origins[0],
+            )
+            continue
+        ambiguous_names[registry_name] = sorted(origins)
+
     for registry_name, origins in sorted(ambiguous_names.items()):
         logger.error(
             "MCP server '%s': name normalization collision for '%s' from %s; "
@@ -6438,6 +6468,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     for candidate in unique_candidates:
         registry_name = candidate["registry_name"]
         if registry_name in ambiguous_names:
+            continue
+        if (registry_name, candidate["origin"]) in shadowed_utilities:
             continue
 
         existing_toolset = registry.get_toolset_for_tool(registry_name)

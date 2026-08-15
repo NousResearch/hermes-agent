@@ -959,3 +959,123 @@ class TestConnectTimeoutClassifier:
 
     def test_generic_negative(self):
         assert TelegramAdapter._looks_like_connect_timeout(Exception("Timed out")) is False
+
+
+@pytest.mark.asyncio
+async def test_drain_rebuilds_http_client_when_shutdown_hangs(monkeypatch):
+    """Hung aclose() must not leave initialize() as a no-op (#87057).
+
+    PTB's HTTPXRequest.initialize() only rebuilds when client.is_closed.
+    If shutdown() is abandoned on a CLOSE-WAIT socket, that flag stays
+    false and start_polling would reuse the dead getUpdates connection.
+    Drain must swap in a fresh client so the reconnect ladder is live.
+    """
+    adapter = _make_adapter()
+
+    class _FakeClient:
+        def __init__(self):
+            self.is_closed = False
+
+        async def aclose(self):
+            await asyncio.Event().wait()
+
+    class _FakePollingReq:
+        def __init__(self):
+            self._client = _FakeClient()
+            self.built = []
+
+        def _build_client(self):
+            client = _FakeClient()
+            self.built.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    polling_req = _FakePollingReq()
+    original = polling_req._client
+    mock_app = MagicMock()
+    mock_app.bot._request = (polling_req, MagicMock())
+    adapter._app = mock_app
+
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05)
+    await asyncio.wait_for(adapter._drain_polling_connections(), timeout=2.0)
+
+    assert polling_req.built, "drain must rebuild the HTTP client after hung aclose"
+    assert polling_req._client is not original
+    assert polling_req._client is polling_req.built[-1]
+
+
+@pytest.mark.asyncio
+async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatch):
+    """The orphaned aclose() must be bounded and must not pin the event loop.
+
+    The stale client can absorb cancellation inside httpcore's shielded
+    scopes; the detached cleanup uses the wall-clock thread deadline so a
+    wedged close is abandoned instead of accumulating one leaked background
+    task per reconnect attempt (#87057 / #87265 review).
+    """
+    adapter = _make_adapter()
+
+    class _Client:
+        is_closed = False
+
+        async def aclose(self):
+            # Simulate httpcore cleanup that absorbs cancellation for a while.
+            for _ in range(20):
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    continue
+
+    class _PollingRequest:
+        def __init__(self):
+            self._client = _Client()
+            self.rebuilt = []
+
+        def _build_client(self):
+            client = _Client()
+            self.rebuilt.append(client)
+            return client
+
+        async def shutdown(self):
+            await asyncio.Event().wait()
+
+        async def initialize(self):
+            if self._client.is_closed:
+                self._client = self._build_client()
+
+    request = _PollingRequest()
+    original_client = request._client
+    app = MagicMock()
+    app.bot._request = (request, MagicMock())
+    adapter._app = app
+    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.02)
+
+    ticks = 0
+
+    async def _ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    ticker = asyncio.create_task(_ticker())
+    await adapter._drain_polling_connections()
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+
+    assert request.rebuilt, "stale polling client must be replaced"
+    assert request._client is request.rebuilt[-1]
+    assert request._client is not original_client
+    assert ticks >= 2, "a wedged close must not block the asyncio event loop"
+
+    await asyncio.sleep(0.35)
+    assert not adapter._background_tasks, (
+        "stale-client cleanup must finish or abandon its own wedged close "
+        "without accumulating a background task"
+    )

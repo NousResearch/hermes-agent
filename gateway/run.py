@@ -17642,15 +17642,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Thread backfill: a threaded message landing in a session with no
         # history (fresh thread, expired session, re-keyed routing) would
-        # leave the agent blind to what the thread is about. Adapters that
-        # can reconstruct thread history expose fetch_thread_context();
-        # platforms that backfill at receive time (Discord) set
-        # channel_context themselves and are skipped by the guard below.
+        # leave the agent blind to what the thread is about. Only adapters
+        # that can reconstruct thread history expose fetch_thread_context()
+        # (platforms that backfill at receive time, like Discord, don't).
+        # Adapter-provided channel_context answers a different question
+        # (fresh channel state notes), so the backfill composes with it
+        # rather than being skipped: backfill first, state notes after.
         if (
             not history
             and source is not None
             and getattr(source, "thread_id", None)
-            and not getattr(event, "channel_context", None)
             and not getattr(event, "internal", False)
         ):
             _thread_adapter = self.adapters.get(source.platform)
@@ -17667,7 +17668,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Thread context backfill failed: %s", exc)
                     _thread_context = None
                 if _thread_context:
-                    event.channel_context = _thread_context
+                    _existing_context = getattr(event, "channel_context", None)
+                    event.channel_context = (
+                        f"{_thread_context}\n\n{_existing_context}"
+                        if _existing_context
+                        else _thread_context
+                    )
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the

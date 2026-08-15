@@ -1659,12 +1659,20 @@ class TestGatewayThreadBackfill:
         adapter.fetch_thread_context.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_existing_channel_context_is_preserved(self, runner, source):
-        adapter = self._adapter_with_context("should not appear")
+    async def test_existing_channel_context_is_composed_with_backfill(
+        self, runner, source
+    ):
+        """Adapter-provided channel context (fresh state notes) and thread
+        backfill answer different questions; a fresh threaded session gets
+        both, backfill first, before the [New message] marker."""
+        adapter = self._adapter_with_context(
+            "[Earlier messages in this thread]\n[Alice] the root"
+        )
         runner.adapters = {Platform.MATRIX: adapter}
         event = MessageEvent(
             text="hello",
             source=source,
+            message_id="$trigger",
             channel_context="[Recent channel messages]\n[Bob] existing",
         )
 
@@ -1672,9 +1680,14 @@ class TestGatewayThreadBackfill:
             event=event, source=source, history=[],
         )
 
-        assert result.startswith("[Recent channel messages]")
-        assert "should not appear" not in result
-        adapter.fetch_thread_context.assert_not_awaited()
+        adapter.fetch_thread_context.assert_awaited_once_with(
+            "!room:ex.org", "$root", exclude_event_id="$trigger"
+        )
+        thread_at = result.index("[Earlier messages in this thread]")
+        channel_at = result.index("[Recent channel messages]")
+        marker_at = result.index("[New message]")
+        assert thread_at < channel_at < marker_at
+        assert result.endswith("hello")
 
     @pytest.mark.asyncio
     async def test_adapter_without_capability_is_fine(self, runner, source):

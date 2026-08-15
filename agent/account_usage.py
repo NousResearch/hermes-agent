@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -33,6 +34,8 @@ class AccountUsageWindow:
     # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
     # never imply the account itself is out of quota.
     scope: str = "account"
+    # Provider-published window length; admission policy picks the longest reliable window by it.
+    limit_window_seconds: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,9 @@ class AccountUsageSnapshot:
     # Usage-window plans only: the stacked bar layout. Every other snapshot
     # renders exactly as before.
     usage_window: bool = False
+    # False when any quota window was missing, malformed, out of range or lacked parseable reset metadata;
+    # admission policy treats such a snapshot as ambiguous telemetry and fails open.
+    usage_windows_complete: bool = True
 
     @property
     def available(self) -> bool:
@@ -71,10 +77,14 @@ def _title_case_slug(value: Optional[str]) -> Optional[str]:
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
-    if value in {None, ""}:
+    if value is None or value == "" or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=UTC)
+        try:
+            timestamp = float(value)
+            return datetime.fromtimestamp(timestamp, tz=UTC) if math.isfinite(timestamp) else None
+        except (OverflowError, OSError, ValueError):
+            return None
     if not isinstance(value, str) or not (text := value.strip()):
         return None
     text = text[:-1] + "+00:00" if text.endswith("Z") else text
@@ -303,9 +313,47 @@ def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
     for key, fallback in _CODEX_WINDOW_POSITIONAL_LABELS:
         window = rate_limit.get(key) or {}
         seconds = window.get("limit_window_seconds") if isinstance(window, dict) else None
-        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
+        try:
+            label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
+        except (ValueError, OverflowError):  # NaN / inf duration: keep the positional label
+            label = fallback
         labels.append((key, label))
     return tuple(labels)
+
+
+def _codex_usage_windows(rate_limit: dict) -> tuple[list[AccountUsageWindow], bool]:
+    """Strictly parsed Codex windows plus a completeness flag. Any missing, non-numeric, non-finite or
+    out-of-[0,100] window, unusable duration, or unparseable reset clears the flag (the window is skipped),
+    so admission policy can fail open on ambiguous telemetry instead of acting on a guess."""
+    windows: list[AccountUsageWindow] = []
+    complete = True
+    for key, label in _codex_window_labels(rate_limit):
+        window = rate_limit.get(key)
+        if not isinstance(window, dict):
+            complete = False
+            continue
+        used = window.get("used_percent")
+        if isinstance(used, bool) or not isinstance(used, (int, float)) or not 0 <= used <= 100 or not math.isfinite(used):
+            complete = False
+            continue
+        raw_seconds, seconds = window.get("limit_window_seconds"), None
+        if raw_seconds is not None:
+            if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, (int, float)):
+                complete = False
+            elif isinstance(raw_seconds, int):  # exact; a huge int must not overflow a float conversion
+                seconds = raw_seconds if raw_seconds > 0 else None
+                complete = complete and seconds is not None
+            elif math.isfinite(raw_seconds) and raw_seconds > 0 and raw_seconds.is_integer():
+                seconds = int(raw_seconds)
+            else:
+                complete = False
+        raw_reset = window.get("reset_at")
+        reset_at = _parse_dt(raw_reset)
+        if raw_reset is not None and reset_at is None:
+            complete = False
+        windows.append(AccountUsageWindow(label=label, used_percent=float(used), reset_at=reset_at,
+                                          limit_window_seconds=seconds))
+    return windows, complete
 
 
 def _plural(count: int) -> str:
@@ -313,28 +361,29 @@ def _plural(count: int) -> str:
 
 
 def _fetch_codex_account_usage(
-    base_url: Optional[str] = None, api_key: Optional[str] = None,
+    base_url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 15.0,
 ) -> Optional[AccountUsageSnapshot]:
-    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=False)
+    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=False, timeout=timeout)
 
 
 def _fetch_codex_account_usage_read_only(
-    base_url: Optional[str] = None, api_key: Optional[str] = None,
+    base_url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 15.0,
 ) -> Optional[AccountUsageSnapshot]:
     """Picker-cache variant: a 401 is reported, never repaired. The live-agent path
     (``_fetch_codex_account_usage``) retries via a forced credential refresh because the
     session it serves owns that credential; a per-credential read of the pool must NOT
     rotate, refresh or mutate anything — it just marks that account unknown."""
-    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=True)
+    return _fetch_codex_account_usage_impl(base_url, api_key, read_only=True, timeout=timeout)
 
 
 def _fetch_codex_account_usage_impl(
     base_url: Optional[str] = None, api_key: Optional[str] = None, *, read_only: bool = False,
+    timeout: float = 15.0,
 ) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     try:
         payload = _get_json(
-            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
+            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=timeout,
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 401:
@@ -346,10 +395,10 @@ def _fetch_codex_account_usage_impl(
             base_url, api_key, force_refresh=True,
         )
         payload = _get_json(
-            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
+            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=timeout,
         )
     rate_limit = payload.get("rate_limit") or {}
-    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
+    windows, windows_complete = _codex_usage_windows(rate_limit)
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:
@@ -360,7 +409,7 @@ def _fetch_codex_account_usage_impl(
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     identity=_codex_snapshot_identity(token), raw=payload)
+                     identity=_codex_snapshot_identity(token), raw=payload, usage_windows_complete=windows_complete)
 
 
 def _codex_snapshot_identity(token: str) -> Optional[str]:
@@ -600,7 +649,7 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
-    read_only: bool = False, identity_id: Optional[str] = None,
+    read_only: bool = False, identity_id: Optional[str] = None, timeout: Optional[float] = None,
 ) -> Optional[AccountUsageSnapshot]:
     from agent.account_usage_cache import remember_account_usage
 
@@ -615,7 +664,9 @@ def fetch_account_usage(
     started = _time.monotonic()
     try:
         if fetcher:
-            snapshot = fetcher(base_url, api_key)
+            # ``timeout`` bounds the HTTP read for fetchers that take one (Codex); others keep their own.
+            snapshot = fetcher(base_url, api_key, timeout=timeout) if timeout is not None and slug == "openai-codex" \
+                else fetcher(base_url, api_key)
         else:
             from providers import get_provider_profile
 

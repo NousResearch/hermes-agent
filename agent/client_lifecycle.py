@@ -611,6 +611,21 @@ class ClientLifecycleMixin:
         if old_key and api_key.strip() == old_key:
             logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)
             return False
+        if self.provider == "openai-codex":
+            try:
+                from agent.credential_pool import usage_admission_credential_denied
+
+                singleton_denied = usage_admission_credential_denied("openai-codex", api_key)
+            except Exception:
+                # Usage admission is intentionally fail-open when telemetry or
+                # policy resolution is unavailable.
+                logger.debug("OpenAI Codex singleton refresh admission check failed", exc_info=True)
+                singleton_denied = False
+            if singleton_denied:
+                logger.info(
+                    "OpenAI Codex singleton refresh produced a policy-excluded credential; refusing to install it"
+                )
+                return False
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
     def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:

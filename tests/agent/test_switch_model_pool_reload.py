@@ -113,6 +113,7 @@ class TestSwitchModelReloadsCredentialPool:
     def test_switch_to_same_provider_does_not_reload_pool(self):
         """Re-selecting the current provider must NOT churn the pool reference."""
         existing_pool = _make_pool("opencode-go")
+        existing_pool.entry_id_for_api_key.return_value = "entry-1"
         agent = _make_agent("opencode-go", "qwen-coder", existing_pool)
 
         load_pool_mock = MagicMock(name="load_pool")
@@ -130,6 +131,7 @@ class TestSwitchModelReloadsCredentialPool:
         # Pool must remain the same object — no churn for same-provider switch.
         assert agent._credential_pool is existing_pool
         load_pool_mock.assert_not_called()
+        assert agent._primary_runtime["credential_pool_entry_id"] == "entry-1"
 
     def test_switch_creates_pool_when_agent_had_none(self):
         """An agent without a pool that switches providers must acquire one."""

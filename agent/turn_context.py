@@ -601,6 +601,7 @@ def _publish_runtime_main(agent: Any) -> None:
             **{k: _str_attr(agent, k) for k in (
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
+            credential_pool_entry_id=_str_attr(agent, "_credential_pool_entry_id"),
             cache_scope=_cache_scope,
         )
 

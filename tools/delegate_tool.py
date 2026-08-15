@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool_config``. Mutable flag globals live only in their owning module.
 from tools import delegate_tool_config
 from tools.delegate_tool_child_run import (
-    _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    ChildCredentialUnavailable, _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _Heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
@@ -346,9 +346,15 @@ def _build_child_agent(
                 raise
         # Shared pool lets children rotate credentials on rate limits. A profile child loads ITS profile's pool
         # (inside the scope) and never shares the launching parent's.
+        # An operator-supplied delegation.api_key is a fixed credential, not permission to substitute a pool sibling.
+        configured_api_key = str((delegation_cfg or {}).get("api_key") or "").strip()
+        explicit_delegation_api_key = (
+            override_api_key if configured_api_key and configured_api_key == override_api_key else None
+        )
         child_pool = _resolve_child_credential_pool(
             rt["provider"], None if profile_home is not None else parent_agent, rt["base_url"],
             effective_requested_provider=rt.get("requested_provider"),
+            explicit_api_key=explicit_delegation_api_key,
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     _apply_child_cache_ttl(child)
@@ -421,6 +427,7 @@ def _run_single_child(
     * ``"completed"``       — normal finish. See #97655.
     """
     child_progress_cb = getattr(child, "tool_progress_callback", None)
+    child_pool, leased_cred_id = None, None
     try:
         child_pool, leased_cred_id = _lease_child_credential(child)
         # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while
@@ -432,6 +439,14 @@ def _run_single_child(
             child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
             owner_session_record=owner_session_record,
         )
+    except ChildCredentialUnavailable as exc:
+        from tools.delegate_tool_resumable import release_unstarted
+        release_unstarted(child)
+        return {
+            "task_index": task_index, "status": "error", "summary": None, "error": str(exc),
+            "exit_reason": "credential_unavailable", "api_calls": 0, "duration_seconds": 0.0,
+            "_child_role": getattr(child, "_delegate_role", None),
+        }
     except BaseException:
         # Nothing below runs, so a continued child's durable claim is handed back here.
         from tools.delegate_tool_resumable import release_unstarted

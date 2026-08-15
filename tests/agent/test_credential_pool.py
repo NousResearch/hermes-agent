@@ -1280,6 +1280,53 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     assert entry.access_token == "sk-or-light"
 
 
+def test_codex_pool_usage_limit_is_read_by_credential_id(monkeypatch):
+    import agent.credential_pool as credential_pool
+
+    monkeypatch.setattr(
+        credential_pool,
+        "_load_config_safe",
+        lambda: {
+            "credential_pool_usage_limits": {
+                "openai-codex": {"a1b2c3": 80},
+            }
+        },
+    )
+
+    assert credential_pool.get_pool_usage_limits("openai-codex") == {
+        "a1b2c3": 80.0,
+    }
+
+
+def test_codex_pool_usage_limits_ignore_invalid_rows(monkeypatch):
+    import agent.credential_pool as credential_pool
+
+    monkeypatch.setattr(
+        credential_pool,
+        "_load_config_safe",
+        lambda: {
+            "credential_pool_usage_limits": {
+                "openai-codex": {
+                    "": 80,
+                    "zero": 0,
+                    "negative": -1,
+                    "too-high": 101,
+                    "not-a-number": "nope",
+                    "not-finite": float("inf"),
+                    "boolean": True,
+                    "string-number": "75",
+                    "valid": 50.5,
+                }
+            }
+        },
+    )
+
+    assert credential_pool.get_pool_usage_limits("openai-codex") == {
+        "string-number": 75.0,
+        "valid": 50.5,
+    }
+
+
 
 
 

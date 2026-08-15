@@ -9,6 +9,9 @@ from agent.credential_pool_selection import CredentialPoolSelectionMixin
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
+import concurrent.futures
+import hashlib
+import math
 import os
 import threading
 import time
@@ -53,6 +56,8 @@ from hermes_cli.auth import (
 )
 
 logger = logging.getLogger(__name__)
+_WARNED_INVALID_USAGE_LIMITS: Set[Tuple[str, str]] = set()
+_WARNED_UNMATCHED_USAGE_LIMITS: Set[Tuple[str, str]] = set()
 
 
 def _load_config_safe() -> Optional[dict]:
@@ -611,6 +616,287 @@ def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
     return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
 
 
+def get_pool_usage_limits(provider: str) -> Dict[str, float]:
+    """Return configured soft usage ceilings keyed by credential ID."""
+    if provider != "openai-codex":
+        return {}
+    config = _load_config_safe()
+    if not isinstance(config, dict):
+        return {}
+    all_limits = config.get("credential_pool_usage_limits")
+    if not isinstance(all_limits, dict):
+        return {}
+    provider_limits = all_limits.get(provider)
+    if not isinstance(provider_limits, dict):
+        return {}
+    valid: Dict[str, float] = {}
+    for credential_id, raw_threshold in provider_limits.items():
+        normalized_id = str(credential_id or "").strip()
+        try:
+            threshold = float(raw_threshold)
+        except (TypeError, ValueError):
+            threshold = math.nan
+        if (
+            not normalized_id
+            or isinstance(raw_threshold, bool)
+            or not math.isfinite(threshold)
+            or threshold <= 0
+            or threshold > 100
+        ):
+            warning_key = (provider, normalized_id)
+            if warning_key not in _WARNED_INVALID_USAGE_LIMITS:
+                _WARNED_INVALID_USAGE_LIMITS.add(warning_key)
+                logger.warning(
+                    "credential pool: ignoring invalid usage limit for %s/%s",
+                    provider,
+                    normalized_id or "<empty-id>",
+                )
+            continue
+        valid[normalized_id] = threshold
+    return valid
+
+
+def _select_codex_policy_window(snapshot: Any) -> Optional[Any]:
+    """Choose the longest finite Codex usage window from a snapshot."""
+    if not getattr(snapshot, "usage_windows_complete", True):
+        return None
+    usable = []
+    duration_candidates = []
+    durations_absent = 0
+    reset_candidates = []
+    fetched_at = getattr(snapshot, "fetched_at", None)
+    timestamp_fn = getattr(fetched_at, "timestamp", None)
+    try:
+        raw_fetched_timestamp: Any = (
+            timestamp_fn() if callable(timestamp_fn) else math.nan
+        )
+        fetched_timestamp = float(raw_fetched_timestamp)
+    except (TypeError, ValueError, OverflowError):
+        fetched_timestamp = math.nan
+    for window in tuple(getattr(snapshot, "windows", ()) or ()):
+        raw_used_percent = getattr(window, "used_percent", None)
+        if (
+            raw_used_percent is None
+            or isinstance(raw_used_percent, bool)
+            or not isinstance(raw_used_percent, (int, float))
+        ):
+            return None
+        try:
+            used_percent = float(raw_used_percent)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(used_percent) or not 0 <= used_percent <= 100:
+            return None
+
+        # A reported reset that has already elapsed makes the whole snapshot
+        # stale, even when duration metadata is otherwise present.  Choosing
+        # that window could preserve a denial from the previous quota cycle.
+        reset_at = getattr(window, "reset_at", None)
+        reset_timestamp = None
+        if reset_at is not None:
+            try:
+                reset_timestamp = float(reset_at.timestamp())
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                return None
+            if (
+                not math.isfinite(fetched_timestamp)
+                or not math.isfinite(reset_timestamp)
+                or reset_timestamp <= fetched_timestamp
+            ):
+                return None
+
+        usable.append(window)
+        duration = getattr(window, "limit_window_seconds", None)
+        if duration is None:
+            durations_absent += 1
+        else:
+            if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+                return None
+            try:
+                duration_value = float(duration)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(duration_value) or duration_value <= 0:
+                return None
+            duration_candidates.append((duration_value, window))
+        if reset_timestamp is not None:
+            reset_candidates.append((reset_timestamp, window))
+    if usable and len(duration_candidates) == len(usable):
+        longest_duration = max(item[0] for item in duration_candidates)
+        longest = [
+            window
+            for duration, window in duration_candidates
+            if duration == longest_duration
+        ]
+        return longest[0] if len(longest) == 1 else None
+    if (
+        usable
+        and durations_absent == len(usable)
+        and len(reset_candidates) == len(usable)
+    ):
+        farthest_reset = max(item[0] for item in reset_candidates)
+        farthest = [
+            window
+            for reset, window in reset_candidates
+            if reset == farthest_reset
+        ]
+        return farthest[0] if len(farthest) == 1 else None
+    return None
+
+
+_USAGE_ADMISSION_SUCCESS_TTL_SECONDS = 300.0
+_USAGE_ADMISSION_ERROR_TTL_SECONDS = 30.0
+_USAGE_ADMISSION_PROBE_TIMEOUT_SECONDS = 3.0
+_USAGE_ADMISSION_PROBE_WAIT_SECONDS = 3.25
+_USAGE_ADMISSION_PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=16,
+    thread_name_prefix="hermes-codex-usage",
+)
+_USAGE_ADMISSION_INFLIGHT: Dict[
+    Tuple[str, str, str, str], concurrent.futures.Future[None]
+] = {}
+
+
+@dataclass(frozen=True)
+class _UsageAdmissionDecision:
+    checked_at: float
+    probe_succeeded: bool
+    used_percent: Optional[float]
+    reset_at: Optional[float]
+
+
+_USAGE_ADMISSION_CACHE: Dict[
+    Tuple[str, str, str, str], _UsageAdmissionDecision
+] = {}
+_USAGE_ADMISSION_CACHE_LOCK = threading.Lock()
+
+
+def _usage_admission_cache_key(
+    entry: PooledCredential,
+) -> Tuple[str, str, str, str]:
+    token_fingerprint = hashlib.sha256(
+        entry.runtime_api_key.encode("utf-8")
+    ).hexdigest()
+    return (
+        entry.provider,
+        entry.id,
+        token_fingerprint,
+        str(entry.runtime_base_url or "").strip().rstrip("/"),
+    )
+
+
+def _usage_admission_decision_is_fresh(
+    decision: _UsageAdmissionDecision,
+    now: float,
+) -> bool:
+    if decision.reset_at is not None:
+        try:
+            reset_at = float(decision.reset_at)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(reset_at) or reset_at <= time.time():
+            return False
+    ttl = (
+        _USAGE_ADMISSION_SUCCESS_TTL_SECONDS
+        if decision.probe_succeeded
+        else _USAGE_ADMISSION_ERROR_TTL_SECONDS
+    )
+    return now - decision.checked_at < ttl
+
+
+def _usage_admission_decision_denied(
+    decision: _UsageAdmissionDecision,
+    threshold: float,
+    now: float,
+) -> bool:
+    """Apply current policy to fresh cached telemetry."""
+    return bool(
+        _usage_admission_decision_is_fresh(decision, now)
+        and decision.probe_succeeded
+        and decision.used_percent is not None
+        and decision.used_percent >= threshold
+    )
+
+
+def usage_admission_policy_denied(provider: str) -> bool:
+    """Return whether a fresh configured decision excludes any credential."""
+    limits = get_pool_usage_limits(provider)
+    if not limits:
+        return False
+    now = time.monotonic()
+    with _USAGE_ADMISSION_CACHE_LOCK:
+        return any(
+            cache_provider == provider
+            and credential_id in limits
+            and _usage_admission_decision_denied(
+                decision, limits[credential_id], now
+            )
+            for (
+                cache_provider,
+                credential_id,
+                _token_fingerprint,
+                _base_url,
+            ), decision in _USAGE_ADMISSION_CACHE.items()
+        )
+
+
+def usage_admission_credential_denied(provider: str, api_key: str) -> bool:
+    """Return whether policy denies the credential behind ``api_key``.
+
+    Explicit runtime paths may be the first use of a configured pool token in a
+    process.  On a cache miss, match only that exact token to a configured stable
+    ID and refresh its pool telemetry before deciding.  Unrelated explicit
+    credentials remain outside the pool policy.
+    """
+    limits = get_pool_usage_limits(provider)
+    token = str(api_key or "").strip()
+    if not limits or not token:
+        return False
+    token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _cached_denial() -> bool:
+        now = time.monotonic()
+        with _USAGE_ADMISSION_CACHE_LOCK:
+            return any(
+                cache_provider == provider
+                and credential_id in limits
+                and cached_fingerprint == token_fingerprint
+                and _usage_admission_decision_denied(
+                    decision, limits[credential_id], now
+                )
+                for (
+                    cache_provider,
+                    credential_id,
+                    cached_fingerprint,
+                    _base_url,
+                ), decision in _USAGE_ADMISSION_CACHE.items()
+            )
+
+    if _cached_denial():
+        return True
+
+    # A cold explicit path has no cache entry yet.  Probe only when the token
+    # matches a configured pool credential; otherwise fail open and leave an
+    # unrelated explicit credential untouched.
+    try:
+        pool = load_pool(provider)
+        matching_entry = any(
+            entry.id in limits
+            and hashlib.sha256(entry.runtime_api_key.encode("utf-8")).hexdigest()
+            == token_fingerprint
+            for entry in pool.entries()
+        )
+    except Exception:
+        return False
+    if not matching_entry:
+        return False
+    try:
+        pool._refresh_usage_admission_cache()
+    except Exception:
+        return False
+    return _cached_denial()
+
+
 def credential_pool_matches_provider(
     pool_or_provider: Any,
     provider: Optional[str],
@@ -956,6 +1242,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         self._lock = threading.RLock()
         self._active_leases: dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        self._usage_limits: Dict[str, float] = {}
         # Monotonic timestamp of the last "no available entries" log (see
         # NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS). Re-armed to None on every
         # successful selection so a recover->re-exhaust transition logs promptly.
@@ -967,6 +1254,166 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         # real entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
 
+    def _probe_usage_admission_entry(
+        self,
+        entry: PooledCredential,
+        cache_key: Tuple[str, str, str, str],
+    ) -> None:
+        """Probe and cache one entry. Network I/O never holds a pool lock."""
+        snapshot = None
+        try:
+            from agent.account_usage import fetch_account_usage
+
+            snapshot = fetch_account_usage(
+                "openai-codex",
+                base_url=entry.runtime_base_url,
+                api_key=entry.runtime_api_key,
+                timeout=_USAGE_ADMISSION_PROBE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.debug(
+                "credential pool: Codex usage admission probe failed",
+                exc_info=True,
+            )
+
+        checked_at = time.monotonic()
+        window = _select_codex_policy_window(snapshot)
+        if window is None:
+            decision = _UsageAdmissionDecision(
+                checked_at=checked_at,
+                probe_succeeded=False,
+                used_percent=None,
+                reset_at=None,
+            )
+        else:
+            used_percent = float(window.used_percent)
+            reset_at = getattr(window, "reset_at", None)
+            try:
+                reset_timestamp = (
+                    float(reset_at.timestamp()) if reset_at is not None else None
+                )
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                reset_timestamp = None
+            decision = _UsageAdmissionDecision(
+                checked_at=checked_at,
+                probe_succeeded=True,
+                used_percent=used_percent,
+                reset_at=reset_timestamp,
+            )
+
+        with _USAGE_ADMISSION_CACHE_LOCK:
+            # Preserve fresh decisions for other auth identities of the same
+            # stable credential ID. A delayed probe for an old OAuth token must
+            # not erase the refreshed token's decision.
+            stale_keys = [
+                key
+                for key, cached_decision in _USAGE_ADMISSION_CACHE.items()
+                if key[:2] == cache_key[:2]
+                and key != cache_key
+                and not _usage_admission_decision_is_fresh(
+                    cached_decision, checked_at
+                )
+            ]
+            for stale_key in stale_keys:
+                _USAGE_ADMISSION_CACHE.pop(stale_key, None)
+            _USAGE_ADMISSION_CACHE[cache_key] = decision
+
+    def _refresh_usage_admission_cache(
+        self,
+        candidate_entries: Optional[List[PooledCredential]] = None,
+    ) -> None:
+        """Refresh configured Codex decisions with one bounded parallel wait."""
+        limits = get_pool_usage_limits(self.provider)
+        with self._lock:
+            self._usage_limits = dict(limits)
+            if not limits:
+                return
+            entry_ids = {entry.id for entry in self._entries}
+            source_entries = (
+                list(candidate_entries)
+                if candidate_entries is not None
+                else self._entries
+            )
+            candidates = [
+                entry
+                for entry in source_entries
+                if entry.id in limits and entry.runtime_api_key
+            ]
+        for credential_id in limits.keys() - entry_ids:
+            warning_key = (self.provider, credential_id)
+            with _USAGE_ADMISSION_CACHE_LOCK:
+                warn = warning_key not in _WARNED_UNMATCHED_USAGE_LIMITS
+                _WARNED_UNMATCHED_USAGE_LIMITS.add(warning_key)
+            if warn:
+                logger.warning(
+                    "credential pool: usage limit configured for missing %s "
+                    "credential %s",
+                    self.provider,
+                    credential_id,
+                )
+        pending: list[concurrent.futures.Future[None]] = []
+        for entry in candidates:
+            cache_key = _usage_admission_cache_key(entry)
+            now = time.monotonic()
+            callback_registration = None
+            with _USAGE_ADMISSION_CACHE_LOCK:
+                cached = _USAGE_ADMISSION_CACHE.get(cache_key)
+                if cached is not None and _usage_admission_decision_is_fresh(
+                    cached, now
+                ):
+                    continue
+                future = _USAGE_ADMISSION_INFLIGHT.get(cache_key)
+                if future is None:
+                    future = _USAGE_ADMISSION_PROBE_EXECUTOR.submit(
+                        self._probe_usage_admission_entry,
+                        entry,
+                        cache_key,
+                    )
+                    _USAGE_ADMISSION_INFLIGHT[cache_key] = future
+                    callback_registration = (future, cache_key)
+                pending.append(future)
+
+            if callback_registration is not None:
+                registered_future, registered_key = callback_registration
+
+                def clear_inflight(
+                    completed: concurrent.futures.Future[None],
+                    *,
+                    key: Tuple[str, str, str, str] = registered_key,
+                ) -> None:
+                    with _USAGE_ADMISSION_CACHE_LOCK:
+                        if _USAGE_ADMISSION_INFLIGHT.get(key) is completed:
+                            _USAGE_ADMISSION_INFLIGHT.pop(key, None)
+
+                registered_future.add_done_callback(clear_inflight)
+
+        if pending:
+            done, _not_done = concurrent.futures.wait(
+                set(pending),
+                timeout=_USAGE_ADMISSION_PROBE_WAIT_SECONDS,
+            )
+            for future in done:
+                try:
+                    future.result()
+                except Exception:
+                    logger.debug(
+                        "credential pool: unexpected usage probe worker failure",
+                        exc_info=True,
+                    )
+
+    def _usage_admission_denied(self, entry: PooledCredential) -> bool:
+        if entry.id not in self._usage_limits or not entry.runtime_api_key:
+            return False
+        cache_key = _usage_admission_cache_key(entry)
+        now = time.monotonic()
+        with _USAGE_ADMISSION_CACHE_LOCK:
+            decision = _USAGE_ADMISSION_CACHE.get(cache_key)
+            return bool(
+                decision is not None
+                and _usage_admission_decision_denied(
+                    decision, self._usage_limits[entry.id], now
+                )
+            )
     # ---- read accessors ---------------------------------------------------
 
     def has_credentials(self) -> bool:
@@ -2066,6 +2513,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 # row read straight off disk); leasing it would send an empty
                 # bearer. The API-key guard above does not cover it.
                 continue
+            if self._usage_admission_denied(entry):
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
@@ -2177,6 +2626,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         failure_reason: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        self._refresh_usage_admission_cache()
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
             entry = self._identify_failed_entry(credential_id, api_key_hint)
@@ -2255,9 +2705,11 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         every credential is at the soft cap, still return the least-leased
         one instead of blocking.
         """
+        self._refresh_usage_admission_cache()
         chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
+            self._refresh_usage_admission_cache()
             # Mirror select(): a pool whose entries all needed a deferred
             # refresh must retry once they are back in rotation, or the caller
             # sees "no credentials available" after a successful refresh.
@@ -2270,6 +2722,12 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     ) -> tuple[Optional[str], list[PooledCredential]]:
         with self._lock:
             if credential_id:
+                requested = next(
+                    (entry for entry in self._entries if entry.id == credential_id),
+                    None,
+                )
+                if requested is not None and self._usage_admission_denied(requested):
+                    return None, []
                 self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
                 self._current_id = credential_id
                 return credential_id, []
@@ -2297,15 +2755,58 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     # ---- explicit refresh / admin ------------------------------------------
 
-    def try_refresh_current(self) -> Optional[PooledCredential]:
+    def _apply_admission_after_forced_refresh(
+        self,
+        refreshed: Optional[PooledCredential],
+    ) -> Tuple[Optional[PooledCredential], Optional[str]]:
+        """Admit a freshly minted token before it can be assigned.
+
+        Forced OAuth refresh changes the token fingerprint for the same stable
+        pool entry.  Probe that exact refreshed token outside the pool lock and
+        return the denied stable ID separately so recovery callers can select a
+        sibling without misclassifying policy denial as credential exhaustion.
+        Telemetry failure retains the policy's fail-open behavior.
+        """
+        if refreshed is None:
+            return None, None
+        self._refresh_usage_admission_cache(candidate_entries=[refreshed])
+        if self._usage_admission_denied(refreshed):
+            logger.info(
+                "credential pool: usage admission excludes refreshed %s "
+                "credential %s",
+                self.provider,
+                refreshed.id,
+            )
+            return None, refreshed.id
+        return refreshed, None
+
+    def try_refresh_current_with_admission_status(
+        self,
+    ) -> Tuple[Optional[PooledCredential], Optional[str]]:
         with self._lock:
-            return self._try_refresh_current_unlocked()
+            refreshed = self._try_refresh_current_unlocked()
+        return self._apply_admission_after_forced_refresh(refreshed)
+
+    def try_refresh_current(self) -> Optional[PooledCredential]:
+        refreshed, _denied_id = self.try_refresh_current_with_admission_status()
+        return refreshed
 
     def try_refresh_matching(
         self,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        refreshed, _denied_id = self.try_refresh_matching_with_admission_status(
+            api_key_hint=api_key_hint,
+            credential_id=credential_id,
+        )
+        return refreshed
+
+    def try_refresh_matching_with_admission_status(
+        self,
+        api_key_hint: Optional[str] = None,
+        credential_id: Optional[str] = None,
+    ) -> Tuple[Optional[PooledCredential], Optional[str]]:
         """Force-refresh the entry that supplied the failed request.
 
         Direct integrations may reload the pool after a request failed, so
@@ -2321,9 +2822,10 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 else:
                     entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
-                return None
+                return None, None
             self._current_id = entry.id
-            return self._try_refresh_current_unlocked(failed_key=api_key_hint)
+            refreshed = self._try_refresh_current_unlocked(failed_key=api_key_hint)
+        return self._apply_admission_after_forced_refresh(refreshed)
 
     def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None) -> Optional[PooledCredential]:
         entry = self._current_unlocked()

@@ -826,6 +826,19 @@ def drop_thinking_only_and_merge_users(
     return merged
 
 
+def _primary_excluded_by_usage_policy(pool, primary_provider: str, primary_model: str) -> bool:
+    """True when ``primary_provider`` has configured usage ceilings, every pool entry is
+    unavailable, and at least one is unavailable because of policy (not cooldown alone)."""
+    from agent.credential_pool import get_pool_usage_limits, usage_admission_policy_denied
+    if not get_pool_usage_limits(primary_provider):
+        return False
+    refresh = getattr(pool, "_refresh_usage_admission_cache", None)
+    if callable(refresh):
+        refresh()
+    return (not pool.has_available(model=primary_model or None)
+            and usage_admission_policy_denied(primary_provider))
+
+
 def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base_url, matches_primary, load_primary_pool):
     """Reset-aware gate: skip a guaranteed-to-fail restore while the primary pool reports a
     future reset; fails open on any error/None. Returns ``(blocked, prefetched_pool, prefetched)``
@@ -833,7 +846,9 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
     prefetched_pool, prefetched = None, False
     try:
         pool = getattr(agent, "_credential_pool", None)
-        if not matches_primary(pool):
+        # A fallback without a pool clears the live binding; the snapshot's pool-entry provenance says the
+        # saved key came from a pool, so reload it and re-run admission instead of bypassing a usage ceiling.
+        if not matches_primary(pool) or (pool is None and str(rt.get("credential_pool_entry_id") or "").strip()):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
         primary_model = str(rt.get("model") or "").strip()
@@ -847,6 +862,12 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
                     datetime.fromtimestamp(next_at).isoformat(timespec="seconds"), agent.provider,
                     agent.model,
                 )
+            return True, prefetched_pool, prefetched
+        if pool is not None and _primary_excluded_by_usage_policy(pool, primary_provider, primary_model):
+            logger.info(
+                "Primary %s is excluded by credential usage policy; staying on fallback %s/%s",
+                primary_provider or "?", agent.provider, agent.model,
+            )
             return True, prefetched_pool, prefetched
     except Exception:
         logger.debug("Reset-aware restore gate failed; falling back to per-turn retry", exc_info=True)
@@ -869,7 +890,9 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
     rotation; re-select the pool's best entry, keeping the snapshot key when none is usable."""
     pool = getattr(agent, "_credential_pool", None)
     pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
-    if pool is not None and pool_provider and not matches_primary(pool):
+    if (pool is not None and pool_provider and not matches_primary(pool)) or (
+        pool is None and prefetched and prefetched_pool is not None
+    ):
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:

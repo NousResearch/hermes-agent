@@ -73,6 +73,19 @@ plugins:
   clone_timeout_seconds: 300
 
 # =============================================================================
+# Credential Pool Routing (optional)
+# =============================================================================
+# Keep the default fill-first ordering while reserving selected credentials
+# once their longest reliable usage window reaches a configured percentage.
+# Find stable credential IDs with: hermes auth list <provider>
+#
+# credential_pool_strategies:
+#   openai-codex: fill_first
+# credential_pool_usage_limits:
+#   openai-codex:
+#     "a1b2c3": 80  # Exclude this credential from new assignments at >= 80% used.
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

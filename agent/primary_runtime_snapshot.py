@@ -25,6 +25,14 @@ def _snapshot_primary_runtime(agent):
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        # Preserve pooled-credential provenance across fallback activation.
+        # The fallback provider may have no pool and clear the live binding;
+        # restoration must still know that the saved raw key came from a pool
+        # so it can reload that pool and re-run admission instead of bypassing
+        # a newly reached usage ceiling.
+        "credential_pool_entry_id": getattr(
+            agent, "_credential_pool_entry_id", None
+        ),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
@@ -57,6 +65,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "credential_pool_entry_id": getattr(agent, "_credential_pool_entry_id", None),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

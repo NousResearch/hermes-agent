@@ -198,6 +198,46 @@ credential ahead of it is benched.
 Sessions that already hold a credential keep it until they rotate; new sessions (and the next
 gateway start) follow the new order.
 
+## Codex Soft Usage Limits
+
+Hermes can reserve part of an individual ChatGPT/Codex account's longest
+reported quota window. Configure the rule by the stable credential ID shown by
+`hermes auth list openai-codex`:
+
+```yaml
+credential_pool_usage_limits:
+  openai-codex:
+    "abc123": 80
+```
+
+The example excludes credential `abc123` from **new** selections and subagent
+leases when the longest usable Codex quota window reports `used_percent >= 80`.
+Other credentials retain their existing priority and rotation strategy. If no
+Codex credential remains eligible, Hermes continues through the configured
+fallback-provider chain.
+
+This is a soft admission limit, not a per-request hard cap. Work that already
+holds the credential may continue past the threshold. Successful usage probes
+are cached for five minutes; failed, missing, partial, or malformed probes fail
+open and are retried after 30 seconds. Configured credentials are probed
+concurrently, so cold selection waits for at most one three-second probe window
+(plus scheduling overhead), not one timeout per credential. Eligibility returns
+automatically after a fresh probe reports usage below the threshold. No policy
+state or access token is written to `auth.json`.
+
+Only `openai-codex` supports this setting. Thresholds must be finite numbers
+greater than 0 and at most 100. Rules for missing credential IDs are ignored
+with a warning.
+
+To disable a rule without removing or reauthorizing the credential:
+
+```bash
+hermes config unset credential_pool_usage_limits.openai-codex.abc123
+```
+
+Restart long-running Hermes processes after changing or removing the rule so
+they reload configuration and discard their in-memory probe cache.
+
 ## Error Recovery
 
 The pool handles different errors differently:

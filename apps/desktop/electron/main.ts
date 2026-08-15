@@ -83,6 +83,8 @@ import {
   tokenPreview
 } from './connection-config'
 import {
+  backendScopeKey,
+  backendScopePrefix,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
@@ -8603,6 +8605,22 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 
 function persistSshConnectionToken(profile, source, token) {
   try {
+    // Registry-scoped ssh backend (source "registry:<connectionId>"): the
+    // served token belongs on the registry entry, not v1 connection.json.
+    if (typeof source === 'string' && source.startsWith('registry:')) {
+      const id = source.slice('registry:'.length)
+      const registry = readDesktopConnectionsRegistry()
+      const entry = registry.connections.find(c => c.id === id)
+
+      if (entry && entry.kind === 'ssh') {
+        writeDesktopConnectionsRegistry(
+          upsertConnection(registry, { ...entry, token: encryptDesktopSecret(token) })
+        )
+      }
+
+      return
+    }
+
     const config = readDesktopConnectionConfig()
     const encrypted = encryptDesktopSecret(token)
 
@@ -9169,6 +9187,142 @@ async function ensureBackend(profile) {
   startPoolIdleReaper()
 
   return entry.connectionPromise
+}
+
+// ── Registry-scoped backends (multi-connection, PR 2 of the campaign) ──────
+// Resolve a backend for (connectionId, profile) against the v2 registry.
+// The LOCAL connection routes through ensureBackend() untouched, so every
+// single-source path stays byte-identical; non-local connections pool under
+// the composite key from backendScopeKey() and reuse the same pool entry
+// lifecycle (LRU, idle reaper, touch) as per-profile local backends.
+async function ensureRegistryBackend(connectionId, profile) {
+  const registry = readDesktopConnectionsRegistry()
+  const id = String(connectionId || '').trim() || registry.primary
+  const source = registry.connections.find(c => c.id === id)
+
+  if (!source) {
+    throw new Error(`No connection with id "${id}".`)
+  }
+
+  if (source.kind === 'local') {
+    return ensureBackend(profile)
+  }
+
+  const key = backendScopeKey(id, profile)
+  const existing = backendPool.get(key)
+
+  if (existing) {
+    existing.lastActiveAt = Date.now()
+
+    return existing.connectionPromise
+  }
+
+  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+
+  const entry = {
+    process: null,
+    port: null,
+    token: null,
+    connectionPromise: null,
+    lastActiveAt: Date.now(),
+    remoteBaseUrl: null
+  }
+
+  entry.connectionPromise = connectRegistryBackend(source, profile, key, entry).catch(error => {
+    if (backendPool.get(key) === entry) {
+      backendPool.delete(key)
+    }
+
+    throw error
+  })
+  backendPool.set(key, entry)
+  startPoolIdleReaper()
+
+  return entry.connectionPromise
+}
+
+// Dial a non-local registry connection for one profile. Never spawns a local
+// child (entry.process stays null — stopPoolBackend/evict already tolerate
+// that shape from remote per-profile overrides).
+async function connectRegistryBackend(source, profile, key, poolEntry) {
+  const profileKey = String(profile ?? '').trim() || 'default'
+
+  if (source.kind === 'ssh') {
+    // The composite key doubles as the ssh scope so each (connection, profile)
+    // pair owns its own tunnel + remote dashboard; the profile that re-homes
+    // the REMOTE process is the entry's remoteProfile or the requested one —
+    // never the composite string.
+    const sshConfig = normalizeSshConfig({
+      mode: 'ssh',
+      host: source.host,
+      user: source.user,
+      port: source.port,
+      keyPath: source.keyPath,
+      remoteHermesPath: source.remoteHermesPath,
+      remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
+    })
+
+    if (!sshConfig) {
+      throw new Error(`SSH connection "${source.label}" has no host configured.`)
+    }
+
+    const connection = await bootstrapSshConnection(
+      key,
+      sshConfig,
+      decryptDesktopSecret(source.token),
+      `registry:${source.id}`
+    )
+
+    poolEntry.remoteBaseUrl = connection.baseUrl
+
+    return { ...connection, profile: profileKey, connectionId: source.id, logs: hermesLog.slice(-80), ...getWindowState() }
+  }
+
+  // remote / cloud: one gateway host serves every profile of that source,
+  // scoped per request — the descriptor carries the profile + connectionId so
+  // renderer-side WS minting and REST scoping target the right agent.
+  const token = source.authMode === 'oauth' ? null : decryptDesktopSecret(source.token)
+
+  const connection = await buildRemoteConnection(
+    source.url,
+    normAuthMode(source.authMode),
+    token,
+    `registry:${source.id}`,
+    undefined,
+    source.kind === 'cloud' ? 'cloud' : 'url'
+  )
+
+  await waitForHermes(connection.baseUrl, connection.token, undefined, connection.authMode)
+  poolEntry.remoteBaseUrl = connection.baseUrl
+
+  return {
+    ...connection,
+    profile: profileKey,
+    connectionId: source.id,
+    // One host, many profiles: REST paths must carry ?profile= (same contract
+    // as the global-remote shared-primary route).
+    sharedRemote: true,
+    logs: hermesLog.slice(-80),
+    ...getWindowState()
+  }
+}
+
+// Stop every pooled backend and ssh scope owned by a registry connection —
+// called when the connection is removed from the registry.
+function stopRegistryConnectionBackends(connectionId) {
+  const prefix = backendScopePrefix(connectionId)
+
+  for (const key of [...backendPool.keys()]) {
+    if (String(key).startsWith(prefix)) {
+      stopPoolBackend(key)
+    }
+  }
+
+  for (const scope of [...sshConnections.keys()]) {
+    if (String(scope).startsWith(prefix)) {
+      void teardownSshConnection(scope)
+    }
+  }
 }
 
 // Mark a pool profile as recently used so the idle reaper spares it. The
@@ -11099,6 +11253,14 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+// Registry-scoped variant: resolve a backend for (connectionId, profile).
+// connectionId '' / 'local' / the registry primary all behave sensibly; the
+// local kind delegates to ensureBackend so legacy behavior is untouched.
+ipcMain.handle('hermes:connection:for', async (_event, payload) => {
+  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+
+  return ensureRegistryBackend(connectionId, profile)
+})
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -11650,8 +11812,12 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
   return { ok: true, connection: saved, registry: sanitizeConnectionsRegistry() }
 })
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
-  const registry = removeConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  const key = String(id || '')
+  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
   writeDesktopConnectionsRegistry(registry)
+  // Tear down anything the removed connection still had running: pooled
+  // backends under its composite keys and any ssh tunnel scopes it owned.
+  stopRegistryConnectionBackends(key)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })

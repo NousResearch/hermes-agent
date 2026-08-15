@@ -18,6 +18,9 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Registry-scoped backend resolution: dial (connectionId, profile). An
+      // empty/local connectionId delegates to the legacy getConnection path.
+      getConnectionFor?: (payload: { connectionId?: null | string; profile?: null | string }) => Promise<HermesConnection>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -560,10 +563,16 @@ export interface HermesConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
+  // The registry connection this descriptor was resolved through (absent on
+  // legacy v1/primary paths). Set by getConnectionFor.
+  connectionId?: string
   // True only when `profile` is a request scope on the shared primary backend.
   // A pooled backend also carries `profile`, so presence alone cannot identify
   // the shared-primary routing case.
   sharedPrimary?: boolean
+  // True when `profile` is a request scope on a SHARED registry remote/cloud
+  // backend (one host, many profiles) — the registry analogue of sharedPrimary.
+  sharedRemote?: boolean
   windowButtonPosition: { x: number; y: number } | null
 }
 

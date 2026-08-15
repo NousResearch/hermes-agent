@@ -12,6 +12,8 @@ import { test } from 'vitest'
 import type { ConnectionRegistry } from './connection-registry'
 import {
   agentHandle,
+  backendScopeKey,
+  backendScopePrefix,
   connectionIdForLabel,
   labelKey,
   labelSlug,
@@ -68,6 +70,26 @@ test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
   const long = 'x'.repeat(300)
   assert.ok(uniqueLabel(long, []).length <= 64)
   assert.ok(uniqueLabel(long, [uniqueLabel(long, [])]).length <= 64)
+})
+
+// --- backendScopeKey (composite pool keys) ---
+
+test('backendScopeKey: local/empty connection keeps the bare profile key', () => {
+  assert.equal(backendScopeKey(null, 'research'), 'research')
+  assert.equal(backendScopeKey('', 'research'), 'research')
+  assert.equal(backendScopeKey(LOCAL_CONNECTION_ID, 'research'), 'research')
+  assert.equal(backendScopeKey('local', ''), 'default')
+  assert.equal(backendScopeKey(undefined, undefined), 'default')
+})
+
+test('backendScopeKey: non-local connections get an unambiguous composite', () => {
+  assert.equal(backendScopeKey('homelab', 'research'), 'conn:homelab::research')
+  assert.equal(backendScopeKey('homelab', ''), 'conn:homelab::default')
+  // Composite keys can never collide with a plain profile name, and the
+  // prefix helper matches exactly the keys the connection owns.
+  assert.ok(backendScopeKey('homelab', 'research').startsWith(backendScopePrefix('homelab')))
+  assert.ok(!backendScopeKey('homelab-2', 'research').startsWith(backendScopePrefix('homelab')))
+  assert.ok(!'research'.startsWith(backendScopePrefix('homelab')))
 })
 
 // --- normalizeConnectionInput ---

@@ -34,6 +34,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +415,7 @@ def check_alias_collision(name: str) -> Optional[str]:
         result = subprocess.run(
             ["where" if is_windows else "which", canon],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode == 0:
             existing_path = result.stdout.strip().splitlines()[0]
@@ -1248,6 +1250,7 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
             cwd=str(project_root),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())

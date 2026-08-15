@@ -18,6 +18,7 @@ from hermes_cli.config import (
     get_project_root,
     recommended_update_command_for_method,
 )
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_constants import agent_browser_runnable
@@ -691,6 +692,7 @@ def check_certificates(should_fix: bool = False, issues: "list | None" = None) -
             capture_output=True,
             text=True,
             timeout=300,
+            creationflags=windows_hide_flags(),
         )
     except Exception as exc:
         check_fail("certifi repair could not run pip", str(exc))
@@ -1960,7 +1962,12 @@ def run_doctor(args):
         if _safe_which("docker"):
             # Check if docker daemon is running
             try:
-                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+                result = subprocess.run(
+                    ["docker", "info"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
             except subprocess.TimeoutExpired:
                 result = None
             if result is not None and result.returncode == 0:
@@ -2003,7 +2010,8 @@ def run_doctor(args):
                     cmd,
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
-                    timeout=15
+                    timeout=15,
+                    creationflags=windows_hide_flags(),
                 )
             except subprocess.TimeoutExpired:
                 result = None
@@ -2248,6 +2256,7 @@ def run_doctor(args):
                     [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                    creationflags=windows_hide_flags(),
                 )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
@@ -2802,6 +2811,7 @@ def run_doctor(args):
             result = subprocess.run(
                 ["gh", "auth", "status", "--json", "authenticated"],
                 capture_output=True, timeout=10,
+                creationflags=windows_hide_flags(),
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):

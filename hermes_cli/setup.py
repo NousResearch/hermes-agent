@@ -937,6 +937,8 @@ def _install_neutts_deps() -> bool:
     import subprocess
     import sys
 
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     # Check espeak-ng
     if not _check_espeak_ng():
         print()
@@ -953,7 +955,11 @@ def _install_neutts_deps() -> bool:
                 if sys.platform == "darwin":
                     subprocess.run(["brew", "install", "espeak-ng"], check=True)
                 elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
+                    subprocess.run(
+                        ["choco", "install", "espeak-ng", "-y"],
+                        check=True,
+                        creationflags=windows_hide_flags(),
+                    )
                 else:
                     subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
                 print_success("espeak-ng installed")
@@ -1563,6 +1569,8 @@ def setup_terminal_backend(config: dict):
             print_info("Installing vercel SDK...")
             import subprocess
 
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
             # which() misses the uv Hermes installed. Bootstrapping one is
             # welcome here — this is the interactive setup wizard, already
@@ -1576,12 +1584,14 @@ def setup_terminal_backend(config: dict):
                     [uv_bin, "pip", "install", "--python", sys.executable, "vercel"],
                     capture_output=True,
                     text=True,
+                    creationflags=windows_hide_flags(),
                 )
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "vercel"],
                     capture_output=True,
                     text=True,
+                    creationflags=windows_hide_flags(),
                 )
             if result.returncode == 0:
                 print_success("vercel SDK installed")
@@ -1626,6 +1636,8 @@ def setup_terminal_backend(config: dict):
             print_info("  Testing connection...")
             import subprocess
 
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
             if ssh_key:
                 ssh_cmd.extend(["-i", ssh_key])
@@ -1633,7 +1645,15 @@ def setup_terminal_backend(config: dict):
                 ssh_cmd.extend(["-p", port])
             ssh_cmd.append(f"{user}@{host}" if user else host)
             ssh_cmd.append("echo ok")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                creationflags=windows_hide_flags(),
+            )
             if result.returncode == 0:
                 print_success("  SSH connection successful!")
             else:

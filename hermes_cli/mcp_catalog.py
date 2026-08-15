@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from hermes_constants import get_hermes_home, get_optional_mcps_dir
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
     load_config,
@@ -450,7 +450,9 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        proc = subprocess.run(
+            cmd, cwd=str(cwd), shell=True, creationflags=windows_hide_flags()
+        )
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"
@@ -492,6 +494,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
             stdin=subprocess.DEVNULL,
             env=_git_env,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode == 0:
             pass
@@ -507,6 +510,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             [git, "clone", install.url, str(dest)],
             stdin=subprocess.DEVNULL,
             env=_git_env,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
             raise CatalogError(f"git clone failed for {install.url}")
@@ -514,6 +518,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             [git, "-C", str(dest), "checkout", install.ref],
             stdin=subprocess.DEVNULL,
             env=_git_env,
+            creationflags=windows_hide_flags(),
         )
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")

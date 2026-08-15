@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import get_hermes_home
 from hermes_constants import venv_python_path
 
@@ -163,6 +164,7 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             check=True,
+            creationflags=windows_hide_flags(),
         )
         return result.stdout.strip() or None
     except (subprocess.CalledProcessError, OSError):
@@ -1160,6 +1162,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         check=True,
+        creationflags=windows_hide_flags(),
     )
     if not status.stdout.strip():
         return None
@@ -1173,10 +1176,11 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     )
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
-        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True, creationflags=windows_hide_flags())
 
     from datetime import datetime, timezone
 
@@ -1189,12 +1193,14 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     ).stdout.strip()
     push = subprocess.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     )
     if push.stdout.strip():
         print(push.stdout.strip())
@@ -1203,6 +1209,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     )
     stash_ref = stash_probe.stdout.strip()
     stash_created = (
@@ -1235,6 +1242,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
                 git_cmd + ["reset", "--hard", "HEAD"],
                 cwd=cwd,
                 capture_output=True,
+                creationflags=windows_hide_flags(),
             )
         else:
             # No stash entry was created: the changes were NOT saved.  This
@@ -1261,6 +1269,7 @@ def _resolve_stash_selector(
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         check=True,
+        creationflags=windows_hide_flags(),
     )
     for line in stash_list.stdout.splitlines():
         selector, _, commit = line.partition(" ")
@@ -1350,6 +1359,7 @@ def _restore_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
@@ -1358,6 +1368,7 @@ def _restore_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     )
     has_conflicts = bool(unmerged.stdout.strip())
 
@@ -1397,6 +1408,7 @@ def _restore_stashed_changes(
             git_cmd + ["reset", "--hard", "HEAD"],
             cwd=cwd,
             capture_output=True,
+            creationflags=windows_hide_flags(),
         )
         print("Working tree reset to clean state.")
         print(f"Restore your changes later with: git stash apply {stash_ref}")
@@ -1420,6 +1432,7 @@ def _restore_stashed_changes(
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if drop.returncode != 0:
             print(
@@ -1471,6 +1484,7 @@ def _discard_stashed_changes(
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=windows_hide_flags(),
     )
     if drop.returncode != 0:
         print(
@@ -1504,6 +1518,7 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -1535,6 +1550,7 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         return result.returncode == 0
     except Exception:
@@ -1548,6 +1564,7 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         return result.returncode == 0
     except Exception:
@@ -1561,6 +1578,7 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
@@ -1594,6 +1612,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         return result.returncode == 0
     except Exception:
@@ -4089,6 +4108,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if diff.returncode != 0:
             return
@@ -4111,6 +4131,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             check=False,
+            creationflags=windows_hide_flags(),
         )
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
     except Exception:
@@ -4146,6 +4167,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if out.returncode != 0:
             return None
@@ -4165,6 +4187,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if out.returncode != 0:
             return None
@@ -4191,6 +4214,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         # Only "true" rewrites LF to CRLF on checkout. Unset, false, and input
         # all leave the working tree alone, so there is nothing to repair.
@@ -4211,6 +4235,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
                 check=False,
+                creationflags=windows_hide_flags(),
             )
             if _eol_only():
                 # Still dirty — persisting the pin here would only surface churn
@@ -4223,6 +4248,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
             cwd=repo_root,
             capture_output=True,
             check=False,
+            creationflags=windows_hide_flags(),
         )
     except Exception:
         # Never let line-ending cleanup block an update.
@@ -4484,6 +4510,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=_m().PROJECT_ROOT,
             check=False,
             capture_output=True,
+            creationflags=windows_hide_flags(),
         )
 
     # Build git command once — reused for fork detection and the update itself.
@@ -4550,6 +4577,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            creationflags=windows_hide_flags(),
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
@@ -4575,6 +4603,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             check=True,
+            creationflags=windows_hide_flags(),
         )
         current_branch = result.stdout.strip()
 
@@ -4597,6 +4626,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 cwd=_m().PROJECT_ROOT,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
+                creationflags=windows_hide_flags(),
             )
             if checkout_result.returncode != 0:
                 # Local checkout doesn't have this branch yet. Try to set
@@ -4608,6 +4638,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     cwd=_m().PROJECT_ROOT,
                     capture_output=True,
                     text=True, encoding="utf-8", errors="replace",
+                    creationflags=windows_hide_flags(),
                 )
                 if track_result.returncode != 0:
                     # Restore the user's prior branch + stash before bailing
@@ -4645,6 +4676,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             check=True,
+            creationflags=windows_hide_flags(),
         )
         commit_count = int(result.stdout.strip())
 
@@ -4698,6 +4730,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     capture_output=True,
                     text=True, encoding="utf-8", errors="replace",
                     check=False,
+                    creationflags=windows_hide_flags(),
                 )
 
             # "No new commits" does not mean the managed interpreter is safe.
@@ -4825,6 +4858,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 cwd=_m().PROJECT_ROOT,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
+                creationflags=windows_hide_flags(),
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
@@ -4833,11 +4867,38 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
+                # GUARD (local-fixes survival): the reset below orphans any
+                # committed-but-unpushed local work (flash/gateway/MCP fixes
+                # were wiped by this exact path twice). Pin current HEAD to a
+                # backup ref BEFORE the destructive reset so committed local
+                # work stays recoverable afterwards:
+                #   git reset --hard hermes-local-fixes-backup
+                backup_ref = "hermes-local-fixes-backup"
+                backup_result = subprocess.run(
+                    git_cmd + ["branch", "-f", backup_ref, "HEAD"],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                    creationflags=windows_hide_flags(),
+                )
+                if backup_result.returncode != 0:
+                    print(
+                        f"  ⚠ Could not create backup ref '{backup_ref}' — "
+                        "committed local work may be lost after the reset."
+                    )
+                    if backup_result.stderr.strip():
+                        print(f"    {backup_result.stderr.strip()}")
+                else:
+                    print(
+                        f"  ✓ Pinned local HEAD to backup ref '{backup_ref}' "
+                        f"(recover with: git reset --hard {backup_ref})"
+                    )
                 reset_result = subprocess.run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=_m().PROJECT_ROOT,
                     capture_output=True,
                     text=True, encoding="utf-8", errors="replace",
+                    creationflags=windows_hide_flags(),
                 )
                 if reset_result.returncode != 0:
                     print(f"✗ Failed to reset to origin/{branch}.")
@@ -4874,6 +4935,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         cwd=_m().PROJECT_ROOT,
                         capture_output=True,
                         text=True, encoding="utf-8", errors="replace",
+                        creationflags=windows_hide_flags(),
                     )
                     if rollback_result.returncode == 0:
                         print("  ✓ Rollback complete — your install is unchanged.")

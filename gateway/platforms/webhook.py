@@ -1356,6 +1356,8 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             result = subprocess.run(
                 [
                     "gh",
@@ -1370,6 +1372,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=30,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 logger.info(

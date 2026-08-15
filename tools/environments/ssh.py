@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
@@ -118,6 +119,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True, encoding='utf-8', errors='replace',
                 timeout=15,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or result.stdout.strip()
@@ -149,6 +151,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True, encoding='utf-8', errors='replace',
                 timeout=10,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             home = result.stdout.strip()
             if home and result.returncode == 0:
@@ -176,6 +179,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True, encoding='utf-8', errors='replace',
             timeout=10,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
 
     # _get_sync_files provided via iter_sync_files in FileSyncManager init
@@ -191,6 +195,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True, encoding='utf-8', errors='replace',
             timeout=10,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
 
         scp_cmd = ["scp"]
@@ -207,6 +212,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True, encoding='utf-8', errors='replace',
             timeout=30,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             raise EnvironmentConnectionError(
@@ -242,6 +248,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True, encoding='utf-8', errors='replace',
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode != 0:
                 raise EnvironmentConnectionError(
@@ -295,11 +302,13 @@ class SSHEnvironment(BaseEnvironment):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                creationflags=windows_hide_flags(),
             )
             try:
                 ssh_proc = subprocess.Popen(
                     ssh_cmd, stdin=tar_proc.stdout, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    creationflags=windows_hide_flags(),
                 )
             except Exception:
                 tar_proc.kill()
@@ -362,6 +371,7 @@ class SSHEnvironment(BaseEnvironment):
                 stdout=f,
                 stderr=subprocess.PIPE,
                 timeout=120,
+                creationflags=windows_hide_flags(),
             )
         if result.returncode != 0:
             raise EnvironmentConnectionError(
@@ -382,6 +392,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True, encoding='utf-8', errors='replace',
             timeout=10,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             raise EnvironmentConnectionError(
@@ -426,6 +437,7 @@ class SSHEnvironment(BaseEnvironment):
                     capture_output=True,
                     timeout=5,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass

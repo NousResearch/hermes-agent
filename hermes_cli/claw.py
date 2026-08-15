@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import get_hermes_home, get_config_path, load_config, save_config
 from hermes_constants import get_optional_skills_dir
 from hermes_cli.setup import (
@@ -82,6 +83,7 @@ def _detect_openclaw_processes() -> list[str]:
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                    creationflags=windows_hide_flags(),
                 )
                 if exe in result.stdout.lower():
                     found.append(f"process: {exe}")
@@ -96,6 +98,7 @@ def _detect_openclaw_processes() -> list[str]:
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                creationflags=windows_hide_flags(),
             )
             if result.stdout.strip():
                 found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")

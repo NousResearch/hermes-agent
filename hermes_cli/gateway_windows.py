@@ -490,7 +490,7 @@ def _build_gateway_vbs_script(
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exitCode",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
@@ -506,10 +506,24 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
-        # console python's one console is created hidden and inherited by all
-        # descendants, so nothing ever flashes.
-        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+        # Window style 0 = hidden — unaffected by the wait mode below, so the
+        # console python's one console is still created hidden and inherited
+        # by all descendants; nothing flashes either way.
+        #
+        # bWaitOnReturn True (was False): the Scheduled Task's RestartOnFailure
+        # policy can only react to *this* wscript.exe process's own exit code,
+        # since that's the Action Task Scheduler actually monitors. With the
+        # old fire-and-forget Run, wscript.exe returned 0 within milliseconds
+        # regardless of what happened to the detached python.exe afterward, so
+        # RestartOnFailure could never see a failure and never fired — a real
+        # gateway crash/hang was silently unrecovered on Windows. Waiting here
+        # and propagating the real exit code restores that safety net. This is
+        # safe against the #45599 root cause this file guards against: that bug
+        # was CTRL_CLOSE_EVENT being broadcast to a *console* process group
+        # (cmd.exe's), and wscript.exe is GUI-subsystem with no console of its
+        # own to receive that broadcast, whether it waits synchronously or not.
+        f"exitCode = sh.Run({_quote_vbs_string(command_line)}, 0, True)",
+        "WScript.Quit exitCode",
     ]
     return "\r\n".join(lines) + "\r\n"
 

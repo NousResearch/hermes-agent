@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
@@ -66,6 +67,7 @@ def _get_git_commit(project_root: Path) -> str:
             ["git", "rev-parse", "--short=8", "HEAD"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             cwd=str(project_root),
+            creationflags=windows_hide_flags(),
         )
         if result.returncode == 0:
             value = result.stdout.strip()
@@ -101,6 +103,7 @@ def _get_git_commit_date(project_root: Path) -> str:
             ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             cwd=str(project_root),
+            creationflags=windows_hide_flags(),
         )
         if result.returncode == 0:
             value = result.stdout.strip()

@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -113,6 +114,7 @@ def write_clipboard_text(text: str) -> bool:
                     argv, input=text.encode("utf-8"),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     timeout=10,
+                    creationflags=windows_hide_flags(),
                 )
             else:
                 b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
@@ -121,6 +123,7 @@ def write_clipboard_text(text: str) -> bool:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     timeout=10,
+                    creationflags=windows_hide_flags(),
                 )
             if proc.returncode == 0:
                 return True
@@ -275,6 +278,7 @@ def _run_powershell(exe: str, script: str, timeout: int) -> subprocess.Completed
     return subprocess.run(
         [exe, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
+        creationflags=windows_hide_flags(),
     )
 
 
@@ -333,6 +337,7 @@ def _find_powershell() -> str | None:
             r = subprocess.run(
                 [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                creationflags=windows_hide_flags(),
             )
             if r.returncode == 0 and "ok" in r.stdout:
                 return name

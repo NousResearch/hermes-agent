@@ -316,6 +316,8 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
     """
     import subprocess
 
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     try:
         proc = subprocess.run(
             [
@@ -329,6 +331,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
             capture_output=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("decode_to_pcm failed for %s: %s", path, e)

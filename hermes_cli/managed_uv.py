@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo, probe_sqlite_runtime
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,7 @@ def _ensure_uv_path(
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             check=False,
+            creationflags=windows_hide_flags(),
         ).stdout.strip()
         print(f"  ✓ Managed uv installed ({version})")
         # Compatibility boundary: an older, already-imported updater calls the
@@ -342,6 +344,7 @@ def update_managed_uv(
                 text=True, encoding='utf-8', errors='replace',
                 check=False,
                 timeout=UV_SELF_UPDATE_TIMEOUT_SECONDS,
+                creationflags=windows_hide_flags(),
             )
         except subprocess.TimeoutExpired:
             logger.debug("uv self update timed out after %ss", UV_SELF_UPDATE_TIMEOUT_SECONDS)
@@ -353,6 +356,7 @@ def update_managed_uv(
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 check=False,
+                creationflags=windows_hide_flags(),
             ).stdout.strip()
             print(f"  ✓ Managed uv updated ({version})")
         elif result is not None:
@@ -478,6 +482,7 @@ def _list_available_patches(
             text=True,
             check=False,
             timeout=15,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0 or not result.stdout.strip():
             return []
@@ -552,6 +557,7 @@ def _attempt_install_generation(
         capture_output=True,
         text=True,
         check=False,
+        creationflags=windows_hide_flags(),
     )
     if install.returncode != 0:
         logger.warning(
@@ -577,6 +583,7 @@ def _attempt_install_generation(
         capture_output=True,
         text=True,
         check=False,
+        creationflags=windows_hide_flags(),
     )
     if found.returncode != 0 or not found.stdout.strip():
         logger.warning(
@@ -783,6 +790,7 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
             text=True,
             timeout=90,
             check=False,
+            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc), info
@@ -832,6 +840,7 @@ def _stage_candidate_venv(
         capture_output=True,
         text=True,
         check=False,
+        creationflags=windows_hide_flags(),
     )
     if created.returncode != 0:
         logger.warning(
@@ -863,6 +872,7 @@ def _stage_candidate_venv(
         cwd=project_root,
         env=sync_env,
         check=False,
+        creationflags=windows_hide_flags(),
     )
     if synced.returncode != 0:
         logger.warning("candidate dependency sync failed (rc=%d)", synced.returncode)
@@ -1039,6 +1049,7 @@ def _uv_version_string(uv_bin: str) -> str:
             errors="replace",
             check=False,
             timeout=15,
+            creationflags=windows_hide_flags(),
         )
     except Exception:
         return ""
@@ -1367,6 +1378,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         env=env,
         check=True,
         capture_output=True,
+        creationflags=windows_hide_flags(),
     )
 
 

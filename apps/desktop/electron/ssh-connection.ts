@@ -36,6 +36,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { hiddenWindowsChildOptions } from './windows-child-options'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
@@ -357,7 +359,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
     let child
 
     try {
-      child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn('ssh', args, hiddenWindowsChildOptions({ stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] }))
     } catch (error) {
       reject(error)
 
@@ -720,7 +722,7 @@ class SshConnection {
         target(this.user, this.host)
       ]
 
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn('ssh', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'ignore', 'pipe'] }))
       const tunnel = { child, alive: true }
       this._tunnels.set(spec, tunnel)
       let stderr = ''

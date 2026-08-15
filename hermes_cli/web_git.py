@@ -19,7 +19,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli._subprocess_compat import IS_WINDOWS, noninteractive_git_env, windows_hide_flags
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -49,6 +49,7 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
             timeout=timeout,
             stdin=subprocess.DEVNULL,
             env=noninteractive_git_env(),
+            creationflags=windows_hide_flags() if IS_WINDOWS else 0,
         )
     except (OSError, subprocess.SubprocessError):
         return 1, "", "git invocation failed"
@@ -438,6 +439,7 @@ def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
         proc = subprocess.run(
             ["gh", *args], cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=_GH_TIMEOUT,
             stdin=subprocess.DEVNULL, env=env,
+            creationflags=windows_hide_flags() if IS_WINDOWS else 0,
         )
     except (OSError, subprocess.SubprocessError):
         return False, ""

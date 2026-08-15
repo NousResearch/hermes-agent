@@ -1407,6 +1407,36 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     return headers
 
 
+def _normalize_headers(raw_headers):
+    """Normalize MCP config headers to a dict.
+
+    Handles three common config formats so downstream callers never hit
+    ``ValueError`` from ``dict(a_list_of_strings)``:
+
+    * ``dict`` — pass-through (the canonical format).
+    * ``list[str]`` — ``"Key: Value"`` strings, split on the first ``: ``.
+    * ``list[dict]`` — ``{"name": "Key", "value": "Val"}`` objects.
+    * Falsy / ``None`` — returns ``{}``.
+    """
+    if not raw_headers:
+        return {}
+    if isinstance(raw_headers, dict):
+        return dict(raw_headers)
+    if isinstance(raw_headers, list):
+        result = {}
+        for item in raw_headers:
+            if isinstance(item, dict):
+                name = item.get("name")
+                value = item.get("value")
+                if name is not None and value is not None:
+                    result[str(name)] = str(value)
+            elif isinstance(item, str) and ": " in item:
+                k, v = item.split(": ", 1)
+                result[k] = v
+        return result
+    return {}
+
+
 def _make_redirect_header_stripper(
     original_url,
     *,
@@ -3026,7 +3056,7 @@ class MCPServerTask:
             )
 
         url = config["url"]
-        headers = dict(config.get("headers") or {})
+        headers = _normalize_headers(config.get("headers"))
         # Portable Agent Plugins v1 packages set strict_redirect_headers:
         # configured headers are visible package data and MUST NOT be
         # forwarded to a different origin through a redirect (spec §7.2.1).
@@ -3410,7 +3440,7 @@ class MCPServerTask:
             # would incorrectly block the OAuth flow before it can run.
             if config.get("transport") != "sse" and not config.get("skip_preflight") and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
-                    _probe_headers = dict(config.get("headers") or {})
+                    _probe_headers = _normalize_headers(config.get("headers"))
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,

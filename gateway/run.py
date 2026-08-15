@@ -2912,10 +2912,12 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             pass
 
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            creationflags=windows_hide_flags(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         if proc.returncode == 0:
@@ -17109,12 +17111,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # quick commands run in the gateway process which
                             # has all API keys in os.environ.
                             from tools.environments.local import build_subprocess_env
+                            from hermes_cli._subprocess_compat import windows_hide_flags
                             sanitized_env = build_subprocess_env()
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                                 env=sanitized_env,
+                                creationflags=windows_hide_flags(),
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                             output = (stdout or stderr).decode().strip()

@@ -55,6 +55,7 @@ from agent.secret_sources._cache import (
 )
 from agent.secret_sources.base import ErrorKind, SecretSource
 from agent.secret_sources.base import get_source_environment
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -703,6 +704,7 @@ def _run_bws_list(
             text=True, encoding='utf-8', errors='replace',
             timeout=_BWS_RUN_TIMEOUT,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

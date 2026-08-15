@@ -232,7 +232,15 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    # Window style 0 = still hidden (no flash either way). bWaitOnReturn is now
+    # True (was False): wscript.exe is the process Task Scheduler's
+    # RestartOnFailure actually monitors, so it must wait on and propagate the
+    # real gateway exit code, or a crash/hang is never detected and never
+    # restarted. wscript.exe has no console of its own to receive a logon
+    # CTRL_CLOSE_EVENT broadcast, so waiting synchronously here does not
+    # reintroduce the #45599 root cause (that was specific to cmd.exe consoles).
+    assert ", 0, True)" in content  # hidden window, waits + propagates exit code
+    assert "WScript.Quit exitCode" in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content

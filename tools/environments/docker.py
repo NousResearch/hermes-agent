@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
@@ -188,6 +189,7 @@ def reap_orphan_containers(
             [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15, check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker ps failed: %s", e)
@@ -222,6 +224,7 @@ def reap_orphan_containers(
                 [docker, "rm", "-f", cid],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 removed += 1
@@ -252,6 +255,7 @@ def _container_finished_at(docker_exe: str, container_id: str):
             [docker_exe, "inspect", "--format", "{{.State.FinishedAt}}", container_id],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker inspect %s failed: %s", container_id[:12], e)
@@ -668,6 +672,7 @@ def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
             text=True, encoding='utf-8', errors='replace',
             timeout=15,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("Docker: could not inspect entrypoint for %s: %s", image, e)
@@ -751,6 +756,7 @@ def _cgroup_limits_available(image: str) -> bool:
             text=True, encoding='utf-8', errors='replace',
             timeout=60,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         _cgroup_limits_ok = result.returncode == 0
         if not _cgroup_limits_ok:
@@ -798,6 +804,7 @@ def _ensure_docker_available() -> None:
             text=True, encoding='utf-8', errors='replace',
             timeout=5,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except FileNotFoundError:
         logger.error(
@@ -1440,6 +1447,7 @@ class DockerEnvironment(BaseEnvironment):
                             timeout=30,
                             check=False,
                             stdin=subprocess.DEVNULL,
+                            creationflags=windows_hide_flags(),
                         )
                     except (subprocess.TimeoutExpired, OSError) as e:
                         logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
@@ -1456,6 +1464,7 @@ class DockerEnvironment(BaseEnvironment):
                             timeout=30,
                             check=True,
                             stdin=subprocess.DEVNULL,
+                            creationflags=windows_hide_flags(),
                         )
                     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                         logger.warning(
@@ -1495,6 +1504,7 @@ class DockerEnvironment(BaseEnvironment):
                     timeout=120,  # image pull may take a while
                     check=True,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 # Docker may create the container object before `docker run`
@@ -1512,6 +1522,7 @@ class DockerEnvironment(BaseEnvironment):
                     [self._docker_exe, "rm", "-f", container_name],
                     capture_output=True, timeout=10,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
                 raise
             self._container_id = result.stdout.strip()
@@ -1676,6 +1687,7 @@ class DockerEnvironment(BaseEnvironment):
                         [self._docker_exe, "start", cid],
                         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True,
                         stdin=subprocess.DEVNULL,
+                        creationflags=windows_hide_flags(),
                     )
                     self._container_id = cid
                     logger.info("Recovery: restarted container %s", cid[:12])
@@ -1707,6 +1719,7 @@ class DockerEnvironment(BaseEnvironment):
                 result = subprocess.run(
                     run_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
                 self._container_id = result.stdout.strip()
                 self._container_name = new_name
@@ -1762,6 +1775,7 @@ class DockerEnvironment(BaseEnvironment):
                 [docker, "info", "--format", "{{.Driver}}"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             driver = result.stdout.strip().lower()
             if driver != "overlay2":
@@ -1773,6 +1787,7 @@ class DockerEnvironment(BaseEnvironment):
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if probe.returncode == 0:
                 # Clean up the created container
@@ -1780,7 +1795,8 @@ class DockerEnvironment(BaseEnvironment):
                 if container_id:
                     subprocess.run([docker, "rm", container_id],
                                    capture_output=True, timeout=5,
-                                   stdin=subprocess.DEVNULL)
+                                   stdin=subprocess.DEVNULL,
+                                   creationflags=windows_hide_flags())
                 _storage_opt_ok = True
             else:
                 _storage_opt_ok = False
@@ -1810,6 +1826,7 @@ class DockerEnvironment(BaseEnvironment):
                 timeout=10,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug("docker inspect NetworkMode failed: %s", e)
@@ -1870,6 +1887,7 @@ class DockerEnvironment(BaseEnvironment):
                 timeout=10,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug("docker ps probe failed: %s — will start a fresh container", e)
@@ -2001,6 +2019,7 @@ class DockerEnvironment(BaseEnvironment):
                         [docker_exe, "stop", "-t", "10", container_id],
                         capture_output=True, timeout=30,
                         stdin=subprocess.DEVNULL,
+                        creationflags=windows_hide_flags(),
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker stop %s timed out / failed: %s", log_id, e)
@@ -2010,6 +2029,7 @@ class DockerEnvironment(BaseEnvironment):
                         [docker_exe, "rm", "-f", container_id],
                         capture_output=True, timeout=30,
                         stdin=subprocess.DEVNULL,
+                        creationflags=windows_hide_flags(),
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker rm -f %s failed: %s", log_id, e)

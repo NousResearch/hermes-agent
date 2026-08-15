@@ -77,6 +77,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 
@@ -605,6 +607,7 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
     imp = subprocess.run(  # noqa: S603 — gpg path from trusted PATH lookup
         [*base_cmd, "--import", str(pubkey_path)],
         capture_output=True, timeout=60,
+        creationflags=windows_hide_flags(),
     )
     if imp.returncode != 0:
         logger.warning(
@@ -617,6 +620,7 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
     verify = subprocess.run(  # noqa: S603
         [*base_cmd, "--verify", str(sig_path), str(checksum_path)],
         capture_output=True, timeout=60,
+        creationflags=windows_hide_flags(),
     )
     if verify.returncode != 0:
         # A present signature that does NOT verify is a tamper signal — fail hard.
@@ -709,6 +713,7 @@ def iron_proxy_version(binary: Path) -> str:
             text=True, encoding="utf-8", errors="replace",
             timeout=_RUN_TIMEOUT,
             env=minimal_env,
+            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -761,6 +766,7 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
             check=True,
             capture_output=True,
             timeout=60,
+            creationflags=windows_hide_flags(),
         )
         subprocess.run(  # noqa: S603
             [
@@ -775,6 +781,7 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
             check=True,
             capture_output=True,
             timeout=60,
+            creationflags=windows_hide_flags(),
         )
 
         # Move into place with private permissions.  CRITICAL: the key
@@ -1744,6 +1751,7 @@ def _pid_alive(pid: int) -> bool:
         res = subprocess.run(  # noqa: S603
             ["ps", "-p", str(pid), "-o", "comm="],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
+            creationflags=windows_hide_flags(),
         )
         if res.returncode == 0:
             comm = (res.stdout or "").strip()
@@ -1871,6 +1879,7 @@ def start_proxy(
             stdin=subprocess.DEVNULL,
             stdout=log_fd,
             stderr=subprocess.STDOUT,
+            creationflags=windows_hide_flags(),
         )
         if platform.system() != "Windows":
             popen_kwargs["start_new_session"] = True

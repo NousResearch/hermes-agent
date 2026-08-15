@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 from hermes_cli.colors import Colors, color
 
@@ -485,6 +486,7 @@ def _uninstall_profile(profile) -> None:
                 text=True, encoding='utf-8', errors='replace',
                 timeout=60,
                 check=False,
+                creationflags=windows_hide_flags(),
             )
         except subprocess.TimeoutExpired:
             log_warn(f"  Gateway {subcmd} timed out for '{name}'")

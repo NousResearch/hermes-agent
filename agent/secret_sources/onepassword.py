@@ -56,6 +56,7 @@ from agent.secret_sources._cache import (
 )
 from agent.secret_sources.base import ErrorKind, SecretSource
 from agent.secret_sources.base import get_source_environment
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +288,7 @@ def _run_op_read(
             encoding="utf-8",
             errors="replace",
             timeout=_OP_RUN_TIMEOUT,
+            creationflags=windows_hide_flags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

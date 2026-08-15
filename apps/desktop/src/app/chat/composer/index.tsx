@@ -2,13 +2,11 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
-import { PR_COMMENT_URL_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
@@ -18,8 +16,6 @@ import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
-import { $hudMode } from '@/store/hud'
-import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -38,7 +34,7 @@ import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -73,9 +69,10 @@ import {
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
-import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
+import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
+import { GhostSuggestionView, SkillStripView, describeCommand, useGhostSuggestion, useSkillStrip } from './ghost-suggestion'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
@@ -96,7 +93,6 @@ export function ChatBar({
   onAddUrl,
   onAttachDroppedItems,
   onAttachImageBlob,
-  onAttachPrCommentUrl,
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
@@ -106,9 +102,6 @@ export function ChatBar({
   onSubmit: onSubmitProp,
   onTranscribeAudio
 }: ChatBarProps) {
-  const hudMode = useStore($hudMode)
-  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode)
-
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
   // end control. Populated after useComposerVoice below (the submit wrapper
@@ -158,10 +151,6 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
-  // Parked on an approval/sudo/secret prompt: typing can't answer those, so the
-  // busy submit routes text to the queue instead of a steer (which would sit
-  // undelivered behind the blocked tool batch). Drives the button affordance.
-  const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
@@ -241,27 +230,6 @@ export function ChatBar({
     syncDraftFromEditor
   })
 
-  // Paste-to-focus: clipboard images from an unfocused ⌘V ride the bus (the
-  // window dispatcher has no handle on this composer's attachment scope).
-  // Same ingestion as a focused paste's image branch.
-  useEffect(() => {
-    if (!onAttachImageBlob) {
-      return undefined
-    }
-
-    return onComposerAttachImagesRequest(({ blobs, target }) => {
-      if (target !== scope.target) {
-        return
-      }
-
-      triggerHaptic('selection')
-
-      for (const blob of blobs) {
-        void onAttachImageBlob(blob)
-      }
-    })
-  }, [onAttachImageBlob, scope.target])
-
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.
   useEffect(() => {
@@ -287,7 +255,6 @@ export function ChatBar({
     queueParked,
     queuedPrompts,
     sendQueuedNow,
-    steerQueuedNow,
     stepQueuedEdit
   } = useComposerQueue({
     activeQueueSessionKey,
@@ -334,9 +301,7 @@ export function ChatBar({
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  const canSteer = busy && !compacting && !!onSteer && attachments.length === 0 && isSteerableText
 
   // While busy: text redirects the live turn (Cursor-style stop-and-correct),
   // attachments queue for the next turn, an empty composer stops.
@@ -400,6 +365,42 @@ export function ChatBar({
     triggerKeyConsumedRef,
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
+
+  // Ghost suggestion: while the user types free text (no trigger character),
+  // surface a single matching skill command inline as a faded ghost. The
+  // active command can be cycled with Shift+Tab; Tab accepts it. Already-used
+  // commands in this session are filtered out so we never re-suggest what
+  // the user just picked.
+  const ghostComposingRef = useRef(false)
+  // Commands the user already accepted or dismissed for this draft. We
+  // mutate the Set in place so React doesn't re-render on every ref update;
+  // the hook reads through `rejectedCommandsRef` on each candidate change.
+  const rejectedCommandsRef = useRef<Set<string>>(new Set())
+  const ghost = useGhostSuggestion({
+    draftRef,
+    editorRef,
+    composingRef: ghostComposingRef,
+    gateway: gateway ?? null,
+    rejectedCommandsRef
+  })
+
+  // Skill strip: a transient hint ABOVE the composer listing the top matched
+  // skills with one-line descriptions. It fades out by itself (~1.8s) so it
+  // advertises capability without obstructing the draft; 不再显示 persists
+  // the dismissal in localStorage.
+  const skillStrip = useSkillStrip(draftRef, ghost.candidates)
+
+  // Full description for the hover marquee on the ghost command: live catalog
+  // first, then the built-in fallback table.
+  const ghostDescription = useMemo(() => {
+    const command = ghost.active?.command
+
+    if (!command) {
+      return null
+    }
+
+    return describeCommand(command, peekCachedSlashCompletion('catalog'))
+  }, [ghost.active])
 
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
@@ -524,17 +525,6 @@ export function ChatBar({
       return
     }
 
-    // A pasted GitHub PR-comment deep link resolves to a structured review
-    // attachment (author, body, file:line anchor, diff hunk) instead of a bare
-    // `@url:` chip. Optimistic card first, resolve via gh in the background —
-    // if gh can't answer (offline, unauthenticated, foreign repo) the card
-    // swaps back to the plain URL ref so nothing is lost.
-    if (PR_COMMENT_URL_RE.test(pastedText) && onAttachPrCommentUrl?.(pastedText)) {
-      event.preventDefault()
-
-      return
-    }
-
     event.preventDefault()
 
     // Links in the paste land as `@url:` chips rather than a wall of URL text —
@@ -551,18 +541,6 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    // Self-heal a stale composition flag before the guard below reads it.
-    // compositionend can be missed (focus jumps, input-source switches, or a
-    // programmatic DOM swap mid-preedit abort the composition without the
-    // event reaching us), and a wedged composingRef silently swallows every
-    // Enter — and, via the form onSubmit guard, the Send button — until the
-    // component remounts (#44135). Chromium stamps isComposing on every
-    // keydown of a genuine composition, so when the native flag says we're
-    // not composing, trust it and recover.
-    if (composingRef.current && !event.nativeEvent.isComposing) {
-      composingRef.current = false
-    }
-
     // IME composition: Enter confirms composed text, not a message submission.
     // We check both composingRef (set by compositionstart/compositionend, robust
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
@@ -579,6 +557,34 @@ export function ChatBar({
     // the message fires before the committed text is fully in the DOM.
     if (event.key === 'Enter' && event.keyCode === 229) {
       return
+    }
+
+    // Ghost suggestion: cycle / accept / dismiss keys take priority over
+    // the rest of the keydown chain. Escape drops the ghost for the current
+    // draft; Shift+Tab cycles to the previous candidate; Tab accepts the
+    // active one (or cycles forward when Shift is not held). The Tab/Enter
+    // branch below is for trigger popovers and stays unaffected because
+    // it only fires when `trigger` is set, which is mutually exclusive with
+    // a visible ghost (the ghost hides for any draft that contains a
+    // trigger character).
+    if (ghost.active) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        ghost.dismiss()
+        return
+      }
+
+      if (event.key === 'Tab') {
+        event.preventDefault()
+
+        if (event.shiftKey) {
+          ghost.cyclePrev()
+        } else {
+          ghost.accept()
+        }
+
+        return
+      }
     }
 
     // Undo/redo before anything else — we own the stack (see useComposerUndo),
@@ -1012,15 +1018,7 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBeforeInput={handleEditorBeforeInput}
-        onBlur={() => {
-          // A composition never survives focus loss (Chromium commits the
-          // preedit and fires compositionend on blur) — but if that event is
-          // missed, the wedged flag would block the Send button's form-submit
-          // guard forever (#44135). Clear unconditionally: by the time blur
-          // runs there is nothing left composing in this editor.
-          composingRef.current = false
-          window.setTimeout(closeTrigger, 80)
-        }}
+        onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={event => {
           composingRef.current = false
 
@@ -1054,6 +1052,7 @@ export function ChatBar({
         spellCheck={false}
         suppressContentEditableWarning
       />
+      <GhostSuggestionView command={ghost.active?.command ?? null} description={ghostDescription} />
       <ComposerDirectiveActions editorRef={editorRef} />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
         so the composer-state binding (text + IME + paste + form-submit hookup)
@@ -1144,7 +1143,6 @@ export function ChatBar({
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <ActionBadges sessionId={statusSessionId} />
-            <SuggestionPills sessionId={statusSessionId} />
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
@@ -1173,13 +1171,16 @@ export function ChatBar({
                     }
                   }}
                   onSendNow={id => void sendQueuedNow(id)}
-                  onSteerNow={id => void steerQueuedNow(id)}
                   parked={queueParked}
                 />
               ) : null
             }
             sessionId={statusSessionId}
           />
+          {/* Skill strip: transient hint above the composer. Rendered as a dock
+            child (NOT inside composer-fade, which is overflow-hidden and would
+            clip the strip) so it is actually visible above the input. */}
+          <SkillStripView items={skillStrip.items} onDismissForever={skillStrip.dismissForever} />
           <ComposerPrimitive.Root
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',
@@ -1187,7 +1188,6 @@ export function ChatBar({
               dragging && 'cursor-grabbing select-none touch-none'
             )}
             data-drag-active={dragActive ? '' : undefined}
-            data-hud-grabbing={hudGrabbing ? '' : undefined}
             data-popped-out={poppedOut ? '' : undefined}
             data-slot="composer-root"
             data-status-stack={statusStackVisible ? '' : undefined}
@@ -1196,7 +1196,7 @@ export function ChatBar({
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onPointerDown={hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDown={popoutAllowed ? onComposerGesturePointerDown : undefined}
             onSubmit={e => {
               e.preventDefault()
 
@@ -1241,7 +1241,6 @@ export function ChatBar({
               />
             )}
             <div className="relative w-full rounded-[inherit]">
-              {hudMode && busy && <span aria-hidden className="arc-border arc-composer" />}
               <div
                 className={cn(
                   // grid-cols-[minmax(0,1fr)]: the implicit `auto` column sized

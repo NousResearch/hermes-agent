@@ -18140,8 +18140,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Accept the selected completion
                 buf.apply_completion(completion)
             elif buf.suggestion and buf.suggestion.text:
-                # No completion menu, but there's a ghost text auto-suggestion — accept it
-                buf.insert_text(buf.suggestion.text)
+                # No completion menu, but there's a ghost text auto-suggestion — accept it.
+                # Skill-intent suggestions carry the FULL replacement draft
+                # ("/learn 我要学习无人机"): the suggestion starts with "/" while
+                # the current draft does not, so we replace the whole buffer.
+                # A plain /-prefix completion keeps its original append behavior.
+                suggestion_text = buf.suggestion.text
+                if suggestion_text.startswith("/") and not buf.text.lstrip().startswith("/"):
+                    buf.text = suggestion_text
+                    buf.cursor_position = len(suggestion_text)
+                else:
+                    buf.insert_text(suggestion_text)
             else:
                 # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
@@ -19957,6 +19966,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # input invisible on light backgrounds.)
             'input-area': '',
             'placeholder': '#888888 italic',
+            'auto-suggestion': '#888888 italic',
             'prompt': '',
             'prompt-working': '#888888 italic',
             'hint': '#888888 italic',

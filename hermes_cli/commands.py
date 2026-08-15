@@ -2285,6 +2285,25 @@ class SlashCommandAutoSuggest(AutoSuggest):
     Falls back to history-based suggestions for non-slash input.
     """
 
+    # Intent suggestion threshold: only surface a skill when the match is
+    # strong (command-name prefix 0-2, description-verbatim / word-level /
+    # CJK-dictionary 3, single CJK bigram 3.5). Sub-threshold hits stay
+    # silent so plain conversation text never gets polluted with skill
+    # suggestions.
+    _INTENT_MAX_SCORE = 3.5
+
+    # Built-in CLI command descriptions are English, so CJK free text needs
+    # an explicit keyword→command table (same idea as the desktop ghost's
+    # KEYWORD_HINTS). Checked BEFORE scoring; a hit is a strong intent.
+    _CN_INTENT_HINTS: list[tuple[tuple[str, ...], str]] = [
+        (("学习", "教程", "教", "无人机", "考证", "caac", "study", "learn"), "/learn"),
+        (("提交", "commit"), "/commit"),
+        (("推送", "push"), "/commit-push"),
+        (("语音", "口述", "voice"), "/voice"),
+        (("gif", "动图", "表情"), "/gif-search"),
+        (("帮助", "help", "快捷键"), "/help"),
+    ]
+
     def __init__(
         self,
         history_suggest: AutoSuggest | None = None,
@@ -2293,12 +2312,122 @@ class SlashCommandAutoSuggest(AutoSuggest):
         self._history = history_suggest
         self._completer = completer  # Reuse its model cache
 
+    @staticmethod
+    def _intent_score(query: str, command: str, description: str) -> float | None:
+        """Score free-text input against a command's name + description.
+
+        Mirrors slash_fuzzy tiers: command-name exact (0) / prefix (1) /
+        substring (2), then description matches. Chinese input has no spaces,
+        so a full-substring check alone misses intent like ``学习无人机``
+        whose words appear spread across the description (``学习…无人机…``).
+        We therefore also score the query's bigrams: two+ bigrams present in
+        the description counts as a strong hit (3.0); a single bigram is a
+        weak hit (4.0) that only surfaces when nothing stronger exists.
+        Returns ``None`` when nothing matches.
+        """
+        q = query.strip().lstrip("/").lower()
+        if not q:
+            return None
+        name = command.lstrip("/").lower()
+        if name == q:
+            return 0.0
+        if name.startswith(q):
+            return 1.0
+        if q in name:
+            return 2.0
+        d = description.lower()
+        if q in d:
+            return 3.0
+        # English word-level match: a query word that shares a prefix with a
+        # description token (learn → "learn"/"learning" in "Learn a reusable
+        # skill"). Requires words ≥3 chars so "he"/"lo" noise never fires.
+        q_words = [w for w in re.split(r"[^a-z0-9]+", q) if len(w) >= 3]
+        if q_words:
+            d_words = [w for w in re.split(r"[^a-z0-9]+", d) if len(w) >= 3]
+            if any(
+                any(w == tw or w.startswith(tw) or tw.startswith(w) for tw in d_words)
+                for w in q_words
+            ):
+                return 3.0
+        # CJK bigram matching: 学习无人机 → [学习, 习无, 无人机]; 提交代码 →
+        # [提交, 交代, 代码]. Two hits = clear intent; a single hit is still
+        # credible for Chinese (no separators) at a weaker 3.5.
+        if any("\u4e00" <= ch <= "\u9fff" for ch in q):
+            grams = [q[i : i + 2] for i in range(len(q) - 1)]
+            grams = [g for g in grams if len(g) == 2]
+            if grams:
+                hits = sum(1 for g in grams if g in d)
+                if hits >= 2:
+                    return 3.0
+                if hits == 1:
+                    return 3.5
+        return None
+
+    def _skill_intent_suggestion(self, text: str) -> Suggestion | None:
+        """Recommend a skill command for free text (non-slash input).
+
+        Best-matching command name/description against the typed text. Only
+        returns a suggestion when the score clears the threshold, so normal
+        conversation text is never ghost-suggested a command.
+        """
+        query = text.strip()
+        if len(query) < 2:
+            return None
+
+        # CJK keyword table first: built-in CLI descriptions are English, so
+        # an explicit 中文→命令 hint is the strongest signal (学习无人机 → /learn).
+        q_lower = query.lower()
+        for keywords, command in self._CN_INTENT_HINTS:
+            if any(keyword in q_lower for keyword in keywords):
+                if command in COMMANDS or command in self._iter_skill_commands():
+                    from prompt_toolkit.auto_suggest import Suggestion as _S
+
+                    return _S(f"{command} {query}")
+                break  # intent matched but command unavailable — don't score
+
+        best = None  # (score, command) — narrows below
+        for cmd, desc in COMMANDS.items():
+            if self._completer is not None and not self._completer._command_allowed(cmd):
+                continue
+            score = self._intent_score(query, cmd, desc)
+            if score is not None and (best is None or score < best[0]):
+                best = (score, cmd)
+        for cmd, info in self._iter_skill_commands().items():
+            score = self._intent_score(query, cmd, str(info.get("description", "")))
+            if score is not None and (best is None or score < best[0]):
+                best = (score, cmd)
+
+        if best is None:
+            return None
+        if best[0] > self._INTENT_MAX_SCORE:
+            return None
+
+        # Full replacement text: the accepted command plus the original query
+        # as its argument (我要学习无人机 → /learn 我要学习无人机). The Tab
+        # binding in cli.py detects skill-intent suggestions (suggestion starts
+        # with "/" while the draft doesn't) and replaces the whole draft, so
+        # Enter actually invokes the skill instead of appending a dead command
+        # to the tail.
+        from prompt_toolkit.auto_suggest import Suggestion as _S
+
+        return _S(f"{best[1]} {query}")
+
+    def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
+        if self._completer is None:
+            return {}
+        return self._completer._iter_skill_commands()
+
     def get_suggestion(self, buffer, document):
         text = document.text_before_cursor
 
         # Only suggest for slash commands
         if not text.startswith("/"):
-            # Fall back to history for regular text
+            # Skill intent: free text that clearly matches a command's name
+            # or description gets a ghost suggestion (e.g. typing 学习无人机
+            # surfaces /learn). Falls back to history for regular text.
+            intent = self._skill_intent_suggestion(text)
+            if intent is not None:
+                return intent
             if self._history:
                 return self._history.get_suggestion(buffer, document)
             return None

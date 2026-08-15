@@ -4877,13 +4877,23 @@ class AIAgent:
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
-        Only the first occurrence of each unique pair is kept.
+        Valid JSON arguments are canonicalized so equivalent objects do not
+        evade deduplication merely because their keys or whitespace differ.
+        Malformed arguments retain their raw representation rather than being
+        repaired here. Only the first occurrence of each unique pair is kept.
         Returns the original list if no duplicates were found.
         """
         seen: set = set()
         unique: list = []
         for tc in tool_calls:
-            key = (tc.function.name, tc.function.arguments)
+            arguments = tc.function.arguments
+            try:
+                arguments = json.dumps(
+                    json.loads(arguments), separators=(",", ":"), sort_keys=True
+                )
+            except (TypeError, ValueError):
+                pass
+            key = (tc.function.name, arguments)
             if key not in seen:
                 seen.add(key)
                 unique.append(tc)

@@ -33,6 +33,7 @@ import pytest
 
 import hermes_cli.main as cli_main
 import hermes_cli.update_cmd as update_cmd
+from hermes_cli import _early_recovery
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -158,6 +159,22 @@ def test_self_lock_detection_clean_when_rust_not_loaded(_winp):
             "cryptography (_rust.pyd)"
             not in cli_main._detect_self_loaded_native_modules()
         )
+
+
+def test_recovered_update_retry_builds_parser_without_native_secret_modules(
+    monkeypatch,
+):
+    """Parser registration must not re-lock a freshly recovered updater."""
+    called = []
+    monkeypatch.setattr(_early_recovery, "_UPDATE_RETRY_RECOVERED", True)
+    monkeypatch.setattr(cli_main, "cmd_update", lambda args: called.append(args))
+    monkeypatch.setattr(sys, "argv", ["hermes", "update", "--yes"])
+    sys.modules.pop("cryptography.hazmat.bindings._rust", None)
+
+    cli_main.main()
+
+    assert len(called) == 1
+    assert "cryptography.hazmat.bindings._rust" not in sys.modules
 
 
 # ---------------------------------------------------------------------------

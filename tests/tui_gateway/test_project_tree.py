@@ -295,7 +295,9 @@ def test_non_git_cwd_preserves_legacy_workspace_grouping():
     assert project["isAuto"] is True
     assert project["label"] == "notes"
     assert project["sessionCount"] == 1
-    assert _lane_ids(project) == ["/work/notes"]
+    # Branch-style lane id (#53329): keying this lane by the raw path used to
+    # fork a duplicate lane against the live overlay's `::branch::main` id.
+    assert _lane_ids(project) == ["/work/notes::branch::main"]
     assert tree["scoped_session_ids"] == [legacy["id"]]
 
 

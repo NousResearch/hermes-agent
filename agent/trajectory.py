@@ -10,6 +10,9 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
+from hermes_cli.config import artifact_file_mode
+from utils import open_private_append
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +52,7 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     }
 
     try:
-        with open(filename, "a", encoding="utf-8") as f:
+        with open_private_append(filename, mode=artifact_file_mode()) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:

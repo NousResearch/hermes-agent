@@ -52,17 +52,27 @@ _REQUEST_DUMP_LOCK = threading.RLock()
 
 @contextmanager
 def _request_dump_write_lock(directory: Path):
-    """Serialize dump publication and pruning within and across processes."""
+    """Serialize dump publication/pruning when the platform supports it.
+
+    POSIX uses an advisory file lock across processes; the thread lock also
+    covers platforms without ``fcntl``. Lock acquisition is best-effort so a
+    read-only or unusual logs directory cannot suppress the useful dump.
+    """
     with _REQUEST_DUMP_LOCK:
         lock_handle = None
         try:
-            from hermes_cli.config import artifact_file_mode
-            from utils import open_private_append
+            try:
+                from hermes_cli.config import artifact_file_mode
+                from utils import open_private_append
 
-            lock_handle = open_private_append(
-                directory / ".request_dump_retention.lock",
-                mode=artifact_file_mode(),
-            )
+                lock_handle = open_private_append(
+                    directory / ".request_dump_retention.lock",
+                    mode=artifact_file_mode(),
+                )
+            except Exception as exc:
+                logger.debug("Request dump lock unavailable: %s", exc)
+                yield
+                return
             try:
                 import fcntl
 

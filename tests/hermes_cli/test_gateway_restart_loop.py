@@ -695,6 +695,54 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_python_path_to_hermes_home_directory_not_blocked(self, tmp_path):
+        """Directory path tokens in Python must not fail-closed as lifecycle.
+
+        Agents commonly write Path('/home/…/.hermes').rglob(...) inside
+        terminal python -c / heredocs. The referenced-script walk yields the
+        absolute directory path (token contains '/'); pre-fix that was
+        fail-closed as unsafe and blocked the whole command with a misleading
+        gateway-restart error.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+            _read_referenced_script,
+        )
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        text, unsafe = _read_referenced_script(hermes_home)
+        assert text is None
+        assert unsafe is False
+
+        cmd = (
+            "python3 -c "
+            f"\"from pathlib import Path; list(Path('{hermes_home}').rglob('*models*'))\""
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            cmd, cwd=str(tmp_path)
+        ) is False
+
+        # Heredoc shape that previously tripped Desktop/gateway agents.
+        heredoc = (
+            "python3 <<'PY'\n"
+            "from pathlib import Path\n"
+            f"list(Path('{hermes_home}').rglob('*models*'))\n"
+            "PY"
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            heredoc, cwd=str(tmp_path)
+        ) is False
+
+    def test_directory_read_is_nothing_to_scan_device_still_unsafe(self, tmp_path):
+        from pathlib import Path as P
+        from cron.lifecycle_guard import _read_referenced_script
+
+        text, unsafe = _read_referenced_script(tmp_path)
+        assert text is None and unsafe is False
+        text2, unsafe2 = _read_referenced_script(P("/dev/null"))
+        assert text2 is None and unsafe2 is True
+
     def test_nul_byte_in_path_token_does_not_crash_guard(self):
         """Residual #76762 class: when a NUL byte survives into the *path
         token itself* (tokenized binary-adjacent command text), ``os.open``
@@ -1204,10 +1252,12 @@ class TestLifecycleGuardNeverRaises:
         weird.write_bytes(b"\xff\xfe\x00\x01 not really a script")
         assert self._scan(f"bash {weird}") is False
 
-    def test_directory_and_dev_null_fail_closed_not_crash(self, tmp_path):
-        # Non-regular files are suspicious (fail closed = blocked), but the
-        # important contract is: verdict, not exception.
-        assert self._scan(f"bash {tmp_path}") is True
+    def test_directory_skipped_dev_null_fail_closed_not_crash(self, tmp_path):
+        # Directories are common path tokens from Python sources
+        # (Path('/home/user/.hermes')) — nothing to scan, not blocked.
+        # Other non-regular nodes (devices) stay fail-closed. Contract: verdict,
+        # never exception.
+        assert self._scan(f"bash {tmp_path}") is False
         assert self._scan("bash /dev/null") is True
 
     def test_magic_prefix_binaries_skipped_without_full_read(self, tmp_path):
@@ -1236,8 +1286,8 @@ class TestLifecycleGuardNeverRaises:
         )
         binary = tmp_path / "prog"
         binary.write_bytes(b"\x7fELF" + bytes(128))
-        for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh"):
+        for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh", str(tmp_path)):
             check_gateway_lifecycle("clean prompt", value)  # must not raise
-        for value in ("/dev/null", str(tmp_path)):
-            with pytest.raises(GatewayLifecycleBlocked):
-                check_gateway_lifecycle("clean prompt", value)
+        # Directories are nothing-to-scan; device nodes stay fail-closed.
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("clean prompt", "/dev/null")

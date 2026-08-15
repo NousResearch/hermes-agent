@@ -440,6 +440,15 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
+            # Directories are not shell scripts. Path tokens from Python
+            # sources (e.g. Path('/home/user/.hermes').rglob(...)) are often
+            # mis-yielded as "referenced scripts"; fail-closing them blocks
+            # innocent terminal/cron work with a misleading gateway-restart
+            # error. Skip dirs as nothing-to-scan. Keep fail-closed for other
+            # non-regular nodes (devices/FIFOs/sockets) which are never
+            # legitimate script payloads.
+            if stat.S_ISDIR(metadata.st_mode):
+                return None, False
             return None, True
         # Sniff a small prefix first: files that are clearly compiled
         # binaries (executable magic, or NUL bytes in the head) are never

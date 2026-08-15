@@ -4092,6 +4092,53 @@ def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
         proc.wait(timeout=1.0)
 
 
+def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
+    """Terminate a script tree, then fall back to the local process-group path."""
+    if proc.poll() is not None:
+        # Already exited (e.g. finished right at the deadline): nothing to
+        # signal, and calling kill_process_tree on a reaped pid would log a
+        # spurious "no signal" warning. Mirrors _terminate_cron_script_process.
+        return
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        logger.warning(
+            "Cron script tree-kill received invalid pid %r; "
+            "falling back to process-group termination",
+            pid,
+        )
+        _terminate_cron_script_process(proc)
+        return
+    try:
+        # Function-local so tests can monkeypatch agent.deadline.kill_process_tree;
+        # separate from the kill try below so a packaging/import problem
+        # surfaces as what it is instead of masquerading as a kill failure.
+        from agent.deadline import kill_process_tree
+    except Exception:
+        logger.warning(
+            "agent.deadline.kill_process_tree unavailable; "
+            "falling back to process-group termination",
+            exc_info=True,
+        )
+        _terminate_cron_script_process(proc)
+        return
+    try:
+        if kill_process_tree(pid):
+            return
+        logger.warning(
+            "Cron script tree-kill reported no signal for pid %s; "
+            "falling back to process-group termination",
+            pid,
+        )
+    except Exception:
+        logger.warning(
+            "Cron script tree-kill failed for pid %s; "
+            "falling back to process-group termination",
+            pid,
+            exc_info=True,
+        )
+    _terminate_cron_script_process(proc)
+
+
 def _drain_script_pipes(proc: subprocess.Popen) -> None:
     """Reap a terminated script process without ever blocking indefinitely.
 
@@ -4320,12 +4367,23 @@ def _run_job_script(
         deadline = time.monotonic() + script_timeout
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                _terminate_cron_script_process(proc)
+                # Same bug class as the timeout site below: a cancelled fire
+                # must not orphan own-session grandchildren either.
+                _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
                 return False, "Script cancelled because cron fire ownership was lost"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_cron_script_process(proc)
+                # Phase 4a (#85125): a script timeout must leave ZERO living
+                # descendants. killpg only reaches the script's own process
+                # group — a grandchild that called setsid (backgrounded
+                # shell jobs, watchdogs) escapes it and keeps running after
+                # the job reports failure (#71148 / #59549).
+                # agent.deadline.kill_process_tree snapshots the descendant
+                # set via psutil BEFORE signalling, so own-session
+                # grandchildren are reached too — the unified deadline
+                # layer's tree-kill (#85147, d6a5cb9725).
+                _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:

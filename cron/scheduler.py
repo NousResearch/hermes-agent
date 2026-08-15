@@ -855,6 +855,23 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     now = time.time()
     stale: list = []
 
+    # Latest durable execution per in-flight job id, loaded in one indexed
+    # query.  Used for the persisted-state reconciliation below (t_8b5480b3):
+    # an in-memory claim whose job's MOST RECENT execution row is terminal
+    # (completed/failed/unknown) cannot represent a live run — the durable
+    # ledger proves that run already ended — so the claim is stale by
+    # construction, regardless of its in-memory age.  This closes the
+    # restart-survival gap that the age-only sweep left open: the ledger is
+    # written by the worker that ran the job and read by ANY ticker process
+    # (including one that started AFTER the leak), so a leaked claim is
+    # recoverable without force-run/resume and without depending on which
+    # process happens to still hold it in memory.
+    try:
+        from cron.executions import latest_executions as _latest_execs
+        _latest = _latest_execs(list(_running_job_ids))
+    except Exception:
+        _latest = {}
+
     # Precompute job intervals OUTSIDE _running_lock so croniter evaluation
     # does not block try_register/release_running_job for other jobs.
     _intervals = {jid: _job_interval_minutes(j) for jid, j in by_id.items()}
@@ -872,8 +889,6 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             allowance = floor_seconds
             if interval_minutes:
                 allowance = max(allowance, 2.0 * interval_minutes * 60.0)
-            if age < allowance:
-                continue
             fut = _running_futures.get(job_id)
             if fut is _FUTURE_PENDING:
                 # The claim is past its allowance and the owning future still
@@ -883,13 +898,34 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 pass
             elif fut is not None and not fut.done():
                 continue  # genuinely still executing
+            # Persisted-state reconciliation: if the durable executions ledger
+            # shows this job's last run reached a terminal state, the claim is
+            # provably stale even if it is still inside its in-memory age
+            # allowance (or was adopted fresh this tick).  Release it now so
+            # the job re-dispatches on the next tick without force-run/resume
+            # (t_8b5480b3 — the 2026-08-14 recurring-router wedge that
+            # survived a gateway restart because the in-memory age bound alone
+            # could not see a run the ledger had already finished).
+            if fut is None or fut is _FUTURE_PENDING or fut.done():
+                latest = _latest.get(job_id)
+                if latest is not None and latest.get("status") in (
+                    "completed", "failed", "unknown",
+                ):
+                    _running_job_ids.discard(job_id)
+                    _running_since.pop(job_id, None)
+                    _running_futures.pop(job_id, None)
+                    _forced_release_count += 1
+                    stale.append((job_id, age, allowance, fut, "ledger-terminal"))
+                    continue
+            if age < allowance:
+                continue
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
             _running_futures.pop(job_id, None)
             _forced_release_count += 1
-            stale.append((job_id, age, allowance, fut))
+            stale.append((job_id, age, allowance, fut, "age"))
 
-    for job_id, age, allowance, fut in stale:
+    for job_id, age, allowance, fut, _reason in stale:
         job = by_id.get(job_id) or {}
         name = job.get("name") or job_id
         if fut is _FUTURE_PENDING:
@@ -899,9 +935,10 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
         else:
             future_state = "finished"
         logger.warning(
-            "cron.inflight.forced_release event=forced_release job='%s' id=%s "
-            "age=%.0fs allowance=%.0fs future=%s — stale in-flight claim "
+            "cron.inflight.forced_release event=forced_release reason=%s job='%s' "
+            "id=%s age=%.0fs allowance=%.0fs future=%s — stale in-flight claim "
             "released; the job was skipping every fire with 'already running'",
+            _reason,
             name,
             job_id,
             age,
@@ -909,6 +946,18 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             future_state,
         )
         _record_forced_release(job_id, name, age, allowance)
+        # A ledger-terminal release is authoritative: the durable executions
+        # ledger ALREADY records how the last run ended (completed/failed/
+        # unknown), so we must NOT call mark_job_run here — doing so would
+        # clobber an honest completed/ok status with a synthetic failure, or
+        # double-write an already-recorded failure.  We only release the claim
+        # so the job re-dispatches on its next due tick; the ledger is the
+        # record of record for the outcome.  The age-based release below keeps
+        # the original wedge-surfacing mark_job_run behaviour (an age-release
+        # may have no ledger row at all, so surfacing last_error is the only
+        # way the wedge becomes visible).
+        if _reason == "ledger-terminal":
+            continue
         # Finite-repeat guard: a forced release is NOT a real run, so it must
         # not consume a finite one-shot's repeat budget or let mark_job_run
         # auto-delete the row (completed >= times).  The claim is released and

@@ -348,3 +348,107 @@ class TestWedgedJobRefiresWithoutRestart:
         assert n == 1, "wedged job must fire again without a gateway restart"
         assert job["id"] not in sched.get_running_job_ids()
         assert sched.get_inflight_guard_stats()["forced_releases"] == 1
+
+
+class TestLedgerTerminalReconciliation:
+    """Persisted-state recovery path (t_8b5480b3).
+
+    The age-only sweep released claims older than ``max(2 * interval, floor)``,
+    but a leaked claim could be YOUNG (inside its allowance) while the durable
+    executions ledger already proved the last run ended — e.g. the 2026-08-14
+    recurring-router wedge, which survived a gateway restart because the age
+    bound alone could not see a run the ledger had already finished.  This
+    class tests the ledger reconciliation: an in-memory claim whose job's
+    MOST RECENT execution row is terminal (completed/failed/unknown) is stale
+    by construction and is force-released regardless of in-memory age, so the
+    recurring job re-dispatches on the next tick without force-run/resume.
+
+    RED first: on the age-only sweep (main before this change) a young leaked
+    claim with a terminal ledger row is NOT released — it stays wedged.  With
+    the ledger reconciliation it IS released (and, because a terminal ledger
+    row is authoritative, WITHOUT a synthetic mark_job_run failure).
+    """
+
+    def _inject_young_claim(self, job_id: str) -> None:
+        """Claim is YOUNG (inside the 30m floor) so only the ledger-terminal
+        path, never the age path, can release it."""
+        sched._running_job_ids.add(job_id)
+        if hasattr(sched, "_running_since"):
+            sched._running_since[job_id] = time.time() - 60  # 1 minute old
+
+    def test_young_claim_with_terminal_ledger_row_is_released(self, tmp_path):
+        """RED/GREEN: a terminal ledger row proves the run ended, so a young
+        leaked claim must be force-released even though its in-memory age is
+        inside the allowance (the age-only sweep alone would leave it)."""
+        job = _job(job_id="ledger-terminal", minutes=10)
+        job_id = job["id"]
+        self._inject_young_claim(job_id)
+
+        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+             patch("cron.executions.latest_executions", return_value={
+                 job_id: {"status": "failed", "id": "exec-x"},
+             }), \
+             patch.object(sched, "mark_job_run") as mark:
+            released = sched.sweep_stale_inflight([job])
+
+        # RED on the age-only sweep: the young claim is NOT released.  GREEN
+        # with the ledger reconciliation: it IS released.
+        assert job_id in released, "terminal ledger row must force-release the claim"
+        assert job_id not in sched.get_running_job_ids()
+        # Ledger-terminal is authoritative: no synthetic failure written.
+        mark.assert_not_called()
+
+    def test_young_claim_without_ledger_row_is_not_released(self, tmp_path):
+        """A young claim whose job has NO execution row at all (the claim was
+        taken but create_execution never ran) is left to the age bound — the
+        ledger reconciliation must not release claims it cannot prove ended."""
+        job = _job(job_id="no-ledger-row", minutes=10)
+        job_id = job["id"]
+        self._inject_young_claim(job_id)
+
+        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+             patch("cron.executions.latest_executions", return_value={}), \
+             patch.object(sched, "mark_job_run"):
+            released = sched.sweep_stale_inflight([job])
+
+        assert job_id not in released
+        assert job_id in sched.get_running_job_ids()
+
+    def test_young_claim_with_running_ledger_row_is_not_released(self, tmp_path):
+        """A young claim whose job is genuinely still running per the ledger
+        ('claimed'/'running' row) is never released — reconciliation must not
+        double-dispatch a healthy long-running job."""
+        job = _job(job_id="still-running", minutes=10)
+        job_id = job["id"]
+        self._inject_young_claim(job_id)
+
+        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+             patch("cron.executions.latest_executions", return_value={
+                 job_id: {"status": "running", "id": "exec-y"},
+             }), \
+             patch.object(sched, "mark_job_run"):
+            released = sched.sweep_stale_inflight([job])
+
+        assert job_id not in released
+        assert job_id in sched.get_running_job_ids()
+
+    def test_old_claim_with_terminal_ledger_row_still_released_once(self, tmp_path):
+        """An old claim with a terminal ledger row is released by the ledger
+        path (one release) — it must not double-release or double-count."""
+        job = _job(job_id="old-terminal", minutes=10)
+        job_id = job["id"]
+        sched._running_job_ids.add(job_id)
+        if hasattr(sched, "_running_since"):
+            sched._running_since[job_id] = time.time() - 6 * 60 * 60  # 6h old
+
+        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+             patch("cron.executions.latest_executions", return_value={
+                 job_id: {"status": "completed", "id": "exec-z"},
+             }), \
+             patch.object(sched, "mark_job_run") as mark:
+            released = sched.sweep_stale_inflight([job])
+
+        assert job_id in released
+        assert job_id not in sched.get_running_job_ids()
+        assert sched.get_inflight_guard_stats()["forced_releases"] == 1
+        mark.assert_not_called()  # authoritative ledger row, no synthetic failure

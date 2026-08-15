@@ -372,6 +372,209 @@ def reply_server(
     )
 
 
+def _write_bridge_config(
+    path: Any,
+    *,
+    enabled: Any = True,
+    proven_topic_reply: Any = True,
+    telegram_chat_id: Any = "123456789",
+    telegram_topic_id: Any = "20197",
+    include_platform_topic: bool = False,
+    platform_chat_id: Any = "123456789",
+    platform_topic_id: Any = "20197",
+) -> Any:
+    platform = ""
+    if include_platform_topic:
+        platform = (
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      dm_topics:\n"
+            f"        - chat_id: {platform_chat_id}\n"
+            "          topics:\n"
+            "            - name: Disposable proof\n"
+            f"              thread_id: {platform_topic_id}\n"
+        )
+    topic_selector = (
+        f"    telegram_topic_id: {json.dumps(telegram_topic_id)}\n"
+        if telegram_topic_id is not None
+        else ""
+    )
+    contents = (
+        f"{platform}"
+        "gateway:\n"
+        "  becky_loops:\n"
+        f"    enabled: {json.dumps(enabled)}\n"
+        f"    proven_topic_reply: {json.dumps(proven_topic_reply)}\n"
+        f"    telegram_chat_id: {json.dumps(telegram_chat_id)}\n"
+        f"{topic_selector}"
+        "    port: 9120\n"
+    )
+    path.write_text(contents, encoding="utf-8")
+    return path
+
+
+def test_load_config_requires_exact_dual_reply_proof_and_configured_topic(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_bridge_config(tmp_path / "config.yaml", include_platform_topic=True)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "bot_api_private_topic"
+    assert loaded.chat_id == "123456789"
+
+
+@pytest.mark.parametrize(
+    ("env_value", "proven_value", "chat_id", "topic_id", "platform_topic"),
+    [
+        (None, True, "123456789", "20197", False),
+        ("0", True, "123456789", "20197", False),
+        ("true", True, "123456789", "20197", False),
+        ("1", False, "123456789", "20197", False),
+        ("1", "true", "123456789", "20197", False),
+        ("1", True, "not-a-chat", "20197", False),
+        ("1", True, "123456789", "not-a-topic", False),
+        ("1", True, "123456789", None, False),
+    ],
+)
+def test_load_config_keeps_reply_unavailable_for_missing_or_invalid_proof(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str | None,
+    proven_value: Any,
+    chat_id: Any,
+    topic_id: Any,
+    platform_topic: bool,
+) -> None:
+    path = _write_bridge_config(
+        tmp_path / "config.yaml",
+        proven_topic_reply=proven_value,
+        telegram_chat_id=chat_id,
+        telegram_topic_id=topic_id,
+        include_platform_topic=platform_topic,
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    if env_value is None:
+        monkeypatch.delenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", env_value)
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "unavailable"
+
+
+def test_load_config_accepts_topic_from_telegram_dm_topics_when_explicit_id_absent(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_bridge_config(
+        tmp_path / "config.yaml",
+        telegram_topic_id=None,
+        include_platform_topic=True,
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "bot_api_private_topic"
+
+
+@pytest.mark.parametrize(
+    ("chat_id", "topic_id", "platform_chat_id", "platform_topic_id"),
+    [
+        ("123456789", "20198", "123456789", "20197"),
+        ("987654321", "20197", "123456789", "20197"),
+    ],
+)
+def test_load_config_rejects_explicit_topic_not_bound_to_configured_chat(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_id: str,
+    topic_id: str,
+    platform_chat_id: str,
+    platform_topic_id: str,
+) -> None:
+    path = _write_bridge_config(
+        tmp_path / "config.yaml",
+        telegram_chat_id=chat_id,
+        telegram_topic_id=topic_id,
+        include_platform_topic=True,
+        platform_chat_id=platform_chat_id,
+        platform_topic_id=platform_topic_id,
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "unavailable"
+
+
+def test_load_config_requires_a_real_configured_dm_topic_for_explicit_proof(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_bridge_config(
+        tmp_path / "config.yaml",
+        telegram_topic_id="20197",
+        include_platform_topic=False,
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "unavailable"
+
+
+def test_load_config_rejects_conflicting_explicit_topic_aliases(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_bridge_config(
+        tmp_path / "config.yaml",
+        telegram_topic_id="20197",
+        include_platform_topic=True,
+    )
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "    port: 9120\n", '    telegram_thread_id: "20198"\n    port: 9120\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "unavailable"
+
+
+def test_load_config_rejects_invalid_explicit_topic_alias(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_bridge_config(
+        tmp_path / "config.yaml",
+        telegram_topic_id="not-a-topic",
+        include_platform_topic=True,
+    )
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_TOKEN", "t" * 64)
+    monkeypatch.setenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "1")
+
+    loaded = becky_loops.load_becky_loops_config(path)
+
+    assert loaded is not None
+    assert loaded.topic_reply == "unavailable"
+
+
 async def rpc(ws, request_id: int, method: str, params: dict) -> dict:
     await ws.send(
         json.dumps({
@@ -775,6 +978,34 @@ async def test_telegram_topic_sender_fails_closed_without_returning_adapter_deta
 
     assert "private-id" not in str(caught.value)
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_disconnected_telegram_adapter_disables_capability_and_sends_nothing() -> (
+    None
+):
+    adapter = FakeTelegramAdapter()
+    adapter.is_connected = False
+    sender = becky_loops.TelegramTopicSender(adapter)
+    server = BeckyLoopsBridgeServer(
+        config=config(topic_reply="bot_api_private_topic"),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        topic_sender=sender,
+        reply_generator=FakeReplyGenerator(),
+    )
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+
+    assert capabilities["topic_reply"] == "unavailable"
+    with pytest.raises(Exception):
+        await sender.send_topic(
+            chat_id="123456789",
+            thread_id="20197",
+            text="Comment",
+            reply_to_message_id=None,
+        )
+    assert adapter.calls == []
 
 
 @pytest.mark.asyncio

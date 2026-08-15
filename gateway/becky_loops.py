@@ -88,6 +88,7 @@ _MAX_REPLY_ATTEMPTS = 256
 _MAX_REPLY_TEXT_CHARS = 2_000
 _SESSION_PAGE_SIZE = 200
 _MAX_SESSION_SCAN = 10_000
+_TELEGRAM_ID_RE = re.compile(r"^-?\d+$")
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,20 @@ class TelegramTopicSender:
     def __init__(self, adapter: Any) -> None:
         self._adapter = adapter
 
+    @property
+    def is_connected(self) -> bool:
+        """Reflect the live adapter state without exposing the adapter."""
+        state = getattr(self._adapter, "is_connected", None)
+        if state is None:
+            # Test seams and lightweight adapters may not expose a state
+            # property. Their presence in GatewayRunner.adapters is the
+            # connected proof, so preserve that contract here.
+            return True
+        try:
+            return bool(state() if callable(state) else state)
+        except Exception:
+            return False
+
     async def send_topic(
         self,
         *,
@@ -130,6 +145,8 @@ class TelegramTopicSender:
         text: str,
         reply_to_message_id: str | None,
     ) -> TopicSendReceipt:
+        if not self.is_connected:
+            raise _TopicSendFailure()
         label = "Becky:" if reply_to_message_id is not None else "Cory via Becky:"
         metadata = {
             "thread_id": thread_id,
@@ -655,11 +672,19 @@ class BeckyLoopsBridgeServer:
         return next((row for row in rows if row.get("source_ref") == source_ref), None)
 
     def _topic_reply_available(self) -> bool:
-        return bool(
-            self.config.topic_reply == "bot_api_private_topic"
-            and self.topic_sender is not None
-            and self.reply_generator is not None
-        )
+        if (
+            self.config.topic_reply != "bot_api_private_topic"
+            or self.topic_sender is None
+            or self.reply_generator is None
+        ):
+            return False
+        sender_state = getattr(self.topic_sender, "is_connected", None)
+        if sender_state is None:
+            return True
+        try:
+            return bool(sender_state() if callable(sender_state) else sender_state)
+        except Exception:
+            return False
 
     def _current_topic(
         self, source_ref: str, expected_revision: str
@@ -1106,7 +1131,7 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         if isinstance(raw.get("gateway"), dict)
         else {}
     )
-    if not isinstance(section, dict) or not section.get("enabled"):
+    if not isinstance(section, dict) or section.get("enabled") is not True:
         return None
     token = os.getenv("HERMES_BECKY_LOOPS_TOKEN", "").strip()
     chat_id = str(section.get("telegram_chat_id", "")).strip()
@@ -1114,6 +1139,13 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         port = int(section.get("port", 9_120))
     except (TypeError, ValueError):
         port = 9_120
+    proven_topic_reply = (
+        section.get("proven_topic_reply") is True
+        and os.getenv("HERMES_BECKY_LOOPS_PROVEN_TOPIC_REPLY", "") == "1"
+        and bool(token)
+        and _valid_telegram_id(chat_id)
+        and _has_configured_loop_topic(raw, section, chat_id)
+    )
     return BeckyLoopsConfig(
         enabled=True,
         chat_id=chat_id,
@@ -1122,9 +1154,73 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         # No mutation adapter is installed in this deployment.  Never
         # advertise a configured-but-unimplemented control method.
         topic_control="unavailable",
-        # Task 7 installs the independent proof loader. Until then, runtime
-        # config remains read-only even if a caller injects an adapter.
-        topic_reply="unavailable",
+        # Topic sends require the profile proof, the gateway-start environment
+        # proof, a bridge token, and a configured Telegram chat/topic. The
+        # connected adapter is checked separately by GatewayRunner before it
+        # is injected into the bridge.
+        topic_reply=("bot_api_private_topic" if proven_topic_reply else "unavailable"),
+    )
+
+
+def _valid_telegram_id(value: Any) -> bool:
+    """Accept only the numeric Telegram chat/topic identifiers used internally."""
+    if isinstance(value, bool):
+        return False
+    return bool(_TELEGRAM_ID_RE.fullmatch(str(value).strip()))
+
+
+def _has_configured_loop_topic(
+    raw: dict[str, Any], section: dict[str, Any], chat_id: str
+) -> bool:
+    """Check for an explicit topic or a matching configured DM topic.
+
+    The topic identifier never leaves the gateway. It is only used here as a
+    local proof that the opt-in capability points at an existing private-topic
+    configuration rather than an arbitrary chat.
+    """
+    platforms = raw.get("platforms")
+    if not isinstance(platforms, dict):
+        return False
+    telegram = platforms.get("telegram")
+    if not isinstance(telegram, dict):
+        return False
+    extra = telegram.get("extra")
+    if not isinstance(extra, dict):
+        return False
+    dm_topics = extra.get("dm_topics")
+    if not isinstance(dm_topics, list):
+        return False
+    configured_thread_ids: set[str] = set()
+    for chat_entry in dm_topics:
+        if not isinstance(chat_entry, dict):
+            continue
+        if str(chat_entry.get("chat_id", "")).strip() != chat_id:
+            continue
+        topics = chat_entry.get("topics")
+        if not isinstance(topics, list):
+            continue
+        configured_thread_ids.update(
+            str(topic.get("thread_id")).strip()
+            for topic in topics
+            if isinstance(topic, dict) and _valid_telegram_id(topic.get("thread_id"))
+        )
+    if not configured_thread_ids:
+        return False
+    explicit_keys = (
+        "telegram_topic_id",
+        "telegram_thread_id",
+        "topic_id",
+        "thread_id",
+    )
+    present_aliases = [key for key in explicit_keys if key in section]
+    if any(not _valid_telegram_id(section[key]) for key in present_aliases):
+        return False
+    explicit_ids = {str(section[key]).strip() for key in present_aliases}
+    # Multiple aliases are accepted only when they agree on one configured
+    # topic. An intersection is not enough: conflicting aliases must not turn
+    # a partial proof into an enabled capability.
+    return not explicit_ids or (
+        len(explicit_ids) == 1 and explicit_ids <= configured_thread_ids
     )
 
 

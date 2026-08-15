@@ -357,20 +357,36 @@ def _(rid, params: dict) -> dict:
             model_set = True
         except Exception:
             pass
-    elif is_truthy_value(params.get("mirror_credentials", True)) and not (path / "config.yaml").exists():
-        # No explicit pin and no cloned config: inherit the launch profile's
-        # provider+model so the first turn resolves. Same writer as the pin.
+    elif is_truthy_value(params.get("mirror_credentials", True)):
+        # No explicit pin: inherit the launch profile's provider+model so the
+        # first turn resolves. Gate on the MODEL SECTION being absent, not on
+        # config.yaml existing — earlier mirroring steps (voice sections,
+        # #85755) legitimately create the file first, and a file-existence
+        # gate silently skipped inheritance for every non-clone bot
+        # ("No inference provider configured" on first message, tester
+        # report). Clones bring their own model section and stay untouched.
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_cli.config import load_config_readonly, read_user_config_raw
             from hermes_cli.web_routers.profiles import _write_profile_model
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
 
-            cfg = load_config_readonly() or {}
-            model_cfg = cfg.get("model") or {}
-            inherited_provider = str(model_cfg.get("provider") or "")
-            inherited_model = str(model_cfg.get("default") or "")
-            if inherited_provider and inherited_model:
-                _write_profile_model(path, inherited_provider, inherited_model)
-                mirrored["model_inherited"] = True
+            token = set_hermes_home_override(str(path))
+            try:
+                dst_model = (read_user_config_raw() or {}).get("model") or {}
+            finally:
+                reset_hermes_home_override(token)
+
+            if not (dst_model.get("provider") and dst_model.get("default")):
+                cfg = load_config_readonly() or {}
+                model_cfg = cfg.get("model") or {}
+                inherited_provider = str(model_cfg.get("provider") or "")
+                inherited_model = str(model_cfg.get("default") or "")
+                if inherited_provider and inherited_model:
+                    _write_profile_model(path, inherited_provider, inherited_model)
+                    mirrored["model_inherited"] = True
         except Exception:
             pass
 
@@ -430,7 +446,20 @@ def _(rid, params: dict) -> dict:
                         {"name": skill_name, "enabled": skill_name.lower() not in disabled}
                     )
 
-            from toolsets import get_all_toolsets, get_toolset_info
+            # Toolsets: the same filtered universe the `hermes tools`
+            # checklist offers — configurable toolsets (built-in + plugin),
+            # minus platform-restricted ones that don't apply here — with
+            # enablement resolved the way the runtime actually resolves it.
+            # The raw registry (get_all_toolsets) leaks internal platform
+            # composites (hermes-discord, feishu_drive, ...) and reports
+            # everything "enabled" whenever the profile has no pin, which a
+            # capabilities UI then faithfully mis-renders (tester report).
+            from hermes_cli.tools_config import (
+                _get_effective_configurable_toolsets,
+                _get_platform_tools,
+                _toolset_allowed_for_platform,
+            )
+            from toolsets import resolve_toolset
 
             tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
             pinned = tools_cfg.get("enabled_toolsets")
@@ -439,15 +468,44 @@ def _(rid, params: dict) -> dict:
                 if isinstance(pinned, list)
                 else None
             )
+            try:
+                platform_enabled = set(
+                    _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+                )
+            except Exception:
+                platform_enabled = set()
+            try:
+                from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+            except Exception:
+                _DEFAULT_OFF_TOOLSETS = set()
             toolsets_out = []
-            for ts_name in sorted(get_all_toolsets().keys()):
-                info = get_toolset_info(ts_name) or {}
+            for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
+                if not _toolset_allowed_for_platform(ts_name, "cli"):
+                    continue
+                enabled = (
+                    ts_name in pinned_set
+                    if pinned_set is not None
+                    else ts_name in platform_enabled
+                )
+                # Default-off integrations (a2a, yuanbao, spotify, ...) are
+                # opt-ins; when the profile hasn't opted in they're noise in
+                # a per-profile editor — `hermes tools` / Settings is where
+                # you turn them on globally first. Enabled ones still show.
+                # yuanbao rides the same rule: a region-specific integration
+                # that isn't in _DEFAULT_OFF_TOOLSETS but is equally opt-in.
+                if (ts_name in _DEFAULT_OFF_TOOLSETS or ts_name == "yuanbao") and not enabled:
+                    continue
+                try:
+                    tool_count = len(set(resolve_toolset(ts_name)))
+                except Exception:
+                    tool_count = 0
                 toolsets_out.append(
                     {
                         "name": ts_name,
-                        "description": info.get("description") or "",
-                        "tool_count": len(info.get("tools") or []),
-                        "enabled": True if pinned_set is None else ts_name in pinned_set,
+                        "label": ts_label,
+                        "description": ts_desc or "",
+                        "tool_count": tool_count,
+                        "enabled": enabled,
                     }
                 )
 

@@ -125,6 +125,7 @@ export const zh: Translations = {
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
+    updateReadyMessageUnknown: '有新更新可用。',
     seeWhatsNew: '查看更新内容',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -762,6 +763,7 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
+      updateReadyUnknown: '新更新已就绪。',
       lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
@@ -1210,6 +1212,7 @@ export const zh: Translations = {
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    configuringProfile: '正在配置：',
     tabMcp: 'MCP',
     tabHub: '浏览技能中心',
     all: '全部',
@@ -2164,6 +2167,7 @@ export const zh: Translations = {
       rename: '重命名',
       archive: '归档',
       newWindow: '新窗口',
+      openInTerminal: '在终端中打开',
       hideTabBar: '隐藏标签栏',
       openInNewTab: '在新标签页中打开',
       openInSplit: '在分屏中打开',

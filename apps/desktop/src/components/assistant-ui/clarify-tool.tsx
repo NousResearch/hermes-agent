@@ -42,6 +42,7 @@ import { parseMaybeObject } from './tool/fallback-model/format'
 interface ClarifyArgs {
   question?: string
   choices?: string[] | null
+  multiSelect?: boolean
 }
 
 interface ClarifyResult {
@@ -73,7 +74,8 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
 
   return {
     question,
-    choices: choices.length > 0 ? choices : null
+    choices: choices.length > 0 ? choices : null,
+    multiSelect: row.multi_select === true
   }
 }
 
@@ -167,7 +169,7 @@ function ChoiceButton({
   disabled,
   keyShortcuts,
   onClick,
-  selected = false,
+  selected,
   title
 }: {
   active?: boolean
@@ -192,6 +194,7 @@ function ChoiceButton({
       <button
         aria-current={active || undefined}
         aria-keyshortcuts={keyShortcuts}
+        aria-pressed={selected}
         className={cn(
           OPTION_ROW_CLASS,
           'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
@@ -204,7 +207,7 @@ function ChoiceButton({
         onClick={onClick}
         type="button"
       >
-        <KeyBadge char={char} preview={active} selected={selected} />
+        <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
         <span className="flex-1 wrap-anywhere">
           <ChoiceLabel choice={choice} />
         </span>
@@ -335,10 +338,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   )
 
   const hasChoices = choices.length > 0
+  const multiSelect = hasChoices && Boolean(matchingRequest?.multiSelect ?? fromArgs.multiSelect)
 
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
+  const [selectedChoices, setSelectedChoices] = useState<string[]>([])
   // The keyboard cursor. Indices 0..choices.length-1 are the options; the
   // trailing index (=== choices.length) is the "Other" free-text row.
   const [activeIndex, setActiveIndex] = useState(0)
@@ -388,14 +392,30 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   // The answer is whichever input is active: a picked choice, or typed text.
   // Picking a choice no longer fires immediately — it selects, then the user
   // confirms with Continue (or Enter from the field).
-  const pendingAnswer = selectedChoice ?? (trimmedDraft || null)
 
-  const selectChoice = useCallback((choice: string, index: number) => {
-    // Picking a choice and typing are mutually exclusive answers.
-    setDraft('')
-    setSelectedChoice(choice)
-    setActiveIndex(index)
-  }, [])
+  const selectedAnswer = multiSelect
+    ? selectedChoices.length > 0
+      ? JSON.stringify(selectedChoices)
+      : null
+    : (selectedChoices[0] ?? null)
+
+  const pendingAnswer = selectedAnswer ?? (trimmedDraft || null)
+
+  const selectChoice = useCallback(
+    (choice: string, index: number) => {
+      // Picking a choice and typing are mutually exclusive answers.
+      setDraft('')
+      setSelectedChoices(selected => {
+        if (!multiSelect) {
+          return [choice]
+        }
+
+        return selected.includes(choice) ? selected.filter(value => value !== choice) : [...selected, choice]
+      })
+      setActiveIndex(index)
+    },
+    [multiSelect]
+  )
 
   // Keep the cursor in range when the choice set changes (never past "Other").
   useEffect(() => {
@@ -406,28 +426,37 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     (delta: number) => {
       const itemCount = choices.length + 1
 
-      // Arrow navigation is a move, not a pick — clear any staged answer so the
-      // cursor and the selection can't disagree.
+      // Arrow navigation is a move, not a pick. Multi-select keeps staged
+      // choices while the cursor moves so the user can build a set; the
+      // single-select path retains its existing clear-on-navigation behaviour.
       setDraft('')
-      setSelectedChoice(null)
+
+      if (!multiSelect) {
+        setSelectedChoices([])
+      }
+
       setActiveIndex(index => (index + delta + itemCount) % itemCount)
     },
-    [choices.length]
+    [choices.length, multiSelect]
   )
 
   const submitAnswer = useCallback(() => {
-    if (selectedChoice !== null) {
-      void respond(selectedChoice)
+    if (pendingAnswer) {
+      void respond(pendingAnswer)
+    }
+  }, [pendingAnswer, respond])
+
+  const activateActive = useCallback(() => {
+    const choice = choices[activeIndex]
+
+    // Multi-select Enter toggles the highlighted choice. The user confirms the
+    // staged set explicitly with Continue so this path never submits a scalar.
+    if (multiSelect && choice) {
+      selectChoice(choice, activeIndex)
 
       return
     }
 
-    if (trimmedDraft) {
-      void respond(trimmedDraft)
-    }
-  }, [respond, selectedChoice, trimmedDraft])
-
-  const activateActive = useCallback(() => {
     // A staged answer (picked choice or typed text) wins — confirm it.
     if (pendingAnswer) {
       submitAnswer()
@@ -437,8 +466,6 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
     // Otherwise act on the highlighted row: a choice responds immediately, and
     // the trailing "Other" row focuses the free-text field.
-    const choice = choices[activeIndex]
-
     if (choice) {
       void respond(choice)
 
@@ -446,7 +473,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     }
 
     textareaRef.current?.focus()
-  }, [activeIndex, choices, pendingAnswer, respond, submitAnswer])
+  }, [activeIndex, choices, multiSelect, pendingAnswer, respond, selectChoice, submitAnswer])
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -562,7 +589,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     // Typing is its own answer — drop any picked choice so the two inputs can't
     // both look selected.
     if (value.trim()) {
-      setSelectedChoice(null)
+      setSelectedChoices([])
     }
   }
 
@@ -600,7 +627,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 key={`${index}-${choice}`}
                 keyShortcuts={`${letterFor(index)} ${index + 1}`}
                 onClick={() => selectChoice(choice, index)}
-                selected={selectedChoice === choice}
+                selected={selectedChoices.includes(choice)}
               />
             ))}
             <label
@@ -624,7 +651,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
-                  setSelectedChoice(null)
+                  setSelectedChoices([])
                   setActiveIndex(choices.length)
                   setOtherFocused(true)
                 }}

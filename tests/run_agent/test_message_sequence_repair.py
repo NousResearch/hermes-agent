@@ -356,6 +356,33 @@ def test_sanitize_drops_empty_tool_calls_array():
     assert assistant["content"] == "answer"
 
 
+def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
+    """repair_message_sequence must drop a stale ``tool_calls: []`` on the
+    surviving message of a consecutive-assistant merge (#77921).
+
+    The chokepoint sanitizer (sanitize_api_messages) only patches the per-call
+    wire copy — a ``[]`` left on the repaired live/persisted trajectory is
+    replayed on the next turn and 400s strict providers (DeepSeek v4). The
+    merge's union branches only ever set non-empty lists or leave the key
+    untouched, so the empty array survives into the persisted state."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        # surviving turn carries a stale empty tool_calls from an earlier pass
+        {"role": "assistant", "content": "first", "tool_calls": []},
+        {"role": "assistant", "content": "second"},
+    ]
+    # A dummy agent object is enough — repair only reads message roles/content.
+    agent = type("Agent", (), {})()
+    n = repair_message_sequence(agent, messages)
+    assert n >= 0
+    assistants = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    assert "tool_calls" not in assistants[0]
+    assert "second" in assistants[0]["content"]
+
+
 
 
 
@@ -370,13 +397,46 @@ def test_sanitize_drops_empty_tool_calls_array():
 # such turns on the per-call copy so the session recovers itself in memory.
 
 
+def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
+    """When dedup removes ALL tool_calls from an assistant message,
+    the key is dropped instead of writing tool_calls: [].
 
+    DeepSeek v4 and newer OpenAI reject empty tool_calls with HTTP 400.
+    The dedup pass introduced by #58327 can produce this state when
+    all tool_call_ids are duplicates of earlier messages in a long
+    history. The fix (#64335) drops the key entirely rather than
+    writing an empty array.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
 
+    # Simulate a long conversation where the same tool_call_id appears
+    # in multiple assistant messages (e.g., crash/resume glitch or
+    # compression window re-emission). The first occurrence is kept,
+    # later duplicates are removed.
+    messages = [
+        {"role": "user", "content": "step 1"},
+        {"role": "assistant", "content": "running",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "result 1"},
+        # Simulate a later assistant message that reuses call_A
+        # (this would be invalid, but the dedup pass handles it)
+        {"role": "assistant", "content": "retrying",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+    ]
 
+    out = sanitize_api_messages(list(messages))
 
+    # First assistant should keep tool_calls (first occurrence)
+    assistant1 = [m for m in out if m.get("role") == "assistant"][0]
+    assert "tool_calls" in assistant1
+    assert len(assistant1["tool_calls"]) == 1
+    assert assistant1["tool_calls"][0]["id"] == "call_A"
 
-
-
-
-
-
+    # Second assistant should have tool_calls key DROPPED
+    # (all tool_calls were deduped as duplicates of call_A)
+    assistant2 = [m for m in out if m.get("role") == "assistant"][1]
+    assert "tool_calls" not in assistant2
+    # Content should be preserved
+    assert assistant2["content"] == "retrying"

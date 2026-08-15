@@ -605,6 +605,7 @@ async def get_session_messages(
     limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0),
     order: Optional[str] = Query(None),
+    include_compacted: bool = Query(False),
 ):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(
@@ -632,6 +633,7 @@ async def get_session_messages(
                 limit=_limit,
                 offset=offset,
                 latest=latest_page,
+                include_compacted=include_compacted,
             )
         finally:
             db.close()

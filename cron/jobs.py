@@ -103,6 +103,8 @@ TICKER_INTERVAL_SECONDS = 60
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
+_fire_fence_locks: Dict[str, threading.RLock] = {}
+_fire_fence_locks_guard = threading.Lock()
 
 # Upper bound on waiting for the cross-process .jobs.lock flock (#60703).
 # Every cron function in the process funnels through _jobs_lock(), and the
@@ -370,6 +372,86 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+
+
+@contextlib.contextmanager
+def _fire_job_lock(job_id: str):
+    """Serialize one job's owner mutations and external side effects.
+
+    Unlike the global jobs lock, this lock may be held across network delivery.
+    It is scoped to one profile + job, so unrelated cron jobs keep progressing.
+    Fencing fails closed when cross-process locking is unavailable.
+    """
+    cron_dir = _current_cron_store().cron_dir
+    lock_key = f"{cron_dir.resolve()}::{job_id}"
+    with _fire_fence_locks_guard:
+        local_lock = _fire_fence_locks.setdefault(lock_key, threading.RLock())
+
+    with local_lock:
+        ensure_dirs()
+        lock_name = uuid.uuid5(uuid.NAMESPACE_URL, lock_key).hex
+        lock_path = cron_dir / f".fire-{lock_name}.lock"
+        lock_fd = None
+        acquired = False
+        try:
+            lock_fd = open(lock_path, "a+", encoding="utf-8")
+            lock_fd.seek(0)
+            if fcntl is not None:
+                deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except (OSError, IOError):
+                        if time.monotonic() >= deadline:
+                            logger.error(
+                                "Timed out waiting for fire fence %s; failing closed",
+                                lock_path,
+                            )
+                            break
+                        time.sleep(0.1)
+            elif msvcrt is not None:
+                getattr(msvcrt, "locking")(
+                    lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1
+                )
+                acquired = True
+            else:  # pragma: no cover - supported platforms provide one backend
+                logger.error("No cross-process lock backend for cron fire fence")
+        except (OSError, IOError) as exc:
+            logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
+
+        try:
+            yield acquired
+        finally:
+            if lock_fd is not None:
+                try:
+                    if acquired and fcntl is not None:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    elif acquired and msvcrt is not None:
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                        )
+                except (OSError, IOError):
+                    pass
+                finally:
+                    lock_fd.close()
+
+
+@contextlib.contextmanager
+def fire_claim_fence(job_id: str, *, expected_owner: str):
+    """Hold a per-job fence while an owner performs an external side effect."""
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            yield False
+            return
+        with _jobs_lock():
+            job = next((item for item in load_jobs() if item.get("id") == job_id), None)
+            claim = job.get("fire_claim") if isinstance(job, dict) else None
+            owns_claim = (
+                isinstance(claim, dict) and claim.get("by") == expected_owner
+            )
+        yield owns_claim
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -2069,8 +2151,35 @@ def remove_job(job_id: str) -> bool:
                     "Failed to clear notepad for removed job %s",
                     canonical_id, exc_info=True,
                 )
+            # Prune the per-job fire-fence lock entry so the registry does
+            # not grow monotonically across create/remove cycles.
+            _fence_key = f"{_current_cron_store().cron_dir.resolve()}::{canonical_id}"
+            with _fire_fence_locks_guard:
+                _fire_fence_locks.pop(_fence_key, None)
             return True
     return False
+
+
+def mark_job_run(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    status: Optional[str] = None,
+    *,
+    expected_fire_owner: Optional[str] = None,
+) -> bool:
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return False
+        return _mark_job_run_locked(
+            job_id,
+            success,
+            error,
+            delivery_error,
+            status=status,
+            expected_fire_owner=expected_fire_owner,
+        )
 
 
 def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
@@ -2124,9 +2233,15 @@ def clear_drift_alerted(job_id: str) -> None:
     _set_alert_flag(job_id, "drift_alerted", False)
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None,
-                 status: Optional[str] = None):
+def _mark_job_run_locked(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    *,
+    status: Optional[str] = None,
+    expected_fire_owner: Optional[str] = None,
+) -> bool:
     """
     Mark a job as having been run.
     
@@ -2146,6 +2261,15 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
+                if expected_fire_owner is not None:
+                    claim = job.get("fire_claim")
+                    if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
+                        logger.warning(
+                            "mark_job_run: job_id %s fire claim owner changed; "
+                            "discarding stale completion",
+                            job_id,
+                        )
+                        return False
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = status or ("ok" if success else "error")
@@ -2205,7 +2329,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         job["state"] = "completed"
                         job["next_run_at"] = None
                         save_jobs(jobs)
-                        return
+                        return True
                 
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
@@ -2240,9 +2364,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
-                return
+                return True
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+        return False
 
 
 def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
@@ -2474,7 +2599,31 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
+def claim_job_for_fire(
+    job_id: str,
+    *,
+    claim_ttl_seconds: int = 300,
+    force: bool = False,
+    return_job: bool = False,
+) -> Union[bool, Dict[str, Any]]:
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return False
+        return _claim_job_for_fire_locked(
+            job_id,
+            claim_ttl_seconds=claim_ttl_seconds,
+            force=force,
+            return_job=return_job,
+        )
+
+
+def _claim_job_for_fire_locked(
+    job_id: str,
+    *,
+    claim_ttl_seconds: int = 300,
+    force: bool = False,
+    return_job: bool = False,
+) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for a single external 'fire' (multi-machine
     at-most-once). Returns True iff THIS caller won the claim.
 
@@ -2482,7 +2631,10 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
     external scheduler (Chronos) signals a job is due across N gateway replicas:
     exactly one wins. Single-machine deployments always win.
 
-    Under the file lock: reject if the job is missing/disabled/paused. If a
+    Under the file lock: reject if the job is missing/disabled/paused. An
+    explicit manual fire may pass ``force=True`` to atomically enable and
+    resume the job as part of the claim; external scheduler callbacks must
+    leave it false so a stale callback cannot resurrect a paused job. If a
     fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
     Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
@@ -2501,8 +2653,10 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if job["id"] != job_id:
                 continue
             # enabled + pause markers must both clear — a half-paused record
-            # (enabled=true, state=paused/paused_at set) must not claim.
-            if not is_job_runnable(job):
+            # (enabled=true, state=paused/paused_at set) must not claim. An
+            # explicit ``force`` (Trigger-now on a paused job) bypasses the
+            # gate and atomically resumes the job below.
+            if not force and not is_job_runnable(job):
                 return False
             now = _hermes_now()
             existing = job.get("fire_claim")
@@ -2520,14 +2674,23 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                         return False  # someone holds a fresh claim
                 except Exception:
                     pass  # malformed claim → overwrite
-            job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
+            if force:
+                job["enabled"] = True
+                job["state"] = "scheduled"
+                job["paused_at"] = None
+                job["paused_reason"] = None
+            # Per-acquisition token: a process may legitimately reclaim its own
+            # stale lease, and the previous runner must not heartbeat the new
+            # claim merely because hostname + PID are unchanged.
+            owner = f"{_machine_id()}:{uuid.uuid4().hex}"
+            job["fire_claim"] = {"at": now.isoformat(), "by": owner}
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)
-            return True
+            return copy.deepcopy(job) if return_job else True
         return False
 
 
@@ -2615,6 +2778,39 @@ def _sweep_completed_oneshots(
                 exc_info=True,
             )
     return removed
+
+
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return False
+        return _heartbeat_fire_claim_locked(
+            job_id,
+            expected_owner=expected_owner,
+        )
+
+
+def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:
+    """Refresh an active ``fire_claim`` without extending another owner's lease.
+
+    A cron execution can legitimately outlive the fire-claim TTL.  The shared
+    run wrapper calls this periodically so another scheduler process cannot
+    treat a live execution as abandoned and dispatch it again.  Comparing the
+    owner copied at dispatch prevents a stale runner from refreshing a claim
+    that has since been recovered by another process.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            claim = job.get("fire_claim")
+            if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+                return False
+            claim["at"] = _hermes_now().isoformat()
+            save_jobs(jobs)
+            return True
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

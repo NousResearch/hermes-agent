@@ -324,7 +324,7 @@ def _get_model_config() -> Dict[str, Any]:
             cfg["default"] = cfg["model"]
         default = (cfg.get("default") or "").strip()
         base_url = (cfg.get("base_url") or "").strip()
-        is_local = "localhost" in base_url or "127.0.0.1" in base_url
+        is_local = base_url_hostname(base_url) in ("localhost", "127.0.0.1")
         is_fallback = not default
         if is_local and is_fallback and base_url:
             detected = _auto_detect_local_model(base_url)
@@ -397,9 +397,17 @@ _VALID_API_MODES = {
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
+    """Validate an api_mode value from config. Returns None if invalid.
+
+    Legacy/alias spellings (``openai``, ``anthropic``, ``responses``, …) are
+    canonicalized via the shared alias map before validation, so configs
+    written against older releases keep selecting the transport they named
+    instead of silently falling through to hostname-based detection.
+    """
     if isinstance(raw, str):
-        normalized = raw.strip().lower()
+        from hermes_cli.config import _canonical_api_mode
+
+        normalized = _canonical_api_mode(raw).lower()
         if normalized in _VALID_API_MODES:
             return normalized
     return None

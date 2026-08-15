@@ -2,7 +2,7 @@ import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type * as React from 'react'
-import { type FC, useCallback, useRef } from 'react'
+import { type FC, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -88,8 +88,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
-  const paddingTop = virtualItems[0]?.start ?? 0
-  const paddingBottom = Math.max(0, totalSize - (virtualItems[virtualItems.length - 1]?.end ?? 0))
 
   const rows = virtualItems.map(virtualItem => {
     const row = listRows[virtualItem.index]
@@ -98,16 +96,23 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       return null
     }
 
+    const itemStyle: React.CSSProperties = {
+      left: 0,
+      position: 'absolute',
+      top: 0,
+      transform: `translateY(${virtualItem.start}px)`,
+      width: '100%'
+    }
+
     // Dividers are non-sortable, self-measured rows interleaved with sessions.
     if (row.kind === 'divider') {
       return (
-        <SidebarDateDivider
-          action={dividerAction}
-          data-index={virtualItem.index}
-          key={row.key}
-          label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
-          ref={virtualizer.measureElement}
-        />
+        <div data-index={virtualItem.index} key={row.key} ref={virtualizer.measureElement} style={itemStyle}>
+          <SidebarDateDivider
+            action={dividerAction}
+            label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
+          />
+        </div>
       )
     }
 
@@ -129,21 +134,13 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     }
 
     return reorderable ? (
-      <VirtualSortableRow
-        index={virtualItem.index}
-        key={session.id}
-        measureRef={virtualizer.measureElement}
-        rowProps={commonProps}
-        session={session}
-      />
+      <div data-index={virtualItem.index} key={session.id} ref={virtualizer.measureElement} style={itemStyle}>
+        <VirtualSortableRow rowProps={commonProps} session={session} />
+      </div>
     ) : (
-      <SidebarSessionRow
-        {...commonProps}
-        data-index={virtualItem.index}
-        key={session.id}
-        ref={virtualizer.measureElement}
-        session={session}
-      />
+      <div data-index={virtualItem.index} key={session.id} ref={virtualizer.measureElement} style={itemStyle}>
+        <SidebarSessionRow {...commonProps} session={session} />
+      </div>
     )
   })
 
@@ -164,41 +161,25 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       )}
       ref={scrollerRef}
     >
-      <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
-        {rows}
-      </div>
+      <div className="relative" style={{ height: `${totalSize}px` }}>{rows}</div>
     </div>
   )
 }
 
 interface VirtualSortableRowProps {
-  index: number
-  measureRef: (node: Element | null) => void
   rowProps: SessionRowCommonProps
   session: SessionInfo
 }
 
-function VirtualSortableRow({ index, measureRef, rowProps, session }: VirtualSortableRowProps) {
+function VirtualSortableRow({ rowProps, session }: VirtualSortableRowProps) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: session.id })
-
-  // Merge dnd-kit's setNodeRef with the virtualizer's measureElement so
-  // the row participates in both DnD hit-testing and TanStack height
-  // measurement.
-  const refMerged = useCallback(
-    (node: HTMLDivElement | null) => {
-      setNodeRef(node)
-      measureRef(node)
-    },
-    [measureRef, setNodeRef]
-  )
 
   return (
     <SidebarSessionRow
       {...rowProps}
-      data-index={index}
       dragging={isDragging}
       dragHandleProps={{ ...attributes, ...listeners }}
-      ref={refMerged}
+      ref={setNodeRef}
       reorderable
       session={session}
       style={{ transform: CSS.Transform.toString(transform), transition }}

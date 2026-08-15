@@ -6603,17 +6603,15 @@ This compaction should PRIORITISE preserving all information related to the focu
         _previous_summary_before_scan = self._previous_summary
         _summary_has_user_turn_before_scan = getattr(self, "_summary_has_user_turn", None)
         # A persisted handoff summary can sit in the protected head after a
-        # resume (commonly immediately after the system prompt). Search from
-        # the first non-system message through the compression window. On the
-        # first compaction after a restart, extend through the full transcript
-        # so summaries that landed in the protected tail or drifted past the
-        # decay probe still rehydrate iterative-summary state instead of being
-        # copied forward as stacked fossils.
+        # resume (commonly immediately after the system prompt), or later in
+        # the live window past a degenerate compress_end (#83248). Always
+        # search the full transcript for handoff rows: the content-prefix
+        # check is cheap, Phase 4 already advances tail_start when
+        # summary_idx >= compress_end, and the #57835 cross-session discard
+        # must only fire after a full-window miss — never after a narrow
+        # scan that could hide a same-session handoff beyond the cut.
         summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
-        summary_search_end = compress_end
-        if self.compression_count < 1 and not self._previous_summary:
-            summary_search_end = len(messages)
-        summary_search_end = min(len(messages), summary_search_end)
+        summary_search_end = len(messages)
         summary_indices: set[int] = set()
         summary_idx = None
         summary_body = None
@@ -6683,11 +6681,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             if summary_idx >= compress_end:
                 tail_start = summary_idx + 1
         elif self._previous_summary:
-            # No handoff summary found in the current messages, but
+            # Full-window scan found no handoff in the current messages, but
             # _previous_summary is non-empty — it was set by a different
             # (now-ended) session (e.g., a cron job, a prior /new).  Discard
             # it so _generate_summary() does not inject cross-session content
             # into the summarizer prompt via the iterative-update path.
+            # Do not clear based on a compress_end-bounded miss (#83248).
             self._previous_summary = None
             self._summary_has_user_turn = real_user_present
         else:

@@ -73,7 +73,7 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-display moves on macOS and Windows', () => {
+test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and cross-display moves on macOS and Windows', () => {
   const handlers = new Map()
 
   const win = {
@@ -95,9 +95,34 @@ test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-d
   assert.deepEqual([...handlers.keys()], zoomReassertWindowEvents('win32'))
   handlers.get('show')()
   handlers.get('restore')()
+  handlers.get('focus')()
   handlers.get('resized')()
   handlers.get('moved')()
-  assert.equal(calls, 4)
+  assert.equal(calls, 5)
+})
+
+test('focus event reasserts zoom immediately without debounce (Windows high-DPI alt-tab, #50837)', () => {
+  const handlers = new Map()
+
+  const win = {
+    isDestroyed: () => false,
+    on(event, listener) {
+      handlers.set(event, listener)
+    }
+  }
+
+  let calls = 0
+  installZoomReassertOnWindowEvents(
+    win,
+    () => {
+      calls += 1
+    },
+    'win32'
+  )
+
+  // focus should trigger immediate reassert — no timer involved
+  handlers.get('focus')()
+  assert.equal(calls, 1)
 })
 
 test('installZoomReassertOnWindowEvents debounces Linux resize and move events at the trailing edge', () => {

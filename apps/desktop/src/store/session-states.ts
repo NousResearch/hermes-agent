@@ -228,15 +228,13 @@ function evictable(runtimeId: string, state: ClientSessionState): boolean {
  *  is updated independently by the caller, so the visual path stays live
  *  without the store churn.
  *
- *  A settled state nothing references is EVICTED instead of republished:
- *  gateway events keep flowing for sessions whose tile was closed mid-turn,
- *  and parking each one's full transcript here forever is the leak that made
- *  the app crawl after a day of tile use — every entry taxes every later
- *  publish (map spread + the status-set projections). Transition side effects
- *  still fire, so the closed session's settle keeps its unread dot. Only an
- *  entry already in the map is evicted — a FIRST publish always lands, because
- *  a resume can publish its idle state a beat before `$activeSessionId` /
- *  the tile's runtime binding points at it. */
+ *  A settled state nothing references releases its transcript instead of
+ *  republishing it. Gateway events keep flowing for sessions whose tile was
+ *  closed mid-turn, and parking each one's full transcript here forever is the
+ *  leak that made the app crawl after a day of tile use. Transition side
+ *  effects still fire, so lightweight status and the unread dot survive. A
+ *  FIRST publish always lands in full because a resume can publish its idle
+ *  state a beat before `$activeSessionId` / the tile binding points at it. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
   const current = $sessionStates.get()
   const prev = current[runtimeId] ?? null
@@ -247,14 +245,37 @@ export function publishSessionState(runtimeId: string, state: ClientSessionState
 
   if (prev && evictable(runtimeId, state)) {
     handleTransition(prev, state, runtimeId)
-    const { [runtimeId]: _dropped, ...rest } = current
-    $sessionStates.set(rest)
+    releaseSessionTranscript(runtimeId, state)
 
     return
   }
 
   $sessionStates.set({ ...current, [runtimeId]: state })
   handleTransition(prev, state, runtimeId)
+}
+
+/** Keep the cheap status projection for a cold session while releasing its
+ * transcript. Unread completion is stored separately, so it survives too. */
+export function releaseSessionTranscript(runtimeId: string, state?: ClientSessionState) {
+  const current = $sessionStates.get()
+
+  if (!(runtimeId in current)) {
+    return
+  }
+
+  const retained = state ?? current[runtimeId]
+
+  // Older persisted snapshots can contain an undefined state or omit the
+  // messages field. Treat either shape as already cold instead of throwing
+  // while memory pressure is being relieved.
+  if (!retained) {
+    return
+  }
+
+  const lightweight =
+    Array.isArray(retained.messages) && retained.messages.length === 0 ? retained : { ...retained, messages: [] }
+
+  $sessionStates.set({ ...current, [runtimeId]: lightweight })
 }
 
 export function dropSessionState(runtimeId: string) {

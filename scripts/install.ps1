@@ -3240,7 +3240,10 @@ function Install-BrowserUseCli {
     }
     $managedBin = Join-Path $HermesHome "bin"
     $managedBu = Join-Path $managedBin "browser-use.exe"
-    if ((Get-Command browser-use -ErrorAction SilentlyContinue) -or (Test-Path $managedBu)) {
+    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
+    # on the user's PATH is a side install -- resolution prefers the managed
+    # copy, so it must be provisioned regardless.
+    if (Test-Path $managedBu) {
         Write-Success "Browser Use CLI already installed"
         return
     }

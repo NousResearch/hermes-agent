@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 import { HermesGateway } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
-import { setGatewayState } from '@/store/session'
+import { setConnection, setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -177,6 +177,11 @@ async function openSecondary(entry: Secondary): Promise<void> {
   const conn = await desktop.getConnection(entry.profile)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
+
+  if (g.activeKey === entry.profile) {
+    setConnection(conn)
+  }
+
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
 }
 
@@ -248,12 +253,14 @@ function createSecondary(profile: string): Secondary {
 }
 
 // True when `profile`'s backend route resolves to the SHARED primary backend
-// (global-remote case 3 in resolveProfileBackendRoute): the descriptor comes
-// back as the primary connection tagged with `profile`. Own-remote-override
-// and local pooled descriptors are never tagged. Dialing a second socket at
-// that descriptor is wrong — over SSH the second dial fails (tunnel/token are
-// per-backend) and the closed socket poisons the active gateway with
-// "not connected" even though the primary is open right next to it.
+// (global-remote case 3 in resolveProfileBackendRoute). Both shared-primary and
+// pooled descriptors carry `profile` so WebSocket URL minting targets the right
+// profile. `sharedPrimary` is the explicit discriminator; treating every tagged
+// descriptor as shared strands local/own-remote pooled profiles on the default
+// socket. Dialing a second socket at the shared descriptor is wrong — over SSH
+// the second dial fails (tunnel/token are per-backend) and the closed socket
+// poisons the active gateway with "not connected" even though the primary is
+// open right next to it.
 async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   const desktop = window.hermesDesktop
 
@@ -264,7 +271,7 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   try {
     const conn = await desktop.getConnection(profile)
 
-    return Boolean(conn && typeof conn === 'object' && (conn as { profile?: string }).profile)
+    return Boolean(conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true)
   } catch {
     return false
   }

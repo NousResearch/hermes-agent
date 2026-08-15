@@ -118,13 +118,25 @@ describe('formatCombo — honest Control labels', () => {
   })
 })
 
-describe('comboAllowedInInput', () => {
-  it('lets ctrl combos fire while typing (e.g. ⌃Tab from the composer)', async () => {
-    const { comboAllowedInInput } = await loadCombo('MacIntel')
+describe('actionAllowedInInput', () => {
+  it('keeps only explicit text-entry-safe global actions active while typing', async () => {
+    const { actionAllowedInInput } = await loadCombo('MacIntel')
 
-    expect(comboAllowedInInput('ctrl+tab')).toBe(true)
-    expect(comboAllowedInInput('ctrl+shift+tab')).toBe(true)
-    expect(comboAllowedInInput('mod+k')).toBe(true)
-    expect(comboAllowedInInput('shift+x')).toBe(false)
+    expect(actionAllowedInInput('session.next', 'ctrl+tab')).toBe(true)
+    expect(actionAllowedInInput('session.prev', 'ctrl+shift+tab')).toBe(true)
+    expect(actionAllowedInInput('nav.commandPalette', 'mod+k')).toBe(true)
+    expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
+    expect(actionAllowedInInput('nav.skills', 'mod+k')).toBe(false)
+    expect(actionAllowedInInput('view.showTerminal', 'ctrl+`')).toBe(false)
+    expect(actionAllowedInInput('profile.next', 'mod+shift+]')).toBe(false)
+  })
+
+  it('leaves text navigation chords with the focused input even when rebound to an allowed action', async () => {
+    const { actionAllowedInInput } = await loadCombo('Win32')
+
+    expect(actionAllowedInInput('session.next', 'mod+right')).toBe(false)
+    expect(actionAllowedInInput('session.prev', 'mod+left')).toBe(false)
+    expect(actionAllowedInInput('nav.commandPalette', 'mod+pageup')).toBe(false)
+    expect(actionAllowedInInput('view.findInPage', 'mod+end')).toBe(false)
   })
 })

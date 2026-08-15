@@ -28,6 +28,27 @@
   }
 }
 
+/* Continuous decorative animations otherwise keep Chromium's renderer awake
+   behind another app. main.tsx owns this attribute only for the primary
+   window; wake/pet overlays retain their purpose-built visibility behavior. */
+:root[data-renderer-animations-paused] :is(
+    .shimmer,
+    .quest-glow,
+    .pet-egg,
+    .pet-egg__glow,
+    .pet-egg-shadow,
+    .pet-wobble,
+    .progress-slide,
+    .kanban-arc
+  ),
+:root[data-renderer-animations-paused] .arc-border::before,
+:root[data-renderer-animations-paused]
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true'] {
+  animation-play-state: paused !important;
+}
+
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));

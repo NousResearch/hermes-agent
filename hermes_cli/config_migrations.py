@@ -754,9 +754,38 @@ def _migrate_to_35(results: Dict[str, Any], quiet: bool) -> None:
                 )
 
 
+def _migrate_to_36(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 35 → 36: raise the subagent iteration cap default 50 → 250 ──
+    # delegation.max_iterations is the per-subagent tool-call budget. The old
+    # default of 50 truncated substantial delegated work (leaf agents spend
+    # ~15-20 turns on recon before producing output, then ran out mid-task).
+    # The shipped default is now 250. Configs still pinned at exactly the old
+    # default 50 — almost always the inherited default rather than a deliberate
+    # choice — are lifted to 250 so existing installs get the same headroom on
+    # update. Any OTHER explicit value (a deliberate override, high or low) is
+    # the user's own and is preserved; unset inherits 250 at read time.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_deleg = config.get("delegation")
+    if isinstance(raw_deleg, dict) and raw_deleg.get("max_iterations") == 50:
+        raw_deleg["max_iterations"] = 250
+        config["delegation"] = raw_deleg
+        _persist_migration(config)
+        results["config_added"].append("delegation.max_iterations=250 (was: 50)")
+        if not quiet:
+            print(
+                "  ✓ Raised delegation.max_iterations from 50 to 250 — subagents "
+                "now get a larger per-child tool-call budget so delegated work "
+                "finishes instead of truncating. Set delegation.max_iterations "
+                "back to 50 to restore the old cap."
+            )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
-#: version captured before the ladder started. Order matters: later steps may
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     # v12 is the support floor: configs already AT v12 (or newer) still get
@@ -777,6 +806,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (33, _migrate_to_33),
     (34, _migrate_to_34),
     (35, _migrate_to_35),
+    (36, _migrate_to_36),
 )
 
 

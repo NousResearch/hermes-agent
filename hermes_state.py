@@ -1492,7 +1492,13 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # enumerate causes (e.g. the cron scheduler's explainer-variant suppression)
 # must iterate this tuple instead of hardcoding the list, so adding a bucket
 # can never silently desynchronize them.
-PERSISTENCE_ERROR_CAUSES = ("locked", "disk", "unknown")
+PERSISTENCE_ERROR_CAUSES = (
+    "locked",
+    "compression",
+    "turn_lease",
+    "disk",
+    "unknown",
+)
 
 
 def classify_persistence_error(exc_or_str) -> str:
@@ -1505,9 +1511,13 @@ def classify_persistence_error(exc_or_str) -> str:
     send it again", while a full disk or read-only database needs the
     disk-space/permissions advice. Returns one of PERSISTENCE_ERROR_CAUSES:
 
-    * ``"locked"``  — lock/busy contention (another process holds the write
-      lock, or a live compression lease refused the write); transient,
-      retry-later guidance applies.
+    * ``"locked"``  — SQLite lock/busy contention (another process holds the
+      database write lock); transient, retry-later guidance applies.
+    * ``"compression"`` — a live compression lease refused the transcript
+      write; the database itself is healthy and unlocked.
+    * ``"turn_lease"`` — a presented session-turn-lease holder no longer
+      owns the conversation (expired, released, or reclaimed); fail-fast
+      fencing, not a storage fault.
     * ``"disk"``    — disk full / read-only / permission-shaped failures
       (delegates the disk-full patterns to :func:`is_disk_full_error` so the
       two classifiers can never drift apart — e.g. ENOSPC).
@@ -1520,14 +1530,18 @@ def classify_persistence_error(exc_or_str) -> str:
     # writer" / "Compression lease lost") contains neither "locked" nor
     # "busy", so it must be matched by type and by phrase (for strings that
     # survived RPC wrapping).
+    if isinstance(exc_or_str, SessionTurnLeaseLostError):
+        return "turn_lease"
     if isinstance(exc_or_str, CompressionSessionBusyError):
-        return "locked"
+        return "compression"
     text = str(exc_or_str).lower()
+    if "turn lease" in text:
+        return "turn_lease"
+    if "being compressed" in text or "compression lease" in text:
+        return "compression"
     if (
         "locked" in text
         or "busy" in text
-        or "being compressed" in text
-        or "compression lease" in text
     ):
         return "locked"
     if (
@@ -2319,6 +2333,16 @@ class SessionCompressionInProgressError(CompressionSessionBusyError):
 
     Subclassing keeps every existing ``except CompressionSessionBusyError``
     handler working unchanged.
+    """
+
+
+class SessionTurnLeaseLostError(RuntimeError):
+    """A transcript write presented a turn-lease holder that no longer owns it.
+
+    Fail-fast fencing: do not retry inside ``_execute_write``. The caller
+    either still thinks it owns the conversation after expiry/reclaim, or
+    the lease row is gone. A later writer may already be persisting a
+    newer turn; landing this write would interleave a stale reply.
     """
 
 
@@ -5739,6 +5763,221 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 session_id, exc,
             )
 
+    def _session_turn_lease_key_on_conn(self, conn, session_id: str) -> str:
+        """Walk compression parents on ``conn`` to the conversation lease key.
+
+        Must run on the same connection as the lease INSERT/UPDATE/DELETE.
+        A prior ``get_session`` failure must not compute a child id that the
+        later write then persists: refresh would walk to the parent and
+        fail-close. Markers bind to ``parent_session_id`` (same contract as
+        ``_NON_CONTINUATION_CHILD_FILTER_SQL``). Lock errors propagate so
+        ``_execute_write`` / ``acquire_session_turn_lease`` can retry.
+        """
+        if not session_id:
+            return session_id
+
+        def _row(sid: str):
+            row = conn.execute(
+                "SELECT id, parent_session_id, source, model_config, end_reason "
+                "FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            return dict(row) if row else None
+
+        current = _row(session_id)
+        seen = {session_id}
+        while current:
+            parent_id = current.get("parent_session_id")
+            if (
+                not parent_id
+                or parent_id in seen
+                or self._is_explicit_fork_child_row(current)
+            ):
+                break
+            parent = _row(parent_id)
+            if not parent or parent.get("end_reason") != "compression":
+                break
+            seen.add(parent_id)
+            current = parent
+        return str(current.get("id") or session_id) if current else session_id
+
+    def _session_turn_lease_key(self, session_id: str) -> str:
+        """Return the stable serialization key for every compression segment.
+
+        Acquire/refresh/release resolve this inside their write transaction.
+        This helper is for tests and diagnostics; it does not swallow lock
+        errors (a swallowed walk plus a later successful write was the
+        fail-open that replayed the post-rotation refresh miss).
+        """
+        if not session_id:
+            return session_id
+        with self._read_ctx() as conn:
+            return self._session_turn_lease_key_on_conn(conn, session_id)
+
+    def try_acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+        patience_s: Optional[float] = None,
+    ) -> bool:
+        """Atomically acquire the cross-process turn lease for a conversation.
+
+        Compression rotates a session into child segments, so the durable key
+        is the lineage root rather than the current segment id. The walk and
+        INSERT share one write transaction. Expired leases and leases whose
+        structured local holder PID is known dead are reclaimed in that same
+        transaction.
+        """
+        if not session_id or not holder:
+            return False
+        now = time.time()
+        expires_at = now + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is not None:
+                current_holder = row["holder"]
+                if (
+                    float(row["expires_at"]) <= now
+                    or _compression_lock_holder_process_is_dead(current_holder)
+                ):
+                    conn.execute(
+                        "DELETE FROM session_turn_leases "
+                        "WHERE conversation_id = ? AND holder = ?",
+                        (conversation_id, current_holder),
+                    )
+            conn.execute(
+                "INSERT OR IGNORE INTO session_turn_leases "
+                "(conversation_id, holder, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (conversation_id, holder, now, expires_at),
+            )
+            owner = conn.execute(
+                "SELECT holder FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return owner is not None and owner["holder"] == holder
+
+        return bool(self._execute_write(_do, patience_s=patience_s))
+
+    def acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+        wait_seconds: float = 1800.0,
+        poll_interval_seconds: float = 1.0,
+        on_wait=None,
+        wait_notice_interval_seconds: float = 15.0,
+        should_abort=None,
+        acquire_patience_s: float = 0.5,
+    ) -> bool:
+        """Wait for a cross-process turn lease without holding a SQLite lock.
+
+        ``on_wait(elapsed_seconds)`` is best-effort: invoked when the first
+        attempt fails (elapsed ~0) and again about every
+        ``wait_notice_interval_seconds`` while still waiting, so UIs can show
+        that another process holds the conversation.
+
+        When ``should_abort()`` returns True (for example the agent received
+        ``/stop`` while waiting), acquisition stops immediately and returns
+        False without consuming the full ``wait_seconds`` budget.
+        """
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        wait_started = None
+        last_notice_at = None
+        notice_every = max(0.0, float(wait_notice_interval_seconds))
+        while True:
+            if should_abort is not None:
+                try:
+                    if should_abort():
+                        return False
+                except Exception:
+                    logger.debug(
+                        "session turn lease should_abort callback failed",
+                        exc_info=True,
+                    )
+            try:
+                if self.try_acquire_session_turn_lease(
+                    session_id,
+                    holder,
+                    ttl_seconds=ttl_seconds,
+                    patience_s=acquire_patience_s,
+                ):
+                    return True
+            except sqlite3.Error as exc:
+                # Long holder transactions (compression publish, large
+                # flushes) can exhaust a single write-patience budget.
+                # Keep polling until wait_seconds or should_abort.
+                if classify_persistence_error(exc) != "locked":
+                    raise
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                return False
+            if wait_started is None:
+                wait_started = now
+            if on_wait is not None and (
+                last_notice_at is None
+                or notice_every == 0.0
+                or (now - last_notice_at) >= notice_every
+            ):
+                try:
+                    on_wait(max(0.0, now - wait_started))
+                except Exception:
+                    logger.debug(
+                        "session turn lease on_wait callback failed",
+                        exc_info=True,
+                    )
+                last_notice_at = now
+            time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
+
+    def refresh_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        expires_at = time.time() + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            cursor = conn.execute(
+                "UPDATE session_turn_leases SET expires_at = ? "
+                "WHERE conversation_id = ? AND holder = ?",
+                (expires_at, conversation_id, holder),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def release_session_turn_lease(self, session_id: str, holder: str) -> None:
+        """Release a turn lease iff ``holder`` still owns it; idempotent."""
+        if not session_id or not holder:
+            return
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            conn.execute(
+                "DELETE FROM session_turn_leases "
+                "WHERE conversation_id = ? AND holder = ?",
+                (conversation_id, holder),
+            )
+
+        self._execute_write(_do)
+
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Return the current (non-expired) holder for ``session_id``, or None.
 
@@ -8024,7 +8263,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return None
 
     def _check_transcript_write_guards(
-        self, conn, session_id: str, compression_lock_holder: Optional[str]
+        self,
+        conn,
+        session_id: str,
+        compression_lock_holder: Optional[str],
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> None:
         """Transcript-append admission checks, run INSIDE the write txn.
 
@@ -8045,6 +8289,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             raise SessionCompressionInProgressError(
                 f"Session {session_id!r} is being compressed by another writer"
             )
+        if turn_lease_holder:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            lease = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if lease is None or lease["holder"] != turn_lease_holder:
+                raise SessionTurnLeaseLostError(
+                    f"Session turn lease lost; refusing transcript write "
+                    f"for {session_id!r}"
+                )
+            now = time.time()
+            if float(lease["expires_at"]) <= now:
+                # Expiry makes the row reclaimable; it does not prove that a
+                # takeover occurred. BEGIN IMMEDIATE serializes this renewal
+                # with acquisition, so a still-matching owner can recover from
+                # a starved refresher without weakening the foreign-holder fence.
+                conn.execute(
+                    "UPDATE session_turn_leases SET expires_at = ? "
+                    "WHERE conversation_id = ? AND holder = ?",
+                    (
+                        now + max(0.1, float(turn_lease_ttl_seconds)),
+                        conversation_id,
+                        turn_lease_holder,
+                    ),
+                )
         session = conn.execute(
             "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
             (session_id,),
@@ -8124,6 +8395,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None,
         compression_lock_holder: Optional[str] = None,
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -8182,7 +8455,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             self._check_transcript_write_guards(
-                conn, session_id, compression_lock_holder
+                conn,
+                session_id,
+                compression_lock_holder,
+                turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -8244,7 +8521,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         messages: List[Dict[str, Any]],
         compression_lock_holder: Optional[str] = None,
+        turn_lease_holder: Optional[str] = None,
         chunk_rows: Optional[int] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Append multiple messages atomically in ONE write transaction.
 
@@ -8283,12 +8562,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     session_id,
                     messages[start:start + chunk_rows],
                     compression_lock_holder=compression_lock_holder,
+                    turn_lease_holder=turn_lease_holder,
+                    turn_lease_ttl_seconds=turn_lease_ttl_seconds,
                 )
             return inserted_total
 
         def _do(conn):
             self._check_transcript_write_guards(
-                conn, session_id, compression_lock_holder
+                conn,
+                session_id,
+                compression_lock_holder,
+                turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, messages
@@ -8857,6 +9142,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         session_id: str,
         include_inactive: bool = False,
+        include_compacted: bool = False,
         limit: Optional[int] = None,
         offset: int = 0,
         latest: bool = False,
@@ -8868,6 +9154,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``include_inactive=True`` to load soft-deleted rows (e.g. for
         audit / debug views of rewound history). See
         :meth:`rewind_to_message` for the soft-delete mechanic.
+
+        Pass ``include_compacted=True`` to additionally load rows preserved
+        by in-place context compaction (``active=0, compacted=1``). Those are
+        durable display history, not soft-deleted rows — a user-visible
+        transcript read must not drop them, or earlier turns silently become
+        unreachable once the UI exhausts its active-only window. Soft-deleted
+        Undo/Rewind rows (``active=0, compacted=0``) stay excluded; use
+        ``include_inactive`` for those.
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
@@ -8887,7 +9181,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
-        active_clause = "" if include_inactive else " AND active = 1"
+        if after_id is not None and include_compacted:
+            raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
+        if include_inactive:
+            # Audit / debug reads: every row, including soft-deleted.
+            active_clause = ""
+        elif include_compacted:
+            # Display history: active rows plus rows preserved by in-place
+            # compaction (active=0, compacted=1), but never soft-deleted
+            # Undo/Rewind rows (active=0, compacted=0).
+            active_clause = " AND (active = 1 OR compacted = 1)"
+        else:
+            active_clause = " AND active = 1"
         keyset_clause = " AND id > ?" if after_id is not None else ""
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
@@ -8896,15 +9201,57 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         params: list = [session_id]
         if after_id is not None:
             params.append(after_id)
-        if limit is not None or offset:
-            # SQLite's OFFSET requires LIMIT; -1 means "no limit".
-            sql += " LIMIT ? OFFSET ?"
-            params.extend([-1 if limit is None else limit, offset])
-        with self._read_ctx() as conn:
-            cursor = conn.execute(sql, params)
-            rows = cursor.fetchall()
-        if latest:
-            rows.reverse()
+        if include_compacted:
+            # Compaction epochs copy the protected tail into each new
+            # generation, so the same logical message can exist as several
+            # rows (identical role/content/timestamp) with different active
+            # flags and ids. A display read must surface each message exactly
+            # once: prefer the live row, then the newest generation. Read the
+            # full display set (a session's rows are bounded; the UI-level
+            # 500-row cap lives in the endpoint, not here), dedupe in Python,
+            # then apply paging.
+            with self._read_ctx() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ?" + active_clause
+                    + " ORDER BY id ASC",
+                    [session_id],
+                )
+                all_rows = cursor.fetchall()
+            seen: dict = {}
+            for row in all_rows:
+                # Tool fields participate in the dedupe key: compaction copies
+                # them verbatim, so identical tool messages across generations
+                # still collapse, while distinct tool calls that happen to
+                # share role/content/timestamp are never merged.
+                key = (
+                    row["role"],
+                    row["content"],
+                    row["timestamp"],
+                    row["tool_call_id"],
+                    row["tool_calls"],
+                    row["tool_name"],
+                )
+                cur = seen.get(key)
+                if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
+                    seen[key] = row
+            rows = sorted(seen.values(), key=lambda r: r["id"])
+            if latest:
+                rows = rows[::-1]
+            rows = rows[offset:]
+            if limit is not None:
+                rows = rows[:limit]
+            if latest:
+                rows = rows[::-1]
+        else:
+            if limit is not None or offset:
+                # SQLite's OFFSET requires LIMIT; -1 means "no limit".
+                sql += " LIMIT ? OFFSET ?"
+                params.extend([-1 if limit is None else limit, offset])
+            with self._read_ctx() as conn:
+                cursor = conn.execute(sql, params)
+                rows = cursor.fetchall()
+            if latest:
+                rows.reverse()
         result = []
         for row in rows:
             msg = dict(row)
@@ -9869,6 +10216,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
+        """True when ``session`` is a branch, delegate, or tool child of its parent.
+
+        Markers only count as a fork when they point at ``parent_session_id``.
+        Compression copies ``model_config`` onto the continuation
+        (``publish_compression_child`` callers pass
+        ``agent._session_init_model_config``), so a delegate's continuation
+        carries ``_delegate_from=<the delegate's own parent>``. Presence-only
+        matching would treat that real continuation as a fork — the same
+        misclassification ``_NON_CONTINUATION_CHILD_FILTER_SQL`` already
+        avoids by binding both markers to the queried parent.
+        """
         if session.get("source") == "tool":
             return True
         raw = session.get("model_config")
@@ -9878,10 +10236,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cfg = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, json.JSONDecodeError):
             return False
-        return isinstance(cfg, dict) and (
-            cfg.get("_branched_from") is not None
-            or cfg.get("_delegate_from") is not None
-        )
+        if not isinstance(cfg, dict):
+            return False
+        parent_id = session.get("parent_session_id")
+        branched = cfg.get("_branched_from")
+        delegated = cfg.get("_delegate_from")
+        if parent_id:
+            return branched == parent_id or delegated == parent_id
+        return branched is not None or delegated is not None
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
@@ -10789,6 +11151,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return retagged
 
         return self._execute_write(_do)
+
+    def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
+        """Return ``[(key, value), ...]`` for state_meta keys with ``prefix``.
+
+        Used by feature stores that persist one row per session under a
+        namespaced key (e.g. ``loop:<session_id>``) and need to enumerate
+        them across sessions (the gateway's idle /loop wakeup watcher).
+        ``prefix`` is matched literally — LIKE wildcards in it are escaped.
+        """
+        if not prefix:
+            return []
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'",
+                (escaped + "%",),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

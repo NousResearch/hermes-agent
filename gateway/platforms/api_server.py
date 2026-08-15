@@ -5918,7 +5918,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
 
-            from cron.scheduler_provider import resolve_cron_scheduler
+            from cron.scheduler_provider import (
+                provider_supports_split_fire,
+                resolve_cron_scheduler,
+            )
             provider = resolve_cron_scheduler()
 
             loop = asyncio.get_running_loop()
@@ -5940,10 +5943,55 @@ class APIServerAdapter(BasePlatformAdapter):
                     runner = None
             adapters = getattr(runner, "adapters", None) or None
 
-            # Fire in the background (202 immediately). fire_due claims via the
-            # store CAS, so a retry while this is in flight is de-duped.
+            if not provider_supports_split_fire(provider):
+                # Legacy single-phase provider: it overrides the documented
+                # ``fire_due`` hook (custom claim/re-arm/telemetry) but
+                # inherits the base ``claim_fire`` — driving it through the
+                # split claim path would silently bypass that override.
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        provider.fire_due,
+                        job_id,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                )
+                reservation["detached"] = True
+                task.add_done_callback(
+                    lambda _task: _release_pending_api_work(self, reservation)
+                )
+                try:
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except (TypeError, AttributeError):
+                    pass
+                return web.json_response(
+                    {"status": "accepted", "job_id": job_id}, status=202
+                )
+
+            # Persist the attempt and exact store owner before acknowledging NAS.
+            # A failure here is retryable and the reservation remains attached.
+            try:
+                claimed_job = await asyncio.to_thread(provider.claim_fire, job_id)
+            except Exception as exc:
+                logger.error("cron fire admission failed for %s: %s", job_id, exc)
+                return web.json_response(
+                    {"error": "cron fire admission failed", "job_id": job_id},
+                    status=503,
+                )
+            if claimed_job is None:
+                return web.json_response(
+                    {"status": "duplicate", "job_id": job_id},
+                    status=200,
+                )
+
             task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=adapters, loop=loop)
+                asyncio.to_thread(
+                    provider.fire_claimed,
+                    claimed_job,
+                    adapters=adapters,
+                    loop=loop,
+                )
             )
             reservation["detached"] = True
             task.add_done_callback(

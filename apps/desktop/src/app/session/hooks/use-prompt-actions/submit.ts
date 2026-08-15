@@ -38,12 +38,13 @@ import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { finalizeInterruptedMessages } from './rewind'
 import {
-  _submitInFlight,
+  acquireSubmitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
   isProviderSetupError,
   isSessionBusyError,
   isTargetSessionBusy,
+  releaseSubmitInFlight,
   SessionRecoveryAborted,
   type SubmitTextOptions,
   withSessionBusyRetry,
@@ -59,6 +60,7 @@ interface SubmitPromptDeps {
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
   requestGateway: GatewayRequest
+  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   syncAttachmentsForSubmit: (
@@ -104,6 +106,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     getRuntimeIdForStoredSession,
     getRouteToken,
     requestGateway,
+    runtimeIdByStoredSessionIdRef,
     resumeStoredSession,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
@@ -296,17 +299,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // session switch; this per-session lock makes that safe.
       const submitLockKey = targetStoredSessionId || sessionId || startingActiveSessionId || '__pending_new__'
 
-      if (_submitInFlight.has(submitLockKey)) {
+      if (!acquireSubmitInFlight(submitLockKey)) {
         return false
       }
 
-      _submitInFlight.add(submitLockKey)
       let submitLockReleased = false
 
       const releaseSubmitLock = () => {
         if (!submitLockReleased) {
           submitLockReleased = true
-          _submitInFlight.delete(submitLockKey)
+          releaseSubmitInFlight(submitLockKey)
         }
       }
 
@@ -427,6 +429,39 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // runtime id (background drain) is authoritative and is left untouched.
       if (!options?.sessionId && routedSessionNeedsResume) {
         sessionId = null
+      }
+
+      // Entry-time consistency check (#64789/#65328): activeSessionId is a
+      // render-closure value that can already be stale relative to the
+      // currently selected stored session by the time submit fires (e.g. a
+      // fast reselect, or a new-chat draft's active ref not yet re-homed).
+      // The #54527 drift guard only catches divergence that happens AFTER
+      // this point, so an already-diverged runtime/stored pair sails
+      // through it. Prove membership from BOTH directions against the same
+      // cache rather than trusting an absent forward entry as "no
+      // conflict" — a bare forward miss can't rule out the runtime being
+      // known to belong to a DIFFERENT stored session (the failure mode a
+      // one-directional check misses): if either direction disagrees,
+      // activeSessionId is not trustworthy and the resume-by-stored-id path
+      // below re-establishes the correct runtime id instead of silently
+      // sending to the wrong one.
+      const ownershipStoredSessionId = options?.sessionId ? null : targetStoredSessionId
+
+      if (sessionId && ownershipStoredSessionId) {
+        const provenRuntimeId = runtimeIdByStoredSessionIdRef.current.get(ownershipStoredSessionId)
+        // A selected stored session requires positive ownership proof. A cache
+        // miss is therefore unsafe too: the active runtime may belong to an
+        // entirely different stored session, so resume the selected id instead
+        // of sending to an unverified runtime.
+        const knownMismatch = provenRuntimeId !== sessionId
+
+        const runtimeOwnedByOtherStored = Array.from(runtimeIdByStoredSessionIdRef.current.entries()).some(
+          ([storedId, runtimeId]) => runtimeId === sessionId && storedId !== ownershipStoredSessionId
+        )
+
+        if (knownMismatch || runtimeOwnedByOtherStored) {
+          sessionId = null
+        }
       }
 
       if (sessionId) {
@@ -743,6 +778,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       getRuntimeIdForStoredSession,
       getRouteToken,
       requestGateway,
+      runtimeIdByStoredSessionIdRef,
       resumeStoredSession,
       scope,
       selectedStoredSessionIdRef,

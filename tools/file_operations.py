@@ -2287,6 +2287,28 @@ class ShellFileOperations(FileOperations):
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
 
+        # A per-file `tsc --noEmit <file>` cannot read the project's
+        # tsconfig.json, so for any .ts that belongs to a TS project it floods
+        # phantom errors — unresolved path aliases (`@/…` → TS2307) and ambient
+        # globals (`Window.hermesDesktop` → TS2339) that are defined by the
+        # config it never loads. The delta filter then reports the misleading
+        # "pre-existing lint errors … the file is still broken", which carries
+        # no signal and wastes the caller's turns. When an ancestor
+        # tsconfig.json exists, skip the shell tsc entirely; real diagnostics
+        # come from the LSP tier (below) or an explicit `tsc -p tsconfig.json`
+        # the caller runs deliberately. (.tsx already returns above via the
+        # `ext not in LINTERS` branch.)
+        if ext == '.ts' and self._has_ancestor_tsconfig(path):
+            return LintResult(
+                skipped=True,
+                message=(
+                    "Project tsconfig.json detected — per-file tsc skipped "
+                    "(single-file tsc can't resolve project aliases/globals; "
+                    "use the LSP tier or `tsc -p tsconfig.json` for real "
+                    "diagnostics)."
+                ),
+            )
+
         # If a real LSP server is active and claims this file, skip the
         # shell linter for extensions whose per-file shell invocation is
         # structurally weaker / floods phantom errors.  See
@@ -2466,6 +2488,33 @@ class ShellFileOperations(FileOperations):
             if ext_lower in srv.extensions:
                 return True
         return False
+
+    def _has_ancestor_tsconfig(self, path: str) -> bool:
+        """True iff a tsconfig.json exists in *path*'s directory or any ancestor.
+
+        A single-file ``tsc`` invocation can't read that config, so its
+        diagnostics for such a file are pure noise (unresolved aliases /
+        ambient globals). Used by :meth:`_check_lint` to skip the per-file
+        shell tsc for project TypeScript files.
+
+        Best-effort and local-host only: a host-side ``os.path`` walk. On a
+        remote/sandboxed backend the project tree isn't on this host, so the
+        walk returns False and the shell linter runs exactly as before — never
+        suppress lint based on a probe that couldn't answer.
+        """
+        if not self._lsp_local_only():
+            return False
+        try:
+            d = os.path.dirname(os.path.abspath(path))
+            while True:
+                if os.path.isfile(os.path.join(d, "tsconfig.json")):
+                    return True
+                parent = os.path.dirname(d)
+                if parent == d:
+                    return False
+                d = parent
+        except Exception:  # noqa: BLE001
+            return False
 
     def _lsp_will_handle(self, path: str) -> bool:
         """Return True iff the LSP service is active AND will lint this file.

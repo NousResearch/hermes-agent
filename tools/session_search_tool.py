@@ -77,6 +77,21 @@ _COMPACTION_PREFIXES = (
     "[CONTEXT SUMMARY]:",
 )
 
+# Gateway /new, /reset, idle/daily expiry, and CLI /new end the predecessor
+# without carrying its transcript into the child. Those children share a
+# parent_session_id lineage with the current session, but the prior content
+# is NOT in live context — unlike compression continuations (summary carried
+# forward) and live delegation children (parent still running).
+_FRESH_RESET_END_REASONS = frozenset({
+    "session_reset",
+    "session_switch",
+    "idle",
+    "daily",
+    "suspended",
+    "resume_pending_expired",
+    "new_session",
+})
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -151,6 +166,19 @@ def _resolve_lineage(db, session_id: str) -> str:
     return _resolve_to_parent(db, session_id)[0]
 
 
+def _session_end_reason(db, session_id: str) -> Optional[str]:
+    """Return the session's ``end_reason``, or None if missing/unended/error."""
+    if not session_id:
+        return None
+    try:
+        s = db.get_session(session_id)
+        if not s:
+            return None
+        return s.get("end_reason") or None
+    except Exception:
+        return None
+
+
 def _is_compression_ended(db, session_id: str) -> bool:
     """Return True if *session_id* itself ended with ``end_reason='compression'``.
 
@@ -161,15 +189,34 @@ def _is_compression_ended(db, session_id: str) -> bool:
     ``end_reason`` is ``None`` — its content is still live to the parent agent,
     so it must stay excluded from discovery.
     """
-    if not session_id:
-        return False
-    try:
-        s = db.get_session(session_id)
-        if not s:
-            return False
-        return s.get("end_reason") == "compression"
-    except Exception:
-        return False
+    return _session_end_reason(db, session_id) == "compression"
+
+
+def _session_left_live_context(db, session_id: str) -> bool:
+    """True when *session_id* was ended, so its transcript is not in live context.
+
+    Covers compression rotation AND /new-reset / idle / CLI new_session.
+    Live delegation children have ``end_reason is None`` and stay excluded.
+    """
+    return _session_end_reason(db, session_id) is not None
+
+
+def _is_fresh_reset_session(end_reason: Optional[str]) -> bool:
+    """True when *end_reason* is a /new-style reset (transcript not carried forward)."""
+    return end_reason in _FRESH_RESET_END_REASONS
+
+
+def _has_reset_from_marker(model_config: Any) -> bool:
+    """True when model_config carries the gateway ``_reset_from`` lineage marker."""
+    if isinstance(model_config, dict):
+        return bool(model_config.get("_reset_from"))
+    if isinstance(model_config, str) and model_config:
+        try:
+            parsed = json.loads(model_config)
+        except (TypeError, ValueError):
+            return "_reset_from" in model_config
+        return isinstance(parsed, dict) and bool(parsed.get("_reset_from"))
+    return False
 
 
 def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
@@ -437,21 +484,39 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
+        # list_sessions_rich already admits /new-reset children
+        # (_reset_from marker / same-key heuristic). The extra skip below
+        # used to drop every parent_session_id row, which hid those
+        # conversations from browse after /new (#85756).
         sessions = db.list_sessions_rich(
-            limit=limit + 5,
+            limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
-        )  # fetch extra so we can skip current
+        )  # fetch extra so we can skip current / live children
 
-        current_root = _resolve_lineage(db, current_session_id) if current_session_id else None
+        current_root, has_compression_hop = (
+            _resolve_to_parent(db, current_session_id)
+            if current_session_id else (None, False)
+        )
 
         results = []
         for s in sessions:
             sid = s.get("id", "")
-            if current_root and (sid == current_root or sid == current_session_id):
+            if sid == current_session_id:
                 continue
-            # Skip child / delegation sessions
-            if s.get("parent_session_id"):
+            # Compression continuation: the root's original turns were
+            # summarised into the live child, so hide the root. /new-reset
+            # children share a lineage root but carry no transcript — keep
+            # that root browsable.
+            if has_compression_hop and current_root and sid == current_root:
+                continue
+            # Hide live children (delegation, still-open continuations)
+            # unless they are /new-reset fragments. Reset children keep
+            # parent_session_id for lineage but are independent conversations.
+            if s.get("parent_session_id") and not (
+                _is_fresh_reset_session(s.get("end_reason"))
+                or _has_reset_from_marker(s.get("model_config"))
+            ):
                 continue
             results.append({
                 "session_id": sid,
@@ -509,10 +574,10 @@ def _scroll(
     window = max(1, min(window, 20))
 
     # Locate the anchor before applying the current-lineage guard. Discovery
-    # intentionally surfaces two kinds of same-lineage history that are no
-    # longer in live context: in-place compacted rows, and rows owned by a
-    # legacy session that ended via compression. Scroll must preserve that
-    # distinction instead of rejecting the discovery result it just returned.
+    # intentionally surfaces same-lineage history that is no longer in live
+    # context: in-place compacted rows, compression-ended parents, and
+    # /new-reset predecessors. Scroll must preserve that distinction instead
+    # of rejecting the discovery result it just returned.
     anchor_state = _get_message_storage_state(db, around_message_id)
     owning_session_id = (
         anchor_state.get("session_id") if anchor_state is not None else None
@@ -533,11 +598,11 @@ def _scroll(
                 and anchor_state["active"] == 0
                 and anchor_state["compacted"] != 1
             )
-            is_compression_history = (
+            is_out_of_context_history = (
                 not is_inactive_non_compacted_anchor
-                and _is_compression_ended(db, anchor_session_id)
+                and _session_left_live_context(db, anchor_session_id)
             )
-            if not (is_compacted_anchor or is_compression_history):
+            if not (is_compacted_anchor or is_out_of_context_history):
                 return tool_error(
                     "scroll rejected: anchor lives in the current session lineage (already in your active context)",
                     success=False,
@@ -640,7 +705,10 @@ def _title_match_result(
 
     lineage_root = _resolve_lineage(db, session_id)
     if current_lineage_root and lineage_root == current_lineage_root:
-        return None
+        # Same-lineage title hits are in-context only when the session is
+        # still live. /new-reset and compression-ended parents are not.
+        if not _session_left_live_context(db, session_id):
+            return None
 
     try:
         session_meta = db.get_session(lineage_root) or db.get_session(session_id) or {}
@@ -752,23 +820,26 @@ def _discover(
             break
         raw_sid = r["session_id"]
         resolved_sid, _ = _resolve_to_parent(db, raw_sid)
-        # Skip the current session lineage — UNLESS the content has been
-        # compression-summarised out of the live context (memory black hole
-        # after compression). Two sub-cases:
+        # Skip the current session lineage — UNLESS the hit's transcript has
+        # left live context. Three sub-cases:
         #
-        # Legacy rotation: the FTS hit lives in a session that itself ended
-        # with end_reason='compression'. That session's content has been
-        # replaced by a summary in the continuation child, so it must stay
-        # discoverable. A delegation child living under a compression
-        # continuation does NOT have end_reason='compression' itself, so it
-        # stays excluded.
+        # Legacy compression rotation: the FTS hit lives in a session that
+        # itself ended with end_reason='compression'. That session's content
+        # has been replaced by a summary in the continuation child, so it
+        # must stay discoverable.
+        #
+        # /new-reset (and idle/daily/CLI new_session): the predecessor was
+        # ended without carrying any transcript into the child. Same lineage
+        # root, but the prior conversation is NOT in the active context —
+        # hiding it made gateway recall go blind after every /new (#85756).
+        # A live delegation child has end_reason=None, so it stays excluded.
         #
         # In-place compaction: the FTS hit lives on the SAME session_id as the
         # current session, but the matched message row is an archived
         # (active=0, compacted=1) row. The live-context load filters active=1,
         # so that content is no longer in context — let it through.
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
-        is_ended_session = _is_compression_ended(db, raw_sid)
+        is_ended_session = _session_left_live_context(db, raw_sid)
         if current_lineage_root and resolved_sid == current_lineage_root:
             if not (is_ended_session or is_compacted_hit):
                 continue

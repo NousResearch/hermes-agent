@@ -18,6 +18,12 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Synthetic error code used when the OpenAI SDK rejects a provider's SSE
+# ``data:`` field before Hermes receives a completion chunk.  Keeping this
+# distinct from generic JSON parse failures lets the classifier make narrow,
+# provider-stream-specific recovery decisions without inventing an HTTP status.
+PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
+
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
@@ -1559,6 +1565,20 @@ def _classify_by_error_code(
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
+
+    if (
+        code_lower == PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        and "request validation failed:" in error_msg
+    ):
+        # Some OpenAI-compatible endpoints encode deterministic request
+        # validation failures as plain-text ``event: error`` SSE data behind
+        # HTTP 200.  Retrying the unchanged request cannot succeed, but a
+        # configured provider fallback still may.
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
 
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(

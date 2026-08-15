@@ -699,8 +699,8 @@ def finalize_turn(
             "health (`hermes doctor`), then send your message again"
         )
         # Machine-readable cause for the gateway/desktop: exactly
-        # 'session_persistence_failed:<locked|disk|unknown>'. Never clobber a
-        # failure_reason another path already stamped on this result.
+        # 'session_persistence_failed:<locked|compression|turn_lease|disk|unknown>'.
+        # Never clobber a failure_reason another path already stamped.
         if "failure_reason" not in result:
             _cause = getattr(agent, "_last_persistence_error_cause", None)
             result["failure_reason"] = (

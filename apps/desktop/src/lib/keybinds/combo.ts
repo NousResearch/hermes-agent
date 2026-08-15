@@ -223,8 +223,27 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   )
 }
 
-// A primary modifier (Cmd/Ctrl/Control) fires even while typing (e.g. ⌘K or
-// ⌃Tab from the composer); bare/Shift-only combos are suppressed in inputs.
-export function comboAllowedInInput(combo: string): boolean {
-  return /^(?:mod|ctrl)(?:\+|$)/.test(combo)
+const INPUT_SAFE_ACTIONS = new Set([
+  'composer.modelPicker',
+  'composer.voice',
+  'keybinds.openPanel',
+  'nav.commandPalette',
+  'session.next',
+  'session.prev',
+  'view.findInPage'
+])
+
+const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown'])
+
+// Only explicit text-entry-safe actions fire while typing. Editing/navigation
+// chords such as Ctrl+Arrow/PageUp must stay with the input even if a user
+// rebinds them to a global navigation action.
+export function actionAllowedInInput(actionId: string, combo: string): boolean {
+  const base = combo.split('+').pop()
+
+  if (base && TEXT_NAVIGATION_KEYS.has(base)) {
+    return false
+  }
+
+  return INPUT_SAFE_ACTIONS.has(actionId)
 }

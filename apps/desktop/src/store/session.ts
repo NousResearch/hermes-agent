@@ -437,7 +437,41 @@ export function mergeSessionPage(
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
-  return survivors.length ? [...survivors, ...merged] : merged
+  if (!survivors.length) {
+    return merged
+  }
+
+  // Survivors carry their old relative positions from `previous`, which can be
+  // stale — the server page is the fresh `order=recent` truth. Sort survivors
+  // by the same effective-recency key the backend sorts by (last_active with a
+  // started_at fallback) and interleave them into the title-preserving merged
+  // rows so a retained session lands where recency puts it instead of the
+  // whole set forming a stale block at the top of the sidebar (fixes #47203).
+  // Ties keep the survivor first, matching the old prepend behavior.
+  const recency = (session: SessionInfo): number => Math.max(session.last_active || 0, session.started_at || 0)
+
+  const sortedSurvivors = [...survivors].sort((a, b) => recency(b) - recency(a))
+  const interleaved: SessionInfo[] = []
+  let survivorIndex = 0
+  let mergedIndex = 0
+
+  while (survivorIndex < sortedSurvivors.length && mergedIndex < merged.length) {
+    if (recency(sortedSurvivors[survivorIndex]) >= recency(merged[mergedIndex])) {
+      interleaved.push(sortedSurvivors[survivorIndex++])
+    } else {
+      interleaved.push(merged[mergedIndex++])
+    }
+  }
+
+  while (survivorIndex < sortedSurvivors.length) {
+    interleaved.push(sortedSurvivors[survivorIndex++])
+  }
+
+  while (mergedIndex < merged.length) {
+    interleaved.push(merged[mergedIndex++])
+  }
+
+  return interleaved
 }
 
 /** Raise a session in recents on user send (before stream / turn resolve). */

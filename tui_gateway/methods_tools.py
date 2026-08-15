@@ -834,6 +834,37 @@ def _(rid, params: dict) -> dict:
             {"type": "send", "notice": notice, "message": state.goal},
         )
 
+    if name == "loop":
+        # /loop — recurring in-session wakeups (Claude Code parity). State
+        # mutation via the shared dispatcher; the notification poller thread
+        # fires due wakeups into this session while it's idle.
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.loops import LoopManager, dispatch_loop_command
+        except Exception as exc:
+            return _err(rid, 5030, f"loops unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        mgr = LoopManager(session_id=sid_key)
+        result = dispatch_loop_command(mgr, arg)
+        output = result.get("output") or ""
+        if result.get("created"):
+            try:
+                from hermes_cli.loops import goal_blocks_loop_tick
+
+                if goal_blocks_loop_tick(sid_key):
+                    output += (
+                        "\nNote: an active /goal is driving this session — loop "
+                        "wakeups defer until the goal finishes, pauses, or parks."
+                    )
+            except Exception:
+                pass
+        return _ok(rid, {"type": "exec", "output": output})
+
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the
         # truncated rows on disk, and prefill the composer with the text
@@ -1731,6 +1762,23 @@ def _(rid, params: dict) -> dict:
 @method("skills.manage")
 def _(rid, params: dict) -> dict:
     action, query = params.get("action", "list"), params.get("query", "")
+    # Optional profile scoping: list/install operate on that profile's
+    # skills dir (capabilities UIs manage a bot's skills from the main
+    # window). Search/browse/inspect hit the shared hub catalog — the
+    # override is harmless there and keeps the semantics uniform.
+    profile = str(params.get("profile") or "").strip()
+    token = None
+    if profile:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            from hermes_constants import set_hermes_home_override
+
+            profile_dir = get_profile_dir(profile)
+            if not profile_dir or not profile_dir.is_dir():
+                return _err(rid, 4064, f"profile '{profile}' not found")
+            token = set_hermes_home_override(str(profile_dir))
+        except Exception as e:
+            return _err(rid, 5024, str(e))
     try:
         if action == "list":
             from hermes_cli.banner import get_available_skills
@@ -1785,6 +1833,468 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4017, f"unknown skills action: {action}")
     except Exception as e:
         return _err(rid, 5024, str(e))
+    finally:
+        if token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+
+                reset_hermes_home_override(token)
+            except Exception:
+                pass
+
+
+@method("mcp.catalog")
+def _(rid, params: dict) -> dict:
+    """Bundled MCP catalog with per-profile install/enable state.
+
+    Params: optional ``profile`` (defaults to the launch profile). Result:
+    ``{servers: [{name, description, installed, enabled, requires: [env
+    keys], transport}]}`` — the same catalog `hermes mcp` offers, so
+    capability UIs can present the full menu and know which entries need
+    setup (missing requires) before they'll work.
+    """
+    profile = str(params.get("profile") or "").strip()
+    token = None
+    try:
+        if profile:
+            from hermes_cli.profiles import get_profile_dir
+            from hermes_constants import set_hermes_home_override
+
+            profile_dir = get_profile_dir(profile)
+            if not profile_dir or not profile_dir.is_dir():
+                return _err(rid, 4064, f"profile '{profile}' not found")
+            token = set_hermes_home_override(str(profile_dir))
+
+        from hermes_cli import mcp_catalog
+
+        out = []
+        for entry in mcp_catalog.list_catalog():
+            try:
+                requires = [str(k) for k in (getattr(entry, "env_keys", None) or [])]
+            except Exception:
+                requires = []
+            out.append(
+                {
+                    "name": entry.name,
+                    "description": getattr(entry, "description", "") or "",
+                    "installed": bool(mcp_catalog.is_installed(entry.name)),
+                    "enabled": bool(mcp_catalog.is_enabled(entry.name)),
+                    "requires": requires,
+                    # TransportSpec object — reduce to its kind string.
+                    "transport": str(
+                        getattr(getattr(entry, "transport", None), "kind", "")
+                        or getattr(entry, "transport", "")
+                        or "stdio"
+                    ),
+                }
+            )
+        return _ok(rid, {"servers": out})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        if token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+
+                reset_hermes_home_override(token)
+            except Exception:
+                pass
+
+
+# ─── Per-profile MCP server lifecycle (mcp.servers.*) ────────────────────────
+#
+# Gateway RPCs mirroring the dashboard's REST surface
+# (hermes_cli/web_routers/mcp.py) so a desktop plugin can manage MCP servers for
+# ANY profile, not just the launch profile. Each accepts an optional ``profile``
+# param that scopes HERMES_HOME via set_hermes_home_override (omitted/None = the
+# launch profile) in a try/finally, exactly like ``skills.manage`` / ``mcp.catalog``.
+# All persistence reuses hermes_cli/mcp_config.py helpers — no logic is duplicated.
+# Shared helpers (resolve_profile / reset_profile / summarize_server) live in
+# tui_gateway.mcp_rpc_helpers and are imported at call time: these handlers are
+# rebound onto server.py's globals at install time, so a plain module-level def
+# here would not be reachable from the rebound handler body.
+
+
+@method("mcp.servers.list")
+def _(rid, params: dict) -> dict:
+    """List a profile's configured MCP servers.
+
+    Params: optional ``profile``. Result: ``{servers: [{name, transport, url,
+    command, args, env (key names only), auth, oauth_tokens_present, enabled,
+    tools}]}``. Reuses ``mcp_config._get_mcp_servers`` under the home override.
+    """
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        servers = _get_mcp_servers()
+        return _ok(
+            rid,
+            {
+                "servers": [
+                    _mcp_summarize_server(name, cfg)
+                    for name, cfg in sorted(servers.items())
+                ]
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.add")
+def _(rid, params: dict) -> dict:
+    """Add/save an MCP server to a profile's config.yaml.
+
+    Params: optional ``profile``, ``name`` (required), and EITHER:
+      - ``preset`` (a catalog preset id) → applied via ``_apply_mcp_preset``, or
+      - ``config`` (an mcp_servers entry dict: url/command/args/env/headers/
+        auth/tools) → saved via ``_save_mcp_server``.
+    If ``bearer_token`` is given (header auth), it is written to the profile's
+    .env via ``_save_bearer_auth_token`` and only the safe ``Authorization``
+    header template is persisted in config.yaml.
+
+    Result: ``{ok: true, name, server: <summary>}``. Duplicate names error.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.mcp_config import (
+            _apply_mcp_preset,
+            _get_mcp_servers,
+            _save_bearer_auth_token,
+            _save_mcp_server,
+        )
+
+        if name in _get_mcp_servers():
+            return _err(rid, 4090, f"server '{name}' already exists")
+
+        preset = str(params.get("preset") or "").strip()
+        raw_cfg = params.get("config")
+        server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
+
+        if preset:
+            # _apply_mcp_preset fills url/command/args from a known preset when
+            # transport details were omitted; it mutates server_config in place.
+            _apply_mcp_preset(
+                name,
+                preset_name=preset,
+                url=server_config.get("url"),
+                command=server_config.get("command"),
+                cmd_args=list(server_config.get("args") or []),
+                server_config=server_config,
+            )
+
+        if not server_config.get("url") and not server_config.get("command"):
+            return _err(
+                rid,
+                4063,
+                "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'",
+            )
+
+        bearer_token = params.get("bearer_token")
+        if bearer_token:
+            # Persist the secret in .env; store only the interpolation template.
+            server_config["headers"] = _save_bearer_auth_token(name, str(bearer_token))
+
+        if not _save_mcp_server(name, server_config):
+            return _err(
+                rid,
+                4001,
+                f"server '{name}' rejected: suspicious command/args configuration",
+            )
+        saved = _get_mcp_servers().get(name, server_config)
+        return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.set_api_key")
+def _(rid, params: dict) -> dict:
+    """Store a required API key / credential for a server in a profile.
+
+    Params: optional ``profile``, ``name`` (required), ``value`` (required,
+    the secret), and optional ``env_var`` (defaults to the server's canonical
+    ``MCP_<NAME>_API_KEY`` key). The secret is written to that profile's .env
+    via ``save_env_value``; the config.yaml entry is updated to reference it —
+    a header template ``Authorization: Bearer ${ENV}`` for http servers, or an
+    ``env: {VAR: "${ENV}"}`` reference for stdio servers — matching how
+    ``cmd_mcp_configure`` / ``_save_bearer_auth_token`` wire secrets.
+
+    Result: ``{ok: true, name, env_var, server: <summary>}``.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    value = params.get("value")
+    if value is None or str(value) == "":
+        return _err(rid, 4063, "value required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.config import load_config, save_config, save_env_value
+        from hermes_cli.mcp_config import (
+            _bearer_auth_headers,
+            _env_key_for_server,
+            _get_mcp_servers,
+            _strip_bearer_prefix,
+        )
+
+        servers = _get_mcp_servers()
+        if name not in servers:
+            return _err(rid, 4064, f"server '{name}' not found")
+
+        env_var = str(params.get("env_var") or "").strip() or _env_key_for_server(name)
+
+        entry = servers[name]
+        if not isinstance(entry, dict):
+            return _err(rid, 4001, "malformed server config")
+
+        if entry.get("url"):
+            # http/sse server: store a bearer token + Authorization template.
+            normalized = _strip_bearer_prefix(str(value))
+            if not normalized or normalized.lower() == "bearer":
+                return _err(rid, 4063, "value is not a valid credential")
+            save_env_value(env_var, normalized)
+            if env_var == _env_key_for_server(name):
+                headers = _bearer_auth_headers(name)
+            else:
+                headers = {"Authorization": f"Bearer ${{{env_var}}}"}
+            entry["headers"] = headers
+        else:
+            # stdio server: reference the secret from the process env block.
+            save_env_value(env_var, str(value))
+            env_block = entry.get("env")
+            if not isinstance(env_block, dict):
+                env_block = {}
+            env_block[env_var] = f"${{{env_var}}}"
+            entry["env"] = env_block
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})[name] = entry
+        save_config(cfg)
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "name": name,
+                "env_var": env_var,
+                "server": _mcp_summarize_server(name, entry),
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.test")
+def _(rid, params: dict) -> dict:
+    """Probe a profile's MCP server: connect, list tools, disconnect.
+
+    Params: optional ``profile``, ``name`` (required). Result on success:
+    ``{ok: true, tools: [{name, description}], prompts, resources,
+    oauth_tokens_present}``. On failure: ``{ok: false, error, tools: [],
+    oauth_needed}``. Reuses ``mcp_config._probe_single_server`` +
+    ``_oauth_tokens_present`` — same logic as the /test dashboard route.
+
+    Runs on the RPC thread pool (see _LONG_HANDLERS): a cold stdio `npx`
+    spawn can block for many seconds.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.mcp_config import (
+            _get_mcp_servers,
+            _oauth_tokens_present,
+            _probe_single_server,
+        )
+
+        servers = _get_mcp_servers()
+        if name not in servers:
+            return _err(rid, 4064, f"server '{name}' not found")
+
+        cfg = servers[name]
+        # An `auth: oauth` server that serves tools/list anonymously would probe
+        # OK with no token — a false green. Require a token on disk for it.
+        needs_oauth_token = cfg.get("auth") == "oauth"
+        details: dict = {}
+        try:
+            tools = _probe_single_server(name, cfg, details=details)
+            token_present = _oauth_tokens_present(name) if needs_oauth_token else True
+        except Exception as exc:
+            return _ok(
+                rid,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "tools": [],
+                    "oauth_needed": needs_oauth_token,
+                    "oauth_tokens_present": _oauth_tokens_present(name)
+                    if needs_oauth_token
+                    else None,
+                },
+            )
+        if not token_present:
+            return _ok(
+                rid,
+                {
+                    "ok": False,
+                    "error": "OAuth authentication required — no token found.",
+                    "tools": [],
+                    "oauth_needed": True,
+                    "oauth_tokens_present": False,
+                },
+            )
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "tools": [{"name": t, "description": d} for t, d in tools],
+                "prompts": details.get("prompts", 0),
+                "resources": details.get("resources", 0),
+                "oauth_needed": needs_oauth_token,
+                "oauth_tokens_present": True if needs_oauth_token else None,
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.remove")
+def _(rid, params: dict) -> dict:
+    """Remove a server from a profile's config.yaml.
+
+    Params: optional ``profile``, ``name`` (required). Result:
+    ``{ok: true, removed: bool}``. Reuses ``mcp_config._remove_mcp_server``.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.mcp_config import _remove_mcp_server
+
+        removed = _remove_mcp_server(name)
+        if not removed:
+            return _err(rid, 4064, f"server '{name}' not found")
+        return _ok(rid, {"ok": True, "removed": True})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.oauth.start")
+def _(rid, params: dict) -> dict:
+    """Begin a session-backed OAuth flow for an MCP server in a profile.
+
+    Params: optional ``profile``, ``name`` (required). Result:
+    ``{ok: true, session_id, auth_url, flow: "pkce"}``.
+
+    The client (desktop) opens ``auth_url`` in the native browser
+    (``window.hermesDesktop.openExternal``) and then polls
+    ``mcp.servers.oauth.poll`` with the returned ``session_id`` until
+    ``status == "approved"``. This mirrors the provider-OAuth start/poll model
+    (``/api/providers/oauth/{id}/start`` + ``/poll``): a background worker drives
+    the SAME interactive MCP OAuth machinery ``hermes mcp login`` uses
+    (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
+    listener captures the browser redirect — no FastAPI request object needed.
+
+    Runs on the RPC thread pool (see _LONG_HANDLERS): start blocks briefly for
+    the authorization URL to be published.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from hermes_cli.mcp_config import _get_mcp_servers
+        from hermes_constants import get_hermes_home
+        from tui_gateway import mcp_oauth_sessions
+
+        servers = _get_mcp_servers()
+        if name not in servers:
+            return _err(rid, 4064, f"server '{name}' not found")
+        cfg = dict(servers[name])
+        if not cfg.get("url"):
+            return _err(
+                rid, 4001, "stdio servers authenticate via env keys, not OAuth"
+            )
+        if cfg.get("headers") and cfg.get("auth") != "oauth":
+            return _err(
+                rid, 4001, "this server uses header/API-key auth, not OAuth"
+            )
+        cfg["auth"] = "oauth"
+
+        hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
+        result = mcp_oauth_sessions.start_flow(hermes_home, name, cfg)
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "session_id": result["session_id"],
+                "auth_url": result["auth_url"],
+                "flow": result["flow"],
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.oauth.poll")
+def _(rid, params: dict) -> dict:
+    """Poll a session-backed MCP OAuth flow.
+
+    Params: optional ``profile``, ``name`` (required), ``session_id`` (required,
+    from ``mcp.servers.oauth.start``). Result: ``{ok: true, status:
+    "pending"|"approved"|"error", error_message?, auth_url?, tools?}``.
+
+    On ``approved`` the OAuth tokens have been persisted for that server in that
+    profile (verified via ``_oauth_tokens_present`` inside the worker). The
+    profile scope is applied here too so a same-profile reconnect / token read
+    resolves correctly.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        return _err(rid, 4063, "session_id required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from tui_gateway import mcp_oauth_sessions
+
+        result = mcp_oauth_sessions.poll_flow(session_id, name)
+        return _ok(rid, {"ok": True, **result})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
 
 
 @method("skills.reload")

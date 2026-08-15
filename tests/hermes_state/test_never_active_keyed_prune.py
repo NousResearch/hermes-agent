@@ -1,9 +1,10 @@
 """Sweeping never-active keyed gateway rows (#82770).
 
 The live-DB guard stops *new* fixture escapes, but it cannot touch rows that
-are already in a developer's ``state.db`` — and bulk prune/archive cannot
-either: their shared selector is pinned to ``ended_at IS NOT NULL`` so a live
-session is never picked, which permanently excludes every never-closed row.
+are already in a developer's ``state.db``. Ordinary bulk prune cannot reach
+them because destructive prune is pinned to ``ended_at IS NOT NULL``; archive
+can soft-hide unended rows but cannot delete them. Removing this exact unused
+shape therefore needs a separate selector.
 
 These tests pin the narrow selector that reaches them, and — more importantly
 — pin the rows it must refuse to touch.

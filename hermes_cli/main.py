@@ -13259,7 +13259,11 @@ def main():
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive",
-        help="Bulk-archive (soft-hide) sessions matching filters — no deletion",
+        help="Bulk-archive ended or unended sessions matching filters — no deletion",
+        description=(
+            "Soft-hide matching ended and unended sessions without deleting them. "
+            "Archiving an unended session does not end or reset it."
+        ),
     )
     _add_session_filter_args(
         sessions_archive,

@@ -4955,10 +4955,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         drop: there is no transcript to lose, and the gateway mints a fresh
         session on the next inbound message either way.
 
-        ``bulk prune``/``archive`` cannot reach these rows: their shared
-        selector is pinned to ``ended_at IS NOT NULL`` so that a live session
-        is never picked, which permanently excludes every never-closed row.
-        Hence a separate, narrower selector rather than another filter flag.
+        Ordinary bulk prune cannot reach these rows because destructive prune
+        is pinned to ``ended_at IS NOT NULL``. Archive may select them, but it
+        only soft-hides rows and cannot perform this cleanup. Hence a separate,
+        narrower destructive selector rather than another prune filter flag.
 
         ``pinned`` and ``archived`` rows are excluded — both are explicit
         user intent to keep the row around.

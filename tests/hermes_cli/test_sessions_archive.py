@@ -1,6 +1,8 @@
+import sys
 from argparse import Namespace
 
 import hermes_state
+import pytest
 from hermes_cli.sessions_cmd import cmd_sessions
 
 
@@ -46,5 +48,22 @@ def test_sessions_archive_dry_run_matches_unended_title(monkeypatch, capsys, tmp
 
     output = capsys.readouterr().out
     assert "1 session(s) match" in output
+    assert "1 unended, 0 ended" in output
     assert "open" in output
     assert "Dry run" in output
+
+
+def test_sessions_archive_help_describes_unended_sessions(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "archive", "--help"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.main()
+
+    assert exc_info.value.code == 0
+    assert "ended and unended sessions" in capsys.readouterr().out

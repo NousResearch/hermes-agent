@@ -6220,14 +6220,19 @@ def tick(
                 execution = create_execution(job_id, source="builtin")
                 dispatched_job = dict(job, execution_id=execution["id"])
                 _ctx = contextvars.copy_context()
-            except BaseException:
+            except Exception as execution_err:
                 # Init/creation failure between the claim and the submit —
                 # release the in-flight claim immediately so the next tick can
                 # retry instead of wedging on 'already running' forever (the
                 # audit requirement: every add is paired with guaranteed
-                # cleanup). Re-raise so the caller sees the failure.
+                # cleanup).
                 release_running_job(job_id)
-                raise
+                logger.exception(
+                    "Job '%s' not dispatched: execution creation failed: %s",
+                    job.get("name", job_id),
+                    execution_err,
+                )
+                return None
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
                 try:

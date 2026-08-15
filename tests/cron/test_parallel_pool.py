@@ -135,6 +135,61 @@ class TestRunningJobGuard:
         assert "queued-job" not in sched._running_job_ids
 
 
+    def test_create_execution_failure_does_not_wedge_running_set(self, tmp_path, monkeypatch):
+        """create_execution failures clear the running lock and still allow next jobs."""
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        failing_job = {
+            "id": "failing-job",
+            "name": "failing-job",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+        healthy_job = {
+            "id": "healthy-job",
+            "name": "healthy-job",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        called = []
+
+        def create_execution_side_effect(job_id, source):
+            if job_id == "failing-job":
+                raise RuntimeError("execution ledger unavailable")
+            return {"id": f"{job_id}-execution"}
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [failing_job, healthy_job])
+        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(sched, "create_execution", create_execution_side_effect)
+        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: called.append(j["id"]) or (True, "out", "resp", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "finish_execution", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "claim_dispatch", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "mark_execution_running", lambda *_a, **_kw: None)
+
+        n = sched.tick(verbose=False)
+
+        assert n == 1
+        assert called == ["healthy-job"]
+        assert "failing-job" not in sched._running_job_ids
+        assert "healthy-job" not in sched._running_job_ids
+
+        sched._shutdown_parallel_pool()
+
+
 class TestSyncMode:
     """tick() blocks by default (sync=True); tick(sync=False) returns immediately."""
 

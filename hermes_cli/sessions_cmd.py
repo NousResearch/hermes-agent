@@ -39,6 +39,133 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
+SESSIONS_ACTIVITY_CONTRACT = "hermes-sessions-activity-v1"
+# Enough sessions to cover every workspace a person could plausibly have open
+# at once, while keeping the read bounded on a 300+ session store.
+_ACTIVITY_SCAN_LIMIT = 200
+
+
+def _sessions_activity(db, args) -> int:
+    """Aggregate interactive-session activity, grouped by workspace digest.
+
+    Interactive sessions are a different subject from kanban rows: a chat a
+    person drives has no assignee, no worker PID and no task row, so a reader
+    that only watches kanban reports "no work observed" while real work is
+    happening in front of them. This states that work exists, per workspace,
+    and nothing about what it is.
+
+    Deliberately aggregate and identifier-free. Session ids, titles, previews,
+    models, chat ids and workspace paths never appear: titles and previews are
+    free user text and raw prompt text, and a path is an environment detail.
+    The workspace is emitted only as a sha256 of its key, so a consumer can
+    match it against a workspace it already knows without ever learning one it
+    does not. Callers name it or withhold it; this command never does.
+    """
+    import hashlib
+    import json as _json
+    import time as _time
+
+    from hermes_state import workspace_key as _ws_key
+
+    window = max(1, int(getattr(args, "window", 300) or 300))
+    now = int(_time.time())
+    floor = now - window
+
+    sessions = db.list_sessions_rich(
+        source=getattr(args, "source", None),
+        exclude_sources=None if getattr(args, "source", None) else ["tool"],
+        limit=_ACTIVITY_SCAN_LIMIT,
+        order_by_last_active=True,
+    )
+
+    by_workspace: dict[str, dict[str, int]] = {}
+    unresolved = {"open_sessions": 0, "recently_active_sessions": 0}
+    totals = {"open_sessions": 0, "recently_active_sessions": 0}
+
+    for row in sessions:
+        if row.get("ended_at") is not None:
+            continue
+        last_active = row.get("last_active")
+        last_active = int(last_active) if last_active else None
+        recent = last_active is not None and last_active >= floor
+        totals["open_sessions"] += 1
+        if recent:
+            totals["recently_active_sessions"] += 1
+
+        key = _ws_key(row) or ""
+        if not key:
+            # A session bound to no workspace is still real work; it is counted
+            # so the totals reconcile, but it cannot be attributed to anywhere.
+            unresolved["open_sessions"] += 1
+            if recent:
+                unresolved["recently_active_sessions"] += 1
+            continue
+
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        bucket = by_workspace.setdefault(
+            digest,
+            {
+                "workspace_sha256": digest,
+                "open_sessions": 0,
+                "recently_active_sessions": 0,
+                "last_activity_at": None,
+            },
+        )
+        bucket["open_sessions"] += 1
+        if recent:
+            bucket["recently_active_sessions"] += 1
+        if last_active is not None:
+            previous = bucket["last_activity_at"]
+            bucket["last_activity_at"] = (
+                last_active if previous is None else max(previous, last_active)
+            )
+
+    workspaces = sorted(
+        by_workspace.values(),
+        key=lambda entry: (
+            -entry["recently_active_sessions"],
+            -(entry["last_activity_at"] or 0),
+            entry["workspace_sha256"],
+        ),
+    )
+    payload = {
+        "contract_version": SESSIONS_ACTIVITY_CONTRACT,
+        "now": now,
+        "window_seconds": window,
+        "scan_limit": _ACTIVITY_SCAN_LIMIT,
+        # The scan hit its ceiling, so the store holds sessions this read never
+        # examined. The two counts degrade differently and must not be reported
+        # as equally trustworthy: rows arrive newest-activity-first, so anything
+        # active inside the window sorts ahead of everything the cut drops --
+        # `recently_active_sessions` stays exact unless more than `scan_limit`
+        # sessions were active at once, while `open_sessions` counts a long-open
+        # idle session that fell past the cut as absent and is a floor.
+        "scan_truncated": len(sessions) >= _ACTIVITY_SCAN_LIMIT,
+        "totals": totals,
+        "unresolved_workspace": unresolved,
+        "workspaces": workspaces,
+    }
+
+    if getattr(args, "json", False):
+        print(_json.dumps(payload, indent=2))
+        return 0
+
+    print(
+        f"Open interactive sessions: {totals['open_sessions']} "
+        f"({totals['recently_active_sessions']} active in the last {window}s)"
+    )
+    for entry in workspaces:
+        print(
+            f"  workspace {entry['workspace_sha256'][:12]}…  "
+            f"open {entry['open_sessions']}  "
+            f"recent {entry['recently_active_sessions']}  "
+            f"last {_relative_time(entry['last_activity_at'])}"
+        )
+    if unresolved["open_sessions"]:
+        print(f"  no workspace bound: {unresolved['open_sessions']}")
+    return 0
+
+
 def _session_browse_picker(sessions):
     return _m()._session_browse_picker(sessions)
 
@@ -243,6 +370,9 @@ def cmd_sessions(args, sessions_parser=None):
     # Hide third-party tool sessions by default, but honour explicit --source
     _source = getattr(args, "source", None)
     _exclude = None if _source else ["tool"]
+
+    if action == "activity":
+        return _sessions_activity(db, args)
 
     if action == "list":
         from hermes_state import workspace_key as _ws_key

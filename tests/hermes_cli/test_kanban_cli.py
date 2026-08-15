@@ -29,30 +29,22 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # run_slash smoke tests (end-to-end via the same entry both CLI and gateway use)
 # ---------------------------------------------------------------------------
-
 
 
 def test_kanban_list_json_includes_session_id(kanban_home):
     """JSON output exposes `session_id` so external clients (Scarf, web
     dashboards) don't need a side query to filter by chat session."""
     from hermes_cli import kanban_db as kb
+
     with kb.connect() as conn:
-        kb.create_task(
-            conn, title="acp task", assignee="alice", session_id="acp-x"
-        )
+        kb.create_task(conn, title="acp task", assignee="alice", session_id="acp-x")
     raw = kc.run_slash("list --json")
     payload = json.loads(raw)
     assert any(
-        row.get("title") == "acp task"
-        and row.get("session_id") == "acp-x"
+        row.get("title") == "acp task" and row.get("session_id") == "acp-x"
         for row in payload
     )
 
@@ -68,6 +60,27 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert f"Task {child_id}: child task" in output
     assert f"parents:   {parent_id}" in output
     assert "Cannot operate on a closed database" not in output
+
+
+def test_kanban_activity_json_exposes_only_bounded_safe_projection(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="private cli activity title",
+            body="private cli activity body",
+            assignee="builder",
+        )
+
+    payload = json.loads(kc.run_slash("activity --json --limit 7"))
+
+    assert payload["contract_version"] == "hermes-kanban-activity-v1"
+    assert payload["retention_limit"] == 7
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["kind"] == "created"
+    rendered = json.dumps(payload)
+    assert task_id not in rendered
+    assert "private cli activity title" not in rendered
+    assert "private cli activity body" not in rendered
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
@@ -121,13 +134,10 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # reclaim + reassign CLI smoke tests
 # ---------------------------------------------------------------------------
+
 
 def test_run_slash_reclaim_running_task(kanban_home):
     import re
@@ -167,8 +177,6 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
-
-
 # ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------
@@ -177,5 +185,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

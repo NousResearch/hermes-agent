@@ -12382,6 +12382,23 @@ def main():
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
+    sessions_activity = sessions_subparsers.add_parser(
+        "activity",
+        help="Aggregate open-session activity per workspace (no ids or content)",
+    )
+    sessions_activity.add_argument(
+        "--source", help="Filter by source (cli, desktop, telegram, ...)"
+    )
+    sessions_activity.add_argument(
+        "--window",
+        type=int,
+        default=300,
+        help="Seconds of recency counted as currently active (default: 300)",
+    )
+    sessions_activity.add_argument(
+        "--json", action="store_true", help="Emit the aggregate as JSON"
+    )
+
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument(
         "--source", help="Filter by source (cli, telegram, discord, etc.)"

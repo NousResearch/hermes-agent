@@ -529,35 +529,35 @@ def _scan_gateway_pids(
             # Prefer wmic when present (fast, stable output format).  On
             # modern Windows 11 / Win 10 late builds, wmic has been
             # removed as part of the WMIC deprecation — fall back to
-            # PowerShell's Get-CimInstance.  Any OSError here (FileNotFoundError
-            # on missing wmic) trips the fallback.
-            # Hide the console window: this scan runs inside the windowless
-            # pythonw.exe gateway/desktop backend, so a bare wmic/powershell
-            # spawn would flash a conhost window on every watchdog probe.
-            from hermes_cli._subprocess_compat import windows_hide_flags
+            # PowerShell's Get-CimInstance.  A spawn failure or timeout
+            # (result is None) trips the fallback.
+            # The scans go through ``bounded_probe_run`` — NOT plain
+            # ``subprocess.run(timeout=...)`` — because on Windows ``run()``'s
+            # post-timeout cleanup joins the pipe reader threads unbounded; a
+            # descendant (conhost.exe) holding duplicated pipe handles then
+            # wedges the caller forever. ``hermes update`` hung exactly there
+            # on slow-WMI machines where the full Win32_Process scan exceeds
+            # its budget (#87134).
+            # bounded_probe_run also hides the console window: this scan runs
+            # inside the windowless pythonw.exe gateway/desktop backend, so a
+            # bare wmic/powershell spawn would flash a conhost window on every
+            # watchdog probe.
+            from hermes_cli._subprocess_compat import bounded_probe_run
 
-            _no_window = {"creationflags": windows_hide_flags()}
             wmic_path = shutil.which("wmic")
             result = None
             if wmic_path is not None:
-                try:
-                    result = subprocess.run(
-                        [
-                            wmic_path,
-                            "process",
-                            "get",
-                            "ProcessId,CommandLine",
-                            "/FORMAT:LIST",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                        timeout=10,
-                        **_no_window,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    result = None
+                result = bounded_probe_run(
+                    [
+                        wmic_path,
+                        "process",
+                        "get",
+                        "ProcessId,CommandLine",
+                        "/FORMAT:LIST",
+                    ],
+                    timeout=10,
+                    errors="ignore",
+                )
             if result is None or result.returncode != 0 or not (result.stdout or ""):
                 # Fallback: PowerShell Get-CimInstance, emit LIST-style output
                 # so the downstream parser below doesn't need to branch.
@@ -572,17 +572,12 @@ def _scan_gateway_pids(
                     "  '' "
                     "}"
                 )
-                try:
-                    result = subprocess.run(
-                        [powershell, "-NoProfile", "-Command", ps_cmd],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                        timeout=15,
-                        **_no_window,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
+                result = bounded_probe_run(
+                    [powershell, "-NoProfile", "-Command", ps_cmd],
+                    timeout=15,
+                    errors="ignore",
+                )
+                if result is None:
                     return []
             if result.returncode != 0 or result.stdout is None:
                 return []

@@ -76,21 +76,22 @@ def _scan_dashboard_processes(
             # here is errors="ignore": it prevents a reader-thread
             # UnicodeDecodeError from leaving result.stdout=None and turning
             # the later .split() into an AttributeError (#17049).
-            # CREATE_NO_WINDOW hides the conhost flash: this scan can run from
-            # the windowless pythonw.exe desktop/gateway backend during an
-            # update, where a bare wmic spawn would pop a console window.
-            from hermes_cli._subprocess_compat import windows_hide_flags
+            # bounded_probe_run (rather than subprocess.run with a timeout)
+            # keeps a slow scan from wedging the caller forever: run()'s
+            # post-timeout cleanup joins the pipe reader threads unbounded,
+            # and a conhost.exe descendant holding duplicated pipe handles
+            # blocks that join indefinitely (#87134). It also passes
+            # CREATE_NO_WINDOW: this scan can run from the windowless
+            # pythonw.exe desktop/gateway backend during an update, where a
+            # bare wmic spawn would pop a console window.
+            from hermes_cli._subprocess_compat import bounded_probe_run
 
-            result = subprocess.run(
+            result = bounded_probe_run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
                 timeout=10,
-                encoding="utf-8",
                 errors="ignore",
-                creationflags=windows_hide_flags(),
             )
-            if result.returncode != 0 or result.stdout is None:
+            if result is None or result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
             for line in result.stdout.split("\n"):

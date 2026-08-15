@@ -1359,7 +1359,7 @@ class AIAgent:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return base_url_host_matches(url, "openai.azure.com")
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
@@ -1514,8 +1514,8 @@ class AIAgent:
     def _is_copilot_url(self) -> bool:
         """Return True when the base URL targets GitHub Copilot or GitHub Models."""
         return (
-            "api.githubcopilot.com" in self._base_url_lower
-            or "models.github.ai" in self._base_url_lower
+            base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_host_matches(self._base_url_lower, "models.github.ai")
         )
 
     def _is_copilot_provider(self) -> bool:
@@ -6003,7 +6003,7 @@ class AIAgent:
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
         _base = getattr(self, "_anthropic_base_url", "") or ""
-        if "azure.com" in _base:
+        if base_url_host_matches(_base, "azure.com"):
             return False
 
         try:
@@ -7260,19 +7260,20 @@ class AIAgent:
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
+        host = base_url_hostname(base)
         return (
-            "dashscope" in base
-            or "aliyuncs" in base
-            or "minimax" in base
-            or "opencode.ai/zen/" in base
-            or "bigmodel.cn" in base
-            or "xiaomimimo.com" in base
+            "dashscope" in host
+            or base_url_host_matches(base, "aliyuncs.com")
+            or "minimax" in host
+            or (base_url_host_matches(base, "opencode.ai") and "/zen/" in base)
+            or base_url_host_matches(base, "bigmodel.cn")
+            or base_url_host_matches(base, "xiaomimimo.com")
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
             # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
-            or "aiplatform.googleapis.com" in base
+            or base_url_host_matches(base, "aiplatform.googleapis.com")
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
-            or "bedrock-runtime." in base
+            or host.startswith("bedrock-runtime.")
         )
 
     def _is_qwen_portal(self) -> bool:
@@ -7376,9 +7377,9 @@ class AIAgent:
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
-        if "openrouter" not in self._base_url_lower:
+        if not self._is_openrouter_url():
             return False
-        if "api.mistral.ai" in self._base_url_lower:
+        if base_url_host_matches(self._base_url_lower, "api.mistral.ai"):
             return False
 
         model = (self.model or "").lower()

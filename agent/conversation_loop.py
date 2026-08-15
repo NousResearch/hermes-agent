@@ -5255,7 +5255,7 @@ def run_conversation(
                 if (
                     status_code == 413
                     and isinstance(agent.base_url, str)
-                    and "models.inference.ai.azure.com" in agent.base_url
+                    and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
                 ):
                     agent._vprint(
                         f"{agent.log_prefix}   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",

@@ -224,7 +224,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import base_url_host_matches, fast_safe_load
+from utils import base_url_host_matches, base_url_hostname, fast_safe_load
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -4604,7 +4604,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
-            if "localhost" in _base_url or "127.0.0.1" in _base_url:
+            if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):
                 from hermes_cli.runtime_provider import _auto_detect_local_model
                 _detected = _auto_detect_local_model(_base_url)
                 if _detected:
@@ -7834,11 +7834,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 f"[dim]   Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
             )
             base_url = getattr(self, "base_url", "") or ""
-            if "11434" in base_url or "ollama" in base_url.lower():
+            from urllib.parse import urlparse as _urlparse
+            try:
+                _parsed = _urlparse(base_url if "://" in base_url else f"//{base_url}")
+                _port = _parsed.port
+            except ValueError:
+                _port = None
+            _host = base_url_hostname(base_url)
+            if _port == 11434 or "ollama" in _host:
                 self._console_print(
                     f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve[/]"
                 )
-            elif "1234" in base_url:
+            elif _port == 1234:
                 self._console_print(
                     "[dim]   LM Studio fix: Set context length in model settings → reload model[/]"
                 )

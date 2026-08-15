@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -1098,7 +1098,7 @@ def resolve_billing_route(
         # Fireworks model ids look like accounts/fireworks/models/<name>;
         # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
         return BillingRoute(provider="fireworks", model=model.rsplit("/", 1)[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and "localhost" in base):
+    if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 

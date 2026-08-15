@@ -559,6 +559,33 @@ def test_live_semantic_v2_content_refs_are_the_action_capabilities():
     assert refs == {"p7:3": {"click", "pointer"}}
 
 
+def test_split_refs_and_content_refs_merge_without_clobbering():
+    """cua-driver >= 0.17 splits the semantic_v2 payload: action-bearing refs
+    live in ``refs`` while ``content_refs`` re-lists every node with EMPTY
+    action lists. The old exclusive preference (content_refs first) dropped
+    all actions, making every click refuse with browser_ref_stale — caught
+    live on 0.19.3 against example.org (PR #79515 by weisiwu).
+    """
+    from tools.computer_use.browser_route import _ref_map
+
+    refs = _ref_map({
+        "status": "ok",
+        "refs": [
+            {"ref": "p1:1", "role": "link", "actions": ["click", "pointer"]},
+        ],
+        "content_refs": [
+            {"ref": "p1:0", "role": "rootwebarea", "actions": []},
+            # same ref re-listed with no actions — must NOT clobber
+            {"ref": "p1:1", "role": "link", "actions": []},
+            {"ref": "p1:2", "role": "heading", "actions": []},
+        ],
+    })
+
+    assert refs["p1:1"] == {"click", "pointer"}
+    assert refs["p1:0"] == set()
+    assert refs["p1:2"] == set()
+
+
 def test_dom_event_is_forwarded_only_when_explicitly_requested():
     driver = _BrowserDriver()
     route = _browser_route(driver)

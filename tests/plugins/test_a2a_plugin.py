@@ -547,6 +547,156 @@ class TestClientTools:
         assert "No peers configured" in out
 
 
+class TestPerPeerHeaders:
+    """Per-peer custom headers (e.g. Cloudflare Access service tokens) must
+    ride along on every outbound request — discovery, calls, and fan-out."""
+
+    _CFG = {
+        "a2a_agents": {
+            "mac": {
+                "url": "http://localhost:9999",
+                "auth": {"type": "bearer", "token": "tok-123"},
+                "headers": {
+                    "CF-Access-Client-Id": "cf-id",
+                    "CF-Access-Client-Secret": "cf-secret",
+                },
+            }
+        }
+    }
+
+    def test_resolve_peer_carries_headers(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config", lambda: self._CFG)
+        peer = tools._resolve_peer("mac")
+        assert peer["headers"]["CF-Access-Client-Id"] == "cf-id"
+        assert peer["auth"]["token"] == "tok-123"
+
+    def test_resolve_peer_defaults_headers_to_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            tools, "_load_config",
+            lambda: {"a2a_agents": {"bare": {"url": "http://localhost:9999"}}},
+        )
+        peer = tools._resolve_peer("bare")
+        assert peer["headers"] == {}
+
+    def test_call_sends_auth_and_custom_headers(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config", lambda: self._CFG)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured.update(headers)
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "mac", "message": "ping"})
+        assert "ok" in out
+        assert captured["Authorization"] == "Bearer tok-123"
+        assert captured["CF-Access-Client-Id"] == "cf-id"
+        assert captured["CF-Access-Client-Secret"] == "cf-secret"
+
+    def test_custom_headers_take_precedence(self, monkeypatch):
+        """Peer config wins over defaults — a peer can override User-Agent
+        (some WAF policies require a specific value)."""
+        cfg = {"a2a_agents": {"mac": dict(self._CFG["a2a_agents"]["mac"],
+                                          headers={"User-Agent": "CustomUA/2"})}}
+        monkeypatch.setattr(tools, "_load_config", lambda: cfg)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured.update(headers)
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        tools.a2a_call({"agent": "mac", "message": "ping"})
+        assert captured["User-Agent"] == "CustomUA/2"
+
+    def test_orchestrate_fanout_sends_custom_headers(self, monkeypatch):
+        """The a2a_orchestrate path rebuilds the peer dict — it must carry
+        headers (and tenant) through, not just url/auth/timeout."""
+        cfg = {"a2a_agents": {"mac": dict(self._CFG["a2a_agents"]["mac"],
+                                          capabilities=["research"])}}
+        monkeypatch.setattr(tools, "_load_config", lambda: cfg)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured.update(headers)
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_orchestrate({"capability": "research", "message": "go"})
+        assert "ok" in out
+        assert captured.get("CF-Access-Client-Id") == "cf-id"
+        assert captured.get("Authorization") == "Bearer tok-123"
+
+    def test_post_retries_on_524(self, monkeypatch):
+        """Cloudflare cuts proxy connections at ~100s with HTTP 524; long
+        peer tasks must be retried, not lost. Other errors don't retry."""
+        import urllib.error as urlerr
+
+        sleeps = []
+        monkeypatch.setattr(tools.time, "sleep", lambda s: sleeps.append(s))
+
+        attempts = {"n": 0}
+        seen_reqs = []
+        body_bytes = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+
+        class _Resp:
+            def read(self):
+                return body_bytes
+
+        def fake_urlopen(req, timeout=None):
+            attempts["n"] += 1
+            seen_reqs.append(req)
+            if attempts["n"] == 1:
+                raise urlerr.HTTPError(req.full_url, 524, "Origin Time-out", {}, None)
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return _Resp()
+
+                def __exit__(self_inner, *a):
+                    return False
+
+            return _Ctx()
+
+        monkeypatch.setattr(tools.urllib.request, "urlopen", fake_urlopen)
+        out = tools._http_post_json("http://peer/", {"x": 1}, {"CF-Access-Client-Id": "cf-id"}, 30)
+        assert out == {"jsonrpc": "2.0", "id": 1, "result": {}}
+        assert attempts["n"] == 2
+        assert sleeps == [1]
+        # Both attempts carry the User-Agent and caller-provided headers.
+        for req in seen_reqs:
+            assert req.get_header("User-agent") == "Hermes-A2A/1.0"
+            assert req.get_header("Cf-access-client-id") == "cf-id"
+
+    def test_post_does_not_retry_other_errors(self, monkeypatch):
+        import urllib.error as urlerr
+
+        monkeypatch.setattr(tools.time, "sleep", lambda s: None)
+        attempts = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            attempts["n"] += 1
+            raise urlerr.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(tools.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(urlerr.HTTPError) as ei:
+            tools._http_post_json("http://peer/", {"x": 1}, {}, 30)
+        assert ei.value.code == 403
+        assert attempts["n"] == 1
+
+
 class TestRegistryDispatchConvention:
     """Tools must accept the args-as-dict positional that registry.dispatch
     uses (`entry.handler(args, **kwargs)`), not keyword params."""
@@ -574,6 +724,33 @@ class TestRegistryDispatchConvention:
 
         out = registry.dispatch("a2a_list", {})
         assert "No peers configured" in out
+
+    def test_registered_schemas_are_flat_not_double_wrapped(self, monkeypatch, tmp_path):
+        """The registry stores schemas as-is and ``get_definitions()`` wraps
+        them in {"type": "function", "function": ...}. ``register_tools``
+        must unwrap ``_SCHEMAS``'s OpenAI-style wrapper first — otherwise the
+        model gets a nested {"function": {"function": {...}}} with no
+        parameters and tool calls fail validation."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(tools, "_load_config", lambda: {})
+        from tools.registry import registry
+
+        class _Ctx:
+            def register_tool(self, name, toolset, schema, handler, **kw):
+                registry.register(name=name, toolset=toolset, schema=schema,
+                                  handler=handler, override=True, **kw)
+
+        tools.register_tools(_Ctx())
+
+        defs = registry.get_definitions({"a2a_call", "a2a_discover"})
+        by_name = {d["function"].get("name"): d for d in defs}
+        assert set(by_name) == {"a2a_call", "a2a_discover"}
+        call_fn = by_name["a2a_call"]["function"]
+        assert "function" not in call_fn  # double-wrap would nest one here
+        assert "agent" in call_fn["parameters"]["properties"]
+        assert call_fn["description"]
+        assert by_name["a2a_discover"]["function"]["description"]
+
 
     def test_a2a_call_accepts_agent_name_alias(self, monkeypatch):
         """Models reach for 'agent_name' (observed live). Accept it as an
@@ -1618,3 +1795,114 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+# --------------------------------------------------------------------------
+# Client HTTP edge cases: GET-layer headers, collision precedence,
+# 524 retry budget
+# --------------------------------------------------------------------------
+
+class TestClientHttpEdgeCases:
+    """Edge cases beyond TestPerPeerHeaders: the GET (card) path at the
+    urllib layer, header-collision precedence, and the 524 retry budget."""
+
+    def test_get_json_sends_user_agent_and_custom_headers(self, monkeypatch):
+        """Card fetches hit the same header-auth proxy as task submits —
+        GETs must carry per-peer headers and the real User-Agent too."""
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return b'{"name": "peer"}'
+
+        class _Ctx:
+            def __enter__(self):
+                return _Resp()
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            seen["headers"] = dict(req.header_items())
+            return _Ctx()
+
+        monkeypatch.setattr(tools.urllib.request, "urlopen", fake_urlopen)
+        out = tools._http_get_json("http://peer/.well-known/agent-card.json",
+                                   {"CF-Access-Client-Id": "cf-id"}, 30)
+        assert out == {"name": "peer"}
+        lowered = {k.lower(): v for k, v in seen["headers"].items()}
+        assert lowered["user-agent"] == "Hermes-A2A/1.0"
+        assert lowered["cf-access-client-id"] == "cf-id"
+
+    def test_custom_headers_override_derived_auth_header(self, monkeypatch):
+        """Peer config headers win over the derived Authorization header on
+        name collision (a proxy may require a different auth scheme)."""
+        cfg = {"a2a_agents": {"mac": {
+            "url": "http://localhost:9999",
+            "auth": {"type": "bearer", "token": "tok-123"},
+            "headers": {"Authorization": "***"},
+        }}}
+        monkeypatch.setattr(tools, "_load_config", lambda: cfg)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured.update(headers)
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        tools.a2a_call({"agent": "mac", "message": "ping"})
+        assert captured["Authorization"] == "***"
+
+    def test_524_exhausts_retry_budget_then_raises(self, monkeypatch):
+        """A persistently 524-ing peer must eventually surface the error
+        (after _POST_MAX_RETRIES attempts), not retry forever."""
+        import urllib.error as urlerr
+
+        monkeypatch.setattr(tools.time, "sleep", lambda s: None)
+        attempts = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            attempts["n"] += 1
+            raise urlerr.HTTPError(req.full_url, 524, "Origin Time-out", {}, None)
+
+        monkeypatch.setattr(tools.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(urlerr.HTTPError) as ei:
+            tools._http_post_json("http://peer/", {"x": 1}, {}, 30)
+        assert ei.value.code == 524
+        assert attempts["n"] == tools._POST_MAX_RETRIES
+
+    def test_524_backoff_is_exponential(self, monkeypatch):
+        """Success on the last attempt exercises the full backoff ladder."""
+        import urllib.error as urlerr
+
+        sleeps = []
+        monkeypatch.setattr(tools.time, "sleep", lambda s: sleeps.append(s))
+        attempts = {"n": 0}
+
+        class _Resp:
+            def read(self):
+                return b'{"ok": true}'
+
+        class _Ctx:
+            def __enter__(self):
+                return _Resp()
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            attempts["n"] += 1
+            if attempts["n"] < tools._POST_MAX_RETRIES:
+                raise urlerr.HTTPError(req.full_url, 524, "Origin Time-out", {}, None)
+            return _Ctx()
+
+        monkeypatch.setattr(tools.urllib.request, "urlopen", fake_urlopen)
+        out = tools._http_post_json("http://peer/", {"x": 1}, {}, 30)
+        assert out == {"ok": True}
+        assert attempts["n"] == tools._POST_MAX_RETRIES
+        assert sleeps == [1, 2]
+

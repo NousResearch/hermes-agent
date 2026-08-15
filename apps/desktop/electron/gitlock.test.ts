@@ -10,6 +10,7 @@ import { clearStaleGitLocks, LOCK_NAMES, STALE_LOCK_MIN_AGE_MS } from './gitlock
 function makeRepo(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitlock-test-'))
   fs.mkdirSync(path.join(root, '.git'))
+
   return root
 }
 
@@ -18,6 +19,7 @@ function writeLock(root: string, name: string, ageMs: number): string {
   fs.writeFileSync(p, '')
   const t = new Date(Date.now() - ageMs)
   fs.utimesSync(p, t, t)
+
   return p
 }
 

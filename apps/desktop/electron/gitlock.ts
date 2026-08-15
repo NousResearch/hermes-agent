@@ -25,19 +25,24 @@ function gitProcessRunning(): Promise<boolean> {
       process.platform === 'win32'
         ? ['tasklist', ['/FI', 'IMAGENAME eq git.exe', '/FO', 'CSV']]
         : ['pgrep', ['-x', 'git']]
+
     execFile(cmd, args, { timeout: 10_000 }, (error, stdout) => {
       if (process.platform === 'win32') {
         // tasklist exits 0 either way; presence is signaled in stdout.
         resolve(Boolean(stdout && stdout.toLowerCase().includes('git.exe')))
+
         return
       }
+
       // pgrep: exit 0 = at least one match; 1 = none; other = probe failure.
       // On probe failure stay conservative: report "running" so no lock is
       // touched when we cannot tell.
       if (error && (error as any).code === 1) {
         resolve(false)
+
         return
       }
+
       resolve(true)
     })
   })
@@ -47,13 +52,17 @@ function gitProcessRunning(): Promise<boolean> {
 // Never throws: a lock we cannot stat or unlink is skipped.
 export async function clearStaleGitLocks(
   repoRoot: string,
-  { minAgeMs = STALE_LOCK_MIN_AGE_MS, isGitRunning = gitProcessRunning }: {
+  {
+    minAgeMs = STALE_LOCK_MIN_AGE_MS,
+    isGitRunning = gitProcessRunning
+  }: {
     minAgeMs?: number
     isGitRunning?: () => Promise<boolean>
   } = {}
 ): Promise<string[]> {
   const gitDir = path.join(repoRoot, '.git')
   const removed: string[] = []
+
   try {
     if (!fs.statSync(gitDir).isDirectory()) {
       return removed
@@ -67,10 +76,13 @@ export async function clearStaleGitLocks(
   }
 
   const cutoff = Date.now() - minAgeMs
+
   for (const name of LOCK_NAMES) {
     const lockPath = path.join(gitDir, name)
+
     try {
       const st = fs.statSync(lockPath)
+
       if (st.isFile() && st.mtimeMs < cutoff) {
         fs.unlinkSync(lockPath)
         removed.push(lockPath)
@@ -79,5 +91,6 @@ export async function clearStaleGitLocks(
       // Missing or concurrently removed — skipping is always safe.
     }
   }
+
   return removed
 }

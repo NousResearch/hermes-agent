@@ -12,6 +12,7 @@ const virtualizer = {
     { end: 26, index: 0, start: 0 },
     { end: 68, index: 1, start: 26 }
   ],
+  measure: vi.fn(),
   measureElement: vi.fn()
 }
 

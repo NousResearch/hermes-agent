@@ -2764,6 +2764,44 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an Anthropic-wire client for a MiniMax OAuth-authenticated session.
+
+    MiniMax OAuth issues short-lived (~15 min) access tokens and the Anthropic
+    SDK caches ``api_key`` as a static string at construction time, so a static
+    bearer would 401 mid-session.  Build the client with a callable token
+    provider — ``build_anthropic_client`` detects the callable and installs a
+    per-request bearer hook that re-reads auth.json (a refresh persisted by
+    another process is picked up immediately).  Mirrors how agent_init.py
+    constructs the main agent's MiniMax OAuth client.
+
+    Returns (None, None) when the user has not authenticated with MiniMax OAuth.
+    """
+    try:
+        from hermes_cli.auth import (
+            build_minimax_oauth_token_provider,
+            get_provider_auth_state,
+        )
+        from agent.anthropic_adapter import build_anthropic_client
+
+        state = get_provider_auth_state("minimax-oauth")
+        if not state or not state.get("access_token"):
+            return None, None
+        token_provider = build_minimax_oauth_token_provider()
+        base_url = "https://api.minimax.io/anthropic"
+        real_client = build_anthropic_client(token_provider, base_url)
+    except Exception as _mm_exc:  # noqa: BLE001 — never block on missing auth
+        logger.debug(
+            "Auxiliary client: minimax-oauth unavailable (%s)", _mm_exc,
+        )
+        return None, None
+    final_model = model or "MiniMax-M3"
+    logger.debug("Auxiliary client: MiniMax OAuth (%s via Anthropic wire)", final_model)
+    return AnthropicAuxiliaryClient(
+        real_client, final_model, token_provider, base_url, is_oauth=False,
+    ), final_model
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
 
@@ -4659,6 +4697,16 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _resolve_minimax_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
+    """MiniMax OAuth (short-lived tokens -> Anthropic wire). Without this branch minimax-oauth falls to
+    the generic oauth_external arm, returns (None, None), and vision aux tasks silently re-route to the
+    Step-2 fallback — a text-only model that hallucinates image descriptions."""
+    client, default = _build_minimax_oauth_aux_client(req.model)
+    return _route_or_warn(req, client, default,
+                          "resolve_provider_client: minimax-oauth requested but no MiniMax "
+                          "OAuth token found (run: hermes model -> MiniMax (OAuth))")
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -4961,6 +5009,7 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
     "xai-oauth": _resolve_xai_oauth_branch,
+    "minimax-oauth": _resolve_minimax_oauth_branch,
     "custom": _resolve_custom_branch,
 }
 

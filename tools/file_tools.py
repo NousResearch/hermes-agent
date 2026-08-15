@@ -1133,10 +1133,12 @@ _file_ops_cache: dict = {}
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 #   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
 #                   Used to skip re-reads of unchanged files.  Survives
-#                   context compression: only the per-key stub-hit
-#                   counters are cleared on compression, so unchanged
-#                   files keep returning the lightweight stub instead of
-#                   re-sending full content (issue #84857).
+#                   context compression so unchanged files can resume
+#                   returning lightweight stubs after one recovery read.
+#   "dedup_generation_reads": set of dedup keys whose full content has been
+#                   served since the latest compaction boundary. Cleared on
+#                   compression so the first post-compaction read can recover
+#                   exact bytes that the summary may have omitted.
 #   "read_timestamps": dict mapping resolved_path → modification-time float
 #                      recorded when the file was last read (or written) by
 #                      this task.  Used by write_file and patch to detect
@@ -1240,6 +1242,15 @@ def _cap_read_tracker_data(task_data: dict) -> None:
             try:
                 dedup_hits.pop(next(iter(dedup_hits)))
             except (StopIteration, KeyError):
+                break
+
+    generation_reads = task_data.get("dedup_generation_reads")
+    if generation_reads is not None and len(generation_reads) > _DEDUP_CAP:
+        excess = len(generation_reads) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                generation_reads.pop()
+            except KeyError:
                 break
 
     ts = task_data.get("read_timestamps")
@@ -1801,7 +1812,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "dedup_hits": {}, "read_timestamps": {},
+                "dedup_hits": {}, "dedup_generation_reads": set(),
+                "read_timestamps": {},
             })
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
@@ -1810,12 +1822,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
+            generation_reads = task_data.setdefault("dedup_generation_reads", set())
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            content_served_in_generation = dedup_key in generation_reads
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
-                if current_mtime == cached_mtime:
+                if current_mtime == cached_mtime and content_served_in_generation:
                     # Count repeated stub returns so weak tool-followers that
                     # ignore the "refer to earlier result" hint don't burn
                     # their iteration budget in an infinite read loop.  After
@@ -1939,6 +1953,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
+            task_data.setdefault("dedup_generation_reads", set()).add(dedup_key)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -2017,17 +2032,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
 
 def reset_file_dedup(task_id: str = None):
-    """Reset the read-dedup stub-hit counters after context compression.
+    """Advance the read-dedup generation after context compression.
 
     Called after context compression.  The per-key ``dedup`` mtime map is
-    PRESERVED: a file that has not changed on disk since the task last read
-    it still returns the lightweight "unchanged" stub instead of re-sending
-    the full content — this is what stops long-session token usage from
-    re-bloating the context we just reclaimed after every compaction
-    (issue #84857).  Only the per-key stub-hit counters (``dedup_hits``)
-    are cleared, so the 2-stub hard block restarts fresh: a model that hits
-    the stub right after compression is never blocked by hits accumulated
-    before it.
+    preserved, but the generation-read set is cleared. The first unchanged
+    read of each key after compaction therefore returns full content that may
+    have been summarized away; later reads in the same generation return the
+    lightweight stub. Stub-hit counters are also cleared so the hard block
+    restarts fresh (issue #84857).
 
     Call with a task_id to reset just that task, or without to reset all.
     """
@@ -2037,10 +2049,12 @@ def reset_file_dedup(task_id: str = None):
             if task_data:
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
         else:
             for task_data in _read_tracker.values():
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data.setdefault("dedup_generation_reads", set()).clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):

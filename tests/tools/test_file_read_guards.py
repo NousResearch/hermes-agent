@@ -391,7 +391,7 @@ class TestFileDedup(unittest.TestCase):
         _read_tracker.clear()
         self._tmpdir = _make_safe_tempdir("hermes-dedup-")
         self._tmpfile = os.path.join(self._tmpdir, "dedup_test.txt")
-        with open(self._tmpfile, "w") as f:
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
             f.write("line one\nline two\n")
 
     def tearDown(self):
@@ -463,7 +463,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         _read_tracker.clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "loop_test.txt")
-        with open(self._tmpfile, "w") as f:
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
             f.write("line one\nline two\n")
 
     def tearDown(self):
@@ -530,7 +530,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
 
         # File changes — mtime updates
         time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
             f.write("brand new content\n")
 
         r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
@@ -591,12 +591,16 @@ class TestDedupStubLoopGuard(unittest.TestCase):
 
         reset_file_dedup("loop")
 
-        # Post-compression: block counters cleared — the unchanged file
-        # returns the lightweight dedup stub (dedup map survives), with
-        # no error and no hard block.
+        # Post-compression: block counters cleared and exact content is served
+        # once because the earlier payload may no longer be in context.
         r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertNotIn("error", r4)
-        self.assertTrue(r4.get("dedup"))
+        self.assertNotIn("dedup", r4)
+        self.assertIn("content", r4)
+
+        # The next unchanged read in this generation is lightweight again.
+        r5 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertTrue(r5.get("dedup"))
 
 
 # ---------------------------------------------------------------------------
@@ -604,15 +608,13 @@ class TestDedupStubLoopGuard(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestDedupResetOnCompression(unittest.TestCase):
-    """reset_file_dedup should preserve the dedup mtime map so
-    post-compression reads of unchanged files still return the lightweight
-    stub (issue #84857)."""
+    """Compaction starts a new full-content recovery generation."""
 
     def setUp(self):
         _read_tracker.clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "compress_test.txt")
-        with open(self._tmpfile, "w") as f:
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
             f.write("original content\n")
 
     def tearDown(self):
@@ -624,10 +626,10 @@ class TestDedupResetOnCompression(unittest.TestCase):
             pass
 
     @patch("tools.file_tools._get_file_ops")
-    def test_reset_preserves_dedup(self, mock_ops):
-        """After reset_file_dedup, the same read still returns the stub."""
+    def test_first_post_compaction_read_recovers_exact_content(self, mock_ops):
+        """First post-compaction read is full; later reads deduplicate."""
         mock_ops.return_value = _make_fake_ops(
-            content="original content\n", file_size=18,
+            content="SECRET_EXACT_LINE=42\n", file_size=21,
         )
         # First read — populates dedup cache
         read_file_tool(self._tmpfile, task_id="comp")
@@ -639,11 +641,15 @@ class TestDedupResetOnCompression(unittest.TestCase):
         # Simulate compression
         reset_file_dedup("comp")
 
-        # Read again — unchanged file still dedups: no full re-send, so
-        # post-compaction re-reads don't re-inject the same content
+        # Exact prior bytes may have been omitted from the summary, so the
+        # first read in the new generation must restore them.
         r_post = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
-        self.assertEqual(r_post.get("dedup"), True,
-                         "Post-compression read of unchanged file should stub")
+        self.assertNotIn("dedup", r_post)
+        self.assertIn("SECRET_EXACT_LINE=42", r_post.get("content", ""))
+
+        # The persisted mtime map still saves tokens after that recovery read.
+        r_again = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
+        self.assertTrue(r_again.get("dedup"))
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -659,12 +665,12 @@ class TestDedupResetOnCompression(unittest.TestCase):
 
         reset_file_dedup("loop")
 
-        # 3rd read — still deduped (lightweight stub), not blocked
+        # First read in the new generation returns full content, not a stale
+        # block or a stub that points to compacted-away bytes.
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-        # Should NOT be blocked or warned — counter restarted since dedup
-        # intercepted reads before they reached the counter
         self.assertNotIn("error", r3)
-        self.assertTrue(r3.get("dedup"))
+        self.assertNotIn("dedup", r3)
+        self.assertIn("content", r3)
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +769,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         _read_tracker.clear()
         self._tmpdir = _make_safe_tempdir("hermes-write-dedup-")
         self._tmpfile = os.path.join(self._tmpdir, "write_dedup.txt")
-        with open(self._tmpfile, "w") as f:
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
             f.write("original content\n")
 
     def tearDown(self):

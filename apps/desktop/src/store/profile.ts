@@ -315,8 +315,8 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
 export const ALL_PROFILES = '__all__'
 
-/** Normalize a sidebar scope to the profile key used by messaging session queries. */
-export const messagingProfileFor = (profileScope: string): string =>
+/** Normalize a sidebar scope to the profile key used by session and cron queries. */
+export const sidebarProfileForScope = (profileScope: string): string =>
   profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
 
 /** Key a platform total by its Desktop profile route so counts cannot leak across profiles. */

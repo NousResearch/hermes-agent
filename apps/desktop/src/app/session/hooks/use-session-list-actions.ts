@@ -17,7 +17,7 @@ import {
   SIDEBAR_FILTERED_PAGE_SIZE,
   SIDEBAR_SESSIONS_PAGE_SIZE
 } from '@/store/layout'
-import { messagingProfileFor, messagingTotalsKey, normalizeProfileKey } from '@/store/profile'
+import { messagingTotalsKey, normalizeProfileKey, sidebarProfileForScope } from '@/store/profile'
 import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
@@ -111,11 +111,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
   /** Refresh the active profile's messaging-platform sidebar slice. */
   const refreshMessagingSessions = useCallback(async () => {
-    const sessionProfile = messagingProfileFor(profileScope)
+    const sessionProfile = sidebarProfileForScope(profileScope)
 
     // A callback captured before a profile switch may still be queued by an
     // event subscription. Do not let it start a request against the old scope.
-    if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
@@ -129,7 +129,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         refreshMessagingSessionsRequestRef.current !== requestId ||
-        messagingProfileFor(profileScopeRef.current) !== sessionProfile
+        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile
       ) {
         return
       }
@@ -150,9 +150,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   /** Page one messaging platform without replacing another platform's rows. */
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
-      const sessionProfile = messagingProfileFor(profileScope)
+      const sessionProfile = sidebarProfileForScope(profileScope)
 
-      if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+      if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
         return
       }
 
@@ -184,7 +184,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         loadMoreMessagingRequestRef.current[requestKey] !== requestId ||
-        messagingProfileFor(profileScopeRef.current) !== sessionProfile
+        sidebarProfileForScope(profileScopeRef.current) !== sessionProfile
       ) {
         return
       }
@@ -205,9 +205,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
   /** Refresh cron jobs only while the profile that requested them remains active. */
   const refreshCronJobs = useCallback(async () => {
-    const sessionProfile = messagingProfileFor(profileScope)
+    const sessionProfile = sidebarProfileForScope(profileScope)
 
-    if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
@@ -220,9 +220,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
   /** Refresh every sidebar session slice without committing an obsolete profile response. */
   const refreshSessions = useCallback(async () => {
-    const sessionProfile = messagingProfileFor(profileScope)
+    const sessionProfile = sidebarProfileForScope(profileScope)
 
-    if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+    if (sidebarProfileForScope(profileScopeRef.current) !== sessionProfile) {
       return
     }
 
@@ -265,7 +265,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (
         refreshSessionsRequestRef.current === requestId &&
-        messagingProfileFor(profileScopeRef.current) === sessionProfile
+        sidebarProfileForScope(profileScopeRef.current) === sessionProfile
       ) {
         const recents = result.recents
 
@@ -331,7 +331,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
 
     // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-    if (messagingProfileFor(profileScopeRef.current) === sessionProfile) {
+    if (sidebarProfileForScope(profileScopeRef.current) === sessionProfile) {
       void refreshCronJobs()
     }
   }, [profileScope, refreshCronJobs])

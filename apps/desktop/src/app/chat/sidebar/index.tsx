@@ -78,9 +78,9 @@ import {
   $profiles,
   $profileScope,
   ALL_PROFILES,
-  messagingProfileFor,
   messagingTotalsKey,
-  normalizeProfileKey
+  normalizeProfileKey,
+  sidebarProfileForScope
 } from '@/store/profile'
 import {
   $activeProjectId,
@@ -398,7 +398,7 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
-  const messagingProfile = messagingProfileFor(profileScope)
+  const messagingProfile = sidebarProfileForScope(profileScope)
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)

@@ -7,7 +7,9 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
+  $cronSessions,
   $currentCwd,
+  $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
   releaseWorkspaceCwdOwner,
@@ -1291,7 +1293,9 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 }
 
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
+    sessionMatchesStoredId(session, storedSessionId)
+  )
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is

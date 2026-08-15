@@ -69,6 +69,20 @@ _SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
     "no api key found",
 )
 
+_HYGIENE_IDLE_TIMEOUT_MARKERS: tuple[str, ...] = (
+    "session hygiene compression timed out",
+)
+
+
+def _is_hygiene_idle_timeout_error(error: object) -> bool:
+    """Return True when the durable cooldown came from a hygiene watchdog timeout.
+
+    That persist is intentional for the pre-agent hygiene pass (#74136) but
+    must not block the in-conversation compressor (#86972).
+    """
+    text = str(error or "").strip().casefold()
+    return any(marker in text for marker in _HYGIENE_IDLE_TIMEOUT_MARKERS)
+
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
@@ -2463,6 +2477,13 @@ class ContextCompressor(ContextEngine):
                     return local_state
                 self._summary_failure_cooldown_until = 0.0
                 self._last_summary_error = None
+            return None
+
+        # Hygiene idle-watchdog timeouts persist the same column so the
+        # pre-agent pass can skip (#74136), but they are not evidence of a
+        # 429/aux-model fault. The in-conversation compressor has its own
+        # budget and must still be allowed to run (#86972).
+        if _is_hygiene_idle_timeout_error(state.get("error")):
             return None
 
         self._summary_failure_cooldown_until = now_mono + remaining_seconds

@@ -4543,7 +4543,7 @@ class GatewaySlashCommandsMixin:
         )
 
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
         session_id = session_entry.session_id
 
         if not self._session_db:

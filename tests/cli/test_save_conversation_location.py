@@ -75,7 +75,9 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
 
     payload = json.loads(files[0].read_text())
     assert payload["model"] == "test-model"
-    assert payload["session_id"] == "20260101_120000_abc123"
+    # /save now emits the canonical export_session shape: the session id
+    # lives under "id" (was "session_id" in the legacy snapshot format).
+    assert payload["id"] == "20260101_120000_abc123"
     assert payload["messages"] == [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},

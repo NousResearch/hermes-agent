@@ -9374,10 +9374,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Prefer the durable DB row (has metadata + tool calls); fall back to
         # the in-memory history for sessions that never touched the DB.
+        # getattr: test doubles (SimpleNamespace / object.__new__) may not
+        # carry _session_db or session_id.
         session_data = None
-        if self._session_db and self.session_id:
+        _db = getattr(self, "_session_db", None)
+        _sid = getattr(self, "session_id", None)
+        if _db and _sid:
             try:
-                session_data = self._session_db.export_session(self.session_id)
+                session_data = _db.export_session(_sid)
             except Exception:
                 session_data = None
         if not session_data:

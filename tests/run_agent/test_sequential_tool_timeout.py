@@ -93,26 +93,32 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     calls = [_tool_call("hung"), _tool_call("next")]
     assistant = SimpleNamespace(tool_calls=calls)
     messages: list[dict] = []
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.5")
 
     started = time.monotonic()
     try:
         with (
             patch("run_agent.handle_function_call", side_effect=_dispatch),
+            patch("model_tools.handle_function_call", side_effect=_dispatch),
             patch(
                 "agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=_capture_terminal_event,
             ),
         ):
             execute_tool_calls_sequential(agent, assistant, messages, "task")
+            # Under a heavily loaded CI worker the daemon thread can be
+            # scheduled just after the bounded call returns.  Observe its
+            # start before releasing the gate; otherwise the assertion below
+            # races the executor teardown rather than testing timeout behavior.
+            assert first_started.wait(timeout=1.0)
     finally:
         release_first.set()
 
     assert first_started.is_set()
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 2.0
     assert dispatched == ["hung", "next"]
     assert [message["tool_call_id"] for message in messages] == ["hung", "next"]
-    assert "timed out after 0.1s" in messages[0]["content"]
+    assert "timed out after 0.5s" in messages[0]["content"]
     assert messages[0]["effect_disposition"] == "unknown"
     assert messages[1]["content"] == "second result"
     timeout_events = [event for event in terminal_events if event.get("error_type") == "tool_timeout"]
@@ -142,7 +148,7 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
 
     calls = [_tool_call("hung"), _tool_call("next")]
     messages: list[dict] = []
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.5")
 
     try:
         with (
@@ -184,7 +190,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     outlast ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` (default 420s).
     """
     agent = _make_agent(tmp_path)
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.5")
     monkeypatch.setattr(
         "tools.clarify_gateway.get_clarify_timeout",
         lambda: clarify_timeout,
@@ -219,7 +225,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
             "task",
         )
 
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 2.0
     assert [message["tool_call_id"] for message in messages] == ["clarify-1", "next"]
     payload = json.loads(messages[0]["content"])
     assert payload["user_response"] == "A"

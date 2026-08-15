@@ -19,6 +19,11 @@ import pytest
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    HISTORICAL_TASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
     ContextCompressor,
 )
 
@@ -42,7 +47,23 @@ def _make_messages(n_turns=30):
 
 def _compress(cc, msgs):
     resp = MagicMock()
-    resp.choices[0].message.content = "## Active Task\nstuff"
+    resp.choices[0].message.content = f"""{HISTORICAL_TASK_HEADING}
+User asked: 'continue the requested work'
+
+{GOVERNING_OUTCOME_HEADING}
+Deliver the requested result.
+
+{CURRENT_SUBTASK_HEADING}
+Continue the current grounded step.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Complete the next grounded step.
+
+## Critical Context
+stuff"""
     with patch("agent.context_compressor.call_llm", return_value=resp):
         return cc.compress(msgs, current_tokens=100_000, force=True)
 

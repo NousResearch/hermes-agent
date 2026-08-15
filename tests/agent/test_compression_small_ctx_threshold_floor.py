@@ -18,6 +18,26 @@ import agent.context_compressor as cc
 from agent.context_compressor import ContextCompressor
 
 
+def _valid_user_summary(content: str) -> str:
+    return f"""{cc.HISTORICAL_TASK_HEADING}
+User asked: 'hi'
+
+{cc.GOVERNING_OUTCOME_HEADING}
+Respond to the user's request.
+
+{cc.CURRENT_SUBTASK_HEADING}
+Prepare the response.
+
+{cc.LATEST_USER_CORRECTION_HEADING}
+None.
+
+{cc.NEXT_OUTCOME_STEP_HEADING}
+Provide the response.
+
+## Critical Context
+{content}"""
+
+
 def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
     with patch.object(cc, "get_model_context_length", return_value=ctx):
         comp = ContextCompressor(
@@ -71,7 +91,9 @@ class TestReasoningExcludedFromSummarizer:
         comp = _make(128_000)
 
         class FakeMsg:
-            content = "<think>OUTPUT_TRACE</think>\n## Active Task\nUser asked X"
+            content = "<think>OUTPUT_TRACE</think>\n" + _valid_user_summary(
+                "## Active Task\nUser asked X"
+            )
 
         class FakeChoice:
             message = FakeMsg()
@@ -104,7 +126,7 @@ class TestSummaryBudgetEnvelope:
         captured = {}
 
         class FakeMsg:
-            content = "## Active Task\nUser asked X"
+            content = _valid_user_summary("## Active Task\nUser asked X")
 
         class FakeChoice:
             message = FakeMsg()

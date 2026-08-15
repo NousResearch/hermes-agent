@@ -17,6 +17,33 @@ from unittest.mock import patch
 import pytest
 
 import agent.auxiliary_client as aux
+from agent.context_compressor import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    HISTORICAL_TASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
+
+
+def _valid_user_summary(content: str) -> str:
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked: 'do a thing' and then 'more'.
+
+{GOVERNING_OUTCOME_HEADING}
+Complete the requested work.
+
+{CURRENT_SUBTASK_HEADING}
+Finish the additional requested work.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Deliver the completed work.
+
+## Critical Context
+{content}"""
 
 
 class TestAuxInterruptProtection:
@@ -64,7 +91,7 @@ class TestCompressionProtectsSummaryCall:
         class _Resp:
             class _Choice:
                 class _Msg:
-                    content = "[CONTEXT SUMMARY]: ok"
+                    content = _valid_user_summary("[CONTEXT SUMMARY]: ok")
                 message = _Msg()
             choices = [_Choice()]
 

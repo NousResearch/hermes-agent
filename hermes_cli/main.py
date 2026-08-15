@@ -11816,19 +11816,14 @@ def main():
     # Lazy-import secrets_cli: the module imports agent.secret_sources.bitwarden
     # which loads cryptography._rust.pyd.  On Windows this maps the native
     # extension into the updater process, causing the self-lock preflight to
-    # defer (#86781).  We pre-create the subparsers here (parse-time, no
-    # crypto cost) and let secrets_cli import only when a command actually
-    # runs — at which point the parse has long since completed.
-    def _register_bitwarden(_p):  # noqa: ANN001
-        from hermes_cli import secrets_cli as _secrets_cli
-        return _secrets_cli.register_cli(_p)
+    # defer (#86781).  secrets_cli defers its backend import to first use
+    # (module-level __getattr__ + handler-level _load_bw()), so register_cli
+    # at parse time only wires argparse structure with no crypto cost.
+    from hermes_cli import secrets_cli as _secrets_cli
+    from hermes_cli import onepassword_secrets_cli as _op_secrets_cli
 
-    def _register_onepassword(_p):  # noqa: ANN001
-        from hermes_cli import onepassword_secrets_cli as _op_secrets_cli
-        return _op_secrets_cli.register_cli(_p)
-
-    _register_bitwarden(secrets_bw)
-    _register_onepassword(secrets_op)
+    _secrets_cli.register_cli(secrets_bw)
+    _op_secrets_cli.register_cli(secrets_op)
 
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)

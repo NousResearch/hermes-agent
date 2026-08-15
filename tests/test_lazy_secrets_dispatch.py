@@ -121,3 +121,88 @@ class TestUpdatePathE2E:
         assert "deferred" not in result.stderr.lower()
         assert "self-lock" not in result.stderr.lower()
         assert "_rust.pyd" not in result.stderr.lower()
+
+    @pytest.mark.live_system_guard_bypass
+    def test_main_update_check_crypto_absent_in_sys_modules(self) -> None:
+        """Decisive invariant: invoking main() with argv=['hermes','update','--check']
+        leaves cryptography.hazmat.bindings._rust absent from sys.modules.
+
+        This is the exact invariant review flagged as unproven (#86782 review
+        2026-08-15): an import-only test cannot observe lazy failures, because
+        parser construction happens inside main(). Run main() itself in a
+        subprocess, let it execute the update path, then assert sys.modules.
+
+        The check must run before _dispatch_update calls its (potentially
+        lazy) network layer, so we instrument sys.modules immediately after
+        parse_args() and before dispatch returns, using a monkeypatched
+        _cmd_update_check that captures state then short-circuits.
+        """
+        script = """
+import sys
+from unittest.mock import patch
+
+crypto_seen_at_dispatch = []
+
+def capture_update_check(*args, **kwargs):
+    # Run just before the real handler would; record crypto state.
+    crypto_seen_at_dispatch.append(
+        'cryptography.hazmat.bindings._rust' in sys.modules
+    )
+    # Short-circuit: don't actually call the network in tests.
+    return 0
+
+sys.argv = ['hermes', 'update', '--check']
+
+import hermes_cli.main as m
+
+# Patch the update handler so main() exercises its parser + dispatch
+# without doing network I/O.  cmd_update (in main.py) calls
+# _self()._cmd_update_check(branch=..., branch_explicit=...) where _self()
+# resolves the hermes_cli.main module's lazily re-exported attribute —
+# so the patch must land on hermes_cli.main._cmd_update_check.
+with patch('hermes_cli.main._cmd_update_check', capture_update_check):
+    try:
+        m.main()
+    except SystemExit as e:
+        # argparse may sys.exit for --help / bad args; ignore for this probe
+        if e.code not in (0, None):
+            print(f'FAIL: main() exited with code {e.code}')
+            sys.exit(1)
+
+# 1. main() must have dispatched into our capture hook
+if not crypto_seen_at_dispatch:
+    print('FAIL: update --check did not dispatch to _cmd_update_check')
+    sys.exit(1)
+
+# 2. At dispatch time, crypto must NOT be loaded
+if crypto_seen_at_dispatch[0]:
+    print('FAIL: cryptography._rust loaded by main() before update dispatch')
+    sys.exit(1)
+
+# 3. After main() returned, crypto must STILL not be loaded
+if 'cryptography.hazmat.bindings._rust' in sys.modules:
+    print('FAIL: cryptography._rust present in sys.modules after main()')
+    sys.exit(1)
+
+print('PASS: main() update --check path never loaded cryptography._rust')
+sys.exit(0)
+"""
+        repo_root = Path(__file__).parent.parent
+        probe = repo_root / "_test_main_update_crypto_probe.py"
+        probe.write_text(script)
+        try:
+            result = subprocess.run(
+                [sys.executable, probe.name],
+                capture_output=True,
+                text=True,
+                cwd=str(repo_root),
+                timeout=60,
+            )
+            assert result.returncode == 0, (
+                f"Decisive main()-level probe failed:\n"
+                f"stdout: {result.stdout}\n"
+                f"stderr: {result.stderr}"
+            )
+            assert "PASS" in result.stdout
+        finally:
+            probe.unlink(missing_ok=True)

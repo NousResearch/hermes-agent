@@ -3640,14 +3640,21 @@ def _configured_provider_ids() -> set[str]:
 
 
 def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
-    """Resolve an explicit ``vendor/model`` prefix to a known provider.
+    """Resolve an explicit ``vendor/model`` prefix to a configured provider.
 
     ``nous/deepseek-v4-pro`` or ``ollama/qwen3.5:4b`` should route to the
     named provider instead of falling back to the configured default (which
-    silently sends non-default models to the wrong endpoint, #87189). The
-    vendor counts as known when it is a built-in provider id/alias or a key
-    in the user's ``providers:`` config block. The returned model is the
-    suffix with the prefix stripped — the provider's API expects the bare id.
+    silently sends non-default models to the wrong endpoint, #87189).
+
+    Only vendors the user actually defined in their ``providers:`` config
+    block (by raw name or alias) are routed here. Built-in vendor prefixes
+    (``google/gemini-2.5-flash``, ``deepseek/deepseek-chat``) deliberately
+    stay on the existing catalog / OpenRouter-slug / default-provider path:
+    those slug forms are aggregator-native, and rerouting them to the vendor
+    provider would change established provider-switch behavior (see
+    ``TestDenormalizeProviderSwitch`` in tests/hermes_cli/test_web_server.py).
+    The returned model is the suffix with the prefix stripped — the target
+    provider's API expects the bare id.
     """
     if "/" not in model_name:
         return None
@@ -3657,20 +3664,17 @@ def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
     if not vendor or not model:
         return None
     configured = _configured_provider_ids()
+    if not configured:
+        return None
     # A provider block the user explicitly named (``ollama:``) wins over the
     # built-in alias table, which may canonicalize the same name elsewhere
     # (``ollama`` → ``custom``) and route to the wrong endpoint.
     if vendor in configured:
         return (vendor, model)
     canonical = _PROVIDER_ALIASES.get(vendor, vendor)
-    known = (
-        canonical in _PROVIDER_LABELS
-        or canonical in _PROVIDER_MODELS
-        or canonical in configured
-    )
-    if not known:
-        return None
-    return (canonical, model)
+    if canonical in configured:
+        return (canonical, model)
+    return None
 
 
 def detect_provider_for_model(
@@ -3709,11 +3713,12 @@ def detect_provider_for_model(
             return ("openrouter", or_slug)
         return None  # already on openrouter with matching name
 
-    # --- Step 3: explicit ``vendor/model`` prefix naming a provider ---
+    # --- Step 3: explicit ``vendor/model`` prefix naming a configured provider ---
     # Checked after the OpenRouter slug lookup so aggregator-native slugs
-    # (e.g. ``deepseek/deepseek-chat``) keep their existing routing; this
-    # step only catches names no catalog serves, which previously fell back
-    # to the configured default provider and 404'd (#87189).
+    # (e.g. ``deepseek/deepseek-chat``) keep their existing routing; only
+    # vendors the user defined in their ``providers:`` block route here,
+    # so catalog/default behavior for built-in vendor prefixes is unchanged
+    # (#87189).
     prefix_match = _resolve_provider_prefix(name)
     if prefix_match is not None:
         return prefix_match

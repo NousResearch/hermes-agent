@@ -55,12 +55,16 @@ export async function clearStaleGitLocks(
   const gitDir = path.join(repoRoot, '.git')
   const removed: string[] = []
   try {
-    if (!fs.statSync(gitDir).isDirectory()) return removed
+    if (!fs.statSync(gitDir).isDirectory()) {
+      return removed
+    }
   } catch {
     return removed
   }
 
-  if (await isGitRunning()) return removed
+  if (await isGitRunning()) {
+    return removed
+  }
 
   const cutoff = Date.now() - minAgeMs
   for (const name of LOCK_NAMES) {

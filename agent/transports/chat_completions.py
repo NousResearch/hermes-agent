@@ -168,6 +168,26 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     return translated or None
 
 
+def _raise_gemini_thinking_max_tokens(
+    model: str,
+    reasoning_config: dict | None,
+    requested: Any,
+) -> Any:
+    """Raise Gemini output caps that thinking tokens would otherwise consume.
+
+    Gemini bills thought tokens against maxOutputTokens / max_tokens. A
+    global Hermes cap of 4096 is enough for visible text, but Ultra/high
+    thinking can exhaust it on the first request and abort after four
+    length-continuations.
+    """
+    thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+    if not thinking_config:
+        return requested
+    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
+
+    return _effective_gemini_max_output_tokens(requested, thinking_config)
+
+
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
@@ -517,9 +537,17 @@ class ChatCompletionsTransport(ProviderTransport):
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(ephemeral))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, ephemeral)
+                )
+            )
         elif max_tokens is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(max_tokens))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, max_tokens)
+                )
+            )
         elif anthropic_max_out is not None:
             api_kwargs["max_tokens"] = anthropic_max_out
 
@@ -711,18 +739,30 @@ class ChatCompletionsTransport(ProviderTransport):
         # they front several backends with different completion-token limits
         # (e.g. opencode-go: mimo-v2.5-pro = 131072).
         profile_max = profile.get_max_tokens(model)
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(ephemeral))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, ephemeral)
+                )
+            )
         elif user_max is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(user_max))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, user_max)
+                )
+            )
         elif profile_max and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(profile_max))
+            api_kwargs.update(
+                max_tokens_fn(
+                    _raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)
+                )
+            )
         elif anthropic_max is not None:
             api_kwargs["max_tokens"] = anthropic_max
 
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         extra_body_from_profile, top_level_from_profile = (
             profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config,

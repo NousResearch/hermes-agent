@@ -6,7 +6,10 @@ import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { openExternalLink } from '@/lib/external-link'
+import { mediaExternalUrl } from '@/lib/media'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { $currentCwd } from '@/store/session'
 import { cn } from '@/lib/utils'
 
 /**
@@ -593,6 +596,20 @@ export function FileDiffPanel({
     [diff, fullText]
   )
 
+  // Resolve the file the diff touches to an absolute path (relative paths are
+  // project-relative, resolved against the session cwd) so the header row can
+  // open the current file with the OS default app.
+  const absolutePath = React.useMemo(() => {
+    if (!path) {
+      return null
+    }
+    if (path.startsWith('/')) {
+      return path
+    }
+    const cwd = $currentCwd.get()
+    return cwd ? `${cwd.replace(/\/$/, '')}/${path}` : null
+  }, [path])
+
   const lineChunks = React.useMemo(() => chunkLines(lines, PREVIEW_CHUNK_LINES), [lines])
 
   const { afterRows, beforeRows, endChunk, onScroll, scrollerRef, startChunk } = useFixedRowWindow({
@@ -635,6 +652,7 @@ export function FileDiffPanel({
   if (!windowed) {
     return (
       <div className={cn(DIFF_BOX_CLASS, className)} data-slot="file-diff-panel">
+        {absolutePath && <DiffFileHeader path={path ?? ''} absolutePath={absolutePath} />}
         {compactBody}
       </div>
     )
@@ -687,6 +705,35 @@ export function FileDiffPanel({
         )}
       </div>
       <DiffOverviewRuler lines={lines} />
+    </div>
+  )
+}
+
+/**
+ * Clickable file header for a diff card: the path the diff touches, opening
+ * the current file with the OS default app (resolved against the session cwd
+ * when the path is project-relative).
+ */
+function DiffFileHeader({ absolutePath, path }: { absolutePath: string; path: string }) {
+  const open = (event: React.MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    openExternalLink(mediaExternalUrl(absolutePath))
+  }
+
+  return (
+    <div className="border-b border-(--ui-stroke-tertiary) bg-muted/25 px-2.5 py-1.5">
+      <a
+        className="ref wrap-anywhere inline-flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
+        href="#"
+        onClick={open}
+        title={`打开 ${path}`}
+      >
+        <span aria-hidden className="shrink-0">
+          📄
+        </span>
+        <span className="truncate">{path}</span>
+      </a>
     </div>
   )
 }

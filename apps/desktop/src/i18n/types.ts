@@ -1019,6 +1019,10 @@ export interface Translations {
       updateStarted: string
       actionFailed: string
       actionLog: string
+      pickerTitle: string
+      pickerBrowse: string
+      pickerHide: string
+      pickerHint: string
       loadFailed: string
       previewFailed: string
       scanFailed: string

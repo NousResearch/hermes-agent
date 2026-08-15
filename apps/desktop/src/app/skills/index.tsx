@@ -24,7 +24,7 @@ import {
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
-import { queryClient, writeCache } from '@/lib/query-client'
+import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -57,6 +57,7 @@ import { TerminalBackendPanel } from '../settings/terminal-backend-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { SkillsHub } from './hub'
 import { McpTab } from './mcp-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
@@ -67,39 +68,36 @@ const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'hub'] as const
 // cached lists instantly (no reload flash) and mount only fires a deduped
 // background refetch. A profile swap globally invalidates (see store/profile),
 // so these plain keys refetch against the new backend automatically.
+// Both are extended with the Capabilities scope key at the call sites so every
+// scoped profile keeps its own cached copy (prefix invalidations still match).
 const SKILLS_QUERY_KEY = ['skills-list'] as const
 const TOOLSETS_QUERY_KEY = ['toolsets-list'] as const
-
-// Optimistic write-through: skill toggles/bulk/archive repaint instantly; the
-// next background refetch reconciles with the backend. (Toolsets write through
-// the profile-scoped query key directly — see handleToggleToolset.)
-const setSkills = writeCache<SkillInfo[]>(SKILLS_QUERY_KEY)
 
 // Per-tool call counts come from a 365-day message scan — heavy, and purely
 // cosmetic (Toolsets usage badges). Cache the result module-wide with a TTL so
 // bouncing between tabs/pages doesn't re-run the scan every time. Keyed by
-// profile: analytics are profile-scoped, so a switch must not show the previous
-// profile's counts. `useRefreshHotkey` still forces a fresh pull.
+// the Capabilities scope profile: analytics are profile-scoped, so a scope or
+// app-profile switch must not show the previous profile's counts.
+// `useRefreshHotkey` still forces a fresh pull.
 const TOOL_CALLS_TTL_MS = 10 * 60 * 1000
 const toolCallsCache = new Map<string, { at: number; value: Record<string, number> }>()
 
-async function loadToolCalls(force = false): Promise<Record<string, number>> {
-  const key = normalizeProfileKey($activeGatewayProfile.get())
-  const cached = toolCallsCache.get(key)
+async function loadToolCalls(
+  scopeKey: string,
+  scopeProfile: null | string,
+  force = false
+): Promise<Record<string, number>> {
+  const cached = toolCallsCache.get(scopeKey)
 
   if (!force && cached && Date.now() - cached.at < TOOL_CALLS_TTL_MS) {
     return cached.value
   }
 
-  const analytics = await getUsageAnalytics(365)
+  const analytics = await getUsageAnalytics(365, scopeProfile)
 
   const value = Object.fromEntries((analytics.tools ?? []).map(e => [e.tool, e.count]))
 
-  // Only cache if the active profile hasn't changed during the request — else a
-  // switch mid-flight would file this result under the wrong profile's key.
-  if (normalizeProfileKey($activeGatewayProfile.get()) === key) {
-    toolCallsCache.set(key, { at: Date.now(), value })
-  }
+  toolCallsCache.set(scopeKey, { at: Date.now(), value })
 
   return value
 }
@@ -215,8 +213,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     isError: skillsFailed,
     error: skillsError
   } = useQuery({
-    queryKey: SKILLS_QUERY_KEY,
-    queryFn: getSkills,
+    queryKey: [...SKILLS_QUERY_KEY, scopeKey],
+    queryFn: () => getSkills(scopeProfile),
     staleTime: 0
   })
 
@@ -225,6 +223,14 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     queryFn: () => getToolsets(scopeProfile),
     staleTime: 0
   })
+
+  // Optimistic write-through against the scoped Skills key: toggles/bulk/
+  // archive repaint instantly; the next background refetch reconciles.
+  const setSkills = useCallback(
+    (fn: (cur: SkillInfo[] | undefined) => SkillInfo[] | undefined) =>
+      queryClient.setQueryData<SkillInfo[]>([...SKILLS_QUERY_KEY, scopeKey], prev => fn(prev) ?? prev),
+    [scopeKey]
+  )
 
   // tool name -> call count over the analytics window. null = still loading
   // (badges show skeletons); {} = loaded empty / unavailable backend.
@@ -249,15 +255,15 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     // An explicit refresh is the one time we bypass the analytics TTL — but
     // only if the badges are already on screen; otherwise let the lazy load
     // pick it up when Toolsets is first shown. Guard the async set against a
-    // profile switch landing before it resolves.
+    // profile/scope switch landing before it resolves.
     if (toolCallsCache.size > 0) {
       const epoch = toolCallsEpoch.current
 
-      loadToolCalls(true)
+      loadToolCalls(scopeKey, scopeProfile, true)
         .then(value => toolCallsEpoch.current === epoch && setToolCalls(value))
         .catch(() => toolCallsEpoch.current === epoch && setToolCalls({}))
     }
-  }, [])
+  }, [scopeKey, scopeProfile])
 
   const refreshToolsets = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
@@ -281,20 +287,24 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     const epoch = toolCallsEpoch.current
     const live = () => !cancelled && toolCallsEpoch.current === epoch
 
-    loadToolCalls()
+    loadToolCalls(scopeKey, scopeProfile)
       .then(value => live() && setToolCalls(value))
       .catch(() => live() && setToolCalls({}))
 
     return () => void (cancelled = true)
-  }, [mode, toolCalls])
+  }, [mode, scopeKey, scopeProfile, toolCalls])
 
-  // On a profile switch the analytics cache is profile-keyed, but our local
-  // toolCalls state isn't — leaving it non-null would keep the lazy effect from
-  // ever re-running, so badges/sort would show the previous profile's counts.
-  // Reset to null so the next Toolsets view reloads for the active profile.
+  // On an app-wide profile switch the analytics cache is scope-keyed, but our
+  // local toolCalls state isn't — leaving it non-null would keep the lazy
+  // effect from ever re-running, so badges/sort would show the previous
+  // profile's counts. Reset to null so the next Toolsets view reloads for the
+  // active profile. The switch also drops any scope override — the user just
+  // changed what "here" means, and a stale override pointing at the previous
+  // selection would be surprising.
   useOnProfileSwitch(() => {
     toolCallsEpoch.current += 1
     setToolCalls(null)
+    setScopeOverride(null)
   })
 
   const visibleSkills = useMemo(
@@ -359,7 +369,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setSkills(current => current?.map(row => (row.name === skill.name ? { ...row, enabled } : row)) ?? current)
 
     try {
-      await setSkillEnabled(skill.name, enabled)
+      await setSkillEnabled(skill.name, enabled, scopeProfile)
       // A disabled skill loses its `/name` command, so the composer's cached
       // `/` list has to be dropped along with the row repaint.
       invalidateSlashCompletions()
@@ -407,7 +417,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       for (const row of skillTargets) {
-        await setSkillEnabled(row.name, enabled)
+        await setSkillEnabled(row.name, enabled, scopeProfile)
         setSkills(cur => cur?.map(r => (r.name === row.name ? { ...r, enabled } : r)) ?? cur)
         done += 1
       }
@@ -509,7 +519,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     const epoch = skillEditorEpoch.current
 
     try {
-      const node = await getLearningNode(name)
+      const node = await getLearningNode(name, scopeProfile)
 
       if (skillEditorEpoch.current !== epoch) {
         return
@@ -530,7 +540,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setSkillSaving(true)
 
     try {
-      await editLearningNode(skillEditor.name, skillDraft)
+      await editLearningNode(skillEditor.name, skillDraft, scopeProfile)
       notify({
         kind: 'success',
         title: t.skills.skillUpdated,
@@ -567,14 +577,35 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     </DetailPane>
   )
 
-  // Profile-scope selector, shown above the Tools and MCP tabs. Lets the user
-  // configure ANY profile's capabilities without switching the whole app.
-  // Only meaningful with >1 profile; hidden otherwise to avoid clutter.
+  // Selecting a different scope is the same staleness hazard as an app-wide
+  // profile switch: in-flight analytics belong to the previous scope's cache
+  // key, and an open skill editor / archive dialog targets the PREVIOUS
+  // scope's skill (a save/archive would hit the new one). Reset both here —
+  // this handler is the only way the scope changes besides an app profile
+  // switch, which useOnProfileSwitch already covers.
+  const changeScope = (value: string) => {
+    if (value === (scopeProfile ?? '')) {
+      return
+    }
+
+    setScopeOverride(value)
+    toolCallsEpoch.current += 1
+    setToolCalls(null)
+    skillEditorEpoch.current += 1
+    setSkillEditor(null)
+    setSkillDraft('')
+    setArchiveTarget(null)
+  }
+
+  // Profile-scope selector, shown above EVERY Capabilities tab (Skills, Tools,
+  // MCP, Browse Hub). Lets the user configure ANY profile's capabilities
+  // without switching the whole app. Only meaningful with >1 profile; hidden
+  // otherwise to avoid clutter.
   const profileScopeSelector =
     profiles.length > 1 ? (
       <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
         <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
-        <Select onValueChange={value => setScopeOverride(value)} value={scopeProfile ?? ''}>
+        <Select onValueChange={changeScope} value={scopeProfile ?? ''}>
           <SelectTrigger className="h-7 w-56 text-xs">
             <SelectValue />
           </SelectTrigger>
@@ -614,81 +645,85 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         { id: 'hub', label: t.skills.tabHub }
       ]}
     >
-      {mode === 'hub' ? (
-        <SkillsHub query={query} />
-      ) : mode === 'mcp' ? (
-        <div className="flex h-full flex-col">
-          {profileScopeSelector}
-          <div className="min-h-0 flex-1">
+      {/* One shared column: the scope selector sits above whichever tab is
+          active, so Skills / Tools / MCP / Browse Hub all read and write the
+          SAME selected profile. */}
+      <div className="flex h-full flex-col">
+        {profileScopeSelector}
+        {/* One-click hub installs live right on the Skills tab: an embedded
+            picker of the live Skills Hub (same postMessage trick Bot Mode
+            uses), scoped to the selected profile. Collapsed by default. */}
+        {mode === 'skills' && <EmbeddedHubPicker key={`picker-${scopeKey}`} profile={scopeProfile} />}
+        <div className="min-h-0 flex-1">
+          {mode === 'hub' ? (
+            // Keyed per scope so a scope change remounts the hub (drops the
+            // previous profile's action log / transient state).
+            <SkillsHub key={`hub-${scopeKey}`} profile={scopeProfile} query={query} />
+          ) : mode === 'mcp' ? (
             <McpTab gateway={gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
-          </div>
-        </div>
-      ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
-        <PanelEmpty
-          action={
-            <Button onClick={() => void refreshCapabilities()} size="sm">
-              {t.skills.refresh}
-            </Button>
-          }
-          description={skillsError instanceof Error ? skillsError.message : undefined}
-          icon="error"
-          title={t.skills.skillsLoadFailed}
-        />
-      ) : !skills || !toolsets ? (
-        <PageLoader label={t.skills.loading} />
-      ) : mode === 'skills' ? (
-        visibleSkills.length === 0 ? (
-          capabilityEmpty('skills')
-        ) : (
-          <MasterDetail pane={skillEditorPane} split="wide">
-            <ListColumn
-              header={
-                <ListStrip
-                  left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
-                  right={
-                    <ListStripMenu
-                      items={[
-                        { disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }
-                      ]}
-                      label={t.skills.tabSkills}
-                      toggle={bulkSwitch(allSkillsEnabled)}
+          ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
+            <PanelEmpty
+              action={
+                <Button onClick={() => void refreshCapabilities()} size="sm">
+                  {t.skills.refresh}
+                </Button>
+              }
+              description={skillsError instanceof Error ? skillsError.message : undefined}
+              icon="error"
+              title={t.skills.skillsLoadFailed}
+            />
+          ) : !skills || !toolsets ? (
+            <PageLoader label={t.skills.loading} />
+          ) : mode === 'skills' ? (
+            visibleSkills.length === 0 ? (
+              capabilityEmpty('skills')
+            ) : (
+              <MasterDetail pane={skillEditorPane} split="wide">
+                <ListColumn
+                  header={
+                    <ListStrip
+                      left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
+                      right={
+                        <ListStripMenu
+                          items={[
+                            { disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }
+                          ]}
+                          label={t.skills.tabSkills}
+                          toggle={bulkSwitch(allSkillsEnabled)}
+                        />
+                      }
                     />
                   }
-                />
-              }
-            >
-              {visibleSkills.map(skill => (
-                <CapRow
-                  active={activeSkill?.name === skill.name}
-                  busy={bulkBusy}
-                  enabled={skill.enabled}
-                  key={skill.name}
-                  meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                  onSelect={() => setSelectedSkill(skill.name)}
-                  onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                  subtitle={skillSubtitle(skill)}
-                  title={skill.name}
-                  toggleLabel={skill.name}
-                />
-              ))}
-            </ListColumn>
-            <DetailColumn footer={t.skills.changesApplyNewSessions}>
-              {activeSkill && (
-                <SkillDetail
-                  onArchive={() => setArchiveTarget(activeSkill.name)}
-                  onEdit={() => void openSkillEditor(activeSkill.name)}
-                  skill={activeSkill}
-                />
-              )}
-            </DetailColumn>
-          </MasterDetail>
-        )
-      ) : visibleToolsets.length === 0 ? (
-        capabilityEmpty('tools')
-      ) : (
-        <div className="flex h-full flex-col">
-          {profileScopeSelector}
-          <div className="min-h-0 flex-1">
+                >
+                  {visibleSkills.map(skill => (
+                    <CapRow
+                      active={activeSkill?.name === skill.name}
+                      busy={bulkBusy}
+                      enabled={skill.enabled}
+                      key={skill.name}
+                      meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
+                      onSelect={() => setSelectedSkill(skill.name)}
+                      onToggle={enabled => void handleToggleSkill(skill, enabled)}
+                      subtitle={skillSubtitle(skill)}
+                      title={skill.name}
+                      toggleLabel={skill.name}
+                    />
+                  ))}
+                </ListColumn>
+                <DetailColumn footer={t.skills.changesApplyNewSessions}>
+                  {activeSkill && (
+                    <SkillDetail
+                      onArchive={() => setArchiveTarget(activeSkill.name)}
+                      onEdit={() => void openSkillEditor(activeSkill.name)}
+                      skill={activeSkill}
+                    />
+                  )}
+                </DetailColumn>
+              </MasterDetail>
+            )
+          ) : visibleToolsets.length === 0 ? (
+            capabilityEmpty('tools')
+          ) : (
             <MasterDetail split="wide">
               <ListColumn
                 header={
@@ -737,9 +772,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 )}
               </DetailColumn>
             </MasterDetail>
-          </div>
+          )}
         </div>
-      )}
+      </div>
       {archiveTarget && (
         <ArchiveSkillConfirmDialog
           onApply={() => {
@@ -753,11 +788,12 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               setSkillEditor(null)
             }
 
-            return () => setSkills(snapshot)
+            return () => setSkills(() => snapshot)
           }}
           onClose={() => setArchiveTarget(null)}
           onFailure={(err, name) => notifyError(err, name)}
           open
+          profile={scopeProfile}
           skillId={archiveTarget}
           skillName={archiveTarget}
         />

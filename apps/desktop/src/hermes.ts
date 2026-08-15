@@ -1063,9 +1063,9 @@ export function getMemoryProviderOAuthStatus(provider: string): Promise<MemoryPr
   })
 }
 
-export function getSkills(): Promise<SkillInfo[]> {
+export function getSkills(profile?: null | string): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/skills'
   })
 }
@@ -1086,25 +1086,29 @@ export interface LearningNodeDetail {
   ok: boolean
 }
 
-export function getLearningNode(id: string): Promise<LearningNodeDetail> {
+export function getLearningNode(id: string, profile?: null | string): Promise<LearningNodeDetail> {
   return window.hermesDesktop.api<LearningNodeDetail>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/learning/node?id=${encodeURIComponent(id)}`
   })
 }
 
-export function deleteLearningNode(id: string): Promise<{ message: string; ok: boolean }> {
+export function deleteLearningNode(id: string, profile?: null | string): Promise<{ message: string; ok: boolean }> {
   return window.hermesDesktop.api<{ message: string; ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/learning/node',
     method: 'DELETE',
     body: { id }
   })
 }
 
-export function editLearningNode(id: string, content: string): Promise<{ message: string; ok: boolean }> {
+export function editLearningNode(
+  id: string,
+  content: string,
+  profile?: null | string
+): Promise<{ message: string; ok: boolean }> {
   return window.hermesDesktop.api<{ message: string; ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/learning/node',
     method: 'PUT',
     body: { content, id }
@@ -1113,10 +1117,11 @@ export function editLearningNode(id: string, content: string): Promise<{ message
 
 export function setSkillEnabled(
   name: string,
-  enabled: boolean
+  enabled: boolean,
+  profile?: null | string
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/skills/toggle',
     method: 'PUT',
     body: { name, enabled }
@@ -1637,9 +1642,9 @@ export function importProfileArchive(
   })
 }
 
-export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
+export function getUsageAnalytics(days = 30, profile?: null | string): Promise<AnalyticsResponse> {
   return window.hermesDesktop.api<AnalyticsResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/analytics/usage?days=${Math.max(1, Math.floor(days))}`
   })
 }
@@ -1812,61 +1817,66 @@ export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
 
 const HUB_REQUEST_TIMEOUT_MS = 45_000
 
-export function getSkillHubSources(): Promise<SkillHubSourcesResponse> {
+export function getSkillHubSources(profile?: null | string): Promise<SkillHubSourcesResponse> {
   return window.hermesDesktop.api<SkillHubSourcesResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/skills/hub/sources',
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
 }
 
-export function searchSkillsHub(query: string, source = 'all', limit = 20): Promise<SkillHubSearchResponse> {
+export function searchSkillsHub(
+  query: string,
+  source = 'all',
+  limit = 20,
+  profile?: null | string
+): Promise<SkillHubSearchResponse> {
   const params = new URLSearchParams({ q: query, source, limit: String(limit) })
 
   return window.hermesDesktop.api<SkillHubSearchResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/skills/hub/search?${params.toString()}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
 }
 
-export function previewSkillHub(identifier: string): Promise<SkillHubPreview> {
+export function previewSkillHub(identifier: string, profile?: null | string): Promise<SkillHubPreview> {
   return window.hermesDesktop.api<SkillHubPreview>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
 }
 
-export function scanSkillHub(identifier: string): Promise<SkillHubScanResult> {
+export function scanSkillHub(identifier: string, profile?: null | string): Promise<SkillHubScanResult> {
   return window.hermesDesktop.api<SkillHubScanResult>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
 }
 
-export function installSkillFromHub(identifier: string): Promise<ActionResponse> {
+export function installSkillFromHub(identifier: string, profile?: null | string): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/skills/hub/install',
     method: 'POST',
     body: { identifier }
   })
 }
 
-export function uninstallSkillFromHub(name: string): Promise<ActionResponse> {
+export function uninstallSkillFromHub(name: string, profile?: null | string): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/skills/hub/uninstall',
     method: 'POST',
     body: { name }
   })
 }
 
-export function updateSkillsFromHub(): Promise<ActionResponse> {
+export function updateSkillsFromHub(profile?: null | string): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/skills/hub/update',
     method: 'POST',
     body: {}

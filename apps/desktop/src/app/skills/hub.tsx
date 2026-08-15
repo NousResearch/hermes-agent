@@ -41,6 +41,7 @@ import {
   updateHubSkills
 } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
+import { normalizeProfileKey } from '@/store/profile'
 
 // Dedup rank when the same skill surfaces from multiple sources — higher trust
 // wins. Mirrors the backend's unified_search `_TRUST_RANK`.
@@ -79,11 +80,13 @@ function verdictTone(policy: string): string {
 function HubSkillRow({
   installedName,
   onPreview,
+  profile,
   rawInstalled,
   skill
 }: {
   installedName: null | string
   onPreview: (skill: SkillHubResult) => void
+  profile?: null | string
   rawInstalled: boolean
   skill: SkillHubResult
 }) {
@@ -96,12 +99,14 @@ function HubSkillRow({
 
   const doInstall = () => {
     notify({ kind: 'success', title: h.installStarted(skill.name), message: h.actionLog })
-    void installHubSkill(skill.identifier).catch(err => notifyError(err, h.actionFailed))
+    void installHubSkill(skill.identifier, profile).catch(err => notifyError(err, h.actionFailed))
   }
 
   const doUninstall = () => {
     notify({ kind: 'success', title: h.uninstallStarted(skill.name), message: h.actionLog })
-    void uninstallHubSkill(skill.identifier, installedName || skill.name).catch(err => notifyError(err, h.actionFailed))
+    void uninstallHubSkill(skill.identifier, installedName || skill.name, profile).catch(err =>
+      notifyError(err, h.actionFailed)
+    )
   }
 
   return (
@@ -137,18 +142,22 @@ function HubSkillRow({
 }
 
 interface SkillsHubProps {
+  /** Capabilities profile-scope override — hub browsing/installs target THIS
+   *  profile's backend; undefined/null keeps the app-wide active profile. */
+  profile?: null | string
   query: string
 }
 
-export function SkillsHub({ query }: SkillsHubProps) {
+export function SkillsHub({ profile, query }: SkillsHubProps) {
   const { t } = useI18n()
   const h = t.skills.hub
+  const profileKey = normalizeProfileKey(profile)
 
   // Sources + featured + the installed map — one cached fetch, revalidated on
   // mount and re-fetched (from the store) after an action lands.
   const sourcesQuery = useQuery({
-    queryKey: HUB_SOURCES_KEY,
-    queryFn: getSkillHubSources,
+    queryKey: [...HUB_SOURCES_KEY, profileKey],
+    queryFn: () => getSkillHubSources(profile),
     staleTime: 5 * 60_000
   })
 
@@ -168,8 +177,8 @@ export function SkillsHub({ query }: SkillsHubProps) {
 
   const sourceSearches = useQueries({
     queries: searchableSources.map(source => ({
-      queryKey: ['skill-hub-search', term, source.id],
-      queryFn: () => searchSkillsHub(term, source.id),
+      queryKey: ['skill-hub-search', term, source.id, profileKey],
+      queryFn: () => searchSkillsHub(term, source.id, 20, profile),
       enabled: term.length > 0,
       staleTime: 60_000
     }))
@@ -191,8 +200,8 @@ export function SkillsHub({ query }: SkillsHubProps) {
   const [scanning, setScanning] = useState(false)
 
   const previewQuery = useQuery({
-    queryKey: ['skill-hub-preview', detail?.identifier],
-    queryFn: () => previewSkillHub(detail!.identifier),
+    queryKey: ['skill-hub-preview', detail?.identifier, profileKey],
+    queryFn: () => previewSkillHub(detail!.identifier, profile),
     enabled: detail !== null,
     staleTime: 5 * 60_000
   })
@@ -201,25 +210,25 @@ export function SkillsHub({ query }: SkillsHubProps) {
     (identifier: string, name: string) => {
       setDetail(null)
       notify({ kind: 'success', title: h.installStarted(name), message: h.actionLog })
-      void installHubSkill(identifier).catch(err => notifyError(err, h.actionFailed))
+      void installHubSkill(identifier, profile).catch(err => notifyError(err, h.actionFailed))
     },
-    [h]
+    [h, profile]
   )
 
   const updateAll = useCallback(() => {
     notify({ kind: 'success', title: h.updateStarted, message: h.actionLog })
-    void updateHubSkills().catch(err => notifyError(err, h.actionFailed))
-  }, [h])
+    void updateHubSkills(profile).catch(err => notifyError(err, h.actionFailed))
+  }, [h, profile])
 
   const runScan = useCallback(
     (identifier: string) => {
       setScanning(true)
-      scanSkillHub(identifier)
+      scanSkillHub(identifier, profile)
         .then(setScan)
         .catch(err => notifyError(err, h.scanFailed))
         .finally(() => setScanning(false))
     },
-    [h]
+    [h, profile]
   )
 
   const openDetail = useCallback((skill: SkillHubResult) => {
@@ -362,6 +371,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
                 installedName={installed[skill.identifier]?.name ?? null}
                 key={skill.identifier}
                 onPreview={openDetail}
+                profile={profile}
                 rawInstalled={Boolean(installed[skill.identifier])}
                 skill={skill}
               />

@@ -23,14 +23,14 @@ const getProfiles = vi.fn()
 // observable.
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
-  getSkills: () => getSkills(),
+  getSkills: (profile?: null | string) => getSkills(profile),
   getToolsets: (profile?: null | string) => getToolsets(profile),
-  setSkillEnabled: (name: string, enabled: boolean) => setSkillEnabled(name, enabled),
+  setSkillEnabled: (name: string, enabled: boolean, profile?: null | string) => setSkillEnabled(name, enabled, profile),
   setToolsetEnabled: (name: string, enabled: boolean, profile?: null | string) =>
     setToolsetEnabled(name, enabled, profile),
   getToolsetConfig: (name: string, profile?: null | string) => getToolsetConfig(name, profile),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
-  getUsageAnalytics: (days: number) => getUsageAnalytics(days),
+  getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
   getProfiles: () => getProfiles()
 }))
 
@@ -172,6 +172,59 @@ describe('SkillsView toolset management', () => {
 
     // Toolsets refetch scoped to the picked profile.
     await waitFor(() => expect(getToolsets).toHaveBeenCalledWith('researcher'))
+  })
+
+  it('scopes the Skills tab (and skill toggles) to the profile chosen in the selector', async () => {
+    // The selector is Capabilities-WIDE: picking a profile on the Skills tab
+    // must refetch the skill list scoped to it, and route toggles there too.
+    Element.prototype.scrollIntoView = vi.fn()
+    getProfiles.mockResolvedValue({
+      profiles: [
+        { name: 'default', is_default: true },
+        { name: 'researcher', is_default: false }
+      ]
+    })
+    getSkills.mockResolvedValue([
+      {
+        name: 'web-research',
+        description: 'Research the web',
+        category: 'research',
+        enabled: true,
+        usage: 3,
+        provenance: 'bundled'
+      }
+    ])
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // The selector renders on the Skills tab too (Capabilities-wide).
+    const trigger = await screen.findByRole('combobox')
+    await act(async () => {
+      fireEvent.click(trigger)
+    })
+    const option = await screen.findByRole('option', { name: 'researcher' })
+    await act(async () => {
+      fireEvent.click(option)
+    })
+
+    // Skills refetch scoped to the picked profile...
+    await waitFor(() => expect(getSkills).toHaveBeenCalledWith('researcher'))
+
+    // ...and a toggle routes its write to that profile as well.
+    const sw = await screen.findByRole('switch', { name: 'web-research' })
+    await act(async () => {
+      fireEvent.click(sw)
+    })
+    await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', false, 'researcher'))
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {

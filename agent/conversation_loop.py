@@ -718,6 +718,12 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
+def _tools_unchanged_by_pin(agent, built_for_this_surface) -> bool:
+    """True when the tools pin left ``agent.tools`` as this surface built it."""
+    from tools.mcp_tool_agent import agent_tool_names
+    return agent_tool_names(agent) == built_for_this_surface
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -817,7 +823,22 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # surface's own build (the -q footprint, its tool_search catalog) would otherwise be
     # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
     built_for_this_surface = _restore_pinned_tools(agent, session_row)
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    # A prompt-warmer prebuild (agent_init) is reused verbatim so the first turn sends
+    # exactly the warmed string. Gated on the same runtime-identity check as the DB-restore
+    # path and on the pin leaving tools[] as built; consumed one-shot.
+    _prebuilt = getattr(agent, "_warm_prebuilt_system_prompt", None)
+    if _prebuilt is not None:
+        agent._warm_prebuilt_system_prompt = None
+    if (
+        isinstance(_prebuilt, str)
+        and _prebuilt
+        and system_message is None
+        and _stored_prompt_matches_runtime(agent, _prebuilt)
+        and _tools_unchanged_by_pin(agent, built_for_this_surface)
+    ):
+        agent._cached_system_prompt = _prebuilt
+    else:
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
     # The rebuilt prompt describes the CURRENT surface, but a surface note left in the
     # transcript by an earlier switch does not — retire it here too, or a rebuild for an

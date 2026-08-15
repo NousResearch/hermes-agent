@@ -48,8 +48,15 @@ def _add_prompt_cache_key(
     tools: list[dict[str, Any]] | None,
     supports_prompt_cache_key: bool,
     session_id: str | None = None,
+    cache_scope_id: str | None = None,
 ) -> None:
-    """Add a content-addressed key only for an explicitly capable endpoint."""
+    """Add a content-addressed key only for an explicitly capable endpoint.
+
+    ``cache_scope_id``, when provided, is the rotation-stable logical scope
+    (compression-lineage root — agent/prompt_cache_scope.py) and takes
+    precedence over the physical ``session_id`` so the key survives
+    context-compression session rotation (#79017).
+    """
     if not supports_prompt_cache_key:
         return
 
@@ -70,7 +77,7 @@ def _add_prompt_cache_key(
     cache_key = _content_cache_key(
         _static_prompt_instructions(messages),
         tools,
-        _cache_scope_from_session_id(session_id),
+        _cache_scope_from_session_id(cache_scope_id or session_id),
     )
     if cache_key:
         api_kwargs["prompt_cache_key"] = cache_key
@@ -641,6 +648,7 @@ class ChatCompletionsTransport(ProviderTransport):
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key"))
             or _is_openai_api_base_url(params.get("base_url")),
             session_id=params.get("session_id"),
+            cache_scope_id=params.get("cache_scope_id"),
         )
 
         return api_kwargs
@@ -791,6 +799,7 @@ class ChatCompletionsTransport(ProviderTransport):
             tools=api_kwargs.get("tools"),
             supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
             session_id=params.get("session_id"),
+            cache_scope_id=params.get("cache_scope_id"),
         )
 
         return api_kwargs

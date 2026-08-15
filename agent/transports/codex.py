@@ -342,10 +342,15 @@ class ResponsesApiTransport(ProviderTransport):
         params:
             instructions: str — system prompt (extracted from messages[0] if not given)
             reasoning_config: dict | None — {effort, enabled}
-            session_id: str | None — transcript/session id; drives the xAI
-                x-grok-conv-id header and the Codex cache-scope headers, and is
-                the fallback prompt_cache_key when there is no static prefix to
-                content-address
+            session_id: str | None — transcript/session id; drives the Codex
+                ``session_id`` header, and is the cache-scope fallback when no
+                ``cache_scope_id`` is given
+            cache_scope_id: str | None — rotation-stable logical scope id
+                (compression-lineage root; see agent/prompt_cache_scope.py).
+                Preferred over session_id for prompt_cache_key derivation and
+                the xAI x-grok-conv-id / Codex x-client-request-id routing
+                headers, so the cache stays warm across context-compression
+                session rotation (#79017)
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
@@ -512,10 +517,18 @@ class ResponsesApiTransport(ProviderTransport):
         # recurring cron jobs carry a per-fire timestamp in session_id
         # (cron_<id>_<ts>) that made every run cache-cold, so the scope strips
         # that suffix (see _cache_scope_from_session_id). session_id is left
-        # untouched for transcript isolation and the cache-scope routing
-        # headers below. Falls back to session_id when there is no static
-        # content to hash.
-        _cache_scope = _cache_scope_from_session_id(session_id)
+        # untouched for transcript isolation (the Codex ``session_id`` header
+        # below). Falls back to session_id when there is no static content to
+        # hash.
+        #
+        # cache_scope_id, when provided, is the rotation-stable logical scope
+        # (compression-lineage root — agent/prompt_cache_scope.py): legacy
+        # ``compression.in_place: false`` compaction rotates session_id
+        # mid-conversation, and scoping by the physical id went cache-cold at
+        # every rotation boundary (#79017).
+        _cache_scope = _cache_scope_from_session_id(
+            params.get("cache_scope_id") or session_id
+        )
         cache_key = _content_cache_key(
             instructions, response_tools, _cache_scope
         ) or _cache_scope

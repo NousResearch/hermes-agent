@@ -1627,14 +1627,18 @@ class _CodexCompletionsAdapter:
                 or base_url_host_matches(_host_src, "models.github.ai")
             )
             if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
-                # Scope by the owning turn's session so two unrelated sessions
-                # with the same instructions/tools (e.g. compression, MoA,
-                # flush_memories firing back-to-back on different sessions)
-                # don't bucket-share a prompt cache slot (#78941). The main
-                # transport (agent/transports/codex.py::build_kwargs) does the
-                # same; this adapter had no session handle before
-                # set_runtime_main() started threading one through.
-                _scope = _cache_scope_from_session_id(_runtime_main_value("session_id"))
+                # Scope by the owning turn's conversation so two unrelated
+                # sessions with the same instructions/tools (e.g. compression,
+                # MoA, flush_memories firing back-to-back on different
+                # sessions) don't bucket-share a prompt cache slot (#78941).
+                # Prefer the rotation-stable logical scope threaded through
+                # set_runtime_main() (compression-lineage root, #79017) and
+                # fall back to the physical session id, mirroring the main
+                # transport (agent/transports/codex.py::build_kwargs).
+                _scope = _cache_scope_from_session_id(
+                    _runtime_main_value("cache_scope")
+                    or _runtime_main_value("session_id")
+                )
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"), _scope)
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
@@ -3377,11 +3381,17 @@ def set_runtime_main(
     api_mode: str = "",
     auth_mode: str = "",
     session_id: str = "",
+    cache_scope: str = "",
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
     Context-local state prevents concurrent gateway sessions from overwriting
     one another while retaining compatibility mirrors for legacy readers.
+
+    ``cache_scope`` is the rotation-stable logical cache scope (compression-
+    lineage root — agent/prompt_cache_scope.py) resolved once per turn by
+    turn_context; auxiliary Responses calls prefer it over ``session_id``
+    for prompt_cache_key derivation (#79017).
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
@@ -3399,6 +3409,7 @@ def set_runtime_main(
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
+        "cache_scope": (cache_scope or "").strip(),
     }
     # Publish authoritative context before updating locked compatibility
     # mirrors; concurrent sessions never read those mirrors at runtime.

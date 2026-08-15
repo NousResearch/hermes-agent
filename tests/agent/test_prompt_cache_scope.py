@@ -1,0 +1,346 @@
+"""Tests for the rotation-stable prompt-cache scope (issue #79017).
+
+Legacy ``compression.in_place: false`` compaction rotates the physical
+session_id mid-conversation. The prompt_cache_key scope (#79161) was derived
+from that physical id, so every rotation went cache-cold. The fix resolves
+the compression-lineage ROOT once per turn and threads it to the key
+derivation sites, while preserving #79161's isolation semantics for /new,
+/branch, delegate subagents, tool children, and unrelated sessions.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from agent.prompt_cache_scope import resolve_prompt_cache_scope
+from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+from hermes_state import SessionDB
+
+
+@pytest.fixture()
+def db(tmp_path):
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        yield session_db
+    finally:
+        session_db.close()
+
+
+def _agent(session_id, session_db=None):
+    return SimpleNamespace(session_id=session_id, _session_db=session_db)
+
+
+def _rotate(db, parent_id: str, child_id: str) -> None:
+    """Simulate a legacy-mode compression rotation parent -> child."""
+    db.end_session(parent_id, "compression")
+    db.create_session(child_id, source="webui", parent_session_id=parent_id)
+
+
+class TestResolvePromptCacheScope:
+    def test_no_session_id_returns_empty(self):
+        assert resolve_prompt_cache_scope(_agent(None)) == ""
+        assert resolve_prompt_cache_scope(_agent("")) == ""
+
+    def test_no_db_falls_back_to_physical_id(self):
+        assert resolve_prompt_cache_scope(_agent("root-sess")) == "root-sess"
+
+    def test_unrotated_session_is_its_own_scope(self, db):
+        db.create_session("root-sess", source="webui")
+        assert resolve_prompt_cache_scope(_agent("root-sess", db)) == "root-sess"
+
+    def test_rotation_child_inherits_root_scope(self, db):
+        """THE fix: scope survives a compression rotation boundary."""
+        db.create_session("root-sess", source="webui")
+        _rotate(db, "root-sess", "rotated-1")
+
+        assert resolve_prompt_cache_scope(_agent("rotated-1", db)) == "root-sess"
+
+    def test_chained_rotations_share_one_scope(self, db):
+        db.create_session("root-sess", source="webui")
+        _rotate(db, "root-sess", "rotated-1")
+        _rotate(db, "rotated-1", "rotated-2")
+
+        assert resolve_prompt_cache_scope(_agent("rotated-2", db)) == "root-sess"
+
+    def test_new_session_gets_fresh_scope(self, db):
+        """/new starts a lineage-less session — never inherits an old scope."""
+        db.create_session("old-conv", source="webui")
+        _rotate(db, "old-conv", "old-rotated")
+        db.create_session("new-conv", source="webui")  # /new: no parent link
+
+        assert resolve_prompt_cache_scope(_agent("new-conv", db)) == "new-conv"
+
+    def test_branch_child_stays_isolated(self, db):
+        """/branch children are explicit forks — own scope, not the root's."""
+        db.create_session("root-sess", source="webui")
+        db.end_session("root-sess", "compression")
+        db.create_session(
+            "branch-child",
+            source="webui",
+            parent_session_id="root-sess",
+            model_config={"_branched_from": "root-sess"},
+        )
+
+        assert (
+            resolve_prompt_cache_scope(_agent("branch-child", db)) == "branch-child"
+        )
+
+    def test_delegate_child_stays_isolated(self, db):
+        """Delegate subagents keep per-child scopes (matches #79161 semantics)."""
+        db.create_session("parent-sess", source="webui")
+        db.end_session("parent-sess", "compression")
+        db.create_session(
+            "delegate-child",
+            source="webui",
+            parent_session_id="parent-sess",
+            model_config={"_delegate_from": "parent-sess"},
+        )
+
+        assert (
+            resolve_prompt_cache_scope(_agent("delegate-child", db))
+            == "delegate-child"
+        )
+
+    def test_tool_child_stays_isolated(self, db):
+        db.create_session("parent-sess", source="webui")
+        db.end_session("parent-sess", "compression")
+        db.create_session(
+            "tool-child", source="tool", parent_session_id="parent-sess"
+        )
+
+        assert resolve_prompt_cache_scope(_agent("tool-child", db)) == "tool-child"
+
+    def test_memoized_per_segment(self, db):
+        """The lineage walk runs once per (agent, session_id) — hot-path rule."""
+        db.create_session("root-sess", source="webui")
+        _rotate(db, "root-sess", "rotated-1")
+        agent = _agent("rotated-1", db)
+
+        assert resolve_prompt_cache_scope(agent) == "root-sess"
+
+        calls = []
+        original = db.get_compression_lineage
+        db.get_compression_lineage = lambda sid: calls.append(sid) or original(sid)
+        try:
+            assert resolve_prompt_cache_scope(agent) == "root-sess"
+            assert calls == []  # memo hit — no second walk
+            # Rotation changes the physical id -> memo invalidates, one re-walk.
+            _rotate(db, "rotated-1", "rotated-2")
+            agent.session_id = "rotated-2"
+            assert resolve_prompt_cache_scope(agent) == "root-sess"
+            assert calls == ["rotated-2"]
+        finally:
+            db.get_compression_lineage = original
+
+    def test_db_failure_falls_back_to_physical_id(self):
+        class BoomDB:
+            def get_compression_lineage(self, sid):
+                raise RuntimeError("db exploded")
+
+        assert resolve_prompt_cache_scope(_agent("sess-x", BoomDB())) == "sess-x"
+
+    def test_failed_walk_is_not_pinned(self, db):
+        """A pre-persist miss must not memoize the physical id for the segment.
+
+        turn_context resolves the scope before _ensure_db_session persists the
+        row on a brand-new agent; once the row (and any rotation ancestry)
+        lands, the next resolution must see it.
+        """
+        agent = _agent("late-row", db)
+        # Row doesn't exist yet -> degraded fallback, unmemoized.
+        assert resolve_prompt_cache_scope(agent) == "late-row"
+        # Row lands with rotation ancestry.
+        db.create_session("late-root", source="webui")
+        db.end_session("late-root", "compression")
+        db.create_session("late-row", source="webui", parent_session_id="late-root")
+        assert resolve_prompt_cache_scope(agent) == "late-root"
+
+    def test_bogus_lineage_shape_falls_back(self):
+        class WeirdDB:
+            def get_compression_lineage(self, sid):
+                return "not-a-list"
+
+        assert resolve_prompt_cache_scope(_agent("sess-y", WeirdDB())) == "sess-y"
+
+
+class TestRotationContinuityEndToEnd:
+    """The acceptance shape from #79017: same conversation, same key."""
+
+    INSTRUCTIONS = "You are a helpful assistant."
+    TOOLS = [{"type": "function", "name": "terminal"}]
+
+    def _key_for(self, agent):
+        scope = _cache_scope_from_session_id(resolve_prompt_cache_scope(agent))
+        return _content_cache_key(self.INSTRUCTIONS, self.TOOLS, scope)
+
+    def test_rotation_keeps_prompt_cache_key_stable(self, db):
+        db.create_session("root-sess", source="webui")
+        key_before = self._key_for(_agent("root-sess", db))
+
+        _rotate(db, "root-sess", "rotated-1")
+        key_after = self._key_for(_agent("rotated-1", db))
+
+        assert key_before == key_after
+
+    def test_unrelated_sessions_keep_distinct_keys(self, db):
+        db.create_session("conv-a", source="webui")
+        db.create_session("conv-b", source="webui")
+
+        assert self._key_for(_agent("conv-a", db)) != self._key_for(
+            _agent("conv-b", db)
+        )
+
+    def test_sibling_forks_keep_distinct_keys(self, db):
+        db.create_session("parent-sess", source="webui")
+        db.end_session("parent-sess", "compression")
+        for child in ("delegate-a", "delegate-b"):
+            db.create_session(
+                child,
+                source="webui",
+                parent_session_id="parent-sess",
+                model_config={"_delegate_from": "parent-sess"},
+            )
+
+        key_a = self._key_for(_agent("delegate-a", db))
+        key_b = self._key_for(_agent("delegate-b", db))
+        assert key_a != key_b
+
+
+class TestTransportWiring:
+    """cache_scope_id reaches the key derivation on both transports."""
+
+    def test_codex_build_kwargs_prefers_cache_scope_id(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        transport = ResponsesApiTransport()
+        base = dict(
+            model="gpt-5.5",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools=[],
+        )
+        # Rotation: different physical ids, same logical scope -> same key.
+        k1 = transport.build_kwargs(
+            **base, session_id="root-sess", cache_scope_id="root-sess"
+        )
+        k2 = transport.build_kwargs(
+            **base, session_id="rotated-1", cache_scope_id="root-sess"
+        )
+        assert k1["prompt_cache_key"] == k2["prompt_cache_key"]
+        # Without the logical scope, rotation used to change the key.
+        k3 = transport.build_kwargs(**base, session_id="rotated-1")
+        assert k3["prompt_cache_key"] != k1["prompt_cache_key"]
+
+    def test_codex_session_header_keeps_physical_id(self):
+        """Transcript identity (#57012 contract) must NOT be rewritten."""
+        from agent.transports.codex import ResponsesApiTransport
+
+        transport = ResponsesApiTransport()
+        kwargs = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools=[],
+            session_id="rotated-1",
+            cache_scope_id="root-sess",
+            is_codex_backend=True,
+        )
+        assert kwargs["extra_headers"]["session_id"] == "rotated-1"
+        # Routing header mirrors the body's scoped cache key.
+        assert kwargs["extra_headers"]["x-client-request-id"] == kwargs[
+            "prompt_cache_key"
+        ]
+
+    def test_xai_conv_id_uses_logical_scope(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        transport = ResponsesApiTransport()
+        kwargs = transport.build_kwargs(
+            model="grok-4",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools=[],
+            session_id="rotated-1",
+            cache_scope_id="root-sess",
+            is_xai_responses=True,
+        )
+        assert kwargs["extra_headers"]["x-grok-conv-id"] == "root-sess"
+
+    def test_chat_completions_prefers_cache_scope_id(self):
+        from agent.transports.chat_completions import _add_prompt_cache_key
+
+        messages = [{"role": "system", "content": "sys"}]
+
+        def key(session_id, cache_scope_id=None):
+            kwargs = {}
+            _add_prompt_cache_key(
+                kwargs,
+                messages=messages,
+                tools=None,
+                supports_prompt_cache_key=True,
+                session_id=session_id,
+                cache_scope_id=cache_scope_id,
+            )
+            return kwargs.get("prompt_cache_key")
+
+        assert key("root-sess", "root-sess") == key("rotated-1", "root-sess")
+        assert key("rotated-1") != key("rotated-1", "root-sess")
+
+    def test_cron_normalization_still_applies_to_scope(self):
+        """cron_<job>_<ts> scopes still normalize per-fire timestamps away."""
+        from agent.transports.codex import ResponsesApiTransport
+
+        transport = ResponsesApiTransport()
+        base = dict(
+            model="gpt-5.5",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools=[],
+        )
+        k1 = transport.build_kwargs(
+            **base,
+            session_id="cron_backup_20260814_120000",
+            cache_scope_id="cron_backup_20260814_120000",
+        )
+        k2 = transport.build_kwargs(
+            **base,
+            session_id="cron_backup_20260815_120000",
+            cache_scope_id="cron_backup_20260815_120000",
+        )
+        assert k1["prompt_cache_key"] == k2["prompt_cache_key"]
+
+
+class TestAuxiliaryRuntimeThreading:
+    def test_set_runtime_main_carries_cache_scope(self):
+        import agent.auxiliary_client as aux
+
+        token = aux.set_runtime_main(
+            "openrouter",
+            "gpt-5.5",
+            session_id="rotated-1",
+            cache_scope="root-sess",
+        )
+        try:
+            assert aux._runtime_main_value("cache_scope") == "root-sess"
+            assert aux._runtime_main_value("session_id") == "rotated-1"
+        finally:
+            aux.reset_runtime_main(token)
+
+    def test_cache_scope_defaults_empty(self):
+        import agent.auxiliary_client as aux
+
+        token = aux.set_runtime_main("openrouter", "gpt-5.5", session_id="s-1")
+        try:
+            assert aux._runtime_main_value("cache_scope") == ""
+        finally:
+            aux.reset_runtime_main(token)

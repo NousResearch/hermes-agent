@@ -485,6 +485,7 @@ def build_turn_context(
     # after primary restoration has settled the runtime.
     try:
         from agent.auxiliary_client import set_runtime_main
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope
         set_runtime_main(
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
@@ -494,6 +495,11 @@ def build_turn_context(
             api_mode=getattr(agent, "api_mode", "") or "",
             auth_mode=getattr(agent, "auth_mode", "") or "",
             session_id=getattr(agent, "session_id", "") or "",
+            # Rotation-stable prompt-cache scope, resolved once per turn here
+            # (memoized per segment — no DB walk on the per-call hot path).
+            # Stays valid through a mid-turn compression rotation because the
+            # lineage root is by definition rotation-invariant (#79017).
+            cache_scope=resolve_prompt_cache_scope(agent),
         )
     except Exception:
         pass

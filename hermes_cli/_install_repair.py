@@ -105,7 +105,12 @@ def _venv_scripts_dir(root: Path) -> Path | None:
     venv_dir = root / "venv"
     if not venv_dir.is_dir():
         return None
-    scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
+    # hermes_constants is stdlib-only, so the canonical layout helper is safe
+    # to use from this corrupted-venv repair path (#76105: never open-code
+    # the Scripts/bin split).
+    from hermes_constants import venv_bin_dir
+
+    scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None
 
 

@@ -177,8 +177,15 @@ def _load_segments_config() -> dict[str, Any]:
     on_compaction = False
     max_turns = 0
     try:
-        from gateway.run import _load_gateway_config  # late import
-        telemetry = (_load_gateway_config().get("gateway") or {}).get("telemetry") or {}
+        # Do NOT import gateway.run from a non-gateway host: its module top level sets
+        # os.environ["_HERMES_GATEWAY"] / HERMES_QUIET — gateway-process semantics. Dragged
+        # into a CLI/TUI/desktop/cron process, _HERMES_GATEWAY flips tools/approval.py onto
+        # the gateway approval path with no notify_cb (#87183).
+        from hermes_cli import managed_scope
+        from hermes_cli.config import read_raw_config
+
+        raw = managed_scope.apply_managed_overlay(read_raw_config())
+        telemetry = ((raw.get("gateway") or {}).get("telemetry")) or {}
         segments = telemetry.get("session_segments") or {}
         on_compaction = bool(segments.get("on_compaction", False))
         try:

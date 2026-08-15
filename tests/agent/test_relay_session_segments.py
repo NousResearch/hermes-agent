@@ -127,8 +127,11 @@ def _default_config(monkeypatch):
 
 
 def _set_segments(monkeypatch, *, on_compaction=False, max_turns=0):
+    # _segments_config() reads via read_raw_config() (+ managed overlay)
+    # instead of importing gateway.run (whose module top-level setenv
+    # pollutes the calling process's environment, see #87183).
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_cli.config.read_raw_config",
         lambda: {
             "gateway": {
                 "telemetry": {

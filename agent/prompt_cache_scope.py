@@ -106,3 +106,20 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
             # unmemoized.
             pass
     return scope
+
+
+def resolve_prompt_cache_scope_safe(agent: Any) -> Optional[str]:
+    """Never-raising variant of :func:`resolve_prompt_cache_scope`.
+
+    Returns None on any failure (or when there is no scope). Consumers treat
+    None/empty as "fall back to the physical session_id", so a resolution
+    failure degrades to pre-#79017 behavior instead of blocking the caller —
+    important at turn_context's call site, where an exception raised inside
+    the ``set_runtime_main(...)`` argument list would otherwise skip the whole
+    runtime binding, not just the cache scope.
+    """
+    try:
+        return resolve_prompt_cache_scope(agent) or None
+    except Exception:
+        logger.debug("prompt-cache scope resolution failed", exc_info=True)
+        return None

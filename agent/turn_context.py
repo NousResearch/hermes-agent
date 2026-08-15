@@ -485,7 +485,17 @@ def build_turn_context(
     # after primary restoration has settled the runtime.
     try:
         from agent.auxiliary_client import set_runtime_main
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        # Rotation-stable prompt-cache scope. Memoized per segment on the
+        # agent, so this is a DB walk at most once per segment — except a
+        # brand-new session whose row lands later in turn setup
+        # (_ensure_db_session); that first turn falls back to the physical
+        # id here and the first build_api_kwargs re-resolves. Stays valid
+        # through a mid-turn compression rotation because the lineage root
+        # is by definition rotation-invariant (#79017). Resolved with the
+        # never-raising variant OUTSIDE the argument list, so a resolution
+        # failure can only lose the scope — never the whole runtime binding.
+        _cache_scope = resolve_prompt_cache_scope_safe(agent) or ""
         set_runtime_main(
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
@@ -495,14 +505,7 @@ def build_turn_context(
             api_mode=getattr(agent, "api_mode", "") or "",
             auth_mode=getattr(agent, "auth_mode", "") or "",
             session_id=getattr(agent, "session_id", "") or "",
-            # Rotation-stable prompt-cache scope. Memoized per segment on the
-            # agent, so this is a DB walk at most once per segment — except a
-            # brand-new session whose row lands later in turn setup
-            # (_ensure_db_session); that first turn falls back to the physical
-            # id here and the first build_api_kwargs re-resolves. Stays valid
-            # through a mid-turn compression rotation because the lineage root
-            # is by definition rotation-invariant (#79017).
-            cache_scope=resolve_prompt_cache_scope(agent),
+            cache_scope=_cache_scope,
         )
     except Exception:
         pass

@@ -191,6 +191,19 @@ class TestResolvePromptCacheScope:
 
         assert resolve_prompt_cache_scope(_agent("sess-y", WeirdDB())) == "sess-y"
 
+    def test_safe_variant_never_raises(self):
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+
+        class ExplodingAgent:
+            @property
+            def session_id(self):
+                raise RuntimeError("hostile property")
+
+        assert resolve_prompt_cache_scope_safe(ExplodingAgent()) is None
+        # Normal path still resolves through to the plain variant.
+        assert resolve_prompt_cache_scope_safe(_agent("sess-ok")) == "sess-ok"
+        assert resolve_prompt_cache_scope_safe(_agent("")) is None
+
 
 class TestRotationContinuityEndToEnd:
     """The acceptance shape from #79017: same conversation, same key."""

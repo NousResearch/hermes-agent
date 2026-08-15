@@ -581,15 +581,16 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
 def _prompt_cache_scope_for_agent(agent) -> "str | None":
     """Rotation-stable logical cache scope for *agent*, or None.
 
-    Thin guard around ``agent.prompt_cache_scope.resolve_prompt_cache_scope``
-    — the transports treat a None/empty value as "fall back to the physical
+    Guarded-import wrapper over the never-raising
+    ``agent.prompt_cache_scope.resolve_prompt_cache_scope_safe`` — the
+    transports treat a None/empty value as "fall back to the physical
     session_id", so any resolution failure degrades to pre-#79017 behavior
     instead of blocking the request build.
     """
     try:
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 
-        return resolve_prompt_cache_scope(agent) or None
+        return resolve_prompt_cache_scope_safe(agent)
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
         return None

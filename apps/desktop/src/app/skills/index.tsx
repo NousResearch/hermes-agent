@@ -9,13 +9,7 @@ import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { CountSkeleton } from '@/components/ui/skeleton'
 import {
   editLearningNode,
@@ -696,53 +690,53 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
           {profileScopeSelector}
           <div className="min-h-0 flex-1">
             <MasterDetail split="wide">
-          <ListColumn
-            header={
-              <ListStrip
-                left={sortButton(toolsetsSortDesc, () => $toolsetsSortDesc.set(!$toolsetsSortDesc.get()))}
-                right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch(allToolsetsEnabled)} />}
-              />
-            }
-          >
-            {visibleToolsets.map(toolset => {
-              const label = toolsetDisplayLabel(toolset)
-              const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+              <ListColumn
+                header={
+                  <ListStrip
+                    left={sortButton(toolsetsSortDesc, () => $toolsetsSortDesc.set(!$toolsetsSortDesc.get()))}
+                    right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch(allToolsetsEnabled)} />}
+                  />
+                }
+              >
+                {visibleToolsets.map(toolset => {
+                  const label = toolsetDisplayLabel(toolset)
+                  const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
 
-              return (
-                <CapRow
-                  active={activeToolset?.name === toolset.name}
-                  busy={bulkBusy}
-                  enabled={toolset.enabled}
-                  key={toolset.name}
-                  meta={
-                    calls === null ? (
-                      <CountSkeleton />
-                    ) : calls > 0 ? (
-                      `×${compactNumber(calls)}`
-                    ) : (
-                      `${toolNames(toolset).length} tools`
-                    )
-                  }
-                  onSelect={() => setSelectedToolset(toolset.name)}
-                  onToggle={checked => void handleToggleToolset(toolset, checked)}
-                  subtitle={asText(toolset.description)}
-                  title={label}
-                  toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
-                />
-              )
-            })}
-          </ListColumn>
-          <DetailColumn footer={t.skills.changesApplyNewSessions}>
-            {activeToolset && (
-              <ToolsetDetail
-                onConfiguredChange={refreshToolsets}
-                profile={scopeProfile}
-                toolCalls={toolCalls ?? {}}
-                toolset={activeToolset}
-              />
-            )}
-          </DetailColumn>
-        </MasterDetail>
+                  return (
+                    <CapRow
+                      active={activeToolset?.name === toolset.name}
+                      busy={bulkBusy}
+                      enabled={toolset.enabled}
+                      key={toolset.name}
+                      meta={
+                        calls === null ? (
+                          <CountSkeleton />
+                        ) : calls > 0 ? (
+                          `×${compactNumber(calls)}`
+                        ) : (
+                          `${toolNames(toolset).length} tools`
+                        )
+                      }
+                      onSelect={() => setSelectedToolset(toolset.name)}
+                      onToggle={checked => void handleToggleToolset(toolset, checked)}
+                      subtitle={asText(toolset.description)}
+                      title={label}
+                      toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
+                    />
+                  )
+                })}
+              </ListColumn>
+              <DetailColumn footer={t.skills.changesApplyNewSessions}>
+                {activeToolset && (
+                  <ToolsetDetail
+                    onConfiguredChange={refreshToolsets}
+                    profile={scopeProfile}
+                    toolCalls={toolCalls ?? {}}
+                    toolset={activeToolset}
+                  />
+                )}
+              </DetailColumn>
+            </MasterDetail>
           </div>
         </div>
       )}

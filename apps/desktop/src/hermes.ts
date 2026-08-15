@@ -1160,10 +1160,7 @@ export function getMcpOAuthFlow(flowId: string, profile?: null | string): Promis
 
 /** Cancel an in-flight MCP OAuth flow server-side, freeing the per-server
  *  "already in progress" slot so a retry doesn't 409. */
-export function cancelMcpOAuthFlow(
-  flowId: string,
-  profile?: null | string
-): Promise<{ ok: boolean; status: string }> {
+export function cancelMcpOAuthFlow(flowId: string, profile?: null | string): Promise<{ ok: boolean; status: string }> {
   return window.hermesDesktop.api<{ ok: boolean; status: string }>({
     ...profileScoped(profile),
     path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,

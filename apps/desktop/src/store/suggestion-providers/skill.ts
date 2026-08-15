@@ -1,8 +1,10 @@
 import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { getSkills } from '@/hermes'
 import { translateNow } from '@/i18n'
+import type { ChatMessage } from '@/lib/chat-messages'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
-import { $currentCwd } from '@/store/session'
+import { $activeSessionId, $currentCwd, $messages } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 /**
  * Skill-match draft provider: the draft names a skill the user has, so offer
@@ -90,6 +92,98 @@ async function loadIndex(): Promise<SkillIndexEntry[]> {
   return index
 }
 
+// ---------------------------------------------------------------------------
+// Already-in-context guard: a skill the session has engaged with must not be
+// re-offered. skill_view loads the whole SKILL.md into the conversation and
+// skill_manage implies the agent is already working with it — clicking the
+// pill would just re-inject content the context already carries (the reported
+// annoyance: a "Use skill" pill for a skill loaded at session start).
+// ---------------------------------------------------------------------------
+
+const SKILL_TOOL_NAMES = new Set(['skill_manage', 'skill_view'])
+
+/** The `name` argument of a skill tool call, however the transcript stored
+ *  it: live rows carry a parsed `args` object, hydrated rows may only have
+ *  the JSON `argsText`. */
+function skillArgName(part: { args?: unknown; argsText?: unknown }): string {
+  const record = part.args && typeof part.args === 'object' ? (part.args as Record<string, unknown>) : null
+
+  if (record && typeof record.name === 'string') {
+    return record.name
+  }
+
+  if (typeof part.argsText === 'string' && part.argsText) {
+    try {
+      const parsed: unknown = JSON.parse(part.argsText)
+
+      if (parsed && typeof parsed === 'object' && typeof (parsed as { name?: unknown }).name === 'string') {
+        return (parsed as { name: string }).name
+      }
+    } catch {
+      // Non-JSON argsText carries no name.
+    }
+  }
+
+  return ''
+}
+
+/** True when the tool-call arg names this skill — exactly, or as the final
+ *  segment of a qualified form (`github/hermes-agent-dev`, `plugin:skill`). */
+function argNamesSkill(arg: string, skillName: string): boolean {
+  const value = arg.trim().toLowerCase()
+
+  if (!value) {
+    return false
+  }
+
+  const target = skillName.toLowerCase()
+
+  return value === target || (value.split(/[/:]/).pop() ?? '') === target
+}
+
+/** Session already touched this skill: the agent loaded it (`skill_view`),
+ *  edited it (`skill_manage`), or the user sent its `/name` command.
+ *  Exported for tests. */
+export function skillTouchedInMessages(skillName: string, messages: readonly ChatMessage[]): boolean {
+  const slash = new RegExp(`^/${escape(skillName.toLowerCase())}(?:\\s|$)`)
+
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type === 'tool-call' && SKILL_TOOL_NAMES.has(part.toolName) && argNamesSkill(skillArgName(part), skillName)) {
+        return true
+      }
+
+      if (
+        message.role === 'user' &&
+        part.type === 'text' &&
+        typeof part.text === 'string' &&
+        slash.test(part.text.trimStart().toLowerCase())
+      ) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+/** This session's transcript, wherever it currently lives: the per-runtime
+ *  mirror ($sessionStates) for any session, falling back to the active view
+ *  ($messages) for a session whose mirror hasn't populated yet. */
+function sessionTranscript(sessionId: string | null): readonly ChatMessage[] {
+  const cached = sessionId ? $sessionStates.get()[sessionId]?.messages : undefined
+
+  if (cached?.length) {
+    return cached
+  }
+
+  if (sessionId && sessionId === $activeSessionId.get()) {
+    return $messages.get()
+  }
+
+  return cached ?? []
+}
+
 function toSuggestion(name: string): ComposerSuggestion {
   const copy = (key: string, ...args: unknown[]) => translateNow(`composer.skillSuggestions.${key}`, ...args)
 
@@ -112,7 +206,7 @@ function toSuggestion(name: string): ComposerSuggestion {
   }
 }
 
-registerDraftProvider('skill', async ({ text }) => {
+registerDraftProvider('skill', async ({ sessionId, text }) => {
   const trimmed = text.trimStart()
 
   // Already a slash command (possibly ours from a previous click) — stand
@@ -124,8 +218,15 @@ registerDraftProvider('skill', async ({ text }) => {
   const haystack = text.toLowerCase()
   const cwd = $currentCwd.get()
   const skills = await loadIndex()
+  const matched = skills.filter(skill => skillHit(skill.pattern, haystack) && !collidesWithWorkspace(skill.name, cwd))
 
-  return skills
-    .filter(skill => skillHit(skill.pattern, haystack) && !collidesWithWorkspace(skill.name, cwd))
-    .map(skill => toSuggestion(skill.name))
+  if (matched.length === 0) {
+    return []
+  }
+
+  // Transcript scan only for actual matches — the common no-match sample
+  // never pays for it.
+  const transcript = sessionTranscript(sessionId)
+
+  return matched.filter(skill => !skillTouchedInMessages(skill.name, transcript)).map(skill => toSuggestion(skill.name))
 })

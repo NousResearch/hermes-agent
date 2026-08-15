@@ -320,7 +320,6 @@ class TestInPlaceAntiGrowthGuard:
             ]
 
 
-
 class TestCompactedTurnsStaySearchable:
     """Teknium's review hinges on the pre-compaction transcript staying
     DISCOVERABLE after in-place compaction. Compaction-archived rows

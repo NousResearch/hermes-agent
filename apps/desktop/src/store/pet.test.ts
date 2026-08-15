@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   $petActivity,
+  STEADY_ACTIVITY_TTL_MS,
   $petAtRest,
   $petMotion,
   $petState,
@@ -142,5 +143,32 @@ describe('flashPetActivity', () => {
     expect($petState.get()).toBe('jump')
 
     setPetActivity({})
+  })
+})
+
+describe('deriveLivePetState recency guard (#84434 / #84438)', () => {
+  const now = Date.now()
+
+  it('animates a recent toolRunning flag even when $busy reads false', () => {
+    $petActivity.set({ toolRunning: true, toolRunningAt: now - 5_000 })
+    expect($petState.get()).toBe('run')
+  })
+
+  it('animates a recent reasoning flag even when $busy reads false', () => {
+    $petActivity.set({ reasoning: true, reasoningAt: now - 5_000 })
+    expect($petState.get()).toBe('review')
+  })
+
+  it('decays a stale flag back to idle (interrupted-turn guard preserved)', () => {
+    $petActivity.set({ toolRunning: true, toolRunningAt: now - STEADY_ACTIVITY_TTL_MS - 1 })
+    expect($petState.get()).toBe('idle')
+  })
+
+  it('setPetActivity stamps the timestamp on set', () => {
+    const before = Date.now()
+    setPetActivity({ toolRunning: true })
+    const activity = $petActivity.get()
+    expect(activity.toolRunningAt).toBeGreaterThanOrEqual(before)
+    expect(activity.toolRunningAt).toBeLessThanOrEqual(Date.now())
   })
 })

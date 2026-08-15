@@ -5360,6 +5360,7 @@ def complete_task(
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
     expected_claim_lock: Optional[str] = None,
+    expected_worker_pid: Optional[int] = None,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5446,7 +5447,7 @@ def complete_task(
         prior_status = prior["status"] if prior else None
         if expected_claim_lock is not None:
             current = conn.execute(
-                "SELECT status, claim_lock, current_run_id "
+                "SELECT status, claim_lock, current_run_id, worker_pid "
                 "FROM tasks WHERE id = ?",
                 (task_id,),
             ).fetchone()
@@ -5482,6 +5483,16 @@ def complete_task(
                 )
             if current["claim_lock"] != expected_claim_lock:
                 return False
+            # The claim lock reaches a nested CLI through the environment, so a
+            # child process can present a matching one and complete its parent's
+            # card. The pid of the process actually making the call cannot be
+            # inherited that way, which is what makes it worth checking.
+            if (
+                expected_worker_pid is not None
+                and current["worker_pid"] is not None
+                and current["worker_pid"] != int(expected_worker_pid)
+            ):
+                return False
             if (
                 expected_run_id is not None
                 and current["current_run_id"] != int(expected_run_id)
@@ -5501,8 +5512,16 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND claim_lock = ?
+                   AND (? IS NULL OR worker_pid IS NULL OR worker_pid = ?)
                 """,
-                (result, now, task_id, expected_claim_lock),
+                (
+                    result,
+                    now,
+                    task_id,
+                    expected_claim_lock,
+                    expected_worker_pid,
+                    expected_worker_pid,
+                ),
             )
         elif expected_run_id is None:
             cur = conn.execute(

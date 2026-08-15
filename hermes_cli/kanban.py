@@ -2305,6 +2305,10 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
                 expected_claim_lock=_worker_claim_lock_for(tid),
+                # os.getpid(), never an environment variable: a pid read
+                # from the environment is inherited like the claim lock
+                # itself and would rebuild the same hole one layer down.
+                expected_worker_pid=os.getpid(),
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)

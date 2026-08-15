@@ -175,3 +175,71 @@ def test_complete_task_accepts_matching_claim_lock_on_completable_status(
         assert task.status == "done"
         assert task.result == "finished"
         assert task.claim_lock is None
+
+
+def test_complete_task_rejects_inherited_claim_lock_from_another_pid(
+    kanban_home: Path,
+) -> None:
+    """A nested CLI inherits the claim lock but not the worker's identity.
+
+    Reported on NousResearch/hermes-agent#71175: a nested Hermes CLI inherits
+    HERMES_KANBAN_TASK and HERMES_KANBAN_CLAIM_LOCK from its parent, so it
+    presents a claim lock that matches and completes the parent's card from a
+    different pid. Every other component of the identity travels down to a
+    child the same way, which is why the pid of the calling process is the one
+    that can tell them apart.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker task", assignee="worker")
+        claim = kb.claim_task(conn, task_id, claimer="worker:live")
+        assert claim is not None
+
+        # claim_task does not stamp the pid; the dispatcher does it separately
+        # via _set_worker_pid, so a test that wants a live worker has to say so.
+        live_pid = 424242
+        kb._set_worker_pid(conn, task_id, live_pid)
+
+        assert not kb.complete_task(
+            conn,
+            task_id,
+            result="completed by a nested CLI",
+            expected_claim_lock="worker:live",
+            expected_worker_pid=live_pid + 1,
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "running"
+        assert task.result is None
+        assert task.claim_lock == "worker:live"
+        assert task.worker_pid == live_pid
+
+
+def test_complete_task_accepts_matching_worker_pid(kanban_home: Path) -> None:
+    """The real worker still completes its own card.
+
+    The bypass test above passes for a gate that refuses everything, so this is
+    the half that keeps it honest.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker task", assignee="worker")
+        claim = kb.claim_task(conn, task_id, claimer="worker:live")
+        assert claim is not None
+
+        # claim_task does not stamp the pid; the dispatcher does it separately
+        # via _set_worker_pid, so a test that wants a live worker has to say so.
+        live_pid = 424242
+        kb._set_worker_pid(conn, task_id, live_pid)
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="completed by its own worker",
+            expected_claim_lock="worker:live",
+            expected_worker_pid=live_pid,
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "done"
+        assert task.result == "completed by its own worker"

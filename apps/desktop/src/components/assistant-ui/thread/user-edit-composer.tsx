@@ -650,7 +650,20 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Self-heal a stale composition flag (same recovery as the main composer's
+    // handleEditorKeyDown, #44135): compositionend can be missed, and a wedged
+    // composingRef would swallow every Enter until the edit composer remounts.
+    if (composingRef.current && !event.nativeEvent.isComposing) {
+      composingRef.current = false
+    }
+
     if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // IME commit Enter still carrying keyCode 229 (VK_PROCESSKEY) after
+    // compositionend — same guard as the main composer.
+    if (event.key === 'Enter' && event.keyCode === 229) {
       return
     }
 

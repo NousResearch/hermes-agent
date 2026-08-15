@@ -462,7 +462,32 @@ def cron_edit(args):
 
 
 def _job_action(action: str, job_id: str, success_verb: str) -> int:
-    result = _cron_api(action=action, job_id=job_id)
+    _stateless_reset = None
+    if action == "run":
+        # One-shot CLI: this process exits as soon as the command returns, so
+        # a background-dispatched run (daemon thread of THIS process) would be
+        # orphaned mid-LLM-call — the delegation dies 'unknown' and the job's
+        # execution row is stuck 'claimed', blocking future runs (#86721).
+        # The background path in ``_try_dispatch_background_run`` triggers when
+        # the CLI inherits a gateway/desktop session env (HERMES_SESSION_KEY);
+        # declare the channel stateless so ``async_delivery_supported()`` gates
+        # it off and the run executes synchronously to completion instead.
+        # The declaration is scoped to this call (token reset in ``finally``)
+        # so in-process callers (tests, embedding apps) are not tainted.
+        try:
+            from gateway.session_context import _SESSION_ASYNC_DELIVERY
+
+            _stateless_token = _SESSION_ASYNC_DELIVERY.set(False)
+
+            def _stateless_reset() -> None:
+                _SESSION_ASYNC_DELIVERY.reset(_stateless_token)
+        except Exception:
+            _stateless_reset = None
+    try:
+        result = _cron_api(action=action, job_id=job_id)
+    finally:
+        if _stateless_reset is not None:
+            _stateless_reset()
     if not result.get("success"):
         print(color(f"Failed to {action} job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1

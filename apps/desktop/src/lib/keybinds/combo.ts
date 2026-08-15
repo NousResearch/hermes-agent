@@ -260,14 +260,22 @@ const INPUT_SAFE_ACTIONS = new Set([
 
 const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown'])
 
-// Only explicit text-entry-safe actions fire while typing. Editing/navigation
-// chords such as Ctrl+Arrow/PageUp must stay with the input even if a user
-// rebinds them to a global navigation action.
+// Only explicit text-entry-safe actions fire while typing. A primary-modifier
+// chord (Cmd/Ctrl) is a deliberate two-key gesture that every browser and chat
+// app fires even with focus in a text field (⌘N, ⌘T, ⌘K, ⌃Tab…), so those stay
+// global — restoring the pre-#86586 behavior. Editing/navigation chords such
+// as Ctrl+Arrow/PageUp must stay with the input even if a user rebinds them to
+// a global navigation action, and bare/Shift-only combos (typed letters) are
+// gated by the allowlist so they never hijack normal typing.
 export function actionAllowedInInput(actionId: string, combo: string): boolean {
   const base = combo.split('+').pop()
 
   if (base && TEXT_NAVIGATION_KEYS.has(base)) {
     return false
+  }
+
+  if (/^(?:mod|ctrl)(?:\+|$)/.test(combo)) {
+    return true
   }
 
   return INPUT_SAFE_ACTIONS.has(actionId)

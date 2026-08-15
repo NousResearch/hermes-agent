@@ -137,16 +137,36 @@ describe('formatCombo — honest Control labels', () => {
 })
 
 describe('actionAllowedInInput', () => {
-  it('keeps only explicit text-entry-safe global actions active while typing', async () => {
+  it('keeps primary-modifier chords global while typing, gating bare/Shift combos to the allowlist', async () => {
     const { actionAllowedInInput } = await loadCombo('MacIntel')
 
+    // Mod/Ctrl chords are deliberate two-key gestures — they fire even with
+    // focus in the composer (⌘N, ⌘T, ⌘⇧N, ⌘K, ⌃Tab, …), matching every browser
+    // and chat app and the pre-#86586 behavior.
+    expect(actionAllowedInInput('session.new', 'mod+n')).toBe(true)
+    expect(actionAllowedInInput('session.newTab', 'mod+t')).toBe(true)
+    expect(actionAllowedInInput('session.newWindow', 'mod+shift+n')).toBe(true)
     expect(actionAllowedInInput('session.next', 'ctrl+tab')).toBe(true)
     expect(actionAllowedInInput('session.prev', 'ctrl+shift+tab')).toBe(true)
     expect(actionAllowedInInput('nav.commandPalette', 'mod+k')).toBe(true)
     expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
-    expect(actionAllowedInInput('nav.skills', 'mod+k')).toBe(false)
-    expect(actionAllowedInInput('view.showTerminal', 'ctrl+`')).toBe(false)
-    expect(actionAllowedInInput('profile.next', 'mod+shift+]')).toBe(false)
+    expect(actionAllowedInInput('nav.skills', 'mod+k')).toBe(true)
+    expect(actionAllowedInInput('view.showTerminal', 'ctrl+`')).toBe(true)
+    expect(actionAllowedInInput('profile.next', 'mod+shift+]')).toBe(true)
+
+    // A global action rebound onto a text-editing chord (Ctrl+A select-all,
+    // Ctrl+E line-end, …) fires deliberately while typing — mod-chords are
+    // two-key gestures, the pre-#86586 semantic. Unbound chords (the shipped
+    // default for a/e/u/backspace) never reach this function: the dispatcher
+    // returns before the gate when no action is bound, so the input keeps its
+    // native editing behavior out of the box. An editing-chord exclusion set
+    // would have to dodge shipped defaults (⌘K, ⌘W, ⌘D, ⌘F, ⌘B) or re-break them.
+    expect(actionAllowedInInput('session.new', 'ctrl+a')).toBe(true)
+
+    // Bare/Shift-only combos must never hijack typing: a rebound ⌘N → 'n'
+    // (or the pre-#76185 'shift+n') must not fire while the user types N.
+    expect(actionAllowedInInput('session.new', 'n')).toBe(false)
+    expect(actionAllowedInInput('session.new', 'shift+n')).toBe(false)
   })
 
   it('leaves text navigation chords with the focused input even when rebound to an allowed action', async () => {

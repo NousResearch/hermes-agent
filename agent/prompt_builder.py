@@ -1741,6 +1741,9 @@ def build_skills_system_prompt(
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
     skills_dir_override: "Path | None" = None,
+    pinned_categories: "frozenset[str] | None" = None,
+    demote_all_categories: bool = False,
+    keep_full_categories: "frozenset[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1761,6 +1764,13 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    Operator pins (``skills.*`` in config.yaml) do the same by choice rather
+    than posture: ``pinned_categories`` demotes named categories,
+    ``demote_all_categories`` demotes every category except
+    ``keep_full_categories``. Explicitly named demotions always apply;
+    ``keep_full_categories`` only guards against ``demote_all_categories``
+    and matches either the full category path or its top-level segment.
     """
     # Home resolution is EXPLICIT when a caller passes skills_dir_override
     # (the agent knows its own profile home from its session_db path). This
@@ -1787,6 +1797,9 @@ def build_skills_system_prompt(
             available_tools,
             available_toolsets,
             compact_categories,
+            pinned_categories,
+            demote_all_categories,
+            keep_full_categories,
         )
     finally:
         if _home_token is not None:
@@ -1799,6 +1812,9 @@ def _build_skills_system_prompt_inner(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
     compact_categories: "frozenset[str] | None",
+    pinned_categories: "frozenset[str] | None" = None,
+    demote_all_categories: bool = False,
+    keep_full_categories: "frozenset[str] | None" = None,
 ) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
@@ -1812,6 +1828,9 @@ def _build_skills_system_prompt_inner(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        tuple(sorted(pinned_categories or ())),
+        demote_all_categories,
+        tuple(sorted(keep_full_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1982,18 +2001,46 @@ def _build_skills_system_prompt_inner(
     # what the index stops showing them. Match on the top-level category
     # segment so nested categories ("social-media/twitter") are demoted with
     # their parent.
+    #
+    # Operator pins (skills.* config) layer on top: pinned_categories are
+    # named demotions that always apply; demote_all_categories demotes every
+    # category except keep_full_categories (matched on the full category path
+    # OR its top-level segment). keep_full never rescues an explicitly named
+    # demotion — an explicit name is deliberate.
+    _named = set(compact_categories or frozenset()) | set(
+        pinned_categories or frozenset()
+    )
+    _keep_full = set(keep_full_categories or frozenset())
+
+    def _is_kept_full(cat: str) -> bool:
+        return cat in _keep_full or cat.split("/", 1)[0] in _keep_full
+
     demoted = frozenset(
         cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+        if cat in _named  # exact nested path pin ("social-media/twitter")
+        or cat.split("/", 1)[0] in _named  # top-level pin demotes children
+        or (demote_all_categories and not _is_kept_full(cat))
     )
 
     hidden_note = ""
     if demoted:
-        hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
-        )
+        # keep_full alone never demotes; if it's the only operator arg and
+        # anything is demoted, posture did it — keep the legacy note so the
+        # focus-mode prompt stays byte-identical without active pins.
+        if pinned_categories or demote_all_categories:
+            # Operator-pinned demotion: explain the config, not posture.
+            hidden_note = (
+                "\n(Categories marked [names only] have their descriptions "
+                "omitted per the skills.compact_categories config — the "
+                "skills work normally and load with skill_view(name) as "
+                "usual; skills_list shows full descriptions on demand.)"
+            )
+        else:
+            hidden_note = (
+                "\n(Categories marked [names only] are outside the current coding "
+                "context, so their descriptions are omitted — the skills work "
+                "normally and load with skill_view(name) as usual.)"
+            )
 
     if not skills_by_category:
         result = ""

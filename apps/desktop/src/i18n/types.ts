@@ -547,6 +547,11 @@ export interface Translations {
       testFailed: string
       saveFailed: string
       removeFailed: string
+      updateAll: string
+      updateAllRunning: string
+      updateAllDone: string
+      updateAllFailed: string
+      updateSkippedCloud: string
       kindLocal: string
       kindRemote: string
       kindCloud: string

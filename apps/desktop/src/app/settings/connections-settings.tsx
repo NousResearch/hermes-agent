@@ -11,7 +11,7 @@ import type {
 } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, Terminal, Trash2 } from '@/lib/icons'
+import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
@@ -74,6 +74,7 @@ export function ConnectionsSettings() {
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
+  const [updatingAll, setUpdatingAll] = useState(false)
 
   const bridge = window.hermesDesktop?.connections
 
@@ -226,6 +227,34 @@ export function ConnectionsSettings() {
     },
     [bridge, s.testFailed, s.testOk]
   )
+
+  // Fan out `hermes update` to every eligible source; per-connection results
+  // land as individual toasts so one dead box doesn't hide the others.
+  const updateAll = useCallback(async () => {
+    if (!bridge?.updateAll) {
+      return
+    }
+
+    setUpdatingAll(true)
+
+    try {
+      const { results } = await bridge.updateAll()
+
+      for (const row of results) {
+        if (row.ok) {
+          notify({ title: row.label, message: row.detail || s.updateAllDone })
+        } else if (row.skipped && row.reason === 'cloud-managed') {
+          notify({ title: row.label, message: s.updateSkippedCloud })
+        } else {
+          notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
+        }
+      }
+    } catch (err) {
+      notifyError(err, s.updateAllFailed)
+    } finally {
+      setUpdatingAll(false)
+    }
+  }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
 
   const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
@@ -425,7 +454,7 @@ export function ConnectionsSettings() {
           </div>
         </div>
       ) : (
-        <div className="mt-4">
+        <div className="mt-4 flex items-center gap-2">
           <Button
             onClick={() => {
               triggerHaptic('selection')
@@ -436,6 +465,27 @@ export function ConnectionsSettings() {
           >
             <Plus className="size-3.5" /> {s.addConnection}
           </Button>
+          {bridge?.updateAll && (registry?.connections.length ?? 0) > 1 && (
+            <Button
+              disabled={updatingAll}
+              onClick={() => {
+                triggerHaptic('selection')
+                void updateAll()
+              }}
+              size="sm"
+              variant="outline"
+            >
+              {updatingAll ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" /> {s.updateAllRunning}
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="size-3.5" /> {s.updateAll}
+                </>
+              )}
+            </Button>
+          )}
         </div>
       )}
 

@@ -238,7 +238,7 @@ Alongside the per-profile connection mode above, **Settings → Connections** ma
 - Cloud entries come from the Hermes Cloud sign-in/discovery flow above, not from a hand-typed URL.
 - Tokens are stored encrypted with the OS keyring (with the same explicit plain-text opt-in as Settings → Gateway on keyring-less Linux).
 
-Side-by-side routing is rolling out in stages: connections are managed here today, while the active connection is still chosen in **Settings → Gateway**. Follow-up releases route chats, the agent roster, and updates across all registered sources.
+Side-by-side routing is live: each registered source dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** in the Connections panel dispatches `hermes update` to every eligible source at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 
 
 :::info The remote backend is a running `hermes serve` process

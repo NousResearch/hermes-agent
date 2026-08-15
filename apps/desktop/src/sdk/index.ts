@@ -24,7 +24,7 @@ import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
-import { $gateway, openGatewayForProfile } from '@/store/gateway'
+import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
@@ -112,6 +112,47 @@ export const host = {
 
     void openGatewayForProfile(name).catch(() => undefined)
   },
+
+  // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
+
+  /** The registered connection list (labels, kinds, primary) — token bytes
+   *  never included. Rejects on Desktop builds without the registry. */
+  connections: async () => {
+    const bridge = window.hermesDesktop?.connections
+
+    if (!bridge) {
+      throw new Error('This Desktop build has no connection registry. Update Hermes Desktop.')
+    }
+
+    return bridge.list()
+  },
+
+  /** The union agent roster across every registered connection: one row per
+   *  (source, profile) with the pre-computed @name-device handle for
+   *  duplicates. Sources that are unreachable (or ssh connect-on-demand)
+   *  appear in `sources` with an error instead of failing the call. */
+  agents: async () => {
+    const roster = window.hermesDesktop?.getAgentRoster
+
+    if (!roster) {
+      throw new Error('This Desktop build cannot enumerate multi-source agents. Update Hermes Desktop.')
+    }
+
+    return roster()
+  },
+
+  /** Pre-dial an agent's socket on ITS source — the (connection, profile)
+   *  analogue of warmProfile. Fire-and-forget, same semantics. */
+  warmAgent: (connectionId: null | string, profile: string): void => {
+    void openGatewayForAgent(connectionId, (profile ?? '').trim() || 'default').catch(() => undefined)
+  },
+
+  /** Activate an agent's gateway (dialing it if needed) so subsequent
+   *  host.request calls hit that agent's backend. The local source falls
+   *  through to the profile path — single-source plugins keep working
+   *  against older behavior unchanged. */
+  ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
+    ensureGatewayForAgent(connectionId, (profile ?? '').trim() || 'default'),
 
   openSession: async (
     storedSessionId: string,

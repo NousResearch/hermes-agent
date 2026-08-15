@@ -85,12 +85,14 @@ import {
 import {
   backendScopeKey,
   backendScopePrefix,
+  buildAgentRoster,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
   removeConnection,
   setPrimaryConnection,
+  updateEligibility,
   upsertConnection
 } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
@@ -11915,6 +11917,156 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 
   return { ok: true, baseUrl, version: status?.version || null }
 })
+
+// ── Union agent roster + registry ws-url + fan-out updates (phase 3-5) ─────
+
+// Enumerate every registered connection's profiles concurrently and flatten
+// into the union roster. Eager REST enumeration, lazy sockets: local + already
+// -dialed sources answer instantly; unreachable ones return an error entry
+// instead of failing the whole roster. ssh sources that have never been dialed
+// are SKIPPED (connect-on-demand — dialing every ssh box just to list agents
+// would spawn tunnels the user never asked for); once dialed, their pooled
+// descriptor serves the enumeration like any remote.
+ipcMain.handle('hermes:agents:roster', async () => {
+  const registry = readDesktopConnectionsRegistry()
+
+  const enumerations = await Promise.all(
+    registry.connections.map(async connection => {
+      try {
+        if (
+          connection.kind === 'ssh' &&
+          ![...sshConnections.keys()].some(scope => String(scope).startsWith(backendScopePrefix(connection.id)))
+        ) {
+          return { connection, profiles: null, error: 'connect-on-demand' }
+        }
+
+        const descriptor: any = await ensureRegistryBackend(connection.id, null)
+        const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+
+        const profiles = Array.isArray(body?.profiles)
+          ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
+          : []
+
+        // The root HERMES_HOME is an agent too; enumerations that omit it
+        // (older backends list only named profiles) still get a default row.
+        if (!profiles.includes('default')) {
+          profiles.unshift('default')
+        }
+
+        return { connection, profiles }
+      } catch (error: any) {
+        return { connection, profiles: null, error: String(error?.message || error) }
+      }
+    })
+  )
+
+  return {
+    agents: buildAgentRoster(enumerations),
+    sources: enumerations.map(({ connection, profiles, error }) => ({
+      connectionId: connection.id,
+      label: connection.label,
+      kind: connection.kind,
+      reachable: profiles !== null,
+      ...(error ? { error } : {})
+    }))
+  }
+})
+
+// Registry-scoped fresh WS URL: the (connectionId, profile) analogue of
+// hermes:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.
+ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
+  const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+
+  return gatewayWsUrlIpcResult(async () => {
+    const connection: any = await ensureRegistryBackend(connectionId, profile)
+
+    if (connection.authMode === 'oauth') {
+      const ticket = await mintGatewayWsTicket(connection.baseUrl)
+
+      return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+    }
+
+    return connection.wsUrl
+  })
+})
+
+// Fan out `hermes update` to every eligible registered connection at once.
+// Cloud entries are excluded (platform-managed); each dispatch reports
+// independently so one dead LAN box can't wedge the batch. Local reuses the
+// app's own update pipeline; remote/ssh POST the backend's own
+// /api/hermes/update endpoint (the dashboard updater), which runs
+// `hermes update` on THAT machine.
+ipcMain.handle('hermes:connections:update-all', async () => {
+  const registry = readDesktopConnectionsRegistry()
+
+  const results = await Promise.all(
+    registry.connections.map(async connection => {
+      const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
+      const eligibility = updateEligibility(connection)
+
+      if (!eligibility.eligible) {
+        return { ...base, ok: false, skipped: true, reason: eligibility.reason }
+      }
+
+      try {
+        if (connection.kind === 'local') {
+          // The app-managed runtime updates through the same pipeline as the
+          // Settings → Updates button (marker + venv gate + relaunch flow).
+          const result: any = await applyUpdates({})
+
+          return { ...base, ok: result?.ok !== false, detail: result?.message || 'update started' }
+        }
+
+        const descriptor: any = await ensureRegistryBackend(connection.id, null)
+
+        const body: any = await postJsonForBackend(
+          descriptor,
+          '/api/hermes/update',
+          {},
+          { timeoutMs: 15_000 }
+        )
+
+        if (body?.ok === false) {
+          // The backend refused (docker/nix/externally-managed installs) —
+          // surface ITS message, per-row, instead of failing the batch.
+          return { ...base, ok: false, skipped: true, reason: body?.error || 'backend-refused', detail: body?.message }
+        }
+
+        return { ...base, ok: true, detail: body?.message || 'update started' }
+      } catch (error: any) {
+        return { ...base, ok: false, error: String(error?.message || error) }
+      }
+    })
+  )
+
+  return { ok: true, results }
+})
+
+// POST helper against a resolved backend descriptor. Token-auth descriptors
+// use the session-token header; OAuth descriptors have token: null and
+// authenticate via the OAuth partition's cookies (same split as the rest of
+// the REST surface).
+async function postJsonForBackend(descriptor, path, body, opts: any = {}) {
+  const url = `${descriptor.baseUrl}${path}`
+
+  if (descriptor.authMode === 'oauth') {
+    return fetchJsonViaOauthSession(url, { ...opts, body: body ?? {}, method: 'POST' })
+  }
+
+  return fetchJson(url, descriptor.token, { ...opts, body: body ?? {}, method: 'POST' })
+}
+
+// GET twin of postJsonForBackend — same token/cookie auth split.
+async function getJsonForBackend(descriptor, path, opts: any = {}) {
+  const url = `${descriptor.baseUrl}${path}`
+
+  if (descriptor.authMode === 'oauth') {
+    return fetchJsonViaOauthSession(url, opts)
+  }
+
+  return fetchJson(url, descriptor.token, opts)
+}
+
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:

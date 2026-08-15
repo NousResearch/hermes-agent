@@ -72,6 +72,14 @@ export function FindBar() {
   // floating right rail. The find bar is `fixed right-4` by default, which
   // would cover the files pane's header + first rows when it is open. Measure
   // the pane's live rect and park the bar just left of it instead.
+  //
+  // The pane can open, close, or be drag-resized *while the bar is open* (its
+  // visibility lives in the contrib workspace registry, not a store we can
+  // subscribe to from here), so a window `resize` listener alone is not
+  // enough: a ResizeObserver tracks width drags of the current aside, and a
+  // body-scoped MutationObserver catches the aside mounting/unmounting and
+  // re-attaches the ResizeObserver to the new node. All paths coalesce into
+  // one rAF-batched measure; everything tears down when the bar closes.
   useEffect(() => {
     if (!active) {
       setFilesPaneRight(null)
@@ -79,8 +87,30 @@ export function FindBar() {
       return undefined
     }
 
+    let rafId: null | number = null
+    let observedAside: Element | null = null
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleMeasure())
+
     const measure = () => {
+      rafId = null
       const aside = document.querySelector('aside[aria-label="Right sidebar"]')
+
+      // The aside can be replaced wholesale (pane closed and reopened, panes
+      // flipped) — retarget the ResizeObserver whenever its identity changes.
+      if (aside !== observedAside) {
+        if (observedAside) {
+          resizeObserver?.unobserve(observedAside)
+        }
+
+        if (aside) {
+          resizeObserver?.observe(aside)
+        }
+
+        observedAside = aside
+      }
+
       const rect = aside?.getBoundingClientRect()
 
       if (rect && rect.width > 0 && rect.left < window.innerWidth) {
@@ -90,10 +120,28 @@ export function FindBar() {
       }
     }
 
-    measure()
-    window.addEventListener('resize', measure)
+    const scheduleMeasure = () => {
+      rafId ??= requestAnimationFrame(measure)
+    }
 
-    return () => window.removeEventListener('resize', measure)
+    // Catches the pane opening/closing while the bar is up. Scoped to
+    // childList mutations only (no attributes/characterData), and the bar is
+    // a transient overlay, so the observer lives only for the find session.
+    const mutationObserver = new MutationObserver(scheduleMeasure)
+    mutationObserver.observe(document.body, { childList: true, subtree: true })
+
+    measure()
+    window.addEventListener('resize', scheduleMeasure)
+
+    return () => {
+      window.removeEventListener('resize', scheduleMeasure)
+      mutationObserver.disconnect()
+      resizeObserver?.disconnect()
+
+      if (rafId != null) {
+        cancelAnimationFrame(rafId)
+      }
+    }
   }, [active, pathname])
 
   // Subscribe to found-in-page results from the main process. Refcounted in

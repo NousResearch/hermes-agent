@@ -610,3 +610,60 @@ describe('FindBar', () => {
     expect(bridge.stopFindInPage).not.toHaveBeenCalled()
   })
 })
+
+// ── Files-pane-aware positioning ────────────────────────────────────────────
+
+describe('FindBar files pane positioning', () => {
+  function mountAside(width = 240) {
+    // eslint-disable-next-line no-restricted-globals -- the component queries the live document for the aside
+    const aside = document.createElement('aside')
+    aside.setAttribute('aria-label', 'Right sidebar')
+    // jsdom has no layout — stub the rect the component measures.
+    aside.getBoundingClientRect = () =>
+      ({ left: window.innerWidth - width, width } as DOMRect)
+    // eslint-disable-next-line no-restricted-globals -- must land in the real DOM the component measures
+    document.body.appendChild(aside)
+
+    return aside
+  }
+
+  afterEach(() => {
+    // eslint-disable-next-line no-restricted-globals -- cleanup of the real DOM the component measures
+    for (const aside of document.querySelectorAll('aside[aria-label="Right sidebar"]')) {
+      aside.remove()
+    }
+  })
+
+  it('keeps the default right-4 position when the pane is closed', async () => {
+    openFindBar()
+    renderFindBar()
+
+    const bar = await screen.findByRole('search')
+    expect(bar.style.right).toBe('')
+  })
+
+  it('parks the bar left of the pane when it is open', async () => {
+    mountAside(240)
+    openFindBar()
+    renderFindBar()
+
+    const bar = await screen.findByRole('search')
+    await waitFor(() => expect(bar.style.right).toBe('calc(240px + 0.75rem)'))
+  })
+
+  it('re-measures when the pane opens or closes while the bar is up', async () => {
+    openFindBar()
+    renderFindBar()
+
+    const bar = await screen.findByRole('search')
+    expect(bar.style.right).toBe('')
+
+    // Pane opens mid-session: the MutationObserver path must re-measure.
+    const aside = mountAside(300)
+    await waitFor(() => expect(bar.style.right).toBe('calc(300px + 0.75rem)'))
+
+    // Pane closes again: the bar falls back to the default position.
+    aside.remove()
+    await waitFor(() => expect(bar.style.right).toBe(''))
+  })
+})

@@ -1092,10 +1092,25 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
     """
     from hermes_state import SessionDB
 
+    gateway_run = importlib.import_module("gateway.run")
     session_id = "sess-restart"
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session(session_id, "telegram")
+
+        main_thread = threading.get_ident()
+        streak_threads = []
+        original_cooldown_for_failure = gateway_run._hygiene_cooldown_for_failure
+
+        def tracked_cooldown_for_failure(*args, **kwargs):
+            streak_threads.append(threading.get_ident())
+            return original_cooldown_for_failure(*args, **kwargs)
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_hygiene_cooldown_for_failure",
+            tracked_cooldown_for_failure,
+        )
 
         class AbortingCompressAgent:
             instances = 0
@@ -1124,6 +1139,8 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         )
         assert await runner1._handle_message(event1) == "ok"
         assert AbortingCompressAgent.instances == 1
+        assert len(streak_threads) == 1
+        assert streak_threads[0] != main_thread
 
         # The abort must have persisted a cooldown to the DB.
         state = db.get_compression_failure_cooldown(session_id)
@@ -1172,6 +1189,8 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         )
         assert await runner3._handle_message(event3) == "ok"
         assert AbortingCompressAgent.instances == 2
+        assert len(streak_threads) == 2
+        assert all(thread_id != main_thread for thread_id in streak_threads)
         escalated = db.get_compression_failure_cooldown(session_id)
         assert escalated is not None
         assert escalated["remaining_seconds"] == pytest.approx(900, abs=5)

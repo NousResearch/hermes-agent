@@ -461,7 +461,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     if output_mode == "files_only":
         return SearchResult(
             files=lines[offset:offset + limit], total_count=len(lines),
-            truncated=len(lines) >= offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
+            truncated=len(lines) > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
     if output_mode == "count":
         counts = {}
         for line in lines:
@@ -492,7 +492,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     total = len(matches)
     return SearchResult(
         matches=matches[offset:offset + limit], total_count=total,
-        truncated=total >= offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning,
+        truncated=total > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning,
         **skip,
     )
 
@@ -1320,7 +1320,7 @@ class SearchMixin:
         ``line_cap`` appends ``| cut -c1-2000`` for engines without --max-columns
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
-        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        fetch_limit = limit + offset + (200 if context > 0 else 1)
         if line_cap:  # grep/find pipelines: shell only, with the column cap
             parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
             if output_mode not in ("files_only", "count"):

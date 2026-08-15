@@ -53,7 +53,13 @@ describe('appendMidTurnUserMessage', () => {
 
     const next = appendMidTurnUserMessage(state, row('user-3', 'user', 'mid-turn note'))
 
-    expect(next.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1', 'user-2', 'assistant-2', 'user-3'])
+    expect(next.messages.map(message => message.id)).toEqual([
+      'user-1',
+      'assistant-1',
+      'user-2',
+      'assistant-2',
+      'user-3'
+    ])
     expect(next.messages.at(-1)?.id).toBe('user-3')
     expect(next.interimBoundaryPending).toBe(false)
   })

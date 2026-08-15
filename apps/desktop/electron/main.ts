@@ -37,11 +37,7 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
-import {
-  backendCommandMatches,
-  createBackendOwnership,
-  createBackendShutdownCoordinator
-} from './backend-ownership'
+import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import {
   canImportHermesCli,
   execProbeSync,
@@ -2927,7 +2923,10 @@ function execText(command, args) {
 async function processStartMarker(pid) {
   if (process.platform === 'linux') {
     const stat = await fs.promises.readFile(`/proc/${pid}/stat`, 'utf8')
-    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
+    const fields = stat
+      .slice(stat.lastIndexOf(')') + 1)
+      .trim()
+      .split(/\s+/)
 
     if (!/^\d+$/.test(fields[19] || '')) {
       throw new Error(`Invalid /proc start marker for PID ${pid}`)
@@ -2965,7 +2964,12 @@ async function backendCommandForPid(pid) {
     const command = IS_WINDOWS ? 'powershell.exe' : 'ps'
 
     const args = IS_WINDOWS
-      ? ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`]
+      ? [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`
+        ]
       : ['-p', String(pid), '-o', 'command=']
 
     return (await execText(command, args)) || null

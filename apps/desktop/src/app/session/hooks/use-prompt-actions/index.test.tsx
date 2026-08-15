@@ -147,13 +147,13 @@ function Harness({
 
   const defaultStoredSessionId = storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   const defaultRuntimeSessionId = activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
-  const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> =
-    runtimeIdByStoredSessionIdRefProp ?? {
-      current:
-        defaultStoredSessionId && defaultRuntimeSessionId
-          ? new Map([[defaultStoredSessionId, defaultRuntimeSessionId]])
-          : new Map()
-    }
+
+  const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = runtimeIdByStoredSessionIdRefProp ?? {
+    current:
+      defaultStoredSessionId && defaultRuntimeSessionId
+        ? new Map([[defaultStoredSessionId, defaultRuntimeSessionId]])
+        : new Map()
+  }
 
   const localBusyRef = busyRef ?? { current: false }
 
@@ -4372,9 +4372,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
       session_id: STORED_SESSION_B,
       source: 'desktop'
     })
-    expect(
-      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
-    ).toBeUndefined()
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeUndefined()
     expect(
       calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
     ).toBeDefined()
@@ -4429,9 +4427,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
       session_id: STORED_SESSION_B,
       source: 'desktop'
     })
-    expect(
-      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
-    ).toBeUndefined()
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeUndefined()
     expect(
       calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
     ).toBeDefined()
@@ -4444,6 +4440,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([[STORED_SESSION_B, RUNTIME_SESSION_A]])
     }
@@ -4472,9 +4469,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     await handle!.submitText('first message in a genuinely fresh session')
 
     expect(calls.some(c => c.method === 'session.resume')).toBe(false)
-    expect(
-      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
-    ).toBeDefined()
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeDefined()
   })
 
   it('resumes the selected session when its ownership cache entry is missing', async () => {
@@ -4514,9 +4509,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
       session_id: STORED_SESSION_B,
       source: 'desktop'
     })
-    expect(
-      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
-    ).toBeUndefined()
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeUndefined()
     expect(
       calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
     ).toBeDefined()

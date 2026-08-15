@@ -857,7 +857,11 @@ export function useSessionActions({
                 // wipes the just-restored activate/cache transcript (the same
                 // wipe the `activated.messages.length || ...` guard above
                 // already prevents for the activate payload itself).
-                if (persisted && persistedMatchesActivatedSession && (persisted.messages.length || !activatedMessages.length)) {
+                if (
+                  persisted &&
+                  persistedMatchesActivatedSession &&
+                  (persisted.messages.length || !activatedMessages.length)
+                ) {
                   activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
                 }
               }

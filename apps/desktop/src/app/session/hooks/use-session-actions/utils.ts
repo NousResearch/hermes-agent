@@ -637,10 +637,7 @@ export function preserveLocalPendingTurnMessages(
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
           (textWithoutReferenceLines(chatMessageText(candidate)) === nextText ||
-            isStrictAnswerTextExtension(
-              textWithoutReferenceLines(chatMessageText(candidate)),
-              nextText
-            ))
+            isStrictAnswerTextExtension(textWithoutReferenceLines(chatMessageText(candidate)), nextText))
       )
 
       if (committedMatch) {
@@ -651,10 +648,7 @@ export function preserveLocalPendingTurnMessages(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
-          isStrictAnswerTextExtension(
-            nextText,
-            textWithoutReferenceLines(chatMessageText(candidate))
-          )
+          isStrictAnswerTextExtension(nextText, textWithoutReferenceLines(chatMessageText(candidate)))
       )
 
       if (committedPrefix) {

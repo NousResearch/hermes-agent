@@ -135,7 +135,8 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     session_id: sessionId
   })
 
-  const result = rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
+  const result =
+    rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
   const pending = Array.isArray(result?.approvals) ? result.approvals[0] : undefined
 
   if (!pending || typeof pending.request_id !== 'string') {

@@ -202,8 +202,18 @@ describe('subagent store', () => {
     upsertSubagent('s1', { goal: 'd', status: 'running', subagent_id: 'd', task_index: 3 })
 
     // Emit terminal events with backend-native status strings
-    upsertSubagent('s1', { status: 'timeout', subagent_id: 'a', task_index: 0, summary: 'timed out' }, false, 'subagent.complete')
-    upsertSubagent('s1', { status: 'error', subagent_id: 'b', task_index: 1, summary: 'errored' }, false, 'subagent.complete')
+    upsertSubagent(
+      's1',
+      { status: 'timeout', subagent_id: 'a', task_index: 0, summary: 'timed out' },
+      false,
+      'subagent.complete'
+    )
+    upsertSubagent(
+      's1',
+      { status: 'error', subagent_id: 'b', task_index: 1, summary: 'errored' },
+      false,
+      'subagent.complete'
+    )
     upsertSubagent('s1', { status: 'cancelled', subagent_id: 'c', task_index: 2 }, false, 'subagent.complete')
     upsertSubagent('s1', { status: 'canceled', subagent_id: 'd', task_index: 3 }, false, 'subagent.complete')
 
@@ -291,7 +301,13 @@ describe('subagent store', () => {
     status => {
       upsertSubagent(
         's1',
-        { goal: 'inconsistent completion', status: 'running', subagent_id: 'ic1', task_index: 0, tool_name: 'search_files' },
+        {
+          goal: 'inconsistent completion',
+          status: 'running',
+          subagent_id: 'ic1',
+          task_index: 0,
+          tool_name: 'search_files'
+        },
         true,
         'subagent.start'
       )

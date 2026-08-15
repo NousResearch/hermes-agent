@@ -31,7 +31,12 @@ interface ReconcilePaneLifecycleOptions {
  */
 export function reconcilePaneLifecycle(
   previous: PaneLifecycleState,
-  { activeId, hotHiddenCap = DEFAULT_HOT_HIDDEN_PANE_CAP, keepAlive = () => false, paneIds }: ReconcilePaneLifecycleOptions
+  {
+    activeId,
+    hotHiddenCap = DEFAULT_HOT_HIDDEN_PANE_CAP,
+    keepAlive = () => false,
+    paneIds
+  }: ReconcilePaneLifecycleOptions
 ): PaneLifecycleState {
   const present = new Set(paneIds)
   const entries: Record<string, PaneLifecycleEntry> = {}

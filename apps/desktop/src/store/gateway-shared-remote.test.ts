@@ -127,9 +127,7 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     setPrimaryGateway(makePrimary() as never, 'default')
     installDesktop({ getConnection })
 
-    gatewayMocks.connect
-      .mockRejectedValueOnce(new Error('temporarily offline'))
-      .mockResolvedValueOnce(undefined)
+    gatewayMocks.connect.mockRejectedValueOnce(new Error('temporarily offline')).mockResolvedValueOnce(undefined)
 
     await ensureGatewayForProfile('worker')
 

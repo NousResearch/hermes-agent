@@ -302,11 +302,7 @@ export function clearSessionRecentlyInterrupted(sessionId?: string): void {
 }
 
 /** Whether a rewind/edit should interrupt before submit — busy OR recent Stop. */
-export function shouldInterruptBeforeRewind(opts: {
-  busy: boolean
-  sessionId: string
-  now?: number
-}): boolean {
+export function shouldInterruptBeforeRewind(opts: { busy: boolean; sessionId: string; now?: number }): boolean {
   return opts.busy || isSessionRecentlyInterrupted(opts.sessionId, opts.now)
 }
 

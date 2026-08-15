@@ -472,7 +472,13 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       try {
         applySurvivorRowIds(
-          await submitRewind(plan.text, plan.truncateOrdinal, interruptFirst, plan.truncateMessageId, plan.truncateRowId)
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId
+          )
         )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
@@ -506,7 +512,13 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       try {
         applySurvivorRowIds(
-          await submitRewind(plan.text, plan.truncateOrdinal, interruptFirst, plan.truncateMessageId, plan.truncateRowId)
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId
+          )
         )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))

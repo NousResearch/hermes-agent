@@ -23,7 +23,9 @@ vi.mock('../chat', () => ({
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))
-vi.mock('../shell/hooks/use-statusbar-items', () => ({ useStatusbarItems: () => ({ leftStatusbarItems: [], statusbarItems: [] }) }))
+vi.mock('../shell/hooks/use-statusbar-items', () => ({
+  useStatusbarItems: () => ({ leftStatusbarItems: [], statusbarItems: [] })
+}))
 vi.mock('../shell/statusbar-controls', () => ({ StatusbarControls: () => null }))
 vi.mock('../routes', () => ({
   contributedRoutes: () => [],

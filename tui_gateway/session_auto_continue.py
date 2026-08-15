@@ -288,7 +288,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
         if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+            # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
+            # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
+            # whole drained turn.
+            _attach_session_transport(session, queued["transport"])
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:

@@ -465,8 +465,8 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Point a live session at ``transport`` (caller holds ``history_lock``)."""
-    session["transport"] = transport
+    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
+    _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()
@@ -592,23 +592,35 @@ def _schedule_ws_orphan_reap(
 def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect") -> tuple[int, int]:
     """Single WS-disconnect teardown entry point: reap close_on_disconnect sessions (sidecar/dashboard) immediately;
     re-point the rest at the detached transport (later emits miss the dead socket) for the grace-windowed WS-orphan
-    reaper. Returns ``(reaped, detached)`` counts."""
-    with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+    reaper. Returns ``(reaped, detached)`` counts.
+
+    Multi-client fan-out: the departing transport is DETACHED from every session first. A session that still has
+    another client attached keeps streaming and is neither parked nor reaped — a watcher leaving must not end the
+    turn the remaining client is reading. Only the sessions left clientless take the historical
+    close_on_disconnect / park-sentinel path, so a single-client disconnect behaves exactly as it always has."""
+    clientless = _detach_transport_from_sessions(transport)
     reaped = detached = 0
-    for sid, session in owned:
+    for sid, session in clientless:
         claimed_for_teardown = None
         should_schedule_reap = False
-        # session.resume fast-path rebinds under _session_resume_lock: take it so a reconnect can't move the transport
-        # between check and claim.
+        # session.resume fast-path attaches under _session_resume_lock: take it so a reconnect can't attach
+        # between the detach above and the claim.
         with _session_resume_lock, _sessions_lock:
             current = _sessions.get(sid)
             if current is not session:
                 continue
-            if current.get("transport") is not transport:
-                # The reconnect owns this session now; drop only the old viewer registration.
-                (current.get("viewers") or {}).pop(transport, None)
-                continue
+            # Prune the departing viewer registration in every branch; it must not affect the new owner.
+            (current.get("viewers") or {}).pop(transport, None)
+            # Revalidate before claiming (#77129, kept under fan-out): between _detach_transport_from_sessions
+            # returning this session as clientless and this claim, a concurrent session.resume can attach a NEW
+            # live transport. Tearing the session down, or parking the sentinel over it, would knock an attached
+            # client into detached state and arm an orphan reap against a session that has a live owner. Attach
+            # and detach both serialize on _session_transport_lock, so this check is race-free against them; that
+            # lock is a leaf, so taking it under _sessions_lock is safe and _session_has_live_transport does not
+            # re-acquire it.
+            with _session_transport_lock:
+                if _session_has_live_transport(current, excluding=transport):
+                    continue
             if current.get("close_on_disconnect"):
                 claimed_for_teardown = _pop_session_by_id(sid)
             else:

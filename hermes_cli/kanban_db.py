@@ -5487,10 +5487,13 @@ def complete_task(
             # child process can present a matching one and complete its parent's
             # card. The pid of the process actually making the call cannot be
             # inherited that way, which is what makes it worth checking.
-            if (
-                expected_worker_pid is not None
-                and current["worker_pid"] is not None
-                and current["worker_pid"] != int(expected_worker_pid)
+            # A caller that supplies its own pid is asserting an identity. If
+            # the row carries no pid we cannot check that assertion, and an
+            # unverifiable claim is refused rather than waved through — the
+            # NULL branch was otherwise a way back to lock-only fencing.
+            if expected_worker_pid is not None and (
+                current["worker_pid"] is None
+                or current["worker_pid"] != int(expected_worker_pid)
             ):
                 return False
             if (
@@ -5512,7 +5515,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND claim_lock = ?
-                   AND (? IS NULL OR worker_pid IS NULL OR worker_pid = ?)
+                   AND (? IS NULL OR worker_pid = ?)
                 """,
                 (
                     result,

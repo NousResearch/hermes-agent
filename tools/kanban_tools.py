@@ -779,6 +779,10 @@ def _handle_complete(args: dict, **kw) -> str:
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
                     expected_claim_lock=_worker_claim_lock(tid),
+                    # The tool handoff is the path the reported bypass
+                    # actually travels: a nested CLI inherits the claim
+                    # lock and completes its parent's card from here.
+                    expected_worker_pid=os.getpid(),
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(

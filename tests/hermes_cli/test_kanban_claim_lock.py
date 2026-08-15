@@ -243,3 +243,38 @@ def test_complete_task_accepts_matching_worker_pid(kanban_home: Path) -> None:
         assert task is not None
         assert task.status == "done"
         assert task.result == "completed by its own worker"
+
+
+def test_tool_complete_rejects_inherited_claim_lock_from_another_pid(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent tool path must carry the caller's pid, not just the claim lock.
+
+    This is the path the bypass on #71175 travels: a nested CLI inherits
+    HERMES_KANBAN_TASK and HERMES_KANBAN_CLAIM_LOCK and completes its parent's
+    card. A database that refuses a mismatched pid proves nothing if the tool
+    never sends one, so this pins the wiring rather than the check.
+    """
+    from tools import kanban_tools
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker task", assignee="worker")
+        claim = kb.claim_task(conn, task_id, claimer="worker:live")
+        assert claim is not None
+        live_pid = 424242
+        kb._set_worker_pid(conn, task_id, live_pid)
+
+    # The nested process inherits the parent's task and claim lock verbatim.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "worker:live")
+    # ...but runs under its own pid, which is the one thing it cannot inherit.
+    monkeypatch.setattr(kanban_tools.os, "getpid", lambda: live_pid + 1)
+
+    kanban_tools._handle_complete({"id": task_id, "result": "from a nested CLI"})
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.result is None
+    assert task.worker_pid == live_pid

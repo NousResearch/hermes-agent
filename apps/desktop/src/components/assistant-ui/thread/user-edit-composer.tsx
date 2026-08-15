@@ -105,7 +105,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
   const triggerKeyConsumedRef = useRef(false)
-  const composingRef = useRef(false) // true during IME composition (CJK input)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)

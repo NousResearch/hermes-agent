@@ -152,3 +152,52 @@ def test_open_private_append_uses_managed_group_writable_mode(
 
     assert _mode(target) == 0o660
     assert target.read_text(encoding="utf-8") == "managed\n"
+
+
+@posix_only
+@pytest.mark.require_symlinks
+def test_open_private_append_creates_through_dangling_symlink_privately(
+    tmp_path: Path,
+) -> None:
+    """A dangling symlinked artifact path must still be appendable.
+
+    Managed deployments symlink state files into a git-tracked profile
+    package, so an artifact path can be a symlink whose target does not exist
+    yet. Plain open(path, "a") creates through it at umask default
+    (0o644 -- world-readable); this helper must create through it too, but at
+    the requested private mode rather than failing the write.
+    """
+    real = tmp_path / "real.jsonl"
+    link = tmp_path / "link.jsonl"
+    link.symlink_to(real)
+
+    old_umask = os.umask(0o022)
+    try:
+        with utils.open_private_append(link, mode=0o600) as handle:
+            handle.write("through\n")
+    finally:
+        os.umask(old_umask)
+
+    assert link.is_symlink(), "symlinked artifact path must survive"
+    assert _mode(real) == 0o600
+    assert real.read_text(encoding="utf-8") == "through\n"
+
+
+@posix_only
+@pytest.mark.require_symlinks
+def test_open_private_append_preserves_live_symlink_target_mode(
+    tmp_path: Path,
+) -> None:
+    """An existing symlink target keeps its own mode across an append."""
+    real = tmp_path / "real.jsonl"
+    real.write_text("first\n", encoding="utf-8")
+    os.chmod(real, 0o644)
+    link = tmp_path / "link.jsonl"
+    link.symlink_to(real)
+
+    with utils.open_private_append(link, mode=0o600) as handle:
+        handle.write("second\n")
+
+    assert link.is_symlink()
+    assert _mode(real) == 0o644
+    assert real.read_text(encoding="utf-8") == "first\nsecond\n"

@@ -351,16 +351,20 @@ def open_private_append(
 ):
     """Append text, applying exact ``mode`` only to a newly created inode.
 
-    Exclusive creation distinguishes a new inode from an existing one before
-    ``fchmod``; an existing file is reopened without creation and keeps its
-    permissions. The new inode may begin more restrictive due to umask, but is
-    never wider than ``mode``. POSIX modes are advisory on Windows.
+    Exclusive creation distinguishes a new inode from an existing one, so
+    ``mode`` lands on files this call creates and an existing file keeps its
+    own permissions. ``fchmod`` on the new fd applies the mode exactly rather
+    than umask-narrowed, matching ``atomic_write_text(create_mode=...)``:
+    managed installs need the group-write bit of ``0o660`` to survive an
+    interactive user's ``0o022`` umask, or the service UID cannot append to a
+    transcript the user's UID started.
+
+    Symlinks are followed, as ``atomic_replace`` does (#16743) -- a managed
+    deployment may symlink an artifact path into a profile package, including
+    before its target exists. POSIX modes are advisory on Windows.
     """
-    def _opener(target: str, flags: int) -> int:
-        try:
-            fd = os.open(target, flags | os.O_CREAT | os.O_EXCL, mode)
-        except FileExistsError:
-            return os.open(target, flags & ~(os.O_CREAT | os.O_EXCL))
+    def _create(target: str, flags: int) -> int:
+        fd = os.open(target, flags, mode)
         try:
             if hasattr(os, "fchmod"):
                 os.fchmod(fd, mode)
@@ -368,6 +372,19 @@ def open_private_append(
             os.close(fd)
             raise
         return fd
+
+    def _opener(target: str, flags: int) -> int:
+        try:
+            return _create(target, flags | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            pass
+        try:
+            return os.open(target, flags & ~(os.O_CREAT | os.O_EXCL))
+        except FileNotFoundError:
+            # A dangling symlink: O_EXCL reports EEXIST for the link itself,
+            # but reopening without O_CREAT hits the missing target. Create
+            # through it, as a plain open would, at the requested mode.
+            return _create(target, flags | os.O_CREAT)
 
     return open(Path(path), "a", encoding=encoding, opener=_opener)
 

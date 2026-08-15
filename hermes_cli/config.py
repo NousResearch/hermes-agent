@@ -833,22 +833,52 @@ def artifact_file_mode() -> int:
 def secure_artifact_dir(path: str | Path) -> None:
     """Create an artifact leaf privately without changing existing modes.
 
+    Create-only: an existing leaf keeps whatever mode it has, so a managed
+    deployment that symlinks its artifact dir into a git-tracked profile
+    package is never chmodded through (see ``atomic_replace`` and #16743).
     Only the leaf is controlled; intermediate parents created by
-    ``parents=True`` retain ordinary umask-derived modes. A fresh managed leaf
-    is created no wider than the umask permits, then set to exactly ``0o770``.
+    ``parents=True`` retain ordinary umask-derived modes.
+
+    Managed installs need ``0o770`` rather than a umask-derived mode: both the
+    systemd service UID and the interactive user's UID share the hermes group,
+    and ``is_managed()`` is true for both. A plain ``mkdir`` under the common
+    ``0o022`` umask would yield ``0o755`` -- readable by every account on the
+    box -- while ``mkdir(mode=0o770)`` under that same umask yields ``0o750``,
+    denying the other UID the write access it needs. So the mode is forced,
+    but any setgid the kernel inherited from the parent is preserved: on Linux
+    that bit is what keeps the shared group flowing to nested artifacts, and a
+    bare ``chmod(0o770)`` would silently clear it.
+
+    The result matches the managed convention :func:`ensure_hermes_home`
+    already documents -- ``2770``, setgid and group-writable -- but does not
+    depend on that function's ``umask(0o007)``, which is scoped to its own
+    call and is not in effect when a writer creates an artifact dir later.
+
     POSIX modes are advisory on Windows, where ACLs protect data at rest.
     """
     path = Path(path)
-    if is_managed():
-        try:
-            path.mkdir(parents=True, mode=0o770)
-        except FileExistsError:
-            if not path.is_dir():
-                raise
-        else:
-            os.chmod(path, 0o770)
-    else:
+    if not is_managed():
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return
+
+    try:
+        path.mkdir(parents=True, mode=0o770)
+    except FileExistsError:
+        if not path.is_dir():
+            raise
+        return  # create-only: never re-mode an existing leaf
+    if os.name != "posix":
+        return
+
+    # Widen to 0o770 on the fd we just created rather than by path: chmod by
+    # path in a group-writable parent can be redirected through a symlink
+    # planted in the mkdir->chmod window. O_NOFOLLOW rejects that swap.
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        inherited = os.fstat(fd).st_mode & 0o7000
+        os.fchmod(fd, inherited | 0o770)
+    finally:
+        os.close(fd)
 
 
 def _is_container() -> bool:

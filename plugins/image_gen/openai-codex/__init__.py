@@ -20,11 +20,9 @@ image-to-image/editing are sent as Responses ``input_image`` content parts.
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -197,84 +195,26 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _sniff_image_mime(raw: bytes) -> Optional[str]:
-    """Return a safe raster image MIME from magic bytes (not filename labels).
-
-    Delegates magic-byte detection to the shared sniffer in
-    ``agent.image_routing`` (single source of truth), then gates the result
-    to :data:`_ACCEPTED_INPUT_MIME` — the raster formats gpt-image-2's
-    ``input_image`` actually accepts. SVG/TIFF/ICO (which the shared sniffer
-    also recognizes) are rejected here so they fail locally with a clear
-    error instead of an opaque server-side HTTP 400.
-    """
-    from agent.image_routing import _sniff_mime_from_bytes
-
-    mime = _sniff_mime_from_bytes(raw)
-    if mime in _ACCEPTED_INPUT_MIME:
-        return mime
-    return None
-
-
-def _data_url_to_input_image_url(value: str) -> str:
-    """Validate and canonicalize a data:image URL for Responses input_image."""
-    if "," not in value:
-        raise ValueError("Image data URL is missing a comma separator")
-    header, data = value.split(",", 1)
-    header_lc = header.lower()
-    if not header_lc.startswith("data:image/") or ";base64" not in header_lc:
-        raise ValueError("Only base64 data:image URLs are supported as Codex image inputs")
-    raw = base64.b64decode(data, validate=True)
-    if len(raw) > _MAX_INPUT_IMAGE_BYTES:
-        raise ValueError("Image data URL exceeds 25MB cap")
-    mime = _sniff_image_mime(raw)
-    if mime is None:
-        raise ValueError("Image data URL does not contain supported image bytes")
-    encoded = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
-
-
-def _local_image_to_data_url(value: str) -> str:
-    """Read a local image path and return a validated data:image URL."""
-    try:
-        from agent.file_safety import get_read_block_error
-
-        blocked = get_read_block_error(value)
-        if blocked:
-            raise ValueError(blocked)
-    except ValueError:
-        raise
-    except Exception as exc:
-        logger.debug("Codex image input read guard unavailable: %s", exc)
-
-    path = Path(os.path.expanduser(value)).resolve()
-    if not path.is_file():
-        raise ValueError(f"Image input path does not exist or is not a file: {value}")
-    size = path.stat().st_size
-    if size <= 0:
-        raise ValueError(f"Image input path is empty: {value}")
-    if size > _MAX_INPUT_IMAGE_BYTES:
-        raise ValueError(f"Image input path exceeds 25MB cap: {value}")
-    raw = path.read_bytes()
-    mime = _sniff_image_mime(raw)
-    if mime is None:
-        raise ValueError(f"Image input path is not a supported image: {value}")
-    encoded = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
-
-
 def _to_input_image_part(value: str) -> Dict[str, str]:
-    """Convert a URL/data URL/local path into a Responses input_image part."""
-    candidate = (value or "").strip()
-    if not candidate:
-        raise ValueError("Blank image input")
-    lowered = candidate.lower()
-    if lowered.startswith("http://") or lowered.startswith("https://"):
-        image_url = candidate
-    elif lowered.startswith("data:"):
-        image_url = _data_url_to_input_image_url(candidate)
-    else:
-        image_url = _local_image_to_data_url(candidate)
-    return {"type": "input_image", "image_url": image_url}
+    """Convert a URL/data URL/local path into a Responses input_image part.
+
+    The sanctioned resolver (:mod:`tools.image_source`) applies the
+    credential-read denylist, sandbox confinement, and magic-byte validation,
+    narrowed here by the 25MB cap and :data:`_ACCEPTED_INPUT_MIME`. Public
+    URLs pass through for the API to fetch; local files and ``data:`` URIs
+    come back re-encoded under their *sniffed* MIME, so a mislabelled header
+    cannot reach the API claiming a type gpt-image-2 will reject.
+    """
+    from tools.image_source import resolve_source_to_url_sync
+
+    return {
+        "type": "input_image",
+        "image_url": resolve_source_to_url_sync(
+            value,
+            max_bytes=_MAX_INPUT_IMAGE_BYTES,
+            accepted_mimes=_ACCEPTED_INPUT_MIME,
+        ),
+    }
 
 
 def _normalize_input_images(

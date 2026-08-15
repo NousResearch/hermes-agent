@@ -3015,6 +3015,9 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Newest API-error request dumps kept in ~/.hermes/sessions.
+        # 0 or a negative value disables pruning.
+        "request_dump_retention": 20,
         # When true, prune ended sessions inactive for retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Activity is the latest message timestamp, falling back to creation

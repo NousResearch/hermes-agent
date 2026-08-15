@@ -44,6 +44,8 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 
 logger = logging.getLogger(__name__)
 
+_REQUEST_DUMP_DEFAULT_KEEP = 20
+
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
 # on a persistent auth failure before we give up and let the fallback chain
@@ -96,6 +98,58 @@ def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
     return run_agent
+
+
+def _request_dump_keep() -> int:
+    """Resolve the configured request-dump cap without mutating config."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        sessions = config.get("sessions", {}) if isinstance(config, dict) else {}
+        if not isinstance(sessions, dict):
+            return _REQUEST_DUMP_DEFAULT_KEEP
+        return int(
+            sessions.get("request_dump_retention", _REQUEST_DUMP_DEFAULT_KEEP)
+        )
+    except Exception:
+        return _REQUEST_DUMP_DEFAULT_KEEP
+
+
+def _prune_request_dumps(directory: Path, keep: int, *, protect: Path) -> int:
+    """Delete oldest request dumps beyond *keep*, preserving *protect*."""
+    if keep <= 0:
+        return 0
+
+    candidates = []
+    try:
+        for path in directory.glob("request_dump_*.json"):
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                candidates.append((path.stat().st_mtime_ns, path.name, path))
+            except OSError as error:
+                logger.debug("Could not inspect request dump %s: %s", path, error)
+    except OSError as error:
+        logger.debug("Could not scan request dumps in %s: %s", directory, error)
+        return 0
+
+    excess = len(candidates) - keep
+    if excess <= 0:
+        return 0
+
+    deleted = 0
+    for _, _, path in sorted(candidates):
+        if deleted >= excess:
+            break
+        if path == protect:
+            continue
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError as error:
+            logger.debug("Could not prune request dump %s: %s", path, error)
+    return deleted
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
@@ -1944,6 +1998,15 @@ def dump_api_request_debug(
 
         _redacted_payload = redact_structured(dump_payload)
         atomic_json_write(dump_file, _redacted_payload, default=str)
+
+        try:
+            _prune_request_dumps(
+                agent.logs_dir,
+                _request_dump_keep(),
+                protect=dump_file,
+            )
+        except Exception as prune_error:
+            logger.debug("Request dump retention skipped: %s", prune_error)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 

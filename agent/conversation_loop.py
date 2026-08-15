@@ -1623,7 +1623,9 @@ def _redecorate_prompt_cache_for_provider(
     return messages, prepared, planned_tools
 
 
-_VALID_CONTEXT_SELECTION_ROLES = frozenset({"system", "user", "assistant", "tool"})
+_VALID_CONTEXT_SELECTION_ROLES = frozenset(
+    {"system", "user", "assistant", "tool", "function", "developer"}
+)
 
 
 def _context_engine_selection_is_safe(

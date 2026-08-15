@@ -220,6 +220,33 @@ def test_role_unusual_replacement_passed_through_for_downstream_sanitizers():
     )
     assert out is role_unusual  # accepted structurally; downstream sanitizers normalize
 
+
+def test_developer_and_function_roles_pass_through_selection_guard():
+    """The selection guard accepts every role the downstream request
+    sanitizer keeps, so a context engine emitting ``developer`` or
+    ``function`` messages (accepted on main and normalized later by
+    ``_sanitize_api_messages``) is not silently dropped at the selection
+    boundary (#84262 review follow-up)."""
+    replacement = [
+        {"role": "system", "content": "sys"},
+        {"role": "developer", "content": "dev instructions"},
+        {"role": "function", "name": "f", "content": "fn result"},
+        {"role": "user", "content": "x"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return replacement
+
+    agent = _agent_with(_Engine())
+    out = _apply_context_engine_selection(
+        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is replacement  # accepted; downstream sanitizers normalize roles
+
+
+
+
 def test_system_role_injection_rejected():
     """A context engine must not inject an attacker-controlled ``system``
     message. The replacement is rejected and the original request is kept

@@ -76,11 +76,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'profile.create', category: 'profiles', defaults: [] },
 
   // ── Session ──────────────────────────────────────────────────────────────
-  // NOTE: both 'mod+n' and 'shift+n' were removed from session.new defaults
-  // (2026-08-01) — they hijacked normal typing (uppercase N) and accidental
-  // Ctrl+N presses, creating new sessions unexpectedly. New session is
-  // available via the sidebar button only.
-  { id: 'session.new', category: 'session', defaults: [] },
+  // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
+  // hijacked normal typing — pressing uppercase N outside an input (or via an
+  // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
+  // stays; users who liked ⇧N can rebind it in the panel.
+  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
   { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd

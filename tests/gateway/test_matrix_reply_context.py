@@ -6,6 +6,8 @@ capture, event-text resolution (cache then API), thread continuation
 semantics (``is_falling_back``), and thread-root backfill for sessions
 with no history.
 """
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -326,6 +328,29 @@ class TestResolveEventContext:
         assert self.adapter._cached_event_text("$e599") == _MatrixEventContext("@a:ex.org", "m599")
 
     @pytest.mark.asyncio
+    async def test_hung_get_event_times_out_and_degrades(self):
+        """A homeserver that never answers the event lookup must not stall
+        message handling: the fetch is bounded and resolves to nothing."""
+        never_done = asyncio.Event()
+
+        async def hang_forever(*_args, **_kwargs):
+            await never_done.wait()
+
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = hang_forever
+        self.adapter._reply_context_timeout_seconds = 0.05
+
+        try:
+            resolved = await asyncio.wait_for(
+                self.adapter._resolve_event_context("!room:ex.org", "$slow"),
+                timeout=5,
+            )
+        finally:
+            never_done.set()
+
+        assert resolved is None
+
+    @pytest.mark.asyncio
     async def test_bodyless_fetch_is_negatively_cached(self):
         """A fetch that yields nothing usable (e.g. a redacted event) must
         not be repeated for every message that references the event."""
@@ -474,6 +499,29 @@ class TestQuotedMediaResolution:
 
         assert resolved is not None
         assert resolved.text == "[file: report.pdf]"
+        assert resolved.media_path is None
+
+    @pytest.mark.asyncio
+    async def test_hung_media_download_degrades_to_marker(self):
+        """A stalled image download must not block sync dispatch either."""
+        never_done = asyncio.Event()
+
+        async def hang_forever(*_args, **_kwargs):
+            await never_done.wait()
+
+        self._install_client()
+        self.adapter._extract_media_payload = hang_forever
+        self.adapter._reply_context_timeout_seconds = 0.05
+
+        try:
+            resolved = await asyncio.wait_for(
+                self.adapter._resolve_event_context("!r:x", "$root"), timeout=5
+            )
+        finally:
+            never_done.set()
+
+        assert resolved is not None
+        assert resolved.text == "[image]"
         assert resolved.media_path is None
 
     @pytest.mark.asyncio
@@ -1022,6 +1070,101 @@ class TestMediaMessageReplySemantics:
 
 
 # ---------------------------------------------------------------------------
+# Text batching: reply context and media survive the merge
+# ---------------------------------------------------------------------------
+
+class TestTextBatchMerge:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._text_batch_delay_seconds = 30
+
+    def teardown_method(self):
+        for task in self.adapter._pending_text_batch_tasks.values():
+            task.cancel()
+
+    def _event(self, text, **kwargs):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:ex.org",
+            chat_type="dm",
+            user_id="@alice:ex.org",
+            user_name="Alice",
+        )
+        return MessageEvent(text=text, source=source, **kwargs)
+
+    def _batched(self):
+        batches = list(self.adapter._pending_text_batches.values())
+        assert len(batches) == 1
+        return batches[0]
+
+    @pytest.mark.asyncio
+    async def test_later_reply_chunk_carries_context_into_batch(self):
+        """A burst can open with a plain message while a later chunk is the
+        actual reply; the merge must not drop the quote."""
+        self.adapter._enqueue_text_event(self._event("first thought"))
+        self.adapter._enqueue_text_event(
+            self._event(
+                "actually, about that",
+                reply_to_message_id="$parent",
+                reply_to_text="The meeting is at 3pm.",
+                reply_to_author_id="@bob:ex.org",
+                reply_to_author_name="Bob",
+                reply_to_is_own_message=False,
+                reply_to_author_authorized=False,
+            )
+        )
+
+        merged = self._batched()
+        assert merged.text == "first thought\nactually, about that"
+        assert merged.reply_to_message_id == "$parent"
+        assert merged.reply_to_text == "The meeting is at 3pm."
+        assert merged.reply_to_author_id == "@bob:ex.org"
+        assert merged.reply_to_author_name == "Bob"
+        assert merged.reply_to_is_own_message is False
+        assert merged.reply_to_author_authorized is False
+
+    @pytest.mark.asyncio
+    async def test_existing_reply_context_is_not_overwritten(self):
+        self.adapter._enqueue_text_event(
+            self._event(
+                "replying",
+                reply_to_message_id="$first",
+                reply_to_text="original quote",
+            )
+        )
+        self.adapter._enqueue_text_event(
+            self._event(
+                "more",
+                reply_to_message_id="$second",
+                reply_to_text="different quote",
+            )
+        )
+
+        merged = self._batched()
+        assert merged.reply_to_message_id == "$first"
+        assert merged.reply_to_text == "original quote"
+
+    @pytest.mark.asyncio
+    async def test_merge_tolerates_none_media_lists(self):
+        """A batch head constructed with explicit None media fields must not
+        break the merge once text events can carry quoted images."""
+        self.adapter._enqueue_text_event(
+            self._event("head", media_urls=None, media_types=None)
+        )
+        self.adapter._enqueue_text_event(
+            self._event(
+                "with image",
+                media_urls=["/cache/img.jpg"],
+                media_types=["image/jpeg"],
+            )
+        )
+
+        merged = self._batched()
+        assert merged.media_urls == ["/cache/img.jpg"]
+        assert merged.media_types == ["image/jpeg"]
+
+
+# ---------------------------------------------------------------------------
 # Inbound relation normalisation
 # ---------------------------------------------------------------------------
 
@@ -1319,6 +1462,28 @@ class TestFetchThreadContext:
         self.adapter._client.api.request = AsyncMock(return_value={"chunk": []})
 
         context = await self.adapter.fetch_thread_context("!room:ex.org", "$root")
+
+        assert context is None
+
+    @pytest.mark.asyncio
+    async def test_hung_relations_request_times_out(self):
+        """The relations endpoint is a network hop inside sync dispatch too;
+        a homeserver that never answers must not stall it."""
+        never_done = asyncio.Event()
+
+        async def hang_forever(*_args, **_kwargs):
+            await never_done.wait()
+
+        self.adapter._client.api.request = hang_forever
+        self.adapter._reply_context_timeout_seconds = 0.05
+
+        try:
+            context = await asyncio.wait_for(
+                self.adapter.fetch_thread_context("!room:ex.org", "$root"),
+                timeout=5,
+            )
+        finally:
+            never_done.set()
 
         assert context is None
 

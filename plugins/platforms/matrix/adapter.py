@@ -3821,6 +3821,13 @@ class MatrixAdapter(BasePlatformAdapter):
             body = getattr(content, "body", "")
         return body if isinstance(body, str) else ""
 
+    # Bound on each network hop while resolving quoted context or thread
+    # backfill. The room-event handlers are registered with wait_sync=True,
+    # so an unbounded await here stalls all Matrix sync-event dispatch; on
+    # timeout the context degrades to empty rather than delaying the
+    # message.
+    _reply_context_timeout_seconds: float = 10.0
+
     async def _resolve_event_context(
         self, room_id: str, event_id: str
     ) -> Optional[_MatrixEventContext]:
@@ -3848,7 +3855,18 @@ class MatrixAdapter(BasePlatformAdapter):
         if not self._client:
             return None
         try:
-            evt = await self._client.get_event(RoomID(room_id), EventID(event_id))
+            evt = await asyncio.wait_for(
+                self._client.get_event(RoomID(room_id), EventID(event_id)),
+                timeout=self._reply_context_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Matrix: timed out fetching event %s in %s after %ss",
+                event_id,
+                room_id,
+                self._reply_context_timeout_seconds,
+            )
+            return None
         except Exception as exc:
             logger.debug(
                 "Matrix: could not fetch event %s in %s: %s", event_id, room_id, exc
@@ -3905,9 +3923,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """
         text = _label_matrix_body("m.image", body)
 
-        payload = await self._extract_media_payload(
-            content, event_id, "m.image", body
-        )
+        try:
+            payload = await asyncio.wait_for(
+                self._extract_media_payload(content, event_id, "m.image", body),
+                timeout=self._reply_context_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("Matrix: quoted image %s download timed out", event_id)
+            payload = None
         if payload is None or not payload.cached_path:
             logger.debug(
                 "Matrix: quoted image %s unavailable; sending marker only", event_id
@@ -4013,10 +4036,13 @@ class MatrixAdapter(BasePlatformAdapter):
             f"/relations/{quote(thread_id, safe='')}/m.thread"
         )
         try:
-            resp = await self._client.api.request(
-                method,
-                path,
-                query_params={"dir": "b", "limit": str(limit)},
+            resp = await asyncio.wait_for(
+                self._client.api.request(
+                    method,
+                    path,
+                    query_params={"dir": "b", "limit": str(limit)},
+                ),
+                timeout=self._reply_context_timeout_seconds,
             )
         except Exception as exc:
             logger.debug(
@@ -5066,8 +5092,27 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                # Normalise to lists: a batch head constructed with explicit
+                # None media fields must not break the merge now that text
+                # events can carry a quoted image.
+                existing.media_urls = (existing.media_urls or []) + list(
+                    event.media_urls
+                )
+                existing.media_types = (existing.media_types or []) + list(
+                    event.media_types or []
+                )
+            # Carry reply context forward when the burst opened with a plain
+            # message and a later chunk is the actual reply; otherwise the
+            # quote is dropped by the merge.
+            if event.reply_to_text and not existing.reply_to_text:
+                existing.reply_to_message_id = event.reply_to_message_id
+                existing.reply_to_text = event.reply_to_text
+                existing.reply_to_author_id = event.reply_to_author_id
+                existing.reply_to_author_name = event.reply_to_author_name
+                existing.reply_to_is_own_message = event.reply_to_is_own_message
+                existing.reply_to_author_authorized = (
+                    event.reply_to_author_authorized
+                )
             if event.channel_context:
                 existing.channel_context = (
                     f"{existing.channel_context}\n{event.channel_context}"

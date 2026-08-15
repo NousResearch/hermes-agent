@@ -920,8 +920,11 @@ def _(rid, params: dict) -> dict:
     stale ``git_repo_root`` would keep it grouped under the project it left.
 
     A live agent bound to the row follows through the runtime path too, so its
-    terminal/file tools re-anchor immediately; a mid-turn session refuses the
-    move rather than yanking the workspace out from under its tools.
+    terminal/file tools re-anchor immediately. An explicit move wins even
+    mid-turn: refusing a running session made the desktop's "Move to project"
+    claim success in the UI while ``state.db`` kept the old cwd — two sources
+    of truth disagreeing (#86626). In-flight tool calls keep the cwd they were
+    launched with; the NEXT tool call uses the new workspace.
     """
     target = str(params.get("session_key") or "").strip()
     if not target:
@@ -944,8 +947,6 @@ def _(rid, params: dict) -> dict:
             if sess.get("session_key") == target:
                 live, live_sid = sess, sid
                 break
-    if live is not None and live.get("running"):
-        return _err(rid, 4009, "session busy")
 
     branch = _git_branch_for_cwd(resolved)
     root = _git_common_repo_root_for_cwd(resolved)

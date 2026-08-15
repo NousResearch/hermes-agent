@@ -19458,3 +19458,55 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
     finally:
         reset_hermes_home_override(outer_token)
     assert get_hermes_home_override() is None
+
+
+def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
+    """An explicit Move-to-project must win for a RUNNING session: the stored
+    row and the live runtime session re-anchor together, never a UI-vs-db
+    disagreement (#86626)."""
+    target = "stored-running-session"
+    new_cwd = tmp_path / "dest-project"
+    new_cwd.mkdir()
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def update_session_cwd(self, session_id, cwd, branch=None, root=None, replace_git_meta=True):
+            captured["row_update"] = (session_id, cwd)
+
+        def close(self):
+            pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_db(_params):
+        yield FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", _fake_db)
+    monkeypatch.setattr(
+        server,
+        "_git_branch_for_cwd",
+        lambda cwd: "main",
+    )
+    monkeypatch.setattr(
+        server,
+        "_git_common_repo_root_for_cwd",
+        lambda cwd: str(new_cwd),
+    )
+
+    live = {"session_key": target, "running": True, "cwd": str(tmp_path / "old-project")}
+    server._sessions["live-sid"] = live
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+
+    res = server._methods["session.workspace.move"](
+        "rid",
+        {"session_key": target, "cwd": str(new_cwd)},
+    )
+
+    assert "error" not in res, res
+    assert captured["row_update"] == (target, str(new_cwd))
+    assert live["cwd"] == str(new_cwd)
+    assert live.get("explicit_cwd") is True

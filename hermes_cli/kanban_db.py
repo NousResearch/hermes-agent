@@ -5487,13 +5487,16 @@ def complete_task(
             # child process can present a matching one and complete its parent's
             # card. The pid of the process actually making the call cannot be
             # inherited that way, which is what makes it worth checking.
-            # A caller that supplies its own pid is asserting an identity. If
-            # the row carries no pid we cannot check that assertion, and an
-            # unverifiable claim is refused rather than waved through — the
-            # NULL branch was otherwise a way back to lock-only fencing.
-            if expected_worker_pid is not None and (
-                current["worker_pid"] is None
-                or current["worker_pid"] != int(expected_worker_pid)
+            # A row with no recorded pid is left alone on purpose. Reporting a
+            # pid from spawn_fn is a crash-detection nicety, not a contract, so
+            # a deployment whose spawn returns none never stamps one — and
+            # refusing those would reject the legitimate worker finishing its
+            # own task. Where no pid was ever recorded this fence is no weaker
+            # than it was before; where one was, it is strictly stronger.
+            if (
+                expected_worker_pid is not None
+                and current["worker_pid"] is not None
+                and current["worker_pid"] != int(expected_worker_pid)
             ):
                 return False
             if (
@@ -5515,7 +5518,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND claim_lock = ?
-                   AND (? IS NULL OR worker_pid = ?)
+                   AND (? IS NULL OR worker_pid IS NULL OR worker_pid = ?)
                 """,
                 (
                     result,

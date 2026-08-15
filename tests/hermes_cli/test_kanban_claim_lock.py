@@ -278,3 +278,34 @@ def test_tool_complete_rejects_inherited_claim_lock_from_another_pid(
     assert task.status == "running"
     assert task.result is None
     assert task.worker_pid == live_pid
+
+
+def test_complete_task_allows_worker_whose_spawn_reported_no_pid(
+    kanban_home: Path,
+) -> None:
+    """A deployment that never stamps a pid must keep working.
+
+    Reporting a pid from spawn_fn is a crash-detection nicety rather than a
+    contract, so a custom spawn that returns none leaves worker_pid NULL
+    forever. Tightening the fence to refuse those rejected the legitimate
+    worker finishing its own task — caught in review after the first attempt
+    did exactly that. Where no pid was recorded this fence is no weaker than
+    before; where one was, it is strictly stronger.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="pidless worker", assignee="worker")
+        claim = kb.claim_task(conn, task_id, claimer="worker:live")
+        assert claim is not None
+        assert kb.get_task(conn, task_id).worker_pid is None
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="completed without a recorded pid",
+            expected_claim_lock="worker:live",
+            expected_worker_pid=4242,
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "done"

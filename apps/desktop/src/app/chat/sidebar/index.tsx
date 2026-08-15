@@ -71,6 +71,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
   $profileColors,
@@ -125,7 +126,6 @@ import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-s
 import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
-import { notifyError } from '@/store/notifications'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
@@ -374,6 +374,7 @@ export function ChatSidebar({
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
   // become the truth (optimistic update + rollback in markSessionUnread).
@@ -386,6 +387,7 @@ export function ChatSidebar({
 
     markSessionUnread(storedId, row.unread !== true).catch(err => notifyError(err, s.row.unreadFailed))
   }
+
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
   const multiProfile = profiles.length > 1

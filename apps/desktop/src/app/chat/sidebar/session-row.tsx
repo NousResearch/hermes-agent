@@ -337,10 +337,10 @@ function SidebarSessionRowImpl({
       onPin={onPin}
       onToggleUnread={onToggleUnread}
       pinned={isPinned}
-      unread={unread}
       profile={session.profile}
       sessionId={session.id}
       title={title}
+      unread={unread}
     >
       <SidebarRowShell
         actions={card ? undefined : actionsNode}

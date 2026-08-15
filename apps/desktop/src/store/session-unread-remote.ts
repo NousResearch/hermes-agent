@@ -39,6 +39,7 @@ function rowFor(storedId: string) {
  *  brand-new chat with no persisted row yet — there is nothing to flag). */
 export async function markSessionUnread(storedId: string, unread: boolean): Promise<void> {
   const row = rowFor(storedId)
+
   if (!row) {
     return
   }
@@ -65,9 +66,11 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
  *  Best-effort: a failed PATCH is healed by the next honest refresh. */
 export async function clearUnreadOnOpen(storedId: string): Promise<void> {
   const row = rowFor(storedId)
+
   if (!row || row.unread !== true) {
     return
   }
+
   try {
     await markSessionUnread(storedId, false)
   } catch {
@@ -84,6 +87,7 @@ export function watchUnreadWriteGuard(): void {
 
     for (const [id, entry] of guard) {
       const row = rows.find(r => r.id === id)
+
       if (row && row.unread === entry.value) {
         guard.delete(id)
         changed = true

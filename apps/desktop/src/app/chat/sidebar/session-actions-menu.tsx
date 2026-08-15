@@ -50,9 +50,9 @@ import {
   sessionPinId,
   setSessions
 } from '@/store/session'
-import { ackStoredSessionId } from '@/store/session-unread'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles } from '@/store/session-states'
+import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'

@@ -138,18 +138,23 @@ export const $sessionDotStateById = computed(
     // our own writes is fenced out by the write guard: keep OUR value until a
     // page confirms it or the guard expires.
     const persistedUnread: string[] = []
+
     for (const s of sessions) {
       const entry = unreadWriteGuard.get(s.id)
+
       if (entry && Date.now() - entry.at < UNREAD_WRITE_GUARD_MS) {
         if (entry.value) {
           persistedUnread.push(s.id)
         }
+
         continue
       }
+
       if (s.unread === true) {
         persistedUnread.push(s.id)
       }
     }
+
     claim(persistedUnread, 'unread')
 
     claim(background, 'background')

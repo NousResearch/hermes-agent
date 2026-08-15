@@ -12,7 +12,7 @@ vi.mock('@/hermes', () => ({
   setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => patch(id, unread, profile)
 }))
 
-import { $sessions, setSessions } from '@/store/session'
+import { $sessions } from '@/store/session'
 
 import { $unreadWriteGuard, clearUnreadOnOpen, markSessionUnread, watchUnreadWriteGuard } from './session-unread-remote'
 

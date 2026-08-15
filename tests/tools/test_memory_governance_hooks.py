@@ -72,6 +72,52 @@ def test_real_plugin_governs_prompt_and_durable_write():
     plugins._reset_plugin_managers_for_tests()
 
 
+def test_real_governor_failure_blocks_write_and_raw_prompt_injection():
+    """Discovery -> callback failure -> both governance boundaries fail closed."""
+    import hermes_cli.plugins as plugins
+
+    hermes_home = get_hermes_home()
+    plugin_dir = hermes_home / "plugins" / "failing_memory_governor"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: failing_memory_governor\n"
+        "provides_hooks:\n"
+        "  - transform_memory_context\n"
+        "  - pre_memory_write\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "def fail(*args, **kwargs):\n"
+        "    raise RuntimeError('governance backend unavailable')\n"
+        "\n"
+        "def register(ctx):\n"
+        "    ctx.register_hook('transform_memory_context', fail)\n"
+        "    ctx.register_hook('pre_memory_write', fail)\n",
+        encoding="utf-8",
+    )
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - failing_memory_governor\n",
+        encoding="utf-8",
+    )
+    memory_dir = hermes_home / "memories"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "USER.md").write_text("private native entry", encoding="utf-8")
+
+    plugins._reset_plugin_managers_for_tests()
+    store = MemoryStore()
+    store.load_from_disk()
+
+    assert store.format_for_system_prompt("user") is None
+    result = store.add("memory", "must remain blocked")
+    assert result == {
+        "success": False,
+        "error": "Memory write blocked because a governance plugin failed.",
+    }
+    assert store.memory_entries == []
+    assert not (memory_dir / "MEMORY.md").exists()
+    plugins._reset_plugin_managers_for_tests()
+
+
 def test_approved_replay_still_crosses_governance_boundary(monkeypatch, tmp_path):
     """The approval replay helper must not bypass the store-level hook."""
     from tools.memory_tool import apply_memory_pending

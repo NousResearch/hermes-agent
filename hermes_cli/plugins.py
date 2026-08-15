@@ -4830,7 +4830,13 @@ class PluginManager:
         }
         return callback(**accepted_payload)
 
-    def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
+    def invoke_hook(
+        self,
+        hook_name: str,
+        *,
+        _propagate_callback_errors: bool = False,
+        **kwargs: Any,
+    ) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
         Hook payloads evolve additively. Callbacks that accept ``**kwargs``
@@ -4873,6 +4879,8 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+                if _propagate_callback_errors:
+                    raise
         return results
 
     def _subscribe_event(
@@ -5600,7 +5608,12 @@ def _delivery_manager() -> PluginManager:
     return manager
 
 
-def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+def invoke_hook(
+    hook_name: str,
+    *,
+    _propagate_callback_errors: bool = False,
+    **kwargs: Any,
+) -> List[Any]:
     """Invoke a lifecycle hook on loaded plugins.
 
     Ensures plugins are discovered on first invocation so callers in
@@ -5610,7 +5623,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return _delivery_manager().invoke_hook(hook_name, **kwargs)
+    return _delivery_manager().invoke_hook(
+        hook_name,
+        _propagate_callback_errors=_propagate_callback_errors,
+        **kwargs,
+    )
 
 
 def render_system_prompt_sections(

@@ -15,7 +15,12 @@ Hermes has four hook systems that run custom code at key lifecycle points:
 | **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
 | **[Outbound webhooks](#outbound-webhooks)** | `hooks.outbound:` list in `~/.hermes/config.yaml` | CLI + Gateway | Push signed lifecycle events to external HTTP endpoints — CI, dashboards, other agents |
 
-Hook callback errors are isolated and logged rather than crashing the agent. Hooks are not all passive: directive/control hooks can change flow, transforms can replace content, and a shell `pre_tool_call` hook can block or fail closed.
+Hook callback errors are normally isolated and logged rather than crashing the
+agent. Built-in memory governance is the deliberate exception: registered
+`pre_memory_write` and `transform_memory_context` callbacks fail closed so a
+broken policy backend cannot write or inject unfiltered native memory. Hooks
+are not all passive: directive/control hooks can change flow, transforms can
+replace content, and a shell `pre_tool_call` hook can block or fail closed.
 
 ## Gateway Event Hooks
 
@@ -635,9 +640,11 @@ release. It receives the final `entries` tuple and `char_count`; return values
 are ignored. Duplicate-add no-ops, blocked/skipped writes, validation failures,
 and over-limit failures do not emit it.
 
-Callback failures are isolated and preserve native behavior. A governance
-plugin that requires fail-closed policy should catch its own internal errors
-and return an explicit `block` directive.
+Memory governance control failures are fail closed. If a registered
+`pre_memory_write` callback raises, Hermes blocks the write. If a registered
+`transform_memory_context` callback raises, Hermes omits the native entries
+from that frozen prompt snapshot instead of injecting unfiltered content.
+`post_memory_write` remains an isolated best-effort observer.
 
 ```python
 def register(ctx):

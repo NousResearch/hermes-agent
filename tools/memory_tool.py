@@ -260,12 +260,18 @@ class MemoryStore:
                 return list(entries)
             results = invoke_hook(
                 "transform_memory_context",
+                _propagate_callback_errors=True,
                 target=target,
                 entries=tuple(entries),
                 char_limit=self._char_limit(target),
             )
         except Exception:
-            return list(entries)
+            logger.warning(
+                "Memory context governance failed for %s; omitting native entries",
+                target,
+                exc_info=True,
+            )
+            return []
 
         for result in results:
             if not isinstance(result, (list, tuple)):
@@ -471,6 +477,7 @@ class MemoryStore:
             if has_hook("pre_memory_write"):
                 results = invoke_hook(
                     "pre_memory_write",
+                    _propagate_callback_errors=True,
                     **payload,
                     entries=tuple(self._entries_for(target)),
                     char_limit=self._char_limit(target),
@@ -478,7 +485,16 @@ class MemoryStore:
             else:
                 results = []
         except Exception:
-            results = []
+            logger.warning(
+                "Memory write governance failed; blocking %s on %s",
+                action,
+                target,
+                exc_info=True,
+            )
+            return payload, {
+                "success": False,
+                "error": "Memory write blocked because a governance plugin failed.",
+            }
 
         for result in results:
             if not isinstance(result, dict):
@@ -1401,5 +1417,4 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 

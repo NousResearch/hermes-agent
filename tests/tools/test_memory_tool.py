@@ -149,6 +149,25 @@ class TestMemoryStoreAdd:
         assert calls[0][1]["action"] == "add"
         assert calls[0][1]["target"] == "memory"
 
+    def test_pre_memory_write_hook_failure_blocks_add(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("policy backend unavailable")
+            ),
+        )
+
+        result = store.add("memory", "must remain blocked while policy is down")
+
+        assert result == {
+            "success": False,
+            "error": "Memory write blocked because a governance plugin failed.",
+        }
+        assert store.memory_entries == []
+
     def test_pre_memory_write_hook_can_skip_duplicate_like_add(self, store, monkeypatch):
         def fake_has_hook(name):
             return name == "pre_memory_write"
@@ -471,6 +490,28 @@ class TestMemoryStoreSnapshot:
         assert "native preference" in snapshot
         assert "managed profile fact" not in snapshot
         assert "managed profile fact" in (tmp_path / "USER.md").read_text(encoding="utf-8")
+
+    def test_context_hook_failure_omits_unfiltered_native_entries(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "USER.md").write_text("private native entry", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "transform_memory_context",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("redaction backend unavailable")
+            ),
+        )
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+
+        assert store.format_for_system_prompt("user") is None
+        assert store.user_entries == ["private native entry"]
 
     def test_context_hook_output_is_scanned_before_prompt_injection(
         self, tmp_path, monkeypatch

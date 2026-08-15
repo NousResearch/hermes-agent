@@ -1597,12 +1597,29 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
 
 def clear_file_ops_cache(task_id: str = None):
-    """Clear the file operations cache."""
+    """Clear file-operation state for a finished task, or all tasks."""
     with _file_ops_lock:
         if task_id:
             _file_ops_cache.pop(task_id, None)
         else:
             _file_ops_cache.clear()
+
+    with _read_tracker_lock:
+        if task_id:
+            _read_tracker.pop(task_id, None)
+        else:
+            _read_tracker.clear()
+
+    with _patch_failure_lock:
+        if task_id:
+            _patch_failure_tracker.pop(task_id, None)
+        else:
+            _patch_failure_tracker.clear()
+
+    if task_id:
+        file_state.get_registry().forget_task(task_id)
+    else:
+        file_state.get_registry().clear()
 
 
 def _special_file_kind(path) -> str | None:

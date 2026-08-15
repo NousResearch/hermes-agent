@@ -656,6 +656,38 @@ def test_queued_prompt_drain_keeps_both_clients_attached(monkeypatch):
     assert b.types() == ["message.delta"]
 
 
+def test_queued_prompt_drain_skips_a_queuer_that_disconnected(monkeypatch):
+    """B goes away while its prompt waits: the prompt runs, the dead pin does not.
+
+    Attaching a transport whose client already left would pin a dead peer into
+    the slot until the first failed write prunes it. A keeps its stream and
+    stays the only attached client.
+    """
+    dispatched = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, _session, text, **kw: dispatched.append((rid, text)),
+    )
+
+    a, b = _FakeClient("a"), _FakeClient("b")
+    session = _session(transport=a)
+    server._enqueue_prompt(session, "from B", b)
+    b._closed = True  # what _transport_is_dead reads: B's socket went away
+    server._sessions["sid"] = session
+    try:
+        assert server._drain_queued_prompt("drain", "sid", session) is True
+        server._emit("message.delta", "sid", {"text": "drained answer"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert dispatched == [("drain", "from B")]  # drain semantics unchanged
+    assert session["transport"] is a
+    assert server._session_transport_contains(session, b) is False
+    assert a.types() == ["message.delta"]
+    assert b.types() == []
+
+
 def test_queued_prompt_drain_still_rebinds_a_single_client_session(monkeypatch):
     """(j) Control: with one client the drain lands on the queuer's transport."""
     monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: None)

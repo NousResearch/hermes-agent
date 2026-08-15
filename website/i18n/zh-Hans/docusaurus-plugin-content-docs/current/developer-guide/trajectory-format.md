@@ -7,7 +7,14 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 
 ## 文件命名规范
 
-轨迹写入当前工作目录下的文件：
+未提供显式文件名时，轨迹会写入当前 profile 的 Hermes home 下，按规范化当前
+工作目录分桶：
+
+`<HERMES_HOME>/trajectories/<cwd-basename>-<path-digest>/`
+
+短摘要用于区分同名目录；同一目录的多次保存会追加到同一个数据集。不会自动
+搬移工作目录中的旧文件。显式 `filename=` 仍完全按调用者指定的路径写入，包含
+相对路径和符号链接。
 
 | 文件 | 时机 |
 |------|------|
@@ -184,7 +191,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("/path/to/trajectory_samples.jsonl")
               if e.get("completed")]
 
 # Extract just the conversations for training
@@ -205,15 +212,8 @@ ds = load_dataset("json", data_files="trajectory_samples.jsonl")
 
 ## 控制轨迹保存
 
-在 CLI 中，轨迹保存通过以下方式控制：
-
-```yaml
-# config.yaml
-agent:
-  save_trajectories: true  # default: false
-```
-
-或通过 `--save-trajectories` 标志。当 agent 以 `save_trajectories=True` 初始化时，
+轨迹保存由 `run_agent.py` 的 `save_trajectories` 参数控制；也可以使用
+`--save_trajectories` 标志。当 agent 以 `save_trajectories=True` 初始化时，
 `_save_trajectory()` 方法在每次对话轮次结束时调用。
 
 批量运行器始终保存轨迹（这是其主要用途）。

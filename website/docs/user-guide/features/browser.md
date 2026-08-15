@@ -540,6 +540,15 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session. Each Hermes task pins the page target it creates and does not adopt another task's existing tab. Cookies, storage, and signed-in account state still belong to the shared browser profile and are intentionally shared.
 
+A shared external-CDP target is not closed merely because no browser command was
+issued during `browser.inactivity_timeout`; model reasoning or another long tool
+call can legitimately exceed that interval. Hermes closes its owned target at
+terminal task cleanup instead. After that cleanup, non-navigation tools fail
+with `browser_session_retired` rather than creating or adopting a replacement
+page. A new lifecycle begins only with an explicit, policy-checked
+`browser_navigate`; if that navigation fails, Hermes cleans the partial
+replacement and keeps the task retired.
+
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 
 If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -16,6 +17,7 @@ import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $projectScope,
   beginSessionMutation,
   endSessionMutation,
   resolveNewSessionCwd,
@@ -437,10 +439,13 @@ export function useSessionActions({
         // An explicit one-shot workspace target (null → detached, string → that
         // folder) wins; otherwise the live cwd, then the project-aware default
         // (resolveNewSessionCwd — a project's new session keeps its repo cwd).
+        // Home is an explicit detached scope: do not let a stale live cwd from
+        // the previously selected project leak into this new session.
         const workspaceTarget = $newChatWorkspaceTarget.get()
+        const homeScope = $projectScope.get() === NO_PROJECT_ID
 
         const cwd =
-          workspaceTarget === null
+          workspaceTarget === null || (workspaceTarget === undefined && homeScope)
             ? ''
             : typeof workspaceTarget === 'string'
               ? workspaceTarget.trim()

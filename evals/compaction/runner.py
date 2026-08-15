@@ -66,6 +66,64 @@ QUESTION: {question}
 GOLD: {gold}
 ANSWER: {answer}"""
 
+SEARCH_QUERY_PROMPT = """You are an AI agent resuming a work session. Your context (below) includes a compaction summary noting that the full pre-compaction history is recoverable via session_search. You need to answer a question and the answer may not be in your current context.
+
+Write the best search query (3-8 keywords, no boolean syntax) to find the answer in the archived session history. Reply with ONLY the query string.
+
+CONTEXT (may be relevant):
+{context_hint}
+
+QUESTION: {question}"""
+
+ANSWER_WITH_RECOVERY_PROMPT = """You are an AI agent resuming a work session. Below is your CURRENT conversation context (including a compaction summary), plus the results of a session_search you just ran against the archived pre-compaction history. Answer the question using both. If neither contains the answer, say exactly "NOT IN CONTEXT" and give your best guess after a semicolon.
+
+CONTEXT:
+{context}
+
+SESSION_SEARCH RESULTS:
+{search_results}
+
+QUESTION: {question}
+
+Answer in one or two sentences."""
+
+
+def keyword_search(archive: list, query: str, top_k: int = 3, excerpt_chars: int = 2500) -> str:
+    """Simulate session_search over the archived (compacted-away) region.
+
+    Scores each message by query-term frequency (case-insensitive), returns
+    the top_k as excerpts centered on the densest term cluster. This is a
+    conservative stand-in for the real FTS5 backend — real session_search
+    has ranking, snippets, and windows, so live recovery should only be
+    better than this sim.
+    """
+    terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_#./-]{3,}", query)]
+    if not terms:
+        return "(no results)"
+    scored = []
+    for i, m in enumerate(archive):
+        c = m.get("content")
+        if not isinstance(c, str) or len(c) < 20:
+            continue
+        lc = c.lower()
+        score = sum(lc.count(t) for t in terms)
+        if score > 0:
+            scored.append((score, i, c))
+    scored.sort(key=lambda x: -x[0])
+    if not scored:
+        return "(no results)"
+    out = []
+    for score, i, c in scored[:top_k]:
+        # center excerpt on the first term hit
+        lc = c.lower()
+        first = min((lc.find(t) for t in terms if lc.find(t) >= 0), default=0)
+        start = max(0, first - excerpt_chars // 4)
+        out.append(
+            f"--- result (message #{i}, role={archive[i].get('role')}) ---\n"
+            + c[start:start + excerpt_chars]
+        )
+    return "\n\n".join(out)
+
 
 def _call(prompt: str, max_tokens: int = 2000) -> str:
     from agent.auxiliary_client import call_llm
@@ -130,7 +188,8 @@ def generate_questions(messages, n: int, cache_path: Path) -> list:
     return questions
 
 
-def run_policy(name: str, spec: dict, messages, questions, out_dir: Path) -> dict:
+def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
+               with_recovery: bool = False) -> dict:
     from agent.context_compressor import ContextCompressor
 
     before = copy.deepcopy(messages)
@@ -141,20 +200,53 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path) -> dic
     compressed = comp.compress(copy.deepcopy(messages), current_tokens=total_tokens(messages), force=True)
     elapsed = time.time() - t0
 
+    # The archived region = original messages that did not survive verbatim.
+    surviving = set()
+    for m in compressed:
+        c = m.get("content")
+        if isinstance(c, str) and c:
+            surviving.add(c[:200])
+    archive = [
+        m for m in before
+        if isinstance(m.get("content"), str) and (m.get("content") or "")[:200] not in surviving
+    ]
+
     context_text = serialize_for_exam(compressed, char_cap=700_000)
     results = []
     for qa in questions:
-        answer = _call(ANSWER_PROMPT.format(context=context_text, question=qa["q"]), max_tokens=400)
+        if with_recovery:
+            query = _call(
+                SEARCH_QUERY_PROMPT.format(
+                    context_hint=context_text[-20_000:], question=qa["q"],
+                ),
+                max_tokens=100,
+            ).strip().strip('"')
+            search_results = keyword_search(archive, query)
+            answer = _call(
+                ANSWER_WITH_RECOVERY_PROMPT.format(
+                    context=context_text,
+                    search_results=search_results,
+                    question=qa["q"],
+                ),
+                max_tokens=400,
+            )
+        else:
+            query = None
+            answer = _call(ANSWER_PROMPT.format(context=context_text, question=qa["q"]), max_tokens=400)
         verdict_raw = _call(JUDGE_PROMPT.format(question=qa["q"], gold=qa["gold"], answer=answer), max_tokens=300)
         try:
             verdict = _extract_json(verdict_raw)
         except Exception:
             verdict = {"score": 0, "why": f"judge parse failure: {verdict_raw[:100]}"}
-        results.append({"q": qa["q"], "gold": qa["gold"], "answer": answer, **verdict})
+        entry = {"q": qa["q"], "gold": qa["gold"], "answer": answer, **verdict}
+        if query is not None:
+            entry["search_query"] = query
+        results.append(entry)
 
     scored = [r["score"] for r in results]
+    label = f"{name}+recovery" if with_recovery else name
     summary = {
-        "policy": name,
+        "policy": label,
         "before_tokens": total_tokens(before),
         "after_tokens": total_tokens(compressed),
         "after_msgs": len(compressed),
@@ -164,7 +256,7 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path) -> dic
         "summary_error": getattr(comp, "_last_summary_error", None),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{name}.json").write_text(json.dumps({"summary": summary, "results": results}, indent=1))
+    (out_dir / f"{label.replace('+', '_')}.json").write_text(json.dumps({"summary": summary, "results": results}, indent=1))
     return summary
 
 
@@ -214,9 +306,12 @@ def main():
 
     for name in args.policies.split(","):
         name = name.strip()
-        if name not in POLICIES:
-            print(f"unknown policy {name}, skipping"); continue
-        s = run_policy(name, POLICIES[name], messages, questions, out_dir)
+        with_recovery = name.endswith("+recovery")
+        base = name[:-len("+recovery")] if with_recovery else name
+        if base not in POLICIES:
+            print(f"unknown policy {base}, skipping"); continue
+        s = run_policy(base, POLICIES[base], messages, questions, out_dir,
+                       with_recovery=with_recovery)
         summaries.append(s)
         print(json.dumps(s, indent=1))
 

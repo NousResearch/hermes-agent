@@ -39,6 +39,12 @@ POLICIES: Dict[str, Dict[str, Any]] = {
         "ctor": {"protect_last_n": 3},
         "attrs": {"tail_token_budget": 2_000},
     },
+    # Compaction-v2 lean mode: clamped 2.5% tail + tail tool demotion +
+    # verbatim user messages in summary + session_search recovery pointers.
+    "lean": {
+        "ctor": {"tail_mode": "lean"},
+        "attrs": {"_session_id": "eval-session"},
+    },
 }
 
 

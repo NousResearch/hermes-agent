@@ -2976,6 +2976,14 @@ def _ensure_session_db_row(session: dict) -> None:
             # means the launch/default profile (matches run_agent's convention).
             profile_name=Path(profile_home).name if profile_home else None,
         )
+        # A session can be born hidden (session.create hidden=true, or a
+        # session.set_hidden that arrived before the row existed): apply the
+        # deferred intent now that the row exists, mirroring pending_title.
+        if session.get("pending_hidden"):
+            try:
+                db.set_session_hidden(key, True)
+            except Exception:
+                logger.debug("failed to apply pending hidden flag", exc_info=True)
     except Exception as exc:
         # Disk-full is not a soft failure: if we swallow it here, prompt.submit
         # returns {"status":"streaming"} and the user's message vanishes with

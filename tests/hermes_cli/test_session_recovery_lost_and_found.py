@@ -324,10 +324,10 @@ def _make_synthetic_lost_and_found(
         ]
     finally:
         schema.close()
-    assert len(sessions_columns) == 54
+    assert len(sessions_columns) == 55
     assert len(usage_columns) == 18
 
-    max_fields = 54
+    max_fields = 55
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:
         cells = ", ".join(f"c{i}" for i in range(max_fields))
@@ -354,8 +354,8 @@ def _make_synthetic_lost_and_found(
             }
             return [base.get(column) for column in sessions_columns[:ncols]]
 
-        # Current 54-column layout and historical 52-column layout.
-        insert(54, 1, session_row("20260101_010101_aaa001", 54))
+        # Current 55-column layout and historical 52-column layout.
+        insert(55, 1, session_row("20260101_010101_aaa001", 55))
         insert(52, 2, session_row("20260202_020202_bbb002", 52))
         # 14-column legacy layout: identity + a plausible epoch timestamp.
         legacy = ["20250303_030303_ccc003", "cli", 1_741_000_000.0] + [None] * 11

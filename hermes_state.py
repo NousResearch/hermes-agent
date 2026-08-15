@@ -7599,6 +7599,60 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
+    def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
+        """Hide or unhide a session (and its whole compression lineage).
+
+        ``hidden`` is a generic "don't show in the global Sessions sidebar"
+        flag: a hidden session is dropped from the default
+        :meth:`list_sessions_rich` listing (which omits ``include_hidden``) but
+        stays fully resumable by the surface that owns it — useful for plugins
+        that manage their own sessions (e.g. kanban) and don't want them
+        cluttering the shared recents list. Like :meth:`set_session_archived`
+        / :meth:`set_session_pinned` the whole compression chain is flipped as
+        a unit, so hiding the surfaced tip hides the root (and vice-versa) no
+        matter which id the caller holds. Returns True when at least one row
+        changed.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                UPDATE sessions
+                SET hidden = ?
+                WHERE id IN (SELECT id FROM lineage)
+                """,
+                (session_id, session_id, 1 if hidden else 0),
+            )
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
         """Mark a session read or unread (and its whole compression lineage).
 
@@ -7870,6 +7924,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         compact_rows: bool = False,
         include_pinned: bool = False,
         session_key: str = None,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -7972,6 +8027,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
+        if not include_hidden:
+            where_clauses.append("s.hidden = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         # Snapshot the filter params before the query builders below extend

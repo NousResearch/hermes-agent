@@ -98,6 +98,7 @@ def _(rid, params: dict) -> dict:
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
+            "pending_hidden": is_truthy_value(params.get("hidden", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,
@@ -1101,6 +1102,37 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"pending": True, "title": title})
         except ValueError as e:
             return _err(rid, 4022, str(e))
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
+
+@method("session.set_hidden")
+def _(rid, params: dict) -> dict:
+    """Set/clear the generic ``hidden`` flag on a session (and its lineage).
+
+    Mirrors the durable ``pinned``/``archived`` setters: a hidden session is
+    dropped from the default global Sessions list (``list_sessions_rich``
+    without ``include_hidden``) but stays fully resumable by the surface that
+    owns it — for plugins that manage their own sessions and don't want them
+    cluttering the shared recents list. Flips the whole compression chain as a
+    unit in the DB layer.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    hidden = is_truthy_value(params.get("hidden", True))
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        key = session["session_key"]
+        try:
+            changed = db.set_session_hidden(key, hidden)
+            if not changed:
+                # No row yet (write deferred to the first prompt): remember the
+                # intent so _ensure_session_db_row is born hidden, mirroring the
+                # pending_title deferral.
+                session["pending_hidden"] = hidden
+            return _ok(rid, {"hidden": hidden, "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))
 

@@ -25,7 +25,6 @@ export function isRouteSessionMismatch(
   }
 
   return !sessions.some(
-    session =>
-      sessionMatchesStoredId(session, routedSessionId) && sessionMatchesStoredId(session, selectedSessionId)
+    session => sessionMatchesStoredId(session, routedSessionId) && sessionMatchesStoredId(session, selectedSessionId)
   )
 }

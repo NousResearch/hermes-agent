@@ -31,7 +31,8 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
 
     const { context, display_kind, name, role, text, timestamp } = row as TranscriptRow
 
-    const createdAt = typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
+    const createdAt =
+      typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
 
     if (role === 'tool') {
       pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))

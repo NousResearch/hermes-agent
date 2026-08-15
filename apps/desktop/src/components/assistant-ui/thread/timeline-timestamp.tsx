@@ -45,8 +45,7 @@ export const TimelineTimestamp: FC<{
     return null
   }
 
-  const completed =
-    validUnixSeconds(completedAt) && completedAt > timestamp ? unixDate(completedAt) : null
+  const completed = validUnixSeconds(completedAt) && completedAt > timestamp ? unixDate(completedAt) : null
 
   const validCompletedAt = completed && validUnixSeconds(completedAt) ? completedAt : undefined
   const startLabel = formatTimelineRange(timestamp, undefined)
@@ -96,7 +95,8 @@ export const MessageTimelineTimestamp: FC<{
       timelineTimestamp?: unknown
     }
 
-    const solePart = s.message.parts.length === 1 ? (s.message.parts[0] as { completedAt?: unknown; timestamp?: unknown }) : null
+    const solePart =
+      s.message.parts.length === 1 ? (s.message.parts[0] as { completedAt?: unknown; timestamp?: unknown }) : null
 
     return (
       Boolean(solePart) &&

@@ -1270,7 +1270,9 @@ const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
   }
 
   const localToolIds = new Set(
-    local.parts.filter(part => part.type === 'tool-call').map(part => (part.type === 'tool-call' ? part.toolCallId : ''))
+    local.parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part.type === 'tool-call' ? part.toolCallId : ''))
   )
 
   const toolMatch = stored.parts.some(part => part.type === 'tool-call' && localToolIds.has(part.toolCallId))
@@ -1338,7 +1340,9 @@ export function reconcileLocalAssistantTimeline(
     const unusedLocalParts = new Set(local.parts.map((_, index) => index))
 
     const parts = message.parts.map(part => {
-      const localIndex = local.parts.findIndex((candidate, index) => unusedLocalParts.has(index) && timelinePartMatch(part, candidate))
+      const localIndex = local.parts.findIndex(
+        (candidate, index) => unusedLocalParts.has(index) && timelinePartMatch(part, candidate)
+      )
 
       if (localIndex === -1) {
         return part

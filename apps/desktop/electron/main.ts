@@ -5902,6 +5902,7 @@ function installDevToolsShortcut(window) {
     if (input.key === 'F12') {
       if (f12Blocked) {
         event.preventDefault()
+
         return
       }
       // Not blocked — fall through to open DevTools.

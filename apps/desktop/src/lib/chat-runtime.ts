@@ -536,7 +536,10 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
               ...prev,
               completedAt: [prev.completedAt, message.completedAt, ...message.parts.map(part => part.completedAt)]
                 .filter((value): value is number => value !== undefined)
-                .reduce<number | undefined>((latest, value) => (latest === undefined ? value : Math.max(latest, value)), undefined),
+                .reduce<number | undefined>(
+                  (latest, value) => (latest === undefined ? value : Math.max(latest, value)),
+                  undefined
+                ),
               parts: [...prev.parts, ...message.parts]
             }
 

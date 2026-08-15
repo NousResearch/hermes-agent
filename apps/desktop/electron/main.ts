@@ -3043,6 +3043,22 @@ async function backendIdentityMatches(identity) {
   return command === null ? undefined : backendCommandMatches(command)
 }
 
+// True when the recorded parent Electron is still running (same PID AND start
+// marker); false when it is gone or its PID was reused; undefined when the
+// ownership record predates parent tracking. Undefined deliberately falls back
+// to the pre-parent reap behaviour so legacy orphan cleanup keeps working.
+async function backendParentMatches(entry) {
+  if (!Number.isInteger(entry.parentPid) || typeof entry.parentStartMarker !== 'string' || !entry.parentStartMarker) {
+    return undefined
+  }
+
+  try {
+    return (await processStartMarker(entry.parentPid)) === entry.parentStartMarker
+  } catch (error) {
+    return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
+  }
+}
+
 async function stopOwnedBackend(identity) {
   if ((await processIdentityMatches(identity)) !== true) {
     return
@@ -3092,6 +3108,7 @@ async function stopOwnedBackend(identity) {
 
 const backendOwnership = createBackendOwnership({
   matchesIdentity: backendIdentityMatches,
+  matchesParent: backendParentMatches,
   stop: stopOwnedBackend,
   store: {
     read: () => {
@@ -3120,7 +3137,12 @@ async function claimBackendChild(child, command, profile, nonce) {
       nonce,
       pid: child.pid,
       profile,
-      startMarker: await processStartMarker(child.pid)
+      startMarker: await processStartMarker(child.pid),
+      // Record the spawning Electron so reapOrphans can tell an orphaned
+      // backend (parent gone) from one owned by a live instance — a live
+      // parent's backend is never reaped (#87295).
+      parentPid: process.pid,
+      parentStartMarker: await desktopParentStartMarker()
     })
 
     child.hermesBackendIdentity = identity

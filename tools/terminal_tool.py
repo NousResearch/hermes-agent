@@ -1176,8 +1176,8 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
 #
 # This is never exposed to the model -- only infrastructure code calls it.
-# Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_task_env_overrides_lock = threading.RLock()
 
 # ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
 #
@@ -1257,15 +1257,22 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         overrides: Dict of config keys to override
     """
     normalized = dict(overrides)
-    previous = _task_env_overrides.get(task_id, {})
     workspace_reset = bool(normalized.pop("workspace_reset", False))
     cwd = normalized.get("cwd")
-    if normalized.get("cwd_source") == "session" and isinstance(cwd, str) and cwd.strip():
-        if workspace_reset or not previous.get("host_workspace_root"):
-            normalized["host_workspace_root"] = cwd
-        else:
-            normalized["host_workspace_root"] = previous["host_workspace_root"]
-    _task_env_overrides[task_id] = normalized
+    with _task_env_overrides_lock:
+        previous = _task_env_overrides.get(task_id, {})
+        if (
+            normalized.get("cwd_source") == "session"
+            and isinstance(cwd, str)
+            and cwd.strip()
+        ):
+            if workspace_reset or not previous.get("host_workspace_root"):
+                normalized["host_workspace_root"] = cwd
+            else:
+                normalized["host_workspace_root"] = previous[
+                    "host_workspace_root"
+                ]
+        _task_env_overrides[task_id] = normalized
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
@@ -1295,7 +1302,8 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    with _task_env_overrides_lock:
+        _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
     with _container_alias_lock:
         _container_aliases.pop(task_id, None)
@@ -1364,9 +1372,11 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     predicate — shared by container-key resolution and container creation so
     the two can't drift.
     """
-    if not task_id or task_id not in _task_env_overrides:
+    if not task_id:
         return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+    with _task_env_overrides_lock:
+        overrides = _task_env_overrides.get(task_id)
+        return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1420,11 +1430,13 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     source of that lookup so the terminal and file layers can't drift apart.
     """
     raw = task_id or "default"
-    return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
-        or {}
-    )
+    with _task_env_overrides_lock:
+        direct = _task_env_overrides.get(raw)
+    if direct:
+        return direct
+    collapsed = _resolve_container_task_id(raw)
+    with _task_env_overrides_lock:
+        return _task_env_overrides.get(collapsed) or {}
 
 
 def _relative_host_suffix(cwd: str, host_root: str) -> Optional[str]:

@@ -159,3 +159,41 @@ def test_explicit_workspace_reset_replaces_preserved_mount_root(tmp_path):
 
     assert resolved.host_cwd == str(second)
     assert resolved.container_cwd == "/workspace"
+
+
+def test_workspace_root_read_modify_write_holds_override_lock(monkeypatch):
+    class ObservedLock:
+        held = False
+
+        def __enter__(self):
+            assert not self.held
+            self.held = True
+
+        def __exit__(self, *_args):
+            self.held = False
+
+    lock = ObservedLock()
+
+    class GuardedOverrides(dict):
+        def get(self, *args, **kwargs):
+            assert lock.held
+            return super().get(*args, **kwargs)
+
+        def __setitem__(self, key, value):
+            assert lock.held
+            return super().__setitem__(key, value)
+
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides_lock", lock)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", GuardedOverrides())
+
+    terminal_tool.register_task_env_overrides(
+        "session", {"cwd": "/first", "cwd_source": "session"}
+    )
+    terminal_tool.register_task_env_overrides(
+        "session",
+        {"cwd": "/second", "cwd_source": "session", "workspace_reset": True},
+    )
+
+    assert terminal_tool._task_env_overrides["session"]["host_workspace_root"] == (
+        "/second"
+    )

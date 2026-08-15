@@ -46,6 +46,7 @@ class TestBackgroundTaskProfileScope:
         scope.assert_called_once_with(Path("/fake/profile"))
         inner.assert_awaited_once()
 
+
     def test_calls_inner_directly_when_multiplex_disabled(self):
         runner = _make_runner(multiplex=False)
         inner = mock.AsyncMock(return_value=None)

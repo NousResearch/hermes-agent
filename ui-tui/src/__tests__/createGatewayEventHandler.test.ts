@@ -5,6 +5,7 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { ZERO } from '../domain/usage.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -849,6 +850,132 @@ describe('createGatewayEventHandler', () => {
     expect(polarityBackgroundFromForeground('#ffffff')).toBeUndefined()
     expect(polarityBackgroundFromForeground('#808080')).toBeUndefined()
     expect(polarityBackgroundFromForeground('not-a-color')).toBeUndefined()
+  })
+
+  it('claims wake-word ownership when the gateway becomes ready', () => {
+    const ctx = buildCtx([])
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('wake.start', { surface: 'tui' })
+  })
+
+  it('ends voice mode on a stop-phrase transcript without submitting a turn', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { stop_phrase: true, text: 'stop' }, type: 'voice.transcript' } as any)
+
+    expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(false)
+    expect(ctx.voice.setRecording).toHaveBeenCalledWith(false)
+    expect(ctx.voice.setProcessing).toHaveBeenCalledWith(false)
+    expect(ctx.system.sys).toHaveBeenCalledWith('voice: stop phrase — voice chat ended')
+    // The stop phrase is user intent to END the chat — never a turn.
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+  })
+
+  it('ends voice mode on a typed stop phrase consumed server-side', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { stop_phrase: true, typed: true }, type: 'voice.transcript' } as any)
+
+    expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(false)
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+  })
+
+  it('still submits ordinary voice transcripts as turns', async () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'stop the docker container' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('stop the docker container'))
+    expect(ctx.voice.setVoiceEnabled).not.toHaveBeenCalled()
+  })
+
+  it('leaves voice transcripts editable when voice.submit_mode is draft', async () => {
+    const ctx = buildCtx([])
+    let composerInput = 'existing draft'
+
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { voice: { submit_mode: 'draft' } } } : null
+    )
+    ctx.composer.setInput = vi.fn((next: string | ((current: string) => string)) => {
+      composerInput = typeof next === 'function' ? next(composerInput) : next
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: '  edit this first  ' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(composerInput).toBe('existing draft edit this first'))
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', { key: 'full' })
+  })
+
+  it('falls back to direct submit for an invalid voice.submit_mode', async () => {
+    const ctx = buildCtx([])
+
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { voice: { submit_mode: 'refine' } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'send safely' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('send safely'))
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+  })
+
+  it('opens a fresh session before starting voice after wake detection', async () => {
+    const ctx = buildCtx([])
+    ctx.session.newSession = vi.fn(async () => patchUiState({ sid: 'wake-session' }))
+    patchUiState({ sid: 'old-session' })
+
+    createGatewayEventHandler(ctx)({
+      payload: { phrase: 'hey hermes', start_new_session: true },
+      type: 'wake.detected'
+    } as any)
+
+    await vi.waitFor(() =>
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.record', {
+        action: 'start',
+        session_id: 'wake-session'
+      })
+    )
+    expect(ctx.session.newSession).toHaveBeenCalledOnce()
+    expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('keeps the current session when wake detection disables session creation', async () => {
+    const ctx = buildCtx([])
+    patchUiState({ sid: 'current-session' })
+
+    createGatewayEventHandler(ctx)({
+      payload: { phrase: 'hey hermes', start_new_session: false },
+      type: 'wake.detected'
+    } as any)
+
+    await vi.waitFor(() =>
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.record', {
+        action: 'start',
+        session_id: 'current-session'
+      })
+    )
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+  })
+
+  it('rearms wake detection when no session is available', async () => {
+    const ctx = buildCtx([])
+    patchUiState({ sid: '' })
+
+    createGatewayEventHandler(ctx)({
+      payload: { start_new_session: false },
+      type: 'wake.detected'
+    } as any)
+
+    await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledWith('wake.resume', {}))
+    expect(ctx.gateway.rpc).not.toHaveBeenCalledWith('voice.record', expect.anything())
   })
 
   it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
@@ -1809,6 +1936,47 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('session.usage', () => {
+    it('merges a live usage tick into uiState (payload.usage shape, see tui_gateway _start_usage_ticker)', () => {
+      patchUiState({ sid: 'sess-1' })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { calls: 3, context_percent: 42, input: 1200, output: 80, total: 1280 } },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({ context_percent: 42, input: 1200, total: 1280 })
+    })
+
+    it('keeps existing usage fields when the tick only carries a subset', () => {
+      patchUiState({ sid: 'sess-1', usage: { calls: 2, input: 500, output: 40, total: 540 } })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { context_percent: 55 } },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({ context_percent: 55, input: 500, total: 540 })
+    })
+
+    it('drops a tick for a non-focused session', () => {
+      patchUiState({ sid: 'focused', usage: ZERO })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { input: 9999, total: 9999 } },
+        session_id: 'background',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toEqual(ZERO)
     })
   })
 

@@ -129,8 +129,14 @@ export const fr: Translations = {
     title: "Sessions",
     history: "Historique",
     overview: "Aperçu",
+    filterChats: "Discussions",
+    filterAutomation: "Automatisation",
+    filterAll: "Toutes",
+    sourceFilter: "Source de la session",
+    anySource: "Toute source",
     searchPlaceholder: "Rechercher dans les messages...",
     noSessions: "Aucune session pour l'instant",
+    noSessionsInFilter: "Aucune session dans ce filtre",
     noMatch: "Aucune session ne correspond à votre recherche",
     startConversation: "Démarrez une conversation pour la voir ici",
     noMessages: "Aucun message",
@@ -612,6 +618,12 @@ export const fr: Translations = {
       "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
     slug: "Slug",
     slugHint: "— minuscules, tirets, par ex. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nom affiché",
     displayNameHint: "(facultatif)",
     description: "Description",

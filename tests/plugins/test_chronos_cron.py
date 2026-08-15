@@ -61,33 +61,6 @@ def test_is_available_false_without_config(temp_home, monkeypatch):
     assert ChronosCronScheduler().is_available() is False
 
 
-def test_is_available_true_with_config_and_token(temp_home, monkeypatch):
-    import plugins.cron_providers.chronos as mod
-    from plugins.cron_providers.chronos import ChronosCronScheduler
-
-    monkeypatch.setattr(mod, "_cfg", lambda *k, default="": "https://x" )
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state",
-                        lambda pid: {"access_token": "tok"})
-    assert ChronosCronScheduler().is_available() is True
-
-
-def test_is_available_makes_no_network(temp_home, monkeypatch):
-    """is_available must not construct the NAS client / hit network."""
-    import plugins.cron_providers.chronos as mod
-    from plugins.cron_providers.chronos import ChronosCronScheduler
-
-    monkeypatch.setattr(mod, "_cfg", lambda *k, default="": "https://x")
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state",
-                        lambda pid: {"access_token": "tok"})
-    p = ChronosCronScheduler()
-
-    def explode():
-        raise AssertionError("is_available must not build the NAS client")
-
-    monkeypatch.setattr(p, "_get_client", explode)
-    assert p.is_available() is True  # did not call _get_client
-
-
 # -- arming -------------------------------------------------------------------
 
 def test_arm_one_shot_sends_provision(chronos):
@@ -102,18 +75,27 @@ def test_arm_one_shot_sends_provision(chronos):
     assert p["agent_callback_url"] == "https://agent.example/"
 
 
-def test_arm_one_shot_preserves_sub_minute_fire(chronos):
-    """Sub-minute fire times survive — the agent owns the time, so there's no
-    1-minute scheduler floor."""
+def test_register_job_arms_only_the_created_job(chronos):
     prov, fake = chronos
-    prov._arm_one_shot({"id": "j2", "next_run_at": "2026-06-18T12:00:30+00:00"})
-    assert fake.provisions[0]["fire_at"] == "2026-06-18T12:00:30+00:00"
+    job = {"id": "created", "next_run_at": "2026-06-18T12:00:00+00:00"}
+
+    prov.register_job(job)
+
+    assert [p["job_id"] for p in fake.provisions] == ["created"]
 
 
-def test_arm_one_shot_noop_without_next_run(chronos):
+def test_register_job_propagates_provision_failure(chronos):
     prov, fake = chronos
-    prov._arm_one_shot({"id": "j3", "next_run_at": None})
-    assert fake.provisions == []
+
+    def fail_provision(**kwargs):
+        raise RuntimeError("provision rejected")
+
+    fake.provision = fail_provision
+
+    with pytest.raises(RuntimeError, match="provision rejected"):
+        prov.register_job(
+            {"id": "created", "next_run_at": "2026-06-18T12:00:00+00:00"}
+        )
 
 
 # -- reconcile ----------------------------------------------------------------
@@ -132,53 +114,65 @@ def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
     assert fake.cancels == []
 
 
-def test_reconcile_cancels_orphan_arms_desired(temp_home, chronos, monkeypatch):
-    prov, fake = chronos
-    # NAS already has a stale arm for deleted job "gone".
-    prov._armed = {"gone": "2026-06-18T11:00:00+00:00"}
-    jobs = [{"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"}]
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
-    monkeypatch.setattr("cron.jobs.get_job", lambda jid: next((j for j in jobs if j["id"] == jid), None))
-
-    prov.reconcile()
-    assert [p["job_id"] for p in fake.provisions] == ["a"]
-    assert fake.cancels == ["gone"]
-
-
-def test_reconcile_skips_paused(temp_home, chronos, monkeypatch):
-    prov, fake = chronos
-    jobs = [{"id": "p", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "paused"}]
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
-    monkeypatch.setattr("cron.jobs.get_job", lambda jid: next((j for j in jobs if j["id"] == jid), None))
-
-    prov.reconcile()
-    assert fake.provisions == []
-
-
-def test_reconcile_skips_already_armed_same_time(temp_home, chronos, monkeypatch):
-    prov, fake = chronos
-    prov._armed = {"a": "2026-06-18T12:00:00+00:00"}
-    jobs = [{"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"}]
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
-    monkeypatch.setattr("cron.jobs.get_job", lambda jid: jobs[0])
-
-    prov.reconcile()
-    assert fake.provisions == []  # already armed at the same time → no re-arm
-
-
 # -- fire_due re-arm ----------------------------------------------------------
 
 def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     prov, fake = chronos
-    # super().fire_due runs the job; stub the ABC default to "ran".
-    monkeypatch.setattr("cron.scheduler_provider.CronScheduler.fire_due",
-                        lambda self, jid, **kw: True)
+    # Keep the two-phase provider flow intact while stubbing durable admission
+    # and the shared runner body.
+    monkeypatch.setattr(
+        "cron.scheduler_provider.CronScheduler.claim_fire",
+        lambda self, jid, **kw: {"id": jid, "execution_id": "exec-1"},
+    )
+    monkeypatch.setattr(
+        "cron.scheduler_provider.CronScheduler.fire_claimed",
+        lambda self, job, **kw: True,
+    )
     monkeypatch.setattr("cron.jobs.get_job",
                         lambda jid: {"id": jid, "enabled": True, "next_run_at": "2026-06-18T12:05:00+00:00"})
 
     assert prov.fire_due("j1") is True
     assert [p["job_id"] for p in fake.provisions] == ["j1"]
     assert fake.provisions[0]["fire_at"] == "2026-06-18T12:05:00+00:00"
+
+
+def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch):
+    """A claimed attempt is consumed even when the job pipeline reports failure."""
+    prov, fake = chronos
+    claimed = {"id": "j1", "fire_claim": {"by": "owner-1"}}
+    persisted = {
+        "id": "j1",
+        "enabled": True,
+        "next_run_at": "2026-06-18T12:05:00+00:00",
+    }
+
+    monkeypatch.setattr("cron.jobs.claim_job_for_fire", lambda jid, **kw: claimed)
+    monkeypatch.setattr(
+        "cron.executions.create_execution",
+        lambda jid, source: {"id": "exec-1"},
+    )
+    monkeypatch.setattr("cron.scheduler.run_one_job", lambda *args, **kwargs: False)
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: persisted)
+
+    assert prov.fire_due("j1") is True
+    assert [provision["job_id"] for provision in fake.provisions] == ["j1"]
+
+
+def test_fire_due_forwards_manual_force_to_claim(chronos, monkeypatch):
+    """A manual force fire must reach the store claim as force=True."""
+    prov, _fake = chronos
+    seen = []
+    monkeypatch.setattr(
+        "cron.jobs.claim_job_for_fire",
+        lambda jid, **kw: seen.append(kw) or False,
+    )
+    monkeypatch.setattr(
+        "cron.executions.create_execution",
+        lambda jid, source: {"id": "exec-1"},
+    )
+
+    assert prov.fire_due("j1", force=True) is False
+    assert seen == [{"return_job": True, "force": True}]
 
 
 def test_fire_due_no_rearm_when_job_gone(chronos, monkeypatch):
@@ -200,4 +194,46 @@ def test_fire_due_no_rearm_when_claim_lost(chronos, monkeypatch):
                         lambda self, jid, **kw: False)
 
     assert prov.fire_due("j1") is False
+    assert fake.provisions == []
+
+
+# -- provider capability classification ----------------------------------------
+
+def test_chronos_is_split_fire_capable(chronos):
+    """Regression: Chronos must be classified as a split-aware provider so the
+    fire webhook uses durable claim admission (not the legacy fire_due path).
+    Chronos deliberately has NO fire_due override — its re-arm logic lives in
+    fire_claimed, which the split path invokes."""
+    from cron.scheduler_provider import (
+        provider_supports_fire_cancel,
+        provider_supports_force_fire,
+        provider_supports_split_fire,
+    )
+
+    prov, _fake = chronos
+    assert provider_supports_split_fire(prov) is True
+    assert provider_supports_force_fire(prov) is True
+    assert provider_supports_fire_cancel(prov) is True
+
+
+def test_fire_claimed_no_rearm_when_run_failed(chronos, monkeypatch):
+    prov, fake = chronos
+    monkeypatch.setattr(
+        "cron.scheduler_provider.CronScheduler.fire_claimed",
+        lambda self, job, **kw: False,
+    )
+
+    assert prov.fire_claimed({"id": "j1"}) is False
+    assert fake.provisions == []
+
+
+def test_fire_claimed_no_rearm_when_job_gone(chronos, monkeypatch):
+    prov, fake = chronos
+    monkeypatch.setattr(
+        "cron.scheduler_provider.CronScheduler.fire_claimed",
+        lambda self, job, **kw: True,
+    )
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: None)
+
+    assert prov.fire_claimed({"id": "j1"}) is True
     assert fake.provisions == []

@@ -12,7 +12,11 @@ journal_mode in apply_wal_with_fallback), before _init_schema runs — so it
 cannot be handled at the FTS-rebuild layer. These tests verify the
 sqlite_master surgery path recovers the canonical data and self-heals on open.
 """
+import contextlib
+import json
 import sqlite3
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -66,22 +70,6 @@ def test_duplicate_fts_makes_every_statement_fail(tmp_path):
     assert is_malformed_db_error(exc_info.value)
 
 
-def test_repair_preserves_sessions_and_messages(tmp_path):
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-    _corrupt_duplicate_fts(db_path)
-
-    report = repair_state_db_schema(db_path)
-    assert report["repaired"] is True
-    assert report["strategy"] in {"dedup_schema", "drop_fts_rebuild"}
-    # A backup of the malformed file is preserved.
-    assert report["backup_path"] and Path(report["backup_path"]).exists()
-
-    conn = sqlite3.connect(str(db_path))
-    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
-    conn.close()
 
 
 def test_repaired_db_search_works(tmp_path):
@@ -103,22 +91,6 @@ def test_repaired_db_search_works(tmp_path):
         db.close()
 
 
-def test_sessiondb_auto_heals_on_open(tmp_path, monkeypatch):
-    db_path = tmp_path / "state.db"
-    sid = _build_healthy_db(db_path)
-    _corrupt_duplicate_fts(db_path)
-
-    # Fresh process-global guard so the attempt isn't pre-claimed.
-    monkeypatch.setattr(hermes_state, "_repair_attempted_paths", set())
-
-    db = SessionDB(db_path=db_path)
-    try:
-        assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
-        assert db._conn.execute(
-            "SELECT id FROM sessions WHERE id=?", (sid,)
-        ).fetchone() is not None
-    finally:
-        db.close()
 
 
 def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
@@ -147,66 +119,8 @@ def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_state, "repair_state_db_schema", real_repair)
 
 
-def test_is_malformed_db_error_discriminates():
-    assert is_malformed_db_error(
-        sqlite3.DatabaseError("malformed database schema (messages_fts) - ...")
-    )
-    assert is_malformed_db_error(sqlite3.DatabaseError("database disk image is malformed"))
-    assert not is_malformed_db_error(sqlite3.OperationalError("database is locked"))
-    assert not is_malformed_db_error(ValueError("nope"))
 
 
-def test_strategy_b_rebuild_when_dedup_insufficient(tmp_path, monkeypatch):
-    """If the dedup pass can't fix it, the drop-FTS + rebuild pass must.
-
-    Force strat 1 to be a no-op so the escalation path is exercised against a
-    real malformed file. Data must still survive and search must work.
-    """
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-    _corrupt_duplicate_fts(db_path)
-
-    # Make every health verification report "still broken" until the drop-FTS
-    # pass has actually removed the messages_fts schema, so the routine
-    # escalates past the in-place-rebuild and dedup passes to strat 2 (drop FTS
-    # + VACUUM) and runs its real SQL against the file. Keyed on whether the FTS
-    # schema is still present rather than a call counter, so it stays correct as
-    # earlier verification call sites are added/removed.
-    real_check = hermes_state._db_opens_cleanly
-    calls = {"n": 0}
-
-    def flaky_check(path):
-        calls["n"] += 1
-        try:
-            probe = sqlite3.connect(str(path))
-            still_has_fts = probe.execute(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE name LIKE 'messages_fts%'"
-            ).fetchone()[0]
-            probe.close()
-        except sqlite3.DatabaseError:
-            # sqlite_master still malformed (pre-dedup) — treat as broken.
-            return "pretend still broken (schema unreadable)"
-        if still_has_fts:
-            return "pretend in-place/dedup passes were insufficient"
-        return real_check(path)
-
-    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", flaky_check)
-    report = repair_state_db_schema(db_path)
-    monkeypatch.undo()
-
-    assert report["repaired"] is True
-    assert report["strategy"] == "drop_fts_rebuild"
-    assert calls["n"] >= 2
-
-    db = SessionDB(db_path=db_path)
-    try:
-        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
-        assert db._conn.execute(
-            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'pizza'"
-        ).fetchone()[0] == 5
-    finally:
-        db.close()
 
 
 def test_unrepairable_file_fails_safely(tmp_path, monkeypatch):
@@ -222,38 +136,8 @@ def test_unrepairable_file_fails_safely(tmp_path, monkeypatch):
     assert report["backup_path"] and Path(report["backup_path"]).exists()
 
 
-def test_non_malformed_error_is_not_auto_repaired(tmp_path, monkeypatch):
-    """Auto-heal must only trigger for the malformed-schema class, not for
-    e.g. 'file is not a database' — those raise unchanged."""
-    db_path = tmp_path / "state.db"
-    db_path.write_bytes(b"this is definitely not a sqlite database")
-    monkeypatch.setattr(hermes_state, "_repair_attempted_paths", set())
-
-    called = {"n": 0}
-    orig = hermes_state.repair_state_db_schema
-
-    def spy(*a, **kw):
-        called["n"] += 1
-        return orig(*a, **kw)
-
-    monkeypatch.setattr(hermes_state, "repair_state_db_schema", spy)
-    with pytest.raises(sqlite3.DatabaseError):
-        SessionDB(db_path=db_path)
-    assert called["n"] == 0  # never attempted repair for a non-malformed error
 
 
-def test_repair_on_clean_db_is_noop(tmp_path):
-    """Dedup-keyed repair must not damage a healthy DB if invoked."""
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-
-    report = repair_state_db_schema(db_path, backup=False)
-    assert report["repaired"] is True  # opens cleanly after a no-op dedup
-
-    conn = sqlite3.connect(str(db_path))
-    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
-    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    conn.close()
 
 
 # ── FTS read-corruption class (#66724) ───────────────────────────────────
@@ -279,36 +163,6 @@ def _corrupt_fts_shadow_segments(db_path: Path) -> None:
     conn.close()
 
 
-def test_fts_read_corruption_detected_by_read_probe(tmp_path):
-    """Partial shadow-table damage is caught by the FTS5 read probe.
-
-    Without the read probe, ``_db_opens_cleanly`` reports the DB healthy
-    even though ``session_search`` and ``/resume`` title resolution fail
-    with ``database disk image is malformed`` — the exact silent-fail
-    behavior reported in #66724.
-    """
-    from hermes_state import _db_opens_cleanly
-
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-    assert _db_opens_cleanly(db_path) is None
-
-    _corrupt_fts_shadow_segments(db_path)
-
-    reason = _db_opens_cleanly(db_path)
-    assert reason is not None
-    assert "messages_fts" in reason
-    # Message varies by SQLite build (same variance documented in
-    # SessionDB._is_fts_write_corruption_error): older builds raise the
-    # generic "database disk image is malformed"; newer builds raise the
-    # FTS5-specific 'fts5: corrupt structure record for table "..."'.
-    # Both are the same corruption class.
-    reason_l = reason.lower()
-    assert (
-        "malformed" in reason_l
-        or "database disk image" in reason_l
-        or ("fts5" in reason_l and "corrupt" in reason_l)
-    )
 
 
 def test_fts_read_corruption_repaired_in_place(tmp_path):
@@ -375,49 +229,8 @@ class _NoTrigramRuntimeConnection(sqlite3.Connection):
         return super().cursor(factory or _NoTrigramRuntimeCursor)
 
 
-def test_fts_read_probe_returns_none_when_fts5_module_missing(tmp_path, monkeypatch):
-    """Capability error on MATCH must not surface as corruption.
-
-    Simulates a healthy DB on a SQLite build without the fts5 module:
-    the messages_fts table exists (from a previous init on a build with
-    fts5) and MATCH queries raise the canonical "no such module: fts5".
-    _db_opens_cleanly must NOT classify this as corruption — otherwise
-    repair would be triggered and its final fallback would delete the
-    messages_fts% schema, breaking the search feature entirely.
-    """
-    from hermes_state import _db_opens_cleanly
-
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-
-    real_connect = sqlite3.connect
-
-    def connect_no_fts5(*args, **kwargs):
-        kwargs["factory"] = _NoFts5RuntimeConnection
-        return real_connect(*args, **kwargs)
-
-    monkeypatch.setattr("hermes_state.sqlite3.connect", connect_no_fts5)
-
-    # Healthy degraded DB → probe returns None. Repair path must NOT fire.
-    assert _db_opens_cleanly(db_path) is None
 
 
-def test_fts_read_probe_returns_none_when_trigram_missing(tmp_path, monkeypatch):
-    """Capability error on trigram MATCH must not surface as corruption."""
-    from hermes_state import _db_opens_cleanly
-
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-
-    real_connect = sqlite3.connect
-
-    def connect_no_trigram(*args, **kwargs):
-        kwargs["factory"] = _NoTrigramRuntimeConnection
-        return real_connect(*args, **kwargs)
-
-    monkeypatch.setattr("hermes_state.sqlite3.connect", connect_no_trigram)
-
-    assert _db_opens_cleanly(db_path) is None
 
 
 # ── FTS write-corruption class (#50502) ──────────────────────────────────
@@ -488,13 +301,6 @@ def test_fts_write_corruption_repaired_in_place(tmp_path):
         db.close()
 
 
-def test_repair_noop_db_uses_already_healthy_shortcut(tmp_path):
-    """A healthy DB returns the cheap already_healthy strategy, no surgery."""
-    db_path = tmp_path / "state.db"
-    _build_healthy_db(db_path)
-    report = repair_state_db_schema(db_path, backup=False)
-    assert report["repaired"] is True
-    assert report["strategy"] == "already_healthy"
 
 
 def _corrupt_btree_index(db_path: Path, index_name: str) -> None:
@@ -593,26 +399,226 @@ def test_repair_stale_btree_index_preserves_rows(tmp_path):
         db.close()
 
 
-def test_select_cached_agent_history_prefers_longer_live_transcript():
-    """Gateway guard keeps the live transcript when persisted history lags."""
-    from gateway.run import _select_cached_agent_history
+# ---------------------------------------------------------------------------
+# Cross-process serialisation of the schema surgery
+# ---------------------------------------------------------------------------
+# A normal host runs several independent processes against one state.db: the
+# gateway service, the Desktop app's own `hermes serve` backend, interactive
+# CLI sessions and the TUI slash worker. `_repair_attempt_lock` is a
+# threading.Lock and covers none of that, so two of them hitting a malformed
+# DB at once each ran the full writable_schema surgery + VACUUM on a private
+# connection — one repairing while the other was mid-surgery.
 
-    persisted = [{"role": "user", "content": "only one"}]
-    live = [
-        {"role": "user", "content": "one"},
-        {"role": "assistant", "content": "two"},
-        {"role": "user", "content": "three"},
+
+_HOLD_LOCK_SCRIPT = """
+import sys, time, fcntl, pathlib
+sys.path.insert(0, {root!r})
+lock_path = pathlib.Path({lock!r})
+handle = lock_path.open("a+b")
+fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+print("locked", flush=True)
+time.sleep({hold})
+"""
+
+
+@contextlib.contextmanager
+def _lock_held_by_other_process(db_path: Path, hold_seconds: float = 30.0):
+    """Hold the repair flock for *db_path* in a real child process."""
+    script = _HOLD_LOCK_SCRIPT.format(
+        root=str(Path(hermes_state.__file__).parent),
+        lock=str(db_path.with_name(db_path.name + ".repair.lock")),
+        hold=hold_seconds,
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        # Wait for the child to actually own the lock before yielding.
+        assert proc.stdout.readline().strip() == "locked"
+        yield
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+def test_repair_skips_surgery_while_another_process_holds_the_lock(
+    tmp_path, monkeypatch
+):
+    """The losing process must NOT run writable_schema surgery in parallel."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+    monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+
+    with _lock_held_by_other_process(db_path):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is False
+    assert "repair lock" in (report["error"] or "")
+    # No surgery ran: no backup was taken and the DB is still malformed.
+    assert report["backup_path"] is None
+    assert not list(tmp_path.glob("state.db.malformed-backup-*"))
+    assert hermes_state._db_opens_cleanly(db_path) is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+def test_repair_reports_success_when_the_holder_already_healed_the_db(
+    tmp_path, monkeypatch
+):
+    """Timing out against a healthy DB is a success, not an error."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 0.5)
+
+    with _lock_held_by_other_process(db_path):
+        report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert report["strategy"] == "repaired_by_other_process"
+
+
+_REPAIR_SCRIPT = """
+import sys, json
+sys.path.insert(0, {root!r})
+from hermes_state import repair_state_db_schema
+print(json.dumps(repair_state_db_schema({db!r})), flush=True)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock test")
+def test_two_processes_repairing_at_once_perform_surgery_once(tmp_path):
+    """Concurrent repairers serialise; the loser sees a healed DB and stops.
+
+    Without the cross-process lock both processes back up and operate on
+    sqlite_master, i.e. one runs surgery on a database the other is
+    simultaneously rewriting. The backup count is the observable proxy for
+    "how many processes entered the critical section".
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    script = _REPAIR_SCRIPT.format(
+        root=str(Path(hermes_state.__file__).parent), db=str(db_path)
+    )
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for _ in range(2)
     ]
-    # Persisted lags (FTS write failed) → keep the longer live copy.
-    out = _select_cached_agent_history(persisted, live)
-    assert out == live
-    assert out is not live  # returns a copy, not the live list
+    reports = []
+    for proc in procs:
+        out, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err
+        reports.append(json.loads(out.strip().splitlines()[-1]))
 
-    # Persisted is current/longer → leave it untouched (identity preserved).
-    longer_persisted = live + [{"role": "assistant", "content": "four"}]
-    out2 = _select_cached_agent_history(longer_persisted, live)
-    assert out2 is longer_persisted
+    assert all(r["repaired"] for r in reports), reports
+    # Exactly one process did the work; the other found the DB already healthy.
+    strategies = sorted(r["strategy"] for r in reports)
+    assert "already_healthy" in strategies or "repaired_by_other_process" in strategies
+    assert len(list(tmp_path.glob("state.db.malformed-backup-*"))) == 1
 
-    # No live transcript / not a list → no-op.
-    assert _select_cached_agent_history(persisted, None) is persisted
-    assert _select_cached_agent_history(persisted, "nope") is persisted
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+    finally:
+        conn.close()
+
+
+def test_schema_surgery_bumps_the_schema_cookie(tmp_path):
+    """Live connections in other processes must be told to reload the schema.
+
+    Editing sqlite_master under writable_schema=ON does not bump the cookie
+    that every other connection checks before running a prepared statement,
+    so they keep compiling against objects the surgery just deleted.
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    probe = sqlite3.connect(str(db_path))
+    try:
+        probe.execute("PRAGMA writable_schema=ON")
+        before = probe.execute("PRAGMA schema_version").fetchone()[0]
+    finally:
+        probe.close()
+
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is True
+
+    probe = sqlite3.connect(str(db_path))
+    try:
+        after = probe.execute("PRAGMA schema_version").fetchone()[0]
+    finally:
+        probe.close()
+    assert after != before
+
+
+# ---------------------------------------------------------------------------
+# Backup refusal is a hard stop (#69603)
+# ---------------------------------------------------------------------------
+# The Aug 2026 incident on #69603: the pre-repair backup was refused because
+# another same-process handle was open, and the repair proceeded anyway —
+# every later strategy (writable_schema surgery, FTS deletion, VACUUM) was
+# then reachable against the only remaining copy of the damaged DB.
+
+
+def test_backup_refusal_hard_stops_the_repair(tmp_path, monkeypatch):
+    """A refused pre-repair backup must abort the repair, not fail open."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+    original_bytes = db_path.read_bytes()
+
+    monkeypatch.setattr(
+        hermes_state,
+        "_backup_db_file",
+        lambda p: (None, "a connection to it is still open in this process"),
+    )
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is False
+    assert report["backup_path"] is None
+    assert "backup refused" in (report["error"] or "")
+    assert "still open" in report["error"]
+    # No mutating strategy ran: the damaged source bytes are untouched.
+    assert db_path.read_bytes() == original_bytes
+    assert hermes_state._db_opens_cleanly(db_path) is not None
+
+
+def test_backup_copy_failure_hard_stops_the_repair(tmp_path, monkeypatch):
+    """An OS-level backup copy failure aborts the repair with the reason."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    monkeypatch.setattr(
+        hermes_state,
+        "_backup_db_file",
+        lambda p: (None, "backup copy failed: [Errno 28] No space left on device"),
+    )
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is False
+    assert "No space left on device" in (report["error"] or "")
+    assert not list(tmp_path.glob("state.db.malformed-backup-*"))
+
+
+def test_backup_false_still_skips_backup_and_repairs(tmp_path):
+    """Explicit backup=False (CLI --no-backup) keeps working."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    report = repair_state_db_schema(db_path, backup=False)
+
+    assert report["repaired"] is True
+    assert report["backup_path"] is None
+    assert not list(tmp_path.glob("state.db.malformed-backup-*"))

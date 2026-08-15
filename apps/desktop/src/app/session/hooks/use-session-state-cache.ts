@@ -4,10 +4,13 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
+  $activeSessionId,
   $busy,
   $messages,
+  setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -17,9 +20,10 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { publishSessionState } from '@/store/session-states'
+import { $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
+import { SessionStateCache } from '../session-state-cache'
 
 import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
@@ -51,6 +55,7 @@ export function useSessionStateCache({
   setMessages
 }: SessionStateCacheOptions) {
   const busy = useStore($busy)
+  const sessionTiles = useStore($sessionTiles)
   const activeSessionIdRef = useRef<string | null>(activeSessionId)
   const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
 
@@ -78,57 +83,102 @@ export function useSessionStateCache({
     selectedStoredSessionIdRef.current = selectedStoredSessionId
   }
 
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
+  const sessionStateByRuntimeIdRef = useRef<SessionStateCache>(null!)
+
+  if (sessionStateByRuntimeIdRef.current === null) {
+    sessionStateByRuntimeIdRef.current = new SessionStateCache({
+      isReferenced: (runtimeId, state) =>
+        runtimeId === activeSessionIdRef.current ||
+        state.storedSessionId === selectedStoredSessionIdRef.current ||
+        $sessionTiles
+          .get()
+          .some(
+            tile =>
+              tile.runtimeId === runtimeId ||
+              (state.storedSessionId !== null && tile.storedSessionId === state.storedSessionId)
+          ),
+      onEvict: (runtimeId, state) => {
+        // Ownership is removed with the transcript, but only if both sides still
+        // describe this exact binding. A recycled runtime must not erase its
+        // new owner's reverse entry.
+        if (state.storedSessionId && runtimeIdByStoredSessionIdRef.current.get(state.storedSessionId) === runtimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(state.storedSessionId)
+        }
+
+        releaseSessionTranscript(runtimeId)
+      }
+    })
+  }
+
+  const sessionStateCache = sessionStateByRuntimeIdRef.current
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     setMutableRef(busyRef, busy)
   }, [busy, busyRef])
 
-  const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
-    const existing = sessionStateByRuntimeIdRef.current.get(sessionId)
+  const ensureSessionState = useCallback(
+    (sessionId: string, storedSessionId?: string | null) => {
+      const existing = sessionStateCache.get(sessionId)
 
-    if (existing) {
-      if (storedSessionId !== undefined && storedSessionId !== existing.storedSessionId) {
-        // Stored id changed (e.g. auto-compression rotated it). Create a NEW
-        // state object rather than mutating in place — updateSessionState needs
-        // the PREVIOUS state to detect transitions (busy→idle, id rotation).
-        const updated = { ...existing, storedSessionId }
+      if (existing) {
+        if (storedSessionId !== undefined && storedSessionId !== existing.storedSessionId) {
+          // Stored id changed (e.g. auto-compression rotated it). Create a NEW
+          // state object rather than mutating in place — updateSessionState needs
+          // the PREVIOUS state to detect transitions (busy→idle, id rotation).
+          const updated = { ...existing, storedSessionId }
 
-        sessionStateByRuntimeIdRef.current.set(sessionId, updated)
+          // Drop the obsolete stored→runtime reverse mapping as soon as the id
+          // rotates (e.g. auto-compression forks a continuation). Leaving the
+          // stale key lets getRuntimeIdForStoredSession resolve the old stored id
+          // to this runtime, which the compression route-follow logic relies on
+          // being absent. The rotation signal was previously emitted centrally
+          // from handleTransition (session-states.ts), but updateSessionState
+          // now skips publishSessionState (and thus handleTransition) when the
+          // updater is a no-op — fire it here so the route-follow effect still
+          // tracks compression without needing a dummy state write.
+          if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
+            runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
 
-        // Drop the obsolete stored→runtime reverse mapping as soon as the id
-        // rotates (e.g. auto-compression forks a continuation). Leaving the
-        // stale key lets getRuntimeIdForStoredSession resolve the old stored id
-        // to this runtime, which the compression route-follow logic relies on
-        // being absent. The rotation signal itself is emitted centrally from
-        // handleTransition (session-states.ts) off the published diff.
-        if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+            // A rotation event needs a real next id — a null/cleared stored id
+            // is a detach, not a rotation the route-follow effect should chase.
+            if (storedSessionId && sessionId === $activeSessionId.get()) {
+              setActiveSessionStoredIdRotation({
+                nextStoredSessionId: storedSessionId,
+                previousStoredSessionId: existing.storedSessionId,
+                runtimeSessionId: sessionId
+              })
+            }
+          }
+
+          if (storedSessionId) {
+            runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+          }
+
+          sessionStateCache.set(sessionId, updated)
         }
 
-        if (storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
-        }
+        return sessionStateCache.get(sessionId)!
       }
 
-      return sessionStateByRuntimeIdRef.current.get(sessionId)!
-    }
+      const created = createClientSessionState(storedSessionId ?? null)
 
-    const created = createClientSessionState(storedSessionId ?? null)
-    sessionStateByRuntimeIdRef.current.set(sessionId, created)
+      if (storedSessionId) {
+        runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+      }
 
-    if (storedSessionId) {
-      runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
-    }
+      sessionStateCache.set(sessionId, created)
 
-    return created
-  }, [])
+      return created
+    },
+    [sessionStateCache]
+  )
 
   const resetViewSync = useCallback(() => {
     // Drop any RAF-pending transcript stage so a backgrounded turn cannot
@@ -266,30 +316,57 @@ export function useSessionStateCache({
       storedSessionId?: string | null
     ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
-      const next = updater({ ...previous, messages: previous.messages })
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      // Give the updater the raw previous state so it can return the same
+      // reference when nothing changed (the caller sees a no-op). Previously
+      // the param was always a fresh spread, so every call looked like a
+      // change — including periodic ~1/s session.info heartbeats that churn
+      // $sessionStates and its computed atoms on every tick.
+      const next = updater(previous)
+
+      // If the updater returned the same reference, nothing changed for this
+      // session — skip the store write, publishSessionState, and view sync.
+      // The cache entry was already updated by ensureSessionState (if
+      // storedSessionId rotated); the caller gets its return value from the
+      // cache, so stale reads don't regress.
+      if (next === previous) {
+        return previous
+      }
+
+      sessionStateCache.set(sessionId, next)
+      // Crash-survivable turn progress: journal the running turn's visible
+      // tail (throttled localStorage write; cleared the moment the turn
+      // settles) so a renderer/app death mid-turn can be recovered on resume.
+      persistInFlightTurnState(next)
       // Publishing to $sessionStates automatically fires transition side-effects
       // (watchdog, settle grace, unread marker, compression id rotation) inside
       // publishSessionState — no manual transition call needed.
       publishSessionState(sessionId, next)
+      sessionStateCache.prune()
       syncSessionStateToView(sessionId, next)
 
       return next
     },
-    [ensureSessionState, syncSessionStateToView]
+    [ensureSessionState, sessionStateCache, syncSessionStateToView]
   )
 
-  const getRuntimeIdForStoredSession = useCallback((storedSessionId: string): string | null => {
-    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+  useEffect(() => {
+    sessionStateCache.prune()
+  }, [activeSessionId, selectedStoredSessionId, sessionStateCache, sessionTiles])
 
-    if (!runtimeId) {
-      return null
-    }
+  const getRuntimeIdForStoredSession = useCallback(
+    (storedSessionId: string): string | null => {
+      const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
 
-    const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
+      if (!runtimeId) {
+        return null
+      }
 
-    return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
-  }, [])
+      const runtimeState = sessionStateCache.get(runtimeId)
+
+      return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
+    },
+    [sessionStateCache]
+  )
 
   return {
     activeSessionIdRef,
@@ -298,7 +375,7 @@ export function useSessionStateCache({
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    sessionStateByRuntimeIdRef,
+    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef as MutableRefObject<Map<string, ClientSessionState>>,
     syncSessionStateToView,
     updateSessionState
   }

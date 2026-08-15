@@ -26,56 +26,465 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _assert_inherited_notify_sub(subs: list[dict]) -> None:
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "topic1"
+    assert subs[0]["user_id"] == "user1"
+    assert subs[0]["notifier_profile"] == "default"
+
+
+def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
+    """delivery_mode persists; an explicit re-subscribe is last-write-wins, a
+    ``None`` re-subscribe leaves the existing mode untouched, an unknown value
+    is ignored, and none of this clobbers the notifier_profile owner."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="mode sub task", assignee="worker1")
+        # Fresh sub without a mode -> defaults to "notify".
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            notifier_profile="owner-a",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["delivery_mode"] == "notify"
+        assert subs[0]["notifier_profile"] == "owner-a"
+
+        # Explicit re-subscribe changes the mode (last-write-wins) and must NOT
+        # overwrite the existing owner (owner self-heals only when unset).
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            notifier_profile="owner-b", delivery_mode="wake",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1
+        assert subs[0]["delivery_mode"] == "wake"
+        assert subs[0]["notifier_profile"] == "owner-a"
+
+        # A None re-subscribe leaves the existing mode untouched.
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["delivery_mode"] == "wake"
+
+        # An unknown mode is ignored (treated like None: no clobber).
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            delivery_mode="bogus",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["delivery_mode"] == "wake"
+    finally:
+        conn.close()
+
+
+def test_child_task_inherits_parent_delivery_mode(kanban_home):
+    """Graph children inherit the parent's ACK edge AND its delivery_mode."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kb.add_notify_sub(
+            conn, task_id=parent, platform="telegram", chat_id="chat1",
+            thread_id="42", user_id="u1", user_id_alt="alt-u1", notifier_profile="default",
+            delivery_mode="notify+wake",
+        )
+        child = kb.create_task(
+            conn, title="review child", assignee="ccreviewer", parents=[parent],
+        )
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "42"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["user_id_alt"] == "alt-u1"
+    assert subs[0]["notifier_profile"] == "default"
+    assert subs[0]["delivery_mode"] == "notify+wake"
+
+
+def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
+    """chat_type persists, defaults to 'dm', an explicit re-subscribe is
+    last-write-wins, and a None re-subscribe leaves it untouched. The
+    active-wake path replays this field so the woken turn keys to the
+    operator's real channel."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="chat_type sub", assignee="worker1")
+        # Fresh sub without chat_type -> defaults to "dm".
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["chat_type"] == "dm"
+
+        # Explicit re-subscribe corrects the recorded chat_type (last-write-wins).
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            chat_type="group",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["chat_type"] == "group"
+
+        # A None re-subscribe (here changing only the mode) must NOT clobber
+        # the recorded chat_type.
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            delivery_mode="wake",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["chat_type"] == "group"
+        assert subs[0]["delivery_mode"] == "wake"
+    finally:
+        conn.close()
+
+
+def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
+    """user_id_alt is persisted with the notify subscription routing tuple and
+    can backfill a pre-existing row created before the alt id was known."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="alt sub", assignee="worker1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            user_id="open-id",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["user_id"] == "open-id"
+        assert subs[0]["user_id_alt"] is None
+
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            user_id="open-id", user_id_alt="union-id",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs[0]["user_id"] == "open-id"
+    assert subs[0]["user_id_alt"] == "union-id"
+
+
+def test_child_task_inherits_parent_chat_type(kanban_home):
+    """Graph children inherit the parent's chat_type alongside its ACK edge and
+    delivery_mode, so a woken child notification keys to the same session as
+    the parent's originating channel."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kb.add_notify_sub(
+            conn, task_id=parent, platform="telegram", chat_id="chat1",
+            user_id="u1", user_id_alt="alt-u1", chat_type="group",
+            delivery_mode="notify+wake",
+        )
+        child = kb.create_task(
+            conn, title="impl child", assignee="coder", parents=[parent],
+        )
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["chat_type"] == "group"
+    assert subs[0]["delivery_mode"] == "notify+wake"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["user_id_alt"] == "alt-u1"
+
+
 @pytest.mark.asyncio
-async def test_notifier_unsubs_after_completed_event(kanban_home):
-    """
-    Subscription should be remove after completed event
-    """
+async def test_notifier_notify_plus_wake_sends_and_wakes(kanban_home):
+    """notify+wake delivers the passive message AND wakes the agent; a plain
+    notify sub only sends. The agent is woken only for the notify+wake sub."""
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
 
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="test task", assignee="worker1")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
-        kb.complete_task(conn, tid, result="completed by agent")
+        passive_tid = kb.create_task(conn, title="passive task", assignee="worker1")
+        active_tid = kb.create_task(conn, title="active task", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=passive_tid, platform="telegram", chat_id="chat1")
+        kb.add_notify_sub(
+            conn, task_id=active_tid, platform="telegram", chat_id="chat1",
+            delivery_mode="notify+wake",
+        )
+        kb.block_task(conn, passive_tid, reason="passive block")
+        kb.block_task(conn, active_tid, reason="active block")
     finally:
         conn.close()
 
     runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
     runner._running = True
     runner._kanban_sub_fail_counts = {}
 
     fake_adapter = MagicMock()
+    sent_msgs: list[str] = []
 
-    async def _send_and_stop(chat_id, msg, metadata=None):
-        runner._running = False
+    async def _send(chat_id, msg, metadata=None):
+        sent_msgs.append(msg)
 
-    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    fake_adapter.send = AsyncMock(side_effect=_send)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
 
     _orig_sleep = asyncio.sleep
+    tick_count = 0
 
     async def _fast_sleep(_):
+        nonlocal tick_count
         await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
 
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+    wake_mock = AsyncMock()
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("gateway.wake.deliver_wake", new=wake_mock):
         await asyncio.wait_for(
             runner._kanban_notifier_watcher(interval=1),
             timeout=10.0,
         )
 
-    fake_adapter.send.assert_called_once()
-    call_msg = fake_adapter.send.call_args[0][1]
-    assert "completed" in call_msg
+    # Both subs still get a passive send (notify AND notify+wake send).
+    assert len(sent_msgs) == 2
+    assert any("passive block" in m for m in sent_msgs)
+    assert any("active block" in m for m in sent_msgs)
+    # Only the notify+wake sub woke the agent, exactly once.
+    wake_mock.assert_awaited_once()
+    assert active_tid in wake_mock.await_args.kwargs["text"]
 
+
+@pytest.mark.asyncio
+async def test_notifier_plain_notify_never_wakes_even_with_session_id(kanban_home):
+    """Plain/default notify must remain passive even when the task carries a
+    creator session_id. This guards against the older unconditional wake path
+    that forged adapter.handle_message events after every terminal delivery."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="legacy passive task",
+            assignee="worker1",
+            session_id="origin-session-id",
+        )
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.block_task(conn, tid, reason="plain notify block")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    fake_adapter.handle_message = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    wake_mock = AsyncMock()
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("gateway.wake.deliver_wake", new=wake_mock):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_awaited_once()
+    wake_mock.assert_not_awaited()
+    fake_adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notifier_notify_wake_does_not_wake_on_status_event(kanban_home):
+    """notify+wake wakes on terminal outcomes, not on dashboard status churn."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="status-only task", assignee="worker1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            delivery_mode="notify+wake",
+        )
+        kb._append_event(conn, tid, kind="status", payload={"status": "review"})
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    wake_mock = AsyncMock()
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("gateway.wake.deliver_wake", new=wake_mock):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    fake_adapter.send.assert_awaited_once()
+    wake_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notifier_wake_forwards_persisted_chat_type_and_user_id(kanban_home):
+    """The active-wake call must carry the subscription's persisted chat_type and
+    user_id so ``deliver_wake`` resolves the operator's real (e.g. group)
+    session instead of a hardcoded one."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="group wake", assignee="worker1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="grp1",
+            user_id="op-42", chat_type="group", delivery_mode="wake",
+            notifier_profile="owner-profile",
+        )
+        kb.block_task(conn, tid, reason="group block")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    runner._profile_adapters = {"owner-profile": {Platform.TELEGRAM: fake_adapter}}
+    runner._authorization_adapter = lambda platform, profile=None: fake_adapter
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    wake_mock = AsyncMock()
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("gateway.wake.deliver_wake", new=wake_mock):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    wake_mock.assert_awaited_once()
+    source = wake_mock.await_args.kwargs["source"]
+    assert source.chat_type == "group"
+    assert source.user_id == "op-42"
+    assert source.profile == "owner-profile"
+
+
+@pytest.mark.asyncio
+async def test_notifier_wake_only_skips_send_and_advances_cursor(kanban_home):
+    """wake-only: NO passive send, the agent is woken exactly once, and the
+    cursor advances so repeated ticks do not re-wake."""
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wake only task", assignee="worker1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            delivery_mode="wake",
+        )
+        kb.block_task(conn, tid, reason="wake only block")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+    tick_count = 0
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
+
+    wake_mock = AsyncMock()
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("gateway.wake.deliver_wake", new=wake_mock):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    # wake-only never uses the passive transport...
+    fake_adapter.send.assert_not_awaited()
+    # ...and wakes the agent exactly once across several ticks (proves the
+    # cursor advanced; otherwise it would re-wake on every poll).
+    wake_mock.assert_awaited_once()
+    assert tid in wake_mock.await_args.kwargs["text"]
+
+    # The subscription survives (blocked is non-terminal) but its cursor moved
+    # past the blocked event.
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == [], "Subscription should be unsub after completed event"
+    assert len(subs) == 1
+    assert int(subs[0]["last_event_id"]) > 0
 
 
 @pytest.mark.asyncio
@@ -104,6 +513,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
         conn.close()
 
     runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
     runner._running = True
     runner._kanban_sub_fail_counts = {}
 
@@ -149,82 +559,11 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     )
 
 
-@pytest.mark.asyncio
-async def test_notifier_second_blocked_delivers(kanban_home):
-    """
-    After the first blocked, should receive second blocked notification.
-    """
-    import hermes_cli.kanban_db as kb
-    from gateway.run import GatewayRunner
-    from gateway.config import Platform
 
-    runner = object.__new__(GatewayRunner)
-    runner._running = True
-    runner._kanban_sub_fail_counts = {}
 
-    delivered_msgs: list[str] = []
 
-    async def _capture_send(chat_id, msg, metadata=None):
-        delivered_msgs.append(msg)
 
-    fake_adapter = MagicMock()
-    fake_adapter.send = AsyncMock(side_effect=_capture_send)
-    runner.adapters = {Platform.TELEGRAM: fake_adapter}
 
-    _orig_sleep = asyncio.sleep
-    tick_count = 0
-
-    async def _fast_sleep(_):
-        nonlocal tick_count
-        await _orig_sleep(0)
-        tick_count += 1
-        if tick_count >= 6:
-            runner._running = False
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="test task", assignee="worker1")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
-
-        # Cycle 1: blocked for one reason
-        kb.block_task(conn, tid, reason="first block", kind="needs_input")
-    finally:
-        conn.close()
-
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
-        await asyncio.wait_for(
-            runner._kanban_notifier_watcher(interval=1),
-            timeout=10.0,
-        )
-
-    # Cycle 2: unblock → block again for a DIFFERENT reason. A distinct
-    # block cause must still notify. (A *same*-cause re-block instead trips
-    # the unblock-loop breaker and routes to triage — covered by
-    # test_kanban_block_kinds.py; here we exercise two genuinely different
-    # blocks, which is the case the user wants notified twice.)
-    runner._running = True
-    tick_count = 0
-
-    conn = kb.connect()
-    try:
-        kb.unblock_task(conn, tid)
-        kb.block_task(conn, tid, reason="second block", kind="capability")
-    finally:
-        conn.close()
-
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
-        await asyncio.wait_for(
-            runner._kanban_notifier_watcher(interval=1),
-            timeout=10.0,
-        )
-
-    blocked_deliveries = [m for m in delivered_msgs if "blocked" in m]
-    assert "second block" not in blocked_deliveries[0]
-    assert "second block" in blocked_deliveries[1]
-    assert len(blocked_deliveries) == 2, (
-        f"Should receive 2 blocked notification, but only get {len(blocked_deliveries)} count\n"
-        f"Message {delivered_msgs}"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -246,184 +585,53 @@ async def test_notifier_second_blocked_delivers(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_notifier_does_not_call_init_db(kanban_home):
-    """Notifier watcher path must not invoke `_kb.init_db` (issue #21378)."""
-    import hermes_cli.kanban_db as kb
-    from gateway.run import GatewayRunner
-    from gateway.config import Platform
-
-    runner = object.__new__(GatewayRunner)
-    runner._running = True
-    runner._kanban_sub_fail_counts = {}
-
-    fake_adapter = MagicMock()
-    fake_adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: fake_adapter}
-
-    _orig_sleep = asyncio.sleep
-    tick_count = 0
-
-    async def _fast_sleep(_):
-        nonlocal tick_count
-        await _orig_sleep(0)
-        tick_count += 1
-        if tick_count >= 3:
-            runner._running = False
-
-    init_db_calls: list[object] = []
-    real_init_db = kb.init_db
-
-    def _spy_init_db(*args, **kwargs):
-        init_db_calls.append((args, kwargs))
-        return real_init_db(*args, **kwargs)
-
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
-         patch("hermes_cli.kanban_db.init_db", side_effect=_spy_init_db):
-        await asyncio.wait_for(
-            runner._kanban_notifier_watcher(interval=1),
-            timeout=10.0,
-        )
-
-    assert init_db_calls == [], (
-        "_kanban_notifier_watcher must not call init_db on every tick — "
-        "connect() handles first-run schema init. "
-        "Reintroducing init_db revives issue #21378. "
-        f"Got {len(init_db_calls)} call(s): {init_db_calls}"
-    )
-
-
-def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
-    """`_tick_once_for_board` must not invoke `_kb.init_db` (issue #21378).
-
-    `connect()` already runs the schema + idempotent migration on first open
-    per process. The explicit `init_db()` call was redundant and triggered a
-    second migration on a second connection that raced the first.
-    """
-    import hermes_cli.kanban_db as kb
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-
-    init_db_calls: list[object] = []
-    real_init_db = kb.init_db
-
-    def _spy_init_db(*args, **kwargs):
-        init_db_calls.append((args, kwargs))
-        return real_init_db(*args, **kwargs)
-
-    # The dispatcher watcher's tick lives as a local closure inside
-    # `_kanban_dispatcher_watcher`. Read the source and assert the
-    # specific patterns that would reintroduce the bug are absent.
-    import inspect
-    src = inspect.getsource(GatewayRunner._kanban_dispatcher_watcher)
-    assert "_kb.init_db(board=slug)" not in src, (
-        "_kanban_dispatcher_watcher must not call _kb.init_db(board=slug) — "
-        "see issue #21378. Use connect() alone; it runs migrations on first "
-        "open per process."
-    )
-
-    notifier_src = inspect.getsource(GatewayRunner._kanban_notifier_watcher)
-    assert "_kb.init_db(board=slug)" not in notifier_src, (
-        "_kanban_notifier_watcher must not call _kb.init_db(board=slug) — "
-        "see issue #21378."
-    )
 
 
 @pytest.mark.asyncio
-async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
-    """Each gateway keeps its watcher on, but only the subscribing profile claims."""
-    import hermes_cli.kanban_db as kb
-    from gateway.run import GatewayRunner
+async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_home):
     from gateway.config import Platform
+    from gateway.run import GatewayRunner
 
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="owned task", assignee="backend-engineer")
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="review handoff", assignee="builder")
         kb.add_notify_sub(
             conn,
-            task_id=tid,
+            task_id=task_id,
             platform="telegram",
             chat_id="chat1",
-            notifier_profile="default",
         )
-        kb.complete_task(conn, tid, result="done")
-    finally:
-        conn.close()
-
-    runner = object.__new__(GatewayRunner)
-    runner._running = True
-    runner._kanban_sub_fail_counts = {}
-    runner._kanban_notifier_profile = "business-partner"
-
-    fake_adapter = MagicMock()
-    fake_adapter.send = AsyncMock()
-    runner.adapters = {Platform.TELEGRAM: fake_adapter}
-
-    _orig_sleep = asyncio.sleep
-    tick_count = 0
-
-    async def _fast_sleep(_):
-        nonlocal tick_count
-        await _orig_sleep(0)
-        tick_count += 1
-        if tick_count >= 3:
-            runner._running = False
-
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
-        await asyncio.wait_for(
-            runner._kanban_notifier_watcher(interval=1),
-            timeout=10.0,
-        )
-
-    fake_adapter.send.assert_not_called()
-    conn = kb.connect()
-    try:
-        subs = kb.list_notify_subs(conn, tid)
-    finally:
-        conn.close()
-    assert len(subs) == 1
-    assert int(subs[0]["last_event_id"]) == 0, "wrong profile must not claim the event"
-
-
-@pytest.mark.asyncio
-async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_home):
-    """The gateway for the profile that created/subscribed the task reports it."""
-    import hermes_cli.kanban_db as kb
-    from gateway.run import GatewayRunner
-    from gateway.config import Platform
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="owned task", assignee="backend-engineer")
-        kb.add_notify_sub(
+        task = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert task is not None
+        assert kb.request_review(
             conn,
-            task_id=tid,
-            platform="telegram",
-            chat_id="chat1",
-            notifier_profile="default",
+            task_id,
+            summary="Implementation and tests ready.",
+            reviewer="reviewer",
+            expected_run_id=task.current_run_id,
         )
-        kb.complete_task(conn, tid, result="done")
-    finally:
-        conn.close()
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner._kanban_sub_fail_counts = {}
-    runner._kanban_notifier_profile = "default"
+    # This legacy subscription has no notifier-profile stamp. Current gateway
+    # ownership rules intentionally expose such rows only to the singleton
+    # dispatcher owner, which this focused watcher harness represents.
+    runner._kanban_dispatcher_lock_handle = object()
+    delivered: list[str] = []
 
-    fake_adapter = MagicMock()
-
-    async def _send_and_stop(chat_id, msg, metadata=None):
+    async def _send(chat_id, message, metadata=None):
+        delivered.append(message)
         runner._running = False
 
-    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
-    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    adapter = MagicMock()
+    adapter.name = "telegram"
+    adapter.send = AsyncMock(side_effect=_send)
+    runner.adapters = {Platform.TELEGRAM: adapter}
 
-    _orig_sleep = asyncio.sleep
+    real_sleep = asyncio.sleep
 
-    async def _fast_sleep(_):
-        await _orig_sleep(0)
+    async def _fast_sleep(_seconds):
+        await real_sleep(0)
 
     with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
         await asyncio.wait_for(
@@ -431,13 +639,10 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
             timeout=10.0,
         )
 
-    fake_adapter.send.assert_called_once()
-    conn = kb.connect()
-    try:
-        subs = kb.list_notify_subs(conn, tid)
-    finally:
-        conn.close()
-    assert subs == []
+    assert any("ready for review" in message for message in delivered)
+    assert any("Implementation and tests ready" in message for message in delivered)
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn), "review is non-final; subscription must survive"
 
 
 @pytest.mark.asyncio
@@ -455,15 +660,19 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     kb.create_board("projx")
 
     runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
-        thread_id="th1",
+        chat_type="dm",
+        thread_id="20197",
         user_id="u1",
     )
     event = SimpleNamespace(
         text='/kanban --board projx create "hello" --assignee alice',
         source=source,
+        message_id="462",
+        reply_to_message_id=None,
     )
 
     out = await GatewayRunner._handle_kanban_command(runner, event)
@@ -480,7 +689,14 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert [t.title for t in tasks] == ["hello"]
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
-    assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["thread_id"] == "20197"
+    assert subs[0]["delivery_metadata"] == {
+        "chat_type": "dm",
+        "direct_messages_topic_id": "20197",
+        "telegram_dm_topic_reply_fallback": True,
+        "telegram_reply_to_message_id": "462",
+        "thread_id": "20197",
+    }
 
     conn = kb.connect(board="default")
     try:
@@ -489,101 +705,95 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "chat_type,thread_id,thread_sessions_per_user",
+    [
+        # Isolated group/channel: no thread, so the participant id is appended
+        # to the key when group_sessions_per_user is on.
+        ("channel", None, False),
+        # Thread with per-user isolation on: the participant id is still
+        # appended, so the alt id must survive the round-trip here too.
+        ("group", "th-42", True),
+    ],
+)
 @pytest.mark.asyncio
-async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
-    """When a completed event carries ``artifacts`` in its payload, the
-    notifier uploads each file to the subscribed chat as a native
-    attachment. Images batch through send_multiple_images; documents
-    route through send_document. See the artifacts wiring in
-    gateway/run.py._deliver_kanban_artifacts.
+async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
+    kanban_home, chat_type, thread_id, thread_sessions_per_user,
+):
+    """The gateway `/kanban create` auto-subscribe must persist ``user_id_alt``
+    so a replayed wake rebuilds the *same* session key as the original event.
+
+    ``build_session_key`` keys the participant on ``user_id_alt or user_id``
+    (Signal UUID / Feishu union_id carry the canonical participant in the alt
+    slot). If the subscription row drops ``user_id_alt``, the replayed source
+    falls back to ``user_id`` and lands in a different session — the woken turn
+    answers into a parallel conversation. Drive the real handler and compare the
+    key built from the original source with the key rebuilt from the persisted
+    row.
     """
-    import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
-    from tools import kanban_tools as kt
+    from gateway.session import SessionSource, build_session_key
 
-    # ``_deliver_kanban_artifacts`` routes candidates through
-    # ``BasePlatformAdapter.filter_local_delivery_paths``, which only accepts
-    # paths under ``MEDIA_DELIVERY_SAFE_ROOTS`` or roots explicitly allowlisted
-    # via ``HERMES_MEDIA_ALLOW_DIRS``. Test fixtures live under ``tmp_path``,
-    # so allowlist it for the duration of the test.
-    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    # user_id != user_id_alt is the whole point: the alt id is the canonical
+    # participant, so dropping it silently corrupts the session key.
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id="open-id",
+        user_id_alt="union-id",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "hello" --assignee alice',
+        source=source,
+    )
 
-    # Materialize real files so os.path.isfile passes inside the helper.
-    chart_path = tmp_path / "q3-revenue.png"
-    chart_path.write_bytes(b"PNG-fake-bytes")
-    report_path = tmp_path / "report.pdf"
-    report_path.write_bytes(b"%PDF-fake")
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+    assert "subscribed" in out.lower()
 
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="render q3 chart", assignee="worker1")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        subs = kb.list_notify_subs(conn)
     finally:
         conn.close()
+    assert len(subs) == 1
+    row = subs[0]
+    assert row["user_id"] == "open-id"
+    assert row["user_id_alt"] == "union-id"
 
-    # Use the production handler so we exercise the full path: tool args
-    # → metadata.artifacts → event payload promotion.
-    import os
-    os.environ["HERMES_KANBAN_TASK"] = tid
-    try:
-        out = kt._handle_complete({
-            "summary": "rendered the chart",
-            "artifacts": [str(chart_path), str(report_path)],
-        })
-    finally:
-        os.environ.pop("HERMES_KANBAN_TASK", None)
-    import json as _json
-    assert _json.loads(out)["ok"] is True
+    original = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id="open-id",
+        user_id_alt="union-id",
+    )
+    # Reconstruct exactly as the wake path does: from the persisted row.
+    replayed = SessionSource(
+        platform=Platform(row["platform"]),
+        chat_id=row["chat_id"],
+        chat_type=row["chat_type"],
+        thread_id=row["thread_id"] or None,
+        user_id=row["user_id"],
+        user_id_alt=row["user_id_alt"],
+    )
 
-    runner = object.__new__(GatewayRunner)
-    runner._running = True
-    runner._kanban_sub_fail_counts = {}
-
-    fake_adapter = MagicMock()
-    fake_adapter.name = "telegram"
-
-    sends: list = []
-    images_uploaded: list = []
-    documents_uploaded: list = []
-
-    async def _send(chat_id, msg, metadata=None):
-        sends.append((chat_id, msg))
-        runner._running = False
-
-    async def _send_images(chat_id, images, metadata=None, **_kw):
-        images_uploaded.extend(p for p, _ in images)
-
-    async def _send_document(chat_id, file_path, metadata=None, **_kw):
-        documents_uploaded.append(file_path)
-
-    fake_adapter.send = AsyncMock(side_effect=_send)
-    fake_adapter.send_multiple_images = AsyncMock(side_effect=_send_images)
-    fake_adapter.send_document = AsyncMock(side_effect=_send_document)
-    # extract_local_files is used internally for legacy path fallback;
-    # the real BasePlatformAdapter implementation lives there, so wire it.
-    from gateway.platforms.base import BasePlatformAdapter
-    fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
-
-    runner.adapters = {Platform.TELEGRAM: fake_adapter}
-
-    _orig_sleep = asyncio.sleep
-
-    async def _fast_sleep(_):
-        await _orig_sleep(0)
-
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
-        await asyncio.wait_for(
-            runner._kanban_notifier_watcher(interval=1),
-            timeout=10.0,
-        )
-
-    # The text completion notification fired.
-    assert len(sends) == 1
-    # The PNG rode the image-batch path.
-    assert any("q3-revenue.png" in p for p in images_uploaded), images_uploaded
-    # The PDF rode the document path.
-    assert any("report.pdf" in p for p in documents_uploaded), documents_uploaded
+    original_key = build_session_key(
+        original, thread_sessions_per_user=thread_sessions_per_user
+    )
+    replayed_key = build_session_key(
+        replayed, thread_sessions_per_user=thread_sessions_per_user
+    )
+    assert original_key == replayed_key
+    # Regression guard: the canonical alt id — not the raw user_id — is what
+    # keys the participant. Proves the alt id actually reached the key.
+    assert "union-id" in replayed_key
+    assert "open-id" not in replayed_key
 
 
 @pytest.mark.asyncio
@@ -621,8 +831,10 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         os.environ.pop("HERMES_KANBAN_TASK", None)
 
     runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
     runner._running = True
     runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
 
     fake_adapter = MagicMock()
     fake_adapter.name = "telegram"
@@ -657,3 +869,264 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+# ---------------------------------------------------------------------------
+# Migration backfill: pre-delivery_mode gateway subscriptions keep active wake.
+#
+# Before the delivery_mode column existed, the notifier woke the originating
+# session unconditionally whenever the task carried a session_id — so every
+# pre-existing gateway subscription had de facto active wake. The column's
+# 'notify' DEFAULT alone would silently disable that on upgrade. The migration
+# backfills first-add rows: gateway platforms -> 'notify+wake', tui -> 'notify'.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_backfills_legacy_gateway_subs_to_notify_wake(kanban_home):
+    from hermes_cli.kanban_db import _migrate_add_optional_columns
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy sub upgrade")
+        # Simulate a pre-delivery_mode database: drop the column entirely,
+        # then insert legacy-shaped rows (one gateway, one tui).
+        conn.execute("ALTER TABLE kanban_notify_subs DROP COLUMN delivery_mode")
+        conn.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, thread_id, created_at) "
+            "VALUES (?, 'telegram', 'legacy-chat', '', 1)",
+            (task_id,),
+        )
+        conn.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, thread_id, created_at) "
+            "VALUES (?, 'tui', 'tui-session-1', '', 1)",
+            (task_id,),
+        )
+        # Re-run the idempotent migration: first-add of delivery_mode must
+        # backfill gateway rows to notify+wake and leave tui rows on notify.
+        _migrate_add_optional_columns(conn)
+        rows = {
+            r["platform"]: r["delivery_mode"]
+            for r in conn.execute(
+                "SELECT platform, delivery_mode FROM kanban_notify_subs "
+                "WHERE task_id = ?",
+                (task_id,),
+            )
+        }
+    assert rows["telegram"] == "notify+wake", (
+        "Legacy gateway subscription lost active wake across the upgrade"
+    )
+    assert rows["tui"] == "notify"
+
+
+def test_migration_backfill_runs_only_on_first_add(kanban_home):
+    from hermes_cli.kanban_db import _migrate_add_optional_columns
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="explicit downgrade survives")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="chat-x",
+            delivery_mode="notify",
+        )
+        # Column already exists -> re-running the migration must NOT touch
+        # the user's explicit 'notify' choice.
+        _migrate_add_optional_columns(conn)
+        row = conn.execute(
+            "SELECT delivery_mode FROM kanban_notify_subs WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    assert row["delivery_mode"] == "notify"
+
+
+# ---------------------------------------------------------------------------
+# Issue #73030: _inherit_notify_subs (link_tasks / decompose path) must copy
+# EVERY routing column — chat_type, user_id_alt, delivery_mode, and
+# delivery_metadata. Before the fix it copied only platform/chat/thread/user/
+# profile, so a DM-originated child completion fell back to chat_type='group'
+# and woke a fresh group-scoped session instead of the originating DM, and
+# Telegram DM-topic subs lost their persisted reply-fallback metadata.
+# ---------------------------------------------------------------------------
+
+
+def _add_full_parent_sub(kb, conn, parent):
+    kb.add_notify_sub(
+        conn, task_id=parent, platform="telegram", chat_id="chat1",
+        thread_id="topic1", user_id="user1", user_id_alt="alt-1",
+        chat_type="dm", notifier_profile="default",
+        delivery_mode="notify+wake",
+        delivery_metadata={"reply_fallback": "general", "topic_name": "ops"},
+    )
+
+
+def _assert_full_inherited_sub(subs):
+    assert len(subs) == 1
+    s = subs[0]
+    assert s["platform"] == "telegram"
+    assert s["chat_id"] == "chat1"
+    assert s["thread_id"] == "topic1"
+    assert s["user_id"] == "user1"
+    assert s["user_id_alt"] == "alt-1", "user_id_alt dropped during inheritance"
+    assert s["chat_type"] == "dm", (
+        "chat_type dropped during inheritance — wake would key to a "
+        "group-scoped session instead of the originating DM (issue #73030)"
+    )
+    assert s["delivery_mode"] == "notify+wake"
+    md = s["delivery_metadata"]
+    assert md and md.get("reply_fallback") == "general", (
+        "delivery_metadata dropped during inheritance (issue #73030)"
+    )
+
+
+def test_link_tasks_inherits_all_routing_columns(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        _add_full_parent_sub(kb, conn, parent)
+        # Pre-existing child, linked after the fact — exercises
+        # _inherit_notify_subs directly (not the create_task parents path).
+        child = kb.create_task(conn, title="existing child", assignee="w1")
+        kb.link_tasks(conn, parent, child)
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    _assert_full_inherited_sub(subs)
+
+
+def test_create_with_parents_inherits_delivery_metadata(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        _add_full_parent_sub(kb, conn, parent)
+        child = kb.create_task(
+            conn, title="graph child", assignee="w1", parents=[parent],
+        )
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    _assert_full_inherited_sub(subs)
+
+
+# ---------------------------------------------------------------------------
+# Stale done-subscription GC (purge_stale_done_notify_subs)
+# ---------------------------------------------------------------------------
+
+def _make_done_task_with_sub(kb, conn, *, title, chat_id):
+    tid = kb.create_task(conn, title=title, assignee="worker1")
+    kb.add_notify_sub(
+        conn, task_id=tid, platform="telegram", chat_id=chat_id,
+        notifier_profile="default",
+    )
+    assert kb.complete_task(conn, tid, summary="done")
+    return tid
+
+
+def _backdate_task(kb, conn, tid, *, days):
+    """Push a task's entire event history + completion into the past."""
+    past = int(__import__("time").time()) - days * 86400
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+            (past, tid),
+        )
+        conn.execute(
+            "UPDATE tasks SET completed_at = ?, created_at = ? WHERE id = ?",
+            (past, past, tid),
+        )
+
+
+def test_gc_purges_stale_done_sub_keeps_fresh_one(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        stale = _make_done_task_with_sub(kb, conn, title="old done", chat_id="c-stale")
+        fresh = _make_done_task_with_sub(kb, conn, title="new done", chat_id="c-fresh")
+        _backdate_task(kb, conn, stale, days=45)
+
+        purged = kb.purge_stale_done_notify_subs(conn, max_age_days=30)
+
+        assert purged == 1
+        assert kb.list_notify_subs(conn, stale) == []
+        # A done task inside the retention window keeps its subscription —
+        # it may still be reopened for review corrections.
+        assert len(kb.list_notify_subs(conn, fresh)) == 1
+    finally:
+        conn.close()
+
+
+def test_gc_honors_configured_retention_days(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    # The watcher reads kanban.done_sub_retention_days from config; the
+    # shipped default must exist and drive the sweep when passed through.
+    default_days = DEFAULT_CONFIG["kanban"]["done_sub_retention_days"]
+    assert isinstance(default_days, int) and default_days > 0
+
+    conn = kb.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="ten days old", chat_id="c-10d")
+        _backdate_task(kb, conn, tid, days=10)
+
+        # Under the shipped default (>= 30d) a 10-day-old done task is fresh.
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=default_days) == 0
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+
+        # A tighter user-configured retention purges the same row.
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=7) == 1
+        assert kb.list_notify_subs(conn, tid) == []
+
+        # Zero (and below) disables the sweep entirely.
+        tid2 = _make_done_task_with_sub(kb, conn, title="ancient", chat_id="c-anc")
+        _backdate_task(kb, conn, tid2, days=3650)
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=0) == 0
+        assert len(kb.list_notify_subs(conn, tid2)) == 1
+    finally:
+        conn.close()
+
+
+def test_gc_spares_reopened_task_even_when_old(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="reopened", chat_id="c-reopen")
+        _backdate_task(kb, conn, tid, days=90)
+        # Reopen: the task leaves ``done``, so even with an ancient event
+        # history the GC must not touch its subscription.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+            kb._append_event(conn, tid, "status", {"status": "ready"})
+        # Backdate the reopen event too — status alone must protect it.
+        _backdate_task(kb, conn, tid, days=90)
+
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=30) == 0
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+    finally:
+        conn.close()
+
+
+def test_gc_archived_rows_already_removed_by_unsub(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="archived", chat_id="c-arch")
+        assert kb.archive_task(conn, tid)
+        # The notifier removes the sub at archive time; the GC targets only
+        # ``done`` tasks, so an archived task contributes nothing to purge.
+        kb.remove_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="c-arch",
+        )
+        _backdate_task(kb, conn, tid, days=365)
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=30) == 0
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()

@@ -161,15 +161,57 @@ def _has_agent_browser() -> bool:
 
     from hermes_constants import agent_browser_runnable
 
-    # Validate the resolved binary actually runs — a dangling global symlink
-    # (issue #48521) is reported by ``which`` but fails at exec. Fall through to
-    # the local node_modules copy, which the validator also checks.
-    if agent_browser_runnable(shutil.which("agent-browser")):
-        return True
-    local_bin = (
-        Path(__file__).parent.parent / "node_modules" / ".bin" / "agent-browser"
-    )
-    return agent_browser_runnable(str(local_bin)) if local_bin.exists() else False
+    # agent-browser is no longer a root package.json dependency (#43564) — it
+    # resolves lazily via npx for most installs, which a bare PATH +
+    # node_modules probe can't see. Mirror the local-CLI tail of
+    # :func:`tools.browser_tool.check_browser_requirements` (same cascade, same
+    # Termux carve-out) so the setup/status surfaces can't diverge from what
+    # browser tools actually find at runtime; validate=False keeps this a cheap
+    # existence check with no subprocess spawn.
+    try:
+        from tools.browser_tool import (
+            _find_agent_browser,
+            _requires_real_termux_browser_install,
+        )
+    except Exception:
+        # If the runtime probe can't be imported, fall back to binary presence
+        # (prior behaviour) rather than crashing the setup/status surface.
+        # Validate the resolved binary actually runs — a dangling global
+        # symlink (issue #48521) is reported by ``which`` but fails at exec.
+        if agent_browser_runnable(shutil.which("agent-browser")):
+            return True
+
+        # Hermes-managed Node dirs (Windows installer / POSIX $HERMES_HOME/node)
+        # are prepended to PATH at runtime but usually absent from the *probe*
+        # process's PATH. Without this rung a successful install keeps
+        # reporting "needs setup" on Windows.
+        from hermes_constants import with_hermes_node_path
+        managed_path = with_hermes_node_path().get("PATH", "")
+        if managed_path:
+            managed_hit = shutil.which("agent-browser", path=managed_path)
+            if managed_hit and agent_browser_runnable(managed_hit):
+                return True
+
+        # Local node_modules/.bin: resolve via PATHEXT-aware ``shutil.which`` so
+        # Windows picks the executable ``.cmd`` shim — probing the
+        # extensionless POSIX shim directly fails exec (WinError 193) even
+        # right after a successful ``npm install``.
+        local_bin_dir = Path(__file__).parent.parent / "node_modules" / ".bin"
+        if local_bin_dir.is_dir():
+            local_which = shutil.which("agent-browser", path=str(local_bin_dir))
+            if local_which and agent_browser_runnable(local_which):
+                return True
+        return False
+
+    try:
+        browser_cmd = _find_agent_browser(validate=False)
+    except FileNotFoundError:
+        return False
+    # On Termux, the bare npx fallback is too fragile to advertise as ready —
+    # require a real install, matching check_browser_requirements.
+    if _requires_real_termux_browser_install(browser_cmd):
+        return False
+    return True
 
 
 def _local_browser_runnable() -> bool:
@@ -376,7 +418,6 @@ def get_nous_subscription_features(
     # Per-capability overrides: if set, they determine which backend is active for
     # search/extract independently of web.backend.
     web_search_backend = str(web_cfg.get("search_backend") or "").strip().lower()
-    web_extract_backend = str(web_cfg.get("extract_backend") or "").strip().lower()
     tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
     # STT default is "local" (faster-whisper) per DEFAULT_CONFIG, which
     # requires `pip install faster-whisper`. For Nous subscribers we'd

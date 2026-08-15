@@ -27,6 +27,7 @@
 
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
+import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
   type DoubleTapContext,
@@ -42,6 +43,8 @@ import {
   $layoutTree,
   $treeDragging,
   type DropHint,
+  isMainStripPane,
+  isSessionStripPane,
   revealTreePane,
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
@@ -66,21 +69,27 @@ const snapRect = (el: HTMLElement): ZoneRect => {
   return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
+/** Chat surfaces the pointer can land on. Inactive tabs are excluded: they stay
+ *  mounted with their layout box intact, so their rect is identical to the
+ *  visible tab's and a hit-test alone would pick whichever came first. */
 function snapshotSurfaces(): SurfaceSnapshot[] {
-  return [...document.querySelectorAll<HTMLElement>('[data-session-anchor]')].map(el => ({
+  return queryAllVisible('[data-session-anchor]').map(el => ({
     anchor: el.dataset.sessionAnchor || 'workspace',
     composerTarget: el.dataset.composerTarget || 'main',
     rect: snapRect(el)
   }))
 }
 
-/** A session may land in a zone only if it hosts a chat surface — never the
- *  sidebar/terminal zones. Returns the pane a stack anchors to. */
-function chatZonePane(groupId: string): null | string {
+/** A session may land in any zone hosting a MAIN tile — another chat stack, a
+ *  Browser tile, a page — never the sidebar/terminal zones. Returns the pane a
+ *  stack anchors to, plus whether the zone hosts a CHAT surface (only those
+ *  offer the link-to-composer center; a preview zone's center stacks). */
+function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
   const tree = $layoutTree.get()
   const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
+  const pane = panes.find(isSessionStripPane) ?? panes.find(isMainStripPane)
 
-  return panes.find(p => p === 'workspace' || p.startsWith('session-tile:')) ?? null
+  return pane ? { chat: panes.some(isSessionStripPane), pane } : null
 }
 
 /**
@@ -100,7 +109,7 @@ export function startSessionDrag(
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
   let composers: ZoneRect[] = []
-  let zoneHost = new Map<string, null | string>()
+  let zoneHost = new Map<string, ReturnType<typeof tileZoneHost>>()
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
@@ -123,8 +132,8 @@ export function startSessionDrag(
       zones = snapshotZones()
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
-      composers = [...document.querySelectorAll<HTMLElement>('[data-slot="composer-root"]')].map(snapRect)
-      zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
+      composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
+      zoneHost = new Map(zones.map(zone => [zone.id, tileZoneHost(zone.id)]))
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
@@ -155,7 +164,7 @@ export function startSessionDrag(
         // Exclude the tile's OWN tab from the slots so re-dropping it in its
         // home strip reorders cleanly (a no-op for a sidebar-row drag).
         const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
-        split = { anchor: host, before: stack.before, pos: 'center' }
+        split = { anchor: host.pane, before: stack.before, pos: 'center' }
         link = null
 
         return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center', stack }
@@ -166,11 +175,16 @@ export function startSessionDrag(
       const pos = composers.some(rect => rectContains(rect, x, y)) ? 'center' : subZonePosition(zones, zone.id, x, y)
       const surface = surfaces.find(s => rectContains(s.rect, x, y))
 
-      if (pos === 'center') {
+      if (pos === 'center' && host.chat) {
         split = null
         link = surface?.composerTarget ?? 'main'
+      } else if (pos === 'center') {
+        // A preview/page zone has no composer to link to — its center stacks
+        // the session as a tab, same as dropping on the strip's tail.
+        split = { anchor: host.pane, pos: 'center' }
+        link = null
       } else {
-        split = { anchor: surface?.anchor ?? 'workspace', pos }
+        split = { anchor: surface?.anchor ?? host.pane, pos }
         link = null
       }
 

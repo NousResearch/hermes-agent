@@ -477,7 +477,56 @@ def record_terminal_result(
     )
     if evidence is None:
         return None
+    return _insert_evidence(evidence)
 
+
+def record_verify_run(
+    *,
+    root: str | Path,
+    session_id: str | None = None,
+    ok: bool,
+    command: str = "hermes verify",
+    scope: str = "full",
+    output: str = "",
+) -> Optional[dict[str, Any]]:
+    """Record a completed ``hermes verify`` run as verification evidence.
+
+    Explicit CLI-side write: unlike :func:`record_terminal_result` there is
+    nothing to classify — the caller (the ``hermes verify`` command) already
+    knows the run was a verification pass and whether it succeeded. A passing
+    run marks the workspace ``passed`` for the verify-on-stop guard exactly
+    like a passing canonical test command would; a failing run records the
+    failure so the guard keeps asking for a fix.
+
+    ``root`` is re-resolved through :func:`agent.coding_context.project_facts_for`
+    so the recorded workspace root matches what :func:`verification_status`
+    derives when the stop guard later looks the evidence up.
+    """
+    try:
+        from agent.coding_context import project_facts_for
+
+        facts = project_facts_for(root)
+    except Exception:
+        facts = None
+
+    resolved = str(Path(root).resolve())
+    evidence = VerificationEvidence(
+        command=command,
+        canonical_command="hermes verify",
+        kind="verify",
+        scope=scope if scope in {"full", "targeted"} else "full",
+        status="passed" if ok else "failed",
+        exit_code=0 if ok else 1,
+        cwd=resolved,
+        root=str((facts or {}).get("root") or resolved),
+        session_id=str(session_id or "default"),
+        output_summary=_summarize_output(output),
+    )
+    return _insert_evidence(evidence)
+
+
+def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
+    """Insert a classified evidence row and repoint the workspace state."""
     created_at = _utc_now()
     with _DB_LOCK:
         with _transaction() as conn:

@@ -27,6 +27,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.secret_scope import get_secret
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
@@ -173,7 +174,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not get_secret("OPENAI_API_KEY"):
             return False
         try:
             import openai  # noqa: F401
@@ -235,7 +236,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        api_key = get_secret("OPENAI_API_KEY")
+        if not api_key:
             return error_response(
                 error=(
                     "OPENAI_API_KEY not set. Run `hermes tools` → Image "
@@ -270,7 +272,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI()
+        client = openai.OpenAI(api_key=api_key)
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each

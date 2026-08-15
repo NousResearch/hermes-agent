@@ -25,7 +25,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
 
 _EMAIL_RE = re.compile(r"^[^/\\\s]+@[^/\\\s]+$")
-_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+# GitHub's *current* signup rules forbid consecutive hyphens, but legacy
+# accounts with them exist and are valid (e.g. Roger--Han, verified via the
+# users API July 2026). Accept any alphanumeric/hyphen login that doesn't
+# start or end with a hyphen, max 39 chars.
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 
 
 def read_mapping_file(path: Path) -> str | None:

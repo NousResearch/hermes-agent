@@ -13,8 +13,12 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
+import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
@@ -25,7 +29,8 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
-import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { TerminalFontSetting } from './terminal-font-setting'
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
@@ -64,10 +69,11 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
   )
 }
 
-// UI scale presets, as zoom percentages. 100 is the browser-default size;
-// the ids double as the percent values sent to the main process. A Cmd/Ctrl
-// +/- step landing between presets highlights nothing, and the row
-// description keeps showing the exact current percent.
+// UI scale presets, as zoom percentages. 100 is Chromium's actual-size
+// baseline; the shipped default is the 90% preset. Ids double as the percent
+// values sent to the main process. A Cmd/Ctrl +/- step landing between
+// presets highlights nothing, and the row description keeps showing the
+// exact current percent.
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
@@ -245,10 +251,14 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const sessionListDensity = useStore($sessionListDensity)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
+  const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
+  const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
@@ -286,6 +296,12 @@ export function AppearanceSettings() {
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
   ] as const
+
+  const sessionDensityOptions = [
+    { id: 'compact', label: a.sessionDensityCompact },
+    { id: 'comfortable', label: a.sessionDensityComfortable },
+    { id: 'detailed', label: a.sessionDensityDetailed }
+  ] as const satisfies readonly { id: SessionListDensity; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -427,6 +443,23 @@ export function AppearanceSettings() {
             title={a.uiScaleTitle}
           />
 
+          <TerminalFontSetting />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setSessionListDensity(id)
+                }}
+                options={sessionDensityOptions}
+                value={sessionListDensity}
+              />
+            }
+            description={a.sessionDensityDesc}
+            title={a.sessionDensityTitle}
+          />
+
           <ListRow
             action={
               <div className="flex items-center gap-3">
@@ -471,6 +504,31 @@ export function AppearanceSettings() {
             title={a.backdropTitle}
           />
 
+          <ToggleRow
+            checked={composerPopoutGesturesEnabled}
+            description={a.composerPopoutDesc}
+            label={a.composerPopoutTitle}
+            onChange={setComposerPopoutGesturesEnabled}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setReactionsEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={reactionsEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.reactionsDesc}
+            title={a.reactionsTitle}
+          />
+
           <ListRow
             action={
               <SegmentedControl
@@ -484,6 +542,24 @@ export function AppearanceSettings() {
             }
             description={a.toolViewDesc}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setReasoningCollapsedByDefault(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={reasoningCollapsedByDefault ? 'on' : 'off'}
+              />
+            }
+            description={a.reasoningCollapsedDesc}
+            title={a.reasoningCollapsedTitle}
           />
 
           <ListRow

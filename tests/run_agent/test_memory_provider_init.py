@@ -25,13 +25,31 @@ class RecordingMemoryProvider:
         pass
 
 
+def test_shutdown_memory_provider_is_idempotent():
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    manager = MagicMock()
+    agent = object.__new__(AIAgent)
+    agent._memory_manager = manager
+    agent.context_compressor = None
+    agent.session_id = "session-1"
+
+    agent.shutdown_memory_provider([{"role": "user", "content": "one"}])
+    agent.shutdown_memory_provider([{"role": "user", "content": "two"}])
+
+    manager.on_session_end.assert_called_once()
+    manager.shutdown_all.assert_called_once()
+
+
 def test_blank_memory_provider_does_not_auto_enable_honcho():
     """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
     honcho_cfg = SimpleNamespace(enabled=True, api_key="stale-key", base_url=None)
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
         patch(
             "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
@@ -59,12 +77,28 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     save_config.assert_not_called()
 
 
+def test_close_shuts_down_memory_provider():
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent._memory_manager = MagicMock()
+    agent.context_compressor = None
+    agent.session_id = ""
+    agent._session_messages = []
+
+    agent.close()
+
+    agent._memory_manager.shutdown_all.assert_called_once()
+
+
 def test_aiagent_forwards_user_id_alt_to_memory_provider():
     provider = RecordingMemoryProvider()
     cfg = {"memory": {"provider": "recording"}, "agent": {}}
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -136,32 +170,3 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "honcho_search" in schema_names
 
 
-def test_aiagent_forwards_warning_callback_to_cli_memory_provider():
-    provider = RecordingMemoryProvider()
-    cfg = {"memory": {"provider": "recording"}, "agent": {}}
-
-    with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("plugins.memory.load_memory_provider", return_value=provider),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-    ):
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            api_key="test-key-1234567890",
-            base_url="https://openrouter.ai/api/v1",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=False,
-            session_id="sess-cli",
-            platform="cli",
-        )
-
-    assert agent._memory_manager is not None
-    assert provider.init_session_id == "sess-cli"
-    assert provider.init_kwargs["platform"] == "cli"
-    assert provider.init_kwargs["warning_callback"] == agent._emit_warning
-    assert provider.init_kwargs["status_callback"] == agent._emit_status

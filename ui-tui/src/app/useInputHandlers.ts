@@ -3,7 +3,8 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
-import { TYPING_IDLE_MS } from '../config/timing.js'
+import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
+import { applyCompletion } from '../domain/slash.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
@@ -33,6 +34,19 @@ const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl 
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
+
+export function handleInputSelectionClipboard(
+  selection: ReturnType<typeof getInputSelection>,
+  action: 'copy' | 'cut'
+): boolean {
+  if (!selection || selection.end <= selection.start) {
+    return false
+  }
+
+  selection[action]()
+
+  return true
+}
 
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
@@ -238,7 +252,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index] ?? '')
+    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
 
     return true
   }
@@ -319,8 +333,32 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
   }
 
+  // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
+  // sits above the isBlocked early-return on purpose: Ctrl+C interrupts a
+  // running turn rather than clearing, so while the agent streams there is
+  // otherwise no way to throw away a half-typed prompt. The draft is pushed
+  // to history first so Up recalls it.
+  const lastEscRef = useRef(0)
+
   useInput((ch, key) => {
     const live = getUiState()
+
+    if (key.escape) {
+      const now = Date.now()
+      const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
+
+      lastEscRef.current = isDouble ? 0 : now
+
+      if (isDouble && (cState.input || cState.inputBuf.length)) {
+        if (cState.input.trim()) {
+          cActions.pushHistory(cState.input)
+        }
+
+        cActions.clearIn()
+
+        return
+      }
+    }
 
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
@@ -537,9 +575,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       const inputSel = getInputSelection()
 
-      if (inputSel && inputSel.end > inputSel.start) {
-        inputSel.clear()
-
+      if (handleInputSelectionClipboard(inputSel, 'copy')) {
         return
       }
 
@@ -550,6 +586,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
+    if (isCtrl(key, ch, 'x') && handleInputSelectionClipboard(getInputSelection(), 'cut')) {
+      return
+    }
+
     if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
       cActions.removeQueue(cState.queueEditIdx)
 
@@ -558,6 +598,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
+    }
+
+    // Ctrl+O opens the model picker without disturbing a typed draft — the
+    // same overlay `/model` opens, but reachable without clearing what you've
+    // typed to run the command. Works mid-stream: picking a model writes the
+    // session model (config.set), which the next turn reads while the in-flight
+    // turn keeps streaming.
+    if (isCtrl(key, ch, 'o')) {
+      return patchOverlayState({ modelPicker: true })
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
@@ -640,12 +689,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const row = cState.completions[cState.compIdx]
 
       if (row?.text) {
-        const text =
-          cState.input.startsWith('/') && row.text.startsWith('/') && cState.compReplace > 0
-            ? row.text.slice(1)
-            : row.text
-
-        cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
+        cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
       }
 
       return

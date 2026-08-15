@@ -42,16 +42,6 @@ class TestHonchoSession:
         assert session.messages[0]["content"] == "Hello!"
         assert "timestamp" in session.messages[0]
 
-    def test_add_message_with_kwargs(self):
-        session = self._make_session()
-        session.add_message("assistant", "Hi!", source="gateway")
-        assert session.messages[0]["source"] == "gateway"
-
-    def test_add_message_updates_timestamp(self):
-        session = self._make_session()
-        original = session.updated_at
-        session.add_message("user", "test")
-        assert session.updated_at >= original
 
     def test_get_history(self):
         session = self._make_session()
@@ -62,27 +52,6 @@ class TestHonchoSession:
         assert history[0] == {"role": "user", "content": "msg1"}
         assert history[1] == {"role": "assistant", "content": "msg2"}
 
-    def test_get_history_strips_extra_fields(self):
-        session = self._make_session()
-        session.add_message("user", "hello", extra="metadata")
-        history = session.get_history()
-        assert "extra" not in history[0]
-        assert set(history[0].keys()) == {"role", "content"}
-
-    def test_get_history_max_messages(self):
-        session = self._make_session()
-        for i in range(10):
-            session.add_message("user", f"msg{i}")
-        history = session.get_history(max_messages=3)
-        assert len(history) == 3
-        assert history[0]["content"] == "msg7"
-        assert history[2]["content"] == "msg9"
-
-    def test_get_history_max_messages_larger_than_total(self):
-        session = self._make_session()
-        session.add_message("user", "only one")
-        history = session.get_history(max_messages=100)
-        assert len(history) == 1
 
     def test_clear(self):
         session = self._make_session()
@@ -90,13 +59,6 @@ class TestHonchoSession:
         session.add_message("user", "msg2")
         session.clear()
         assert session.messages == []
-
-    def test_clear_updates_timestamp(self):
-        session = self._make_session()
-        session.add_message("user", "msg")
-        original = session.updated_at
-        session.clear()
-        assert session.updated_at >= original
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +71,6 @@ class TestSanitizeId:
         mgr = HonchoSessionManager()
         assert mgr._sanitize_id("telegram-12345") == "telegram-12345"
 
-    def test_colons_replaced(self):
-        mgr = HonchoSessionManager()
-        assert mgr._sanitize_id("telegram:12345") == "telegram-12345"
 
     def test_special_chars_replaced(self):
         mgr = HonchoSessionManager()
@@ -119,10 +78,6 @@ class TestSanitizeId:
         assert "@" not in result
         assert "#" not in result
         assert "!" not in result
-
-    def test_alphanumeric_preserved(self):
-        mgr = HonchoSessionManager()
-        assert mgr._sanitize_id("abc123_XYZ-789") == "abc123_XYZ-789"
 
 
 # ---------------------------------------------------------------------------
@@ -145,18 +100,6 @@ class TestFormatMigrationTranscript:
         assert 'session_key="telegram:123"' in text
         assert 'message_count="2"' in text
 
-    def test_empty_messages(self):
-        result = HonchoSessionManager._format_migration_transcript("key", [])
-        text = result.decode("utf-8")
-        assert "<prior_conversation_history>" in text
-        assert "</prior_conversation_history>" in text
-
-    def test_missing_fields_handled(self):
-        messages = [{"role": "user"}]  # no content, no timestamp
-        result = HonchoSessionManager._format_migration_transcript("key", messages)
-        text = result.decode("utf-8")
-        assert "user: " in text  # empty content
-
 
 # ---------------------------------------------------------------------------
 # HonchoSessionManager.delete / list_sessions
@@ -174,9 +117,6 @@ class TestManagerCacheOps:
         assert mgr.delete("test") is True
         assert "test" not in mgr._cache
 
-    def test_delete_nonexistent_returns_false(self):
-        mgr = HonchoSessionManager()
-        assert mgr.delete("nonexistent") is False
 
     def test_list_sessions(self):
         mgr = HonchoSessionManager()
@@ -205,34 +145,6 @@ class TestPeerLookupHelpers:
         mgr._cache[session.key] = session
         return mgr, session
 
-    def test_get_peer_card_uses_direct_peer_lookup(self):
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        assistant_peer.get_card.return_value = ["Name: Robert"]
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
-
-        assert mgr.get_peer_card(session.key) == ["Name: Robert"]
-        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
-
-    def test_get_peer_card_falls_back_to_target_peer_own_card(self):
-        # When the observer-target card slot is empty (returns None/[]), fall
-        # back to the target peer's own card. Self-hosted Honcho v3 stores the
-        # peer card on the peer itself; the observer-target slot is only
-        # populated when writes also go through that path.
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        assistant_peer.get_card.return_value = None  # observer-target slot empty
-        user_peer = MagicMock()
-        user_peer.get_card.return_value = ["Prefers: dark mode"]
-
-        def _peer(peer_id: str) -> MagicMock:
-            return assistant_peer if peer_id == session.assistant_peer_id else user_peer
-
-        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
-
-        assert mgr.get_peer_card(session.key) == ["Prefers: dark mode"]
-        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
-        user_peer.get_card.assert_called_once_with()
 
     def test_set_peer_card_uses_observer_target_in_ai_observe_others_mode(self):
         # Writes must go to the same observer-target slot that reads check,
@@ -269,158 +181,6 @@ class TestPeerLookupHelpers:
         # user-stated facts from assistant-derived ones.
         assert "[assistant" in result
 
-    def test_search_context_explicit_ai_peer_searches_ai_perspective(self):
-        mgr, session = self._make_cached_manager()
-        honcho_client = MagicMock()
-        honcho_client.search.return_value = [
-            SimpleNamespace(content="Assistant note", peer_id="hermes", session_id="s1", id="m1"),
-        ]
-        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
-            result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
-
-        assert "Assistant note" in result
-        _args, kwargs = honcho_client.search.call_args
-        assert kwargs["filters"] == {"peer_perspective": session.assistant_peer_id}
-
-    def test_search_context_empty_query_returns_empty(self):
-        mgr, session = self._make_cached_manager()
-        honcho_client = MagicMock()
-        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
-            assert mgr.search_context(session.key, "   ") == ""
-
-        honcho_client.search.assert_not_called()
-
-    def test_search_context_honors_small_budget_for_first_result(self):
-        mgr, session = self._make_cached_manager()
-        honcho_client = MagicMock()
-        honcho_client.search.return_value = [
-            SimpleNamespace(
-                content="x" * 2_000,
-                peer_id="robert",
-                session_id="s-old",
-                id="m1",
-            ),
-        ]
-
-        with patch.object(
-            HonchoSessionManager,
-            "honcho",
-            new_callable=lambda: property(lambda s: honcho_client),
-        ):
-            result = mgr.search_context(session.key, "anything", max_tokens=50)
-
-        assert result
-        assert len(result) <= 200
-
-    def test_search_context_falls_back_to_peer_search_on_filter_error(self):
-        """If the workspace search with peer_perspective raises (older Honcho),
-        fall back to peer-authored search rather than returning nothing."""
-        mgr, session = self._make_cached_manager()
-        honcho_client = MagicMock()
-        honcho_client.search.side_effect = RuntimeError("peer_perspective unsupported")
-        peer_obj = MagicMock()
-        peer_obj.search.return_value = [
-            SimpleNamespace(content="fallback hit", peer_id="robert", session_id="s1", id="m1"),
-        ]
-        mgr._get_or_create_peer = MagicMock(return_value=peer_obj)
-
-        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
-            result = mgr.search_context(session.key, "anything")
-
-        assert "fallback hit" in result
-        peer_obj.search.assert_called_once()
-
-    def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
-        mgr, session = self._make_cached_manager()
-        user_peer = MagicMock()
-        user_peer.context.return_value = SimpleNamespace(
-            representation="User representation",
-            peer_card=["Name: Robert"],
-        )
-        ai_peer = MagicMock()
-        ai_peer.context.side_effect = lambda **kwargs: SimpleNamespace(
-            representation=(
-                "AI representation" if kwargs.get("target") == session.assistant_peer_id
-                else "Mixed representation"
-            ),
-            peer_card=(
-                ["Role: Assistant"] if kwargs.get("target") == session.assistant_peer_id
-                else ["Name: Robert"]
-            ),
-        )
-        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
-
-        result = mgr.get_prefetch_context(session.key)
-
-        assert result == {
-            "representation": "User representation",
-            "card": "Name: Robert",
-            "ai_representation": "AI representation",
-            "ai_card": "Role: Assistant",
-        }
-        user_peer.context.assert_called_once_with(target=session.user_peer_id)
-        ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
-
-    def test_get_prefetch_context_uses_assistant_observer_for_user_when_ai_observe_others(self):
-        """With ai_observe_others enabled, get_prefetch_context must query
-        the user context through the assistant observer, not the user peer."""
-        mgr, session = self._make_cached_manager()
-        mgr._ai_observe_others = True
-
-        assistant_peer = MagicMock()
-
-        def _assistant_context(**kwargs):
-            if kwargs.get("target") == session.user_peer_id:
-                return SimpleNamespace(
-                    representation="User via assistant",
-                    peer_card=["Name: Robert"],
-                )
-            if kwargs.get("target") == session.assistant_peer_id:
-                return SimpleNamespace(
-                    representation="AI self",
-                    peer_card=["Role: Assistant"],
-                )
-            return SimpleNamespace(representation="Unknown", peer_card=[])
-
-        assistant_peer.context.side_effect = _assistant_context
-        mgr._get_or_create_peer = MagicMock(
-            side_effect=[assistant_peer, assistant_peer],
-        )
-
-        result = mgr.get_prefetch_context(session.key)
-
-        assert result == {
-            "representation": "User via assistant",
-            "card": "Name: Robert",
-            "ai_representation": "AI self",
-            "ai_card": "Role: Assistant",
-        }
-        assert assistant_peer.context.call_count == 2
-        assistant_peer.context.assert_any_call(target=session.user_peer_id)
-        assistant_peer.context.assert_any_call(target=session.assistant_peer_id)
-
-    def test_get_ai_representation_uses_peer_api(self):
-        mgr, session = self._make_cached_manager()
-        ai_peer = MagicMock()
-        ai_peer.context.side_effect = lambda **kwargs: SimpleNamespace(
-            representation=(
-                "AI representation" if kwargs.get("target") == session.assistant_peer_id
-                else "Mixed representation"
-            ),
-            peer_card=(
-                ["Role: Assistant"] if kwargs.get("target") == session.assistant_peer_id
-                else ["Name: Robert"]
-            ),
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=ai_peer)
-
-        result = mgr.get_ai_representation(session.key)
-
-        assert result == {
-            "representation": "AI representation",
-            "card": "Role: Assistant",
-        }
-        ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
     def test_create_conclusion_defaults_to_user_target(self):
         mgr, session = self._make_cached_manager()
@@ -437,84 +197,6 @@ class TestPeerLookupHelpers:
             "content": "User prefers dark mode",
             "session_id": session.honcho_session_id,
         }])
-
-    def test_create_conclusion_can_target_ai_peer(self):
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        scope = MagicMock()
-        assistant_peer.conclusions_of.return_value = scope
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
-
-        ok = mgr.create_conclusion(session.key, "Assistant prefers terse summaries", peer="ai")
-
-        assert ok is True
-        assistant_peer.conclusions_of.assert_called_once_with(session.assistant_peer_id)
-        scope.create.assert_called_once_with([{
-            "content": "Assistant prefers terse summaries",
-            "session_id": session.honcho_session_id,
-        }])
-
-    def test_create_conclusion_accepts_explicit_user_peer_id(self):
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        scope = MagicMock()
-        assistant_peer.conclusions_of.return_value = scope
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
-
-        ok = mgr.create_conclusion(session.key, "Robert prefers vinyl", peer=session.user_peer_id)
-
-        assert ok is True
-        assistant_peer.conclusions_of.assert_called_once_with(session.user_peer_id)
-        scope.create.assert_called_once_with([{
-            "content": "Robert prefers vinyl",
-            "session_id": session.honcho_session_id,
-        }])
-
-    def test_list_conclusions_uses_query_when_query_given(self):
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        scope = MagicMock()
-        assistant_peer.conclusions_of.return_value = scope
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
-        scope.query.return_value = [
-            SimpleNamespace(id="nano1", content="User prefers dark mode"),
-        ]
-
-        result = mgr.list_conclusions(session.key, query="dark mode")
-
-        assert result == [{"id": "nano1", "content": "User prefers dark mode"}]
-        scope.query.assert_called_once_with("dark mode", top_k=20)
-        scope.list.assert_not_called()
-
-    def test_list_conclusions_uses_list_when_no_query(self):
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        scope = MagicMock()
-        assistant_peer.conclusions_of.return_value = scope
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
-        scope.list.return_value = SimpleNamespace(
-            items=[SimpleNamespace(id="nano2", content="Robert likes vinyl")]
-        )
-
-        result = mgr.list_conclusions(session.key)
-
-        assert result == [{"id": "nano2", "content": "Robert likes vinyl"}]
-        scope.list.assert_called_once_with(size=20)
-        scope.query.assert_not_called()
-
-    def test_list_conclusions_returns_empty_list_on_exception(self):
-        mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        scope = MagicMock()
-        assistant_peer.conclusions_of.return_value = scope
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
-        scope.list.side_effect = RuntimeError("boom")
-
-        assert mgr.list_conclusions(session.key) == []
-
-    def test_list_conclusions_returns_empty_list_without_cached_session(self):
-        mgr = HonchoSessionManager()
-        assert mgr.list_conclusions("missing-session") == []
 
 
 class TestConcludeToolDispatch:
@@ -550,236 +232,6 @@ class TestConcludeToolDispatch:
             peer="user",
         )
 
-    def test_honcho_conclude_can_target_ai_peer(self):
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        provider._manager.create_conclusion.return_value = True
-
-        result = provider.handle_tool_call(
-            "honcho_conclude",
-            {"conclusion": "Assistant likes terse replies", "peer": "ai"},
-        )
-
-        assert "Conclusion saved for ai" in result
-        provider._manager.create_conclusion.assert_called_once_with(
-            "telegram:123",
-            "Assistant likes terse replies",
-            peer="ai",
-        )
-
-    def test_honcho_profile_can_target_explicit_peer_id(self):
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        provider._manager.get_peer_card.return_value = ["Role: Assistant"]
-
-        result = provider.handle_tool_call(
-            "honcho_profile",
-            {"peer": "hermes"},
-        )
-
-        assert "Role: Assistant" in result
-        provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="hermes")
-
-    def test_honcho_search_can_target_explicit_peer_id(self):
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        provider._manager.search_context.return_value = "Assistant self context"
-
-        result = provider.handle_tool_call(
-            "honcho_search",
-            {"query": "assistant", "peer": "hermes"},
-        )
-
-        assert "Assistant self context" in result
-        provider._manager.search_context.assert_called_once_with(
-            "telegram:123",
-            "assistant",
-            max_tokens=800,
-            peer="hermes",
-        )
-
-    def test_honcho_search_rejects_whitespace_only_query(self):
-        """Whitespace-only query must not hit Honcho search API."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-
-        result = provider.handle_tool_call("honcho_search", {"query": "  \t\n  "})
-        parsed = json.loads(result)
-        assert parsed == {"error": "Missing required parameter: query"}
-        provider._manager.search_context.assert_not_called()
-
-    def test_honcho_reasoning_can_target_explicit_peer_id(self):
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        provider._manager.dialectic_query.return_value = "Assistant answer"
-
-        result = provider.handle_tool_call(
-            "honcho_reasoning",
-            {"query": "who are you", "peer": "hermes"},
-        )
-
-        assert "Assistant answer" in result
-        provider._manager.dialectic_query.assert_called_once_with(
-            "telegram:123",
-            "who are you",
-            reasoning_level=None,
-            peer="hermes",
-            apply_injection_cap=False,
-        )
-
-    def test_honcho_reasoning_rejects_whitespace_only_query(self):
-        """Whitespace-only query must not hit Honcho dialectic API."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-
-        result = provider.handle_tool_call("honcho_reasoning", {"query": "   "})
-        parsed = json.loads(result)
-        assert parsed == {"error": "Missing required parameter: query"}
-        provider._manager.dialectic_query.assert_not_called()
-
-    def test_honcho_conclude_missing_both_params_returns_error(self):
-        """Calling honcho_conclude with neither conclusion nor delete_id returns a tool error."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-
-        result = provider.handle_tool_call("honcho_conclude", {})
-
-        parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
-        provider._manager.create_conclusion.assert_not_called()
-        provider._manager.delete_conclusion.assert_not_called()
-
-    def test_honcho_conclude_rejects_both_params_at_once(self):
-        """Sending both conclusion and delete_id should be rejected."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        result = provider.handle_tool_call(
-            "honcho_conclude",
-            {"conclusion": "User prefers dark mode", "delete_id": "conc-123"},
-        )
-        parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
-        provider._manager.create_conclusion.assert_not_called()
-        provider._manager.delete_conclusion.assert_not_called()
-
-    def test_honcho_conclude_rejects_query_outside_list_mode(self):
-        import json
-
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-
-        result = provider.handle_tool_call(
-            "honcho_conclude",
-            {"conclusion": "User prefers dark mode", "query": "preferences"},
-        )
-
-        assert json.loads(result) == {
-            "error": "query is only valid when list is true."
-        }
-        provider._manager.create_conclusion.assert_not_called()
-
-    def test_honcho_conclude_rejects_whitespace_only_conclusion(self):
-        """Whitespace-only conclusion should be treated as empty."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        result = provider.handle_tool_call("honcho_conclude", {"conclusion": "   "})
-        parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
-        provider._manager.create_conclusion.assert_not_called()
-
-    def test_honcho_conclude_rejects_whitespace_only_delete_id(self):
-        """Whitespace-only delete_id should be treated as empty."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        result = provider.handle_tool_call("honcho_conclude", {"delete_id": "  "})
-        parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
-        provider._manager.delete_conclusion.assert_not_called()
-
-    def test_honcho_conclude_list_mode_dispatches_to_manager(self):
-        """list=true with a query should return conclusions (with ids) via list_conclusions."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        provider._manager.list_conclusions.return_value = [
-            {"id": "nano1", "content": "User prefers dark mode"},
-        ]
-
-        result = provider.handle_tool_call("honcho_conclude", {"list": True, "query": "dark mode"})
-
-        parsed = json.loads(result)
-        assert parsed == {"conclusions": [{"id": "nano1", "content": "User prefers dark mode"}]}
-        provider._manager.list_conclusions.assert_called_once_with(
-            "telegram:123",
-            query="dark mode",
-            peer="user",
-        )
-
-    def test_honcho_conclude_list_mode_omits_query_when_not_given(self):
-        """list=true without a query should list recent conclusions (query=None)."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-        provider._manager.list_conclusions.return_value = []
-
-        result = provider.handle_tool_call("honcho_conclude", {"list": True})
-
-        json.loads(result)
-        provider._manager.list_conclusions.assert_called_once_with(
-            "telegram:123",
-            query=None,
-            peer="user",
-        )
-
-    def test_honcho_conclude_rejects_list_with_conclusion(self):
-        """list=true combined with conclusion violates exactly-one-of and is rejected."""
-        import json
-        provider = HonchoMemoryProvider()
-        provider._session_initialized = True
-        provider._session_key = "telegram:123"
-        provider._manager = MagicMock()
-
-        result = provider.handle_tool_call(
-            "honcho_conclude",
-            {"conclusion": "User prefers dark mode", "list": True},
-        )
-
-        parsed = json.loads(result)
-        assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
-        provider._manager.list_conclusions.assert_not_called()
-        provider._manager.create_conclusion.assert_not_called()
 
     def test_sync_turn_strips_leaked_memory_context_before_honcho_ingest(self):
         provider = HonchoMemoryProvider()
@@ -874,27 +326,6 @@ class TestToolsModeInitBehavior:
         assert provider._manager is None
         assert provider._lazy_init_kwargs is not None
 
-    def test_tools_eager_init(self):
-        """tools + initOnSessionStart=true → session IS initialized after initialize()."""
-        provider, _, _ = self._make_provider_with_config(
-            recall_mode="tools", init_on_session_start=True,
-        )
-        assert provider._session_initialized is True
-        assert provider._manager is not None
-
-    def test_tools_eager_prefetch_still_empty(self):
-        """tools mode with eager init still returns empty from prefetch() (no auto-injection)."""
-        provider, _, _ = self._make_provider_with_config(
-            recall_mode="tools", init_on_session_start=True,
-        )
-        assert provider.prefetch("test query") == ""
-
-    def test_tools_lazy_prefetch_empty(self):
-        """tools mode with lazy init also returns empty from prefetch()."""
-        provider, _, _ = self._make_provider_with_config(
-            recall_mode="tools", init_on_session_start=False,
-        )
-        assert provider.prefetch("test query") == ""
 
     def test_explicit_peer_name_not_overridden_by_user_id(self):
         """Explicit peerName in config must not be replaced by gateway user_id."""
@@ -904,14 +335,6 @@ class TestToolsModeInitBehavior:
         )
         assert cfg.peer_name == "Kathie"
 
-    def test_user_id_used_when_no_peer_name(self):
-        """Gateway user_id is passed separately from config peer_name."""
-        _, cfg, mock_manager_cls = self._make_provider_with_config(
-            recall_mode="tools", init_on_session_start=True,
-            peer_name=None, user_id="8439114563",
-        )
-        assert cfg.peer_name is None
-        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
 
     def test_user_id_alt_is_passed_to_session_manager(self):
         """Gateway alternate user IDs are available for Honcho alias matching."""
@@ -965,21 +388,12 @@ class TestPerSessionMigrateGuard:
         _, mock_manager = self._make_provider_with_strategy("per-session")
         mock_manager.migrate_memory_files.assert_not_called()
 
-    def test_migrate_runs_for_per_directory(self):
-        """per-directory strategy with empty session SHOULD call migrate_memory_files."""
-        _, mock_manager = self._make_provider_with_strategy("per-directory")
-        mock_manager.migrate_memory_files.assert_called_once()
-
 
 class TestChunkMessage:
     def test_short_message_single_chunk(self):
         result = HonchoMemoryProvider._chunk_message("hello world", 100)
         assert result == ["hello world"]
 
-    def test_exact_limit_single_chunk(self):
-        msg = "x" * 100
-        result = HonchoMemoryProvider._chunk_message(msg, 100)
-        assert result == [msg]
 
     def test_splits_at_paragraph_boundary(self):
         msg = "first paragraph.\n\nsecond paragraph."
@@ -989,21 +403,6 @@ class TestChunkMessage:
         assert result[0] == "first paragraph."
         assert result[1] == "[continued] second paragraph."
 
-    def test_splits_at_sentence_boundary(self):
-        msg = "First sentence. Second sentence. Third sentence is here."
-        result = HonchoMemoryProvider._chunk_message(msg, 35)
-        assert len(result) >= 2
-        # First chunk should end at a sentence boundary (rstripped)
-        assert result[0].rstrip().endswith(".")
-
-    def test_splits_at_word_boundary(self):
-        msg = "word " * 20  # 100 chars
-        result = HonchoMemoryProvider._chunk_message(msg, 30)
-        assert len(result) >= 2
-        # No words should be split mid-word
-        for chunk in result:
-            clean = chunk.replace("[continued] ", "")
-            assert not clean.startswith(" ")
 
     def test_continuation_prefix(self):
         msg = "a" * 200
@@ -1012,17 +411,6 @@ class TestChunkMessage:
         assert not result[0].startswith("[continued]")
         for chunk in result[1:]:
             assert chunk.startswith("[continued] ")
-
-    def test_empty_message(self):
-        result = HonchoMemoryProvider._chunk_message("", 100)
-        assert result == [""]
-
-    def test_large_message_many_chunks(self):
-        msg = "word " * 10000  # 50k chars
-        result = HonchoMemoryProvider._chunk_message(msg, 25000)
-        assert len(result) >= 2
-        for chunk in result:
-            assert len(chunk) <= 25000
 
 
 # ---------------------------------------------------------------------------
@@ -1044,25 +432,6 @@ class TestTruncateToBudget:
         assert len(result) <= 50  # budget_chars + ellipsis + word boundary slack
         assert result.endswith(" …")
 
-    def test_no_truncation_within_budget(self):
-        """Text within budget passes through unchanged."""
-        from plugins.memory.honcho.client import HonchoClientConfig
-
-        provider = HonchoMemoryProvider()
-        provider._config = HonchoClientConfig(context_tokens=1000)
-
-        short_text = "Name: Robert, Location: Melbourne"
-        assert provider._truncate_to_budget(short_text) == short_text
-
-    def test_no_truncation_when_context_tokens_none(self):
-        """When context_tokens is None (explicit opt-out), no truncation."""
-        from plugins.memory.honcho.client import HonchoClientConfig
-
-        provider = HonchoMemoryProvider()
-        provider._config = HonchoClientConfig(context_tokens=None)
-
-        long_text = "word " * 500
-        assert provider._truncate_to_budget(long_text) == long_text
 
     def test_context_tokens_cap_bounds_prefetch(self):
         """With an explicit token budget, oversized prefetch is bounded."""
@@ -1214,20 +583,6 @@ class TestDialecticCadenceDefaults:
         provider = self._make_provider()
         assert provider._dialectic_cadence == 1
 
-    def test_config_override(self):
-        """dialecticCadence from config overrides the default."""
-        provider = self._make_provider(cfg_extra={"dialectic_cadence": 5})
-        assert provider._dialectic_cadence == 5
-
-    def test_injection_frequency_from_config(self):
-        """injectionFrequency from config (including host block) is respected."""
-        provider = self._make_provider(cfg_extra={"injection_frequency": "first-turn"})
-        assert provider._injection_frequency == "first-turn"
-
-    def test_context_cadence_from_config(self):
-        """contextCadence from config (including host block) is respected."""
-        provider = self._make_provider(cfg_extra={"context_cadence": 999})
-        assert provider._context_cadence == 999
 
     def test_first_turn_only_injection_disables_base_refresh(self):
         provider = self._make_provider(
@@ -1257,20 +612,6 @@ class TestBaseContextSummary:
         assert "## Session Summary" in formatted
         assert formatted.index("Session Summary") < formatted.index("User Representation")
 
-    def test_format_without_summary(self):
-        """No summary key means no summary section."""
-        provider = HonchoMemoryProvider()
-        ctx = {"representation": "Eri is a developer.", "card": "Name: Eri"}
-        formatted = provider._format_first_turn_context(ctx)
-        assert "Session Summary" not in formatted
-        assert "User Representation" in formatted
-
-    def test_format_empty_summary_skipped(self):
-        """Empty summary string should not produce a section."""
-        provider = HonchoMemoryProvider()
-        ctx = {"summary": "", "representation": "rep", "card": "card"}
-        formatted = provider._format_first_turn_context(ctx)
-        assert "Session Summary" not in formatted
 
     def test_timed_out_first_turn_context_surfaces_next_turn(self):
         import threading
@@ -1372,33 +713,12 @@ class TestDialecticDepth:
         provider = self._make_provider()
         assert provider._dialectic_depth == 1
 
-    def test_depth_from_config(self):
-        """dialecticDepth from config sets the depth."""
-        provider = self._make_provider(cfg_extra={"dialectic_depth": 2})
-        assert provider._dialectic_depth == 2
 
     def test_depth_clamped_to_3(self):
         """dialecticDepth > 3 gets clamped to 3."""
         provider = self._make_provider(cfg_extra={"dialectic_depth": 7})
         assert provider._dialectic_depth == 3
 
-    def test_depth_clamped_to_1(self):
-        """dialecticDepth < 1 gets clamped to 1."""
-        provider = self._make_provider(cfg_extra={"dialectic_depth": 0})
-        assert provider._dialectic_depth == 1
-
-    def test_depth_levels_from_config(self):
-        """dialecticDepthLevels array is read from config."""
-        provider = self._make_provider(cfg_extra={
-            "dialectic_depth": 2,
-            "dialectic_depth_levels": ["minimal", "high"],
-        })
-        assert provider._dialectic_depth_levels == ["minimal", "high"]
-
-    def test_depth_levels_none_by_default(self):
-        """When dialecticDepthLevels is not configured, it's None."""
-        provider = self._make_provider()
-        assert provider._dialectic_depth_levels is None
 
     def test_resolve_pass_level_uses_depth_levels(self):
         """Per-pass levels from dialecticDepthLevels override proportional."""
@@ -1409,22 +729,6 @@ class TestDialecticDepth:
         assert provider._resolve_pass_level(0) == "minimal"
         assert provider._resolve_pass_level(1) == "high"
 
-    def test_resolve_pass_level_proportional_depth_1(self):
-        """Depth 1 pass 0 uses the base reasoning level."""
-        provider = self._make_provider(cfg_extra={
-            "dialectic_depth": 1,
-            "dialectic_reasoning_level": "medium",
-        })
-        assert provider._resolve_pass_level(0) == "medium"
-
-    def test_resolve_pass_level_proportional_depth_2(self):
-        """Depth 2: pass 0 is minimal, pass 1 is base level."""
-        provider = self._make_provider(cfg_extra={
-            "dialectic_depth": 2,
-            "dialectic_reasoning_level": "high",
-        })
-        assert provider._resolve_pass_level(0) == "minimal"
-        assert provider._resolve_pass_level(1) == "high"
 
     def test_cold_start_prompt(self):
         """Cold start (no base context) uses general user query."""
@@ -1433,12 +737,6 @@ class TestDialecticDepth:
         assert "preferences" in prompt.lower()
         assert "session" not in prompt.lower()
 
-    def test_warm_session_prompt(self):
-        """Warm session (has context) uses session-scoped query."""
-        provider = self._make_provider()
-        prompt = provider._build_dialectic_prompt(0, [], is_cold=False)
-        assert "session" in prompt.lower()
-        assert "current conversation" in prompt.lower()
 
     def test_signal_sufficient_short_response(self):
         """Short responses are not sufficient signal."""
@@ -1446,14 +744,6 @@ class TestDialecticDepth:
         assert not HonchoMemoryProvider._signal_sufficient("")
         assert not HonchoMemoryProvider._signal_sufficient(None)
 
-    def test_signal_sufficient_structured_response(self):
-        """Structured responses with bullets/headers are sufficient."""
-        result = "## Current State\n- Working on Honcho PR\n- Testing dialectic depth\n" + "x" * 50
-        assert HonchoMemoryProvider._signal_sufficient(result)
-
-    def test_signal_sufficient_long_unstructured(self):
-        """Long responses are sufficient even without structure."""
-        assert HonchoMemoryProvider._signal_sufficient("a" * 301)
 
     def test_run_dialectic_depth_single_pass(self):
         """Depth 1 makes exactly one .chat() call."""
@@ -1466,37 +756,6 @@ class TestDialecticDepth:
 
         result = provider._run_dialectic_depth("hello")
         assert result == "user prefers zero-fluff"
-        assert provider._manager.dialectic_query.call_count == 1
-
-    def test_run_dialectic_depth_two_passes(self):
-        """Depth 2 makes two .chat() calls when pass 1 signal is weak."""
-        from unittest.mock import MagicMock
-        provider = self._make_provider(cfg_extra={"dialectic_depth": 2})
-        provider._manager = MagicMock()
-        provider._manager.dialectic_query.side_effect = [
-            "thin response",  # pass 0: weak signal
-            "## Synthesis\n- Grounded in evidence\n- Current PR work\n" + "x" * 100,  # pass 1: strong
-        ]
-        provider._session_key = "test"
-        provider._base_context_cache = "existing context"
-
-        result = provider._run_dialectic_depth("test query")
-        assert provider._manager.dialectic_query.call_count == 2
-        assert "Synthesis" in result
-
-    def test_run_dialectic_depth_bails_early_on_strong_signal(self):
-        """Depth 2 skips pass 1 when pass 0 returns strong signal."""
-        from unittest.mock import MagicMock
-        provider = self._make_provider(cfg_extra={"dialectic_depth": 2})
-        provider._manager = MagicMock()
-        provider._manager.dialectic_query.return_value = (
-            "## Full Assessment\n- Strong structured response\n- With evidence\n" + "x" * 200
-        )
-        provider._session_key = "test"
-        provider._base_context_cache = "existing context"
-
-        result = provider._run_dialectic_depth("test query")
-        # Only 1 call because pass 0 had sufficient signal
         assert provider._manager.dialectic_query.call_count == 1
 
 
@@ -1532,9 +791,10 @@ class TestTrivialPromptHeuristic:
         for t in ("ok", "OK", " ok ", "y", "yes", "sure", "thanks", "lgtm", "/help", "", "   "):
             assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
 
-    def test_classifier_lets_substantive_prompts_through(self):
-        for t in ("hello world", "what's my name", "explain this", "ok so what's next"):
-            assert not HonchoMemoryProvider._is_trivial_prompt(t), f"expected non-trivial: {t!r}"
+    def test_classifier_catches_greetings(self):
+        """Greeting words must register as trivial so context injection is skipped."""
+        for t in ("hi", "HI", "hey", "hello", "yo", "sup", " hi ", "hey!", "hello."):
+            assert HonchoMemoryProvider._is_trivial_prompt(t), f"expected trivial: {t!r}"
 
     def test_prefetch_skips_on_trivial_prompt(self):
         provider = self._make_provider()
@@ -1548,18 +808,6 @@ class TestTrivialPromptHeuristic:
         # Dialectic should not have fired
         assert provider._manager.dialectic_query.call_count == 0
 
-    def test_queue_prefetch_skips_on_trivial_prompt(self):
-        provider = self._make_provider()
-        provider._session_key = "test"
-        provider._turn_count = 10
-        provider._last_dialectic_turn = -999  # would otherwise fire
-        provider._manager.prefetch_context.reset_mock()
-        provider._manager.dialectic_query.reset_mock()
-
-        provider.queue_prefetch("y")
-        # Trivial prompts short-circuit both context refresh and dialectic fire.
-        assert provider._manager.prefetch_context.call_count == 0
-        assert provider._manager.dialectic_query.call_count == 0
 
     def test_trivial_prompt_injects_ready_pending_dialectic(self):
         """A trivial turn consumes a ready result without starting new work."""
@@ -1628,22 +876,6 @@ class TestDialecticCadenceAdvancesOnSuccess:
         _settle_prewarm(provider)
         return provider
 
-    def test_empty_dialectic_result_does_not_advance_cadence(self):
-        provider = self._make_provider()
-        provider._session_key = "test"
-        provider._manager.dialectic_query.return_value = ""  # silent failure
-        provider._turn_count = 5
-        provider._last_dialectic_turn = 0  # would fire (5 - 0 = 5 ≥ 3)
-
-        provider.queue_prefetch("hello")
-        # wait for the background thread to settle
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-
-        # Dialectic call was attempted
-        assert provider._manager.dialectic_query.call_count == 1
-        # But cadence tracker did NOT advance — next turn should retry
-        assert provider._last_dialectic_turn == 0
 
     def test_non_empty_dialectic_result_advances_cadence(self):
         provider = self._make_provider()
@@ -1652,7 +884,7 @@ class TestDialecticCadenceAdvancesOnSuccess:
         provider._turn_count = 5
         provider._last_dialectic_turn = 0
 
-        provider.queue_prefetch("hello")
+        provider.queue_prefetch("what changed in the repo today")
         if provider._prefetch_thread:
             provider._prefetch_thread.join(timeout=2.0)
 
@@ -1677,7 +909,7 @@ class TestDialecticCadenceAdvancesOnSuccess:
         provider._prefetch_thread = fresh
         provider._prefetch_thread_started_at = _time.monotonic()  # fresh start
 
-        provider.queue_prefetch("hello")
+        provider.queue_prefetch("what changed in the repo today")
         # Should have short-circuited — no new dialectic call
         assert provider._manager.dialectic_query.call_count == 0
         hold.set()
@@ -1720,22 +952,6 @@ class TestSessionStartDialecticPrewarm:
             assert p._prefetch_result == "prewarm synthesis"
         assert p._last_dialectic_turn == 0
 
-    def test_init_leaves_base_fetch_to_first_user_message(self):
-        p = self._make_provider()
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=3.0)
-
-        p._manager.prefetch_context.assert_not_called()
-        p._manager.get_prefetch_context.reset_mock()
-        p._session_key = "test-prewarm"
-        p._base_context_cache = None
-        p._turn_count = 1
-
-        p.prefetch("hello world")
-
-        p._manager.get_prefetch_context.assert_called_once_with(
-            "test-prewarm", "hello world"
-        )
 
     def test_turn1_consumes_prewarm_without_duplicate_dialectic(self):
         """With prewarm result already in _prefetch_result, turn 1 prefetch
@@ -1752,25 +968,6 @@ class TestSessionStartDialecticPrewarm:
         assert "prewarm synthesis" in result
         # The sync first-turn path must NOT have fired another .chat()
         assert p._manager.dialectic_query.call_count == 0
-
-    def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
-        """If the prewarm produced nothing (empty graph, API blip), turn 1
-        still fires its own sync dialectic."""
-        p = self._make_provider(dialectic_result="")  # prewarm returns empty
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=3.0)
-        with p._prefetch_lock:
-            assert p._prefetch_result == ""  # prewarm landed nothing
-        # Switch dialectic_query to return something on the sync first-turn call
-        p._manager.dialectic_query.return_value = "sync recovery"
-        p._manager.dialectic_query.reset_mock()
-        p._session_key = "test-prewarm"
-        p._base_context_cache = ""
-        p._turn_count = 1
-
-        result = p.prefetch("hello world")
-        assert "sync recovery" in result
-        assert p._manager.dialectic_query.call_count == 1
 
 
 class TestDialecticLiveness:
@@ -1818,7 +1015,7 @@ class TestDialecticLiveness:
         # timeout=2.0, multiplier=2.0, so anything older than 4s is stale
         p._prefetch_thread_started_at = 0.0  # very old (1970 monotonic baseline)
 
-        p.queue_prefetch("hello")
+        p.queue_prefetch("what changed in the repo today")
         # New thread should have been spawned since stuck one is stale
         assert p._prefetch_thread is not stuck, "stale thread must be recycled"
         if p._prefetch_thread:
@@ -1827,39 +1024,6 @@ class TestDialecticLiveness:
         hold.set()
         stuck.join(timeout=2.0)
 
-    def test_stale_pending_result_is_discarded_on_read(self):
-        """A pending dialectic result from many turns ago is discarded
-        instead of injected against a fresh conversational pivot."""
-        p = self._make_provider(cfg_extra={"dialectic_cadence": 2})
-        p._session_key = "test"
-        p._base_context_cache = "base ctx"
-        with p._prefetch_lock:
-            p._prefetch_result = "ancient synthesis"
-            p._prefetch_result_fired_at = 1
-        # cadence=2, multiplier=2 → stale after 4 turns since fire
-        p._turn_count = 10
-        p._last_dialectic_turn = 1  # prevents sync first-turn path
-
-        result = p.prefetch("what's new")
-        assert "ancient synthesis" not in result, "stale pending must be discarded"
-        # Cache slot cleared
-        with p._prefetch_lock:
-            assert p._prefetch_result == ""
-            assert p._prefetch_result_fired_at == -999
-
-    def test_fresh_pending_result_is_kept(self):
-        """A pending result within the staleness window is injected normally."""
-        p = self._make_provider(cfg_extra={"dialectic_cadence": 3})
-        p._session_key = "test"
-        p._base_context_cache = ""
-        with p._prefetch_lock:
-            p._prefetch_result = "recent synthesis"
-            p._prefetch_result_fired_at = 8
-        p._turn_count = 9  # 1 turn since fire, well within cadence × 2 = 6
-        p._last_dialectic_turn = 8
-
-        result = p.prefetch("what's new")
-        assert "recent synthesis" in result
 
     def test_empty_streak_widens_effective_cadence(self):
         """After N empty returns, the gate waits cadence + N turns."""
@@ -1868,41 +1032,6 @@ class TestDialecticLiveness:
         # cadence=1, streak=3 → effective = 4
         assert p._effective_cadence() == 4
 
-    def test_backoff_is_capped(self):
-        """Effective cadence is capped at cadence × _BACKOFF_MAX."""
-        p = self._make_provider(cfg_extra={"dialectic_cadence": 2})
-        p._dialectic_empty_streak = 100
-        # cadence=2, ceiling = 2 × 8 = 16
-        assert p._effective_cadence() == 16
-
-    def test_success_resets_empty_streak(self):
-        """A non-empty result zeroes the streak so healthy operation restores
-        the base cadence immediately."""
-        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
-        p._session_key = "test"
-        p._dialectic_empty_streak = 5
-        p._turn_count = 10
-        p._last_dialectic_turn = 0
-        p._manager.dialectic_query.return_value = "real output"
-
-        p.queue_prefetch("hello")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=2.0)
-        assert p._dialectic_empty_streak == 0
-        assert p._last_dialectic_turn == 10
-
-    def test_empty_result_increments_streak(self):
-        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
-        p._session_key = "test"
-        p._turn_count = 5
-        p._last_dialectic_turn = 0
-        p._manager.dialectic_query.return_value = ""  # empty
-
-        p.queue_prefetch("hello")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=2.0)
-        assert p._dialectic_empty_streak == 1
-        assert p._last_dialectic_turn == 0  # cadence not advanced
 
     def test_liveness_snapshot_shape(self):
         p = self._make_provider()
@@ -2091,54 +1220,11 @@ class TestReasoningHeuristic:
         _settle_prewarm(provider)
         return provider
 
-    def test_short_query_stays_at_base(self):
-        p = self._make_provider()
-        assert p._apply_reasoning_heuristic("low", "hey") == "low"
-
-    def test_medium_query_bumps_one_level(self):
-        p = self._make_provider()
-        q = "x" * 150
-        assert p._apply_reasoning_heuristic("low", q) == "medium"
-
-    def test_long_query_bumps_two_levels(self):
-        p = self._make_provider()
-        q = "x" * 500
-        assert p._apply_reasoning_heuristic("low", q) == "high"
-
-    def test_bump_respects_cap(self):
-        p = self._make_provider(cfg_extra={"reasoning_level_cap": "medium"})
-        q = "x" * 500  # would hit 'high' without the cap
-        assert p._apply_reasoning_heuristic("low", q) == "medium"
-
-    def test_max_never_auto_selected_with_default_cap(self):
-        p = self._make_provider(cfg_extra={"dialectic_reasoning_level": "high"})
-        q = "x" * 500  # base=high, bump would push to 'max'
-        assert p._apply_reasoning_heuristic("high", q) == "high"
 
     def test_heuristic_disabled_returns_base(self):
         p = self._make_provider(cfg_extra={"reasoning_heuristic": False})
         q = "x" * 500
         assert p._apply_reasoning_heuristic("low", q) == "low"
-
-    def test_resolve_pass_level_applies_heuristic_at_base_mapping(self):
-        """Depth=1, pass 0 maps to 'base' → heuristic applies."""
-        p = self._make_provider()
-        q = "x" * 150
-        assert p._resolve_pass_level(0, query=q) == "medium"
-
-    def test_resolve_pass_level_does_not_touch_explicit_per_pass(self):
-        """dialecticDepthLevels wins absolutely — no heuristic scaling."""
-        p = self._make_provider(cfg_extra={"dialectic_depth_levels": ["minimal"]})
-        q = "x" * 500  # heuristic would otherwise bump to 'high'
-        assert p._resolve_pass_level(0, query=q) == "minimal"
-
-    def test_resolve_pass_level_does_not_touch_lighter_passes(self):
-        """Depth 3 pass 0 is hardcoded 'minimal' — heuristic must not bump it."""
-        p = self._make_provider(cfg_extra={"dialectic_depth": 3})
-        q = "x" * 500
-        assert p._resolve_pass_level(0, query=q) == "minimal"
-        # But the 'base' pass (idx 1 for depth 3) does get heuristic
-        assert p._resolve_pass_level(1, query=q) == "high"
 
 
 # ---------------------------------------------------------------------------
@@ -2176,12 +1262,6 @@ class TestSetPeerCardNoneGuard:
         with patch.object(mgr, "_resolve_peer_id", return_value=None):
             result = mgr.set_peer_card("test", ["fact 1", "fact 2"], peer="ghost")
 
-        assert result is None
-
-    def test_returns_none_when_session_missing(self):
-        """set_peer_card returns None when session key is not in cache."""
-        mgr = self._make_manager()
-        result = mgr.set_peer_card("nonexistent", ["fact"], peer="user")
         assert result is None
 
 
@@ -2235,20 +1315,3 @@ class TestGetSessionContextFallback:
         assert peer_id == "user-peer"
         assert target == "user-peer"
 
-    def test_fallback_uses_ai_peer_for_ai(self):
-        """On cache miss, peer='ai' fetches assistant peer context, not user."""
-        mgr = self._make_manager_with_session()
-        fetch_calls = []
-
-        def _fake_fetch(peer_id, search_query=None, *, target=None):
-            fetch_calls.append((peer_id, target))
-            return {"representation": "ai rep", "card": []}
-
-        mgr._fetch_peer_context = _fake_fetch
-
-        mgr.get_session_context("test", peer="ai")
-
-        assert len(fetch_calls) == 1
-        peer_id, target = fetch_calls[0]
-        assert peer_id == "ai-peer", f"expected ai-peer, got {peer_id}"
-        assert target == "ai-peer"

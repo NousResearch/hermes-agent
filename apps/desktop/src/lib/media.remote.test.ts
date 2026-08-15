@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-// downloadGatewayMediaFile drives an <a download> click, so these need a DOM.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -11,7 +9,8 @@ import {
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
-  resolveMediaDisplaySrc
+  resolveMediaDisplaySrc,
+  resolveMediaPlaybackSrc
 } from './media'
 
 describe('isRemoteGateway', () => {
@@ -139,6 +138,40 @@ describe('resolveMediaDisplaySrc', () => {
   })
 })
 
+describe('resolveMediaPlaybackSrc', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('keeps a remote HTTPS video URL unchanged', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 'secret' } as never)
+
+    await expect(resolveMediaPlaybackSrc('https://cdn.example.com/render.mp4')).resolves.toBe(
+      'https://cdn.example.com/render.mp4'
+    )
+  })
+
+  it('routes gateway-local video through the authenticated download endpoint', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 's e/cret' } as never)
+
+    await expect(resolveMediaPlaybackSrc('/root/outputs/render.mp4')).resolves.toBe(
+      'https://gateway.test/api/files/download?path=%2Froot%2Foutputs%2Frender.mp4&token=s%20e%2Fcret'
+    )
+  })
+
+  it('uses the Electron streaming protocol for local desktop video', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
+      'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
+    )
+  })
+})
+
 describe('gatewayMediaDataUrl', () => {
   const api = vi.fn(async ({ path }: { path: string }) => {
     if (path.startsWith('/api/fs/read-data-url?')) {
@@ -170,49 +203,37 @@ describe('gatewayMediaDataUrl', () => {
 })
 
 describe('downloadGatewayMediaFile', () => {
-  const api = vi.fn(async ({ path }: { path: string }) => {
-    if (path.startsWith('/api/fs/read-data-url?')) {
-      return { dataUrl: 'data:text/markdown;base64,IyByZXBvcnQ=' }
-    }
-
-    throw new Error(`unexpected path ${path}`)
-  })
-
-  let clickSpy: ReturnType<typeof vi.spyOn>
+  const saveGatewayFile = vi.fn(async () => ({ path: '/Users/me/Downloads/report.md', saved: true }))
 
   beforeEach(() => {
-    api.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { api }, setTimeout: vi.fn() })
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ blob: async () => new Blob(['# report'], { type: 'text/markdown' }) }))
-    )
-    URL.createObjectURL = vi.fn(() => 'blob:remote-artifact')
-    URL.revokeObjectURL = vi.fn()
-    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    $connection.set({ mode: 'remote' } as never)
+    saveGatewayFile.mockClear()
+    vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
+    $connection.set({ mode: 'remote', profile: 'docker-gw' } as never)
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.clearAllMocks()
-    clickSpy.mockRestore()
     $connection.set(null)
   })
 
-  it('downloads gateway files through the desktop fs bridge', async () => {
-    await downloadGatewayMediaFile('file:///Users/me/project/report.md')
-
-    expect(api).toHaveBeenCalledWith({
-      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Freport.md'
+  it('downloads gateway files through the native desktop save bridge', async () => {
+    await expect(downloadGatewayMediaFile('file:///Users/me/project/a%20b.md')).resolves.toEqual({
+      path: '/Users/me/Downloads/report.md',
+      saved: true
     })
-    expect(clickSpy).toHaveBeenCalledOnce()
+
+    expect(saveGatewayFile).toHaveBeenCalledWith({
+      path: '/Users/me/project/a b.md',
+      profile: 'docker-gw',
+      suggestedName: 'a b.md'
+    })
   })
 
-  it('rejects when the gateway refuses the file read', async () => {
-    api.mockRejectedValueOnce(new Error('403 File is not readable'))
+  it('rejects when the desktop bridge is unavailable', async () => {
+    vi.stubGlobal('window', { hermesDesktop: {} })
 
-    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow('403')
-    expect(clickSpy).not.toHaveBeenCalled()
+    await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
+      'Desktop file download bridge'
+    )
   })
 })

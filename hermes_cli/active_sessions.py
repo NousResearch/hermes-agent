@@ -70,10 +70,47 @@ def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
     return coerce_max_concurrent_sessions(raw, key=key)
 
 
-def active_session_limit_message(active_count: int, max_sessions: int) -> str:
+def format_age(seconds: float) -> str:
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h" if not minutes else f"{hours}h{minutes}m"
+
+
+def summarize_holders(entries: list[dict[str, Any]]) -> str:
+    """Compact "who is holding the slots" phrase, e.g. ``desktop x4, cli``."""
+    if not entries:
+        return ""
+    counts: dict[str, int] = {}
+    for entry in entries:
+        surface = str(entry.get("surface") or "unknown")
+        counts[surface] = counts.get(surface, 0) + 1
+    held = ", ".join(
+        f"{surface} x{n}" if n > 1 else surface
+        for surface, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    started = [t for t in (_optional_float(e.get("started_at")) for e in entries) if t]
+    if started:
+        held += f", oldest {format_age(time.time() - min(started))} ago"
+    return held
+
+
+def active_session_limit_message(
+    active_count: int,
+    max_sessions: int,
+    entries: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    # Name the holders: the slots are shared across CLI, desktop/TUI and the
+    # messaging gateway, so the surface that gets rejected is usually NOT the
+    # one squatting on them (idle desktop chats starving a Discord bot, say).
+    # Without this the message is unactionable and the only way to find out is
+    # reading runtime/active_sessions.json by hand.
+    held = summarize_holders(entries or [])
+    detail = f" Held by: {held}." if held else ""
     return (
-        f"Hermes is at the active session limit ({active_count}/{max_sessions}). "
-        "Try again when another session finishes."
+        f"Hermes is at the active session limit ({active_count}/{max_sessions})."
+        f"{detail} Try again when another session finishes."
     )
 
 
@@ -224,6 +261,14 @@ class ActiveSessionLease:
     surface: str
     enabled: bool = True
     released: bool = False
+    # Registry paths pinned at acquisition time. A lease acquired under the
+    # root ``HERMES_HOME`` must release against the same registry even when
+    # ``release()`` runs inside a profile home override (native multiplex
+    # routes turns under ``_profile_runtime_scope``), otherwise the root
+    # entry survives until process exit and the session cap fills with
+    # phantom leases (#85431).
+    state_path: Optional[Path] = None
+    lock_path: Optional[Path] = None
 
     def release(self) -> None:
         if self.released or not self.enabled:
@@ -284,7 +329,9 @@ def try_acquire_active_session(
                 max_sessions,
                 surface,
             )
-            return None, active_session_limit_message(active_count, max_sessions)
+            return None, active_session_limit_message(
+                active_count, max_sessions, entries
+            )
         entries.append(entry)
         _write_entries(state_path, entries)
 
@@ -292,13 +339,18 @@ def try_acquire_active_session(
         lease_id=lease_id,
         session_id=str(session_id),
         surface=str(surface),
+        state_path=state_path,
+        lock_path=_lock_path(),
     ), None
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:
-    state_path = _state_path()
+    # Prefer the registry the lease was acquired against: the caller may be
+    # running under a profile HERMES_HOME override (#85431).
+    state_path = lease.state_path or _state_path()
+    lock_path = lease.lock_path or _lock_path()
     try:
-        with _FileLock(_lock_path()):
+        with _FileLock(lock_path):
             entries = _prune_dead(_read_entries(state_path))
             kept = [
                 entry
@@ -327,8 +379,9 @@ def transfer_active_session(
         lease.session_id = new_session_id
         return True
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    state_path = lease.state_path or _state_path()
+    lock_path = lease.lock_path or _lock_path()
+    with _FileLock(lock_path):
         entries = _prune_dead(_read_entries(state_path))
         updated = False
         for entry in entries:
@@ -346,6 +399,36 @@ def transfer_active_session(
             _write_entries(state_path, entries)
             lease.session_id = new_session_id
         return updated
+
+
+def release_orphaned_leases(live_lease_ids: set[str]) -> int:
+    """Drop this process's registry entries that no live session owns.
+
+    ``_prune_dead`` only reclaims leases whose owning process died. A server
+    that runs for days (``hermes dashboard`` / ``serve``) never trips that
+    check, so a lease whose session skipped teardown is held until restart.
+    The owning process is the only authority on which of its own leases are
+    real, so it drops the rest itself — exact, with no heartbeat write on the
+    turn path and no staleness threshold to tune.
+    """
+    pid = os.getpid()
+    state_path = _state_path()
+    # With the cap disabled the registry is never written, so don't take a lock
+    # (or create its file) on the idle-reaper tick for the majority of installs.
+    if not state_path.exists():
+        return 0
+    with _FileLock(_lock_path()):
+        entries = _prune_dead(_read_entries(state_path))
+        kept = [
+            entry
+            for entry in entries
+            if entry.get("pid") != pid
+            or str(entry.get("lease_id") or "") in live_lease_ids
+        ]
+        dropped = len(entries) - len(kept)
+        if dropped:
+            _write_entries(state_path, kept)
+    return dropped
 
 
 def active_session_registry_snapshot() -> list[dict[str, Any]]:

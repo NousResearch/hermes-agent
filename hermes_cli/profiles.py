@@ -20,6 +20,7 @@ Usage::
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -30,11 +31,14 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
+logger = logging.getLogger(__name__)
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -237,6 +241,9 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
     "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    # Desktop appearance/interface overlay (written by the desktop app's
+    # profile export; applied by its import — see desktop.json handling).
+    "desktop.json",
     # User-facing skill, cron, and session artifacts
     "skills", "cron", "scripts", "sessions",
     # Plugin / memory surfaces (per-profile overrides live here)
@@ -683,9 +690,10 @@ def _read_config_model(profile_dir: Path) -> tuple:
     if not config_path.exists():
         return None, None
     try:
-        import yaml
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        # Multi-profile display read: load_config() targets the ACTIVE
+        # profile's home, so read THIS profile's file via the raw primitive.
+        from hermes_cli.config import read_user_config_raw
+        cfg = read_user_config_raw(config_path)
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, None
@@ -866,8 +874,12 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+    # Atomic write: bare open("w") truncates before the dump, and the read
+    # path above swallows parse errors as {}, so a crashed write would
+    # silently drop unspecified fields on the next call (#51356, #16743).
+    from utils import atomic_yaml_write
+
+    atomic_yaml_write(path, existing, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +958,10 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+def profiles_to_serve(
+    multiplex: bool,
+    profile_allowlist: Optional[List[str]] = None,
+) -> List[Tuple[str, Path]]:
     """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
 
     This is the single chokepoint for "which profiles does the inbound gateway
@@ -957,7 +972,9 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
       always had. The name is ``"default"`` for the default profile or the
       active named profile's id.
     - ``multiplex=True``: returns the default profile plus every valid named
-      profile under ``profiles/``, each paired with its own HERMES_HOME.
+      profile under ``profiles/``, each paired with its own HERMES_HOME. When
+      ``profile_allowlist`` is provided, only selected named profiles are
+      included; the default profile is always served.
 
     Intentionally lightweight (a directory scan + name validation only): no
     per-profile config reads, gateway-running probes, or skill counts like
@@ -971,6 +988,19 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
         return [(active, get_profile_dir(active))]
 
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+    allowed: Optional[set[str]] = None
+    if profile_allowlist is not None:
+        allowed = set()
+        for entry in profile_allowlist:
+            if not isinstance(entry, str):
+                continue
+            try:
+                name = normalize_profile_name(entry)
+                validate_profile_name(name)
+            except ValueError:
+                continue
+            if name != "default":
+                allowed.add(name)
 
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
@@ -982,7 +1012,18 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
                 continue  # default is the built-in entry already added above
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if allowed is not None and name not in allowed:
+                continue
             serve.append((name, entry))
+
+    if allowed is not None:
+        missing = tuple(sorted(allowed - {name for name, _ in serve}))
+        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
+            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
+            logger.warning(
+                "Skipping missing gateway.multiplex_profile_allowlist profile(s): %s",
+                ", ".join(missing),
+            )
 
     return serve
 
@@ -1874,7 +1915,8 @@ def _default_export_ignore(root_dir: Path):
     * **Universal exclusions at any depth** — ``__pycache__``, sockets,
       temp files; plus npm lockfiles, which may appear at the root.
 
-    All other profile artifacts are copied through untouched.
+    Surviving text files are later force-redacted by
+    :func:`_scrub_export_secrets` before the archive is written.
     """
 
     def _ignore(directory: str, contents: list) -> set:
@@ -1897,10 +1939,106 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-def export_profile(name: str, output_path: str) -> Path:
+def _make_profile_archive(base: str, root_dir: str, base_dir: str) -> str:
+    """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` — GNU tar format.
+
+    Not :func:`shutil.make_archive`: that writes PAX (Python's tarfile default
+    since 3.8), whose fractional-mtime records macOS Archive Utility rejects —
+    double-clicking an exported profile threw "Error 94 - Bad message." GNU
+    format keeps long paths working (longlink extensions) and stays integer-
+    mtime, so Finder, bsdtar, and gnutar all extract it.
+    """
+    import tarfile
+
+    archive_path = f"{base}.tar.gz"
+    with tarfile.open(archive_path, "w:gz", format=tarfile.GNU_FORMAT) as tf:
+        tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+    return archive_path
+
+
+# Text / config suffixes walked during export secret scrubbing. Binary DBs,
+# images, and other non-text artifacts are left alone (they may still leave
+# via named-profile export — scrubbing those is a separate concern).
+_EXPORT_REDACT_SUFFIXES = frozenset({
+    ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl",
+    ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
+    ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx",
+    ".css", ".html", ".xml", ".csv",
+})
+# pathlib.Path(".cursorrules").suffix is "" — name-match these.
+# ``*.env.example`` uses endswith (suffix would be ``.example``).
+_EXPORT_REDACT_NAMES = frozenset({
+    ".cursorrules",
+})
+
+
+def _should_redact_export_file(path: Path) -> bool:
+    """True when *path* is a text-ish file we should secret-scrub on export."""
+    name = path.name
+    if name in _EXPORT_REDACT_NAMES:
+        return True
+    if name.lower().endswith(".env.example"):
+        return True
+    return path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
+
+
+def _scrub_export_secrets(staged: Path) -> None:
+    """Force-redact secret-shaped strings in a staged export tree.
+
+    Same ``agent.redact.redact_sensitive_text(..., force=True)`` pass used by
+    ``hermes sessions export --redact``. Runs on the *staged copy only* so the
+    live profile is never rewritten. ``force=True`` ignores
+    ``security.redact_secrets`` / ``HERMES_REDACT_SECRETS`` — share archives
+    must not emit raw keys even when the user has disabled live redaction.
+
+    Symlinks to text files are materialized into regular files when their
+    content changes, so redaction never follows a link back into the source
+    profile (``copytree(..., symlinks=True)``).
+    """
+    from agent.redact import redact_sensitive_text
+
+    for path in staged.rglob("*"):
+        try:
+            is_link = path.is_symlink()
+        except OSError:
+            continue
+        if is_link:
+            # Skip broken links and symlinked directories.
+            try:
+                if not path.exists() or path.is_dir():
+                    continue
+            except OSError:
+                continue
+        elif not path.is_file():
+            continue
+
+        if not _should_redact_export_file(path):
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+
+        redacted = redact_sensitive_text(text, force=True)
+        if redacted == text:
+            continue
+
+        if is_link:
+            path.unlink()
+        path.write_text(redacted, encoding="utf-8")
+
+
+def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive.
 
-    Returns the output file path.
+    ``extra_files`` maps root-relative filenames (e.g. ``desktop.json``) to
+    text content staged into the archive alongside the profile's own files —
+    the desktop app uses it to bundle its appearance/interface overlay.
+
+    Credential files (``auth.json``, ``.env``) are excluded, and secret-shaped
+    strings in staged text files are force-redacted before the archive is
+    written. Returns the output file path.
     """
     import tempfile
 
@@ -1911,8 +2049,15 @@ def export_profile(name: str, output_path: str) -> Path:
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
 
     output = Path(output_path)
-    # shutil.make_archive wants the base name without extension
+    # Archive base name without extension (.tar.gz appended by the writer).
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
+
+    def _stage_extras(staged: Path) -> None:
+        for rel, content in (extra_files or {}).items():
+            parts = _normalize_profile_archive_parts(rel)
+            target = staged.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
     if canon == "default":
         # The default profile IS ~/.hermes itself — its parent is ~/ and its
@@ -1926,7 +2071,9 @@ def export_profile(name: str, output_path: str) -> Path:
                 symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
-            result = shutil.make_archive(base, "gztar", tmpdir, "default")
+            _stage_extras(staged)
+            _scrub_export_secrets(staged)
+            result = _make_profile_archive(base, tmpdir, "default")
             return Path(result)
 
     # Named profiles — stage a filtered copy to exclude credentials
@@ -1939,7 +2086,9 @@ def export_profile(name: str, output_path: str) -> Path:
             symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
-        result = shutil.make_archive(base, "gztar", tmpdir, canon)
+        _stage_extras(staged)
+        _scrub_export_secrets(staged)
+        result = _make_profile_archive(base, tmpdir, canon)
         return Path(result)
 
 

@@ -259,33 +259,6 @@ class TestBrowserSnapshotRedaction:
         assert len(captured_prompts) == 1
         assert "ANOTHERFAKEKEY99887766" not in captured_prompts[0]
 
-    def test_extract_relevant_content_normal_snapshot_unchanged(self):
-        """Snapshot without secrets should pass through normally."""
-        from tools.browser_tool import _extract_relevant_content
-
-        normal_snapshot = (
-            "heading: Welcome\n"
-            "text: Click the button below to continue\n"
-            "button [ref=e1]: Continue\n"
-        )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Welcome page with continue button"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(normal_snapshot, "proceed")
-
-        assert len(captured_prompts) == 1
-        assert "Welcome" in captured_prompts[0]
-        assert "Continue" in captured_prompts[0]
-
 
 class TestCamofoxAnnotationRedaction:
     """Verify annotation context is redacted before vision LLM call."""

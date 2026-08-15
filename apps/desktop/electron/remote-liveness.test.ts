@@ -6,6 +6,7 @@ import {
   REMOTE_LIVENESS_TIMEOUT_MS,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
+  revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
 
@@ -249,5 +250,104 @@ describe('revalidateRemoteConnection', () => {
 
     await expect(revalidateRemoteConnection(rejected.options)).resolves.toEqual({ ok: true, rebuilt: false })
     expect(rejected.probe).not.toHaveBeenCalled()
+  })
+})
+
+describe('revalidatePooledRemoteBackends', () => {
+  const harness = (entries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string }]>) => {
+    const unreachable = new Set<string>()
+    const log = vi.fn()
+    const stopBackend = vi.fn()
+
+    const probe = vi.fn(async (url: string) => {
+      if ([...unreachable].some(base => url.startsWith(base))) {
+        throw new Error('unreachable')
+      }
+
+      return {}
+    })
+
+    return {
+      log,
+      probe,
+      stopBackend,
+      unreachable,
+      run: (tracker: RemoteLivenessTracker) =>
+        revalidatePooledRemoteBackends({ entries, log, probe, stopBackend, tracker })
+    }
+  }
+
+  it('probes only pooled entries backed by a remote host', async () => {
+    const local = { process: {}, remoteBaseUrl: null }
+    const spawning = { process: null, remoteBaseUrl: null }
+    const remote = { process: null, remoteBaseUrl: 'https://remote.example.com' }
+
+    const pool = harness([
+      ['local', local],
+      ['spawning', spawning],
+      ['remote', remote]
+    ])
+
+    await pool.run(new RemoteLivenessTracker())
+
+    expect(pool.probe).toHaveBeenCalledTimes(1)
+    expect(pool.probe).toHaveBeenCalledWith('https://remote.example.com/api/status', {
+      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+    })
+    expect(pool.stopBackend).not.toHaveBeenCalled()
+  })
+
+  it('drops a descriptor only after the shared failure limit', async () => {
+    const pool = harness([['coder', { process: null, remoteBaseUrl: 'https://remote.example.com/' }]])
+    pool.unreachable.add('https://remote.example.com')
+
+    const tracker = new RemoteLivenessTracker()
+
+    for (let attempt = 1; attempt < REMOTE_LIVENESS_FAILURE_LIMIT; attempt += 1) {
+      await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+      expect(pool.stopBackend).not.toHaveBeenCalled()
+    }
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
+    expect(pool.stopBackend).toHaveBeenCalledWith('coder')
+  })
+
+  it('clears the streak when the host answers again', async () => {
+    const pool = harness([['coder', { process: null, remoteBaseUrl: 'https://remote.example.com' }]])
+    const tracker = new RemoteLivenessTracker()
+
+    pool.unreachable.add('https://remote.example.com')
+    await pool.run(tracker)
+
+    pool.unreachable.clear()
+    await pool.run(tracker)
+
+    pool.unreachable.add('https://remote.example.com')
+
+    for (let attempt = 1; attempt < REMOTE_LIVENESS_FAILURE_LIMIT; attempt += 1) {
+      await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    }
+
+    expect(pool.stopBackend).not.toHaveBeenCalled()
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
+  })
+
+  it('keeps a healthy sibling when another profile on a different host dies', async () => {
+    const pool = harness([
+      ['coder', { process: null, remoteBaseUrl: 'https://dead.example.com' }],
+      ['writer', { process: null, remoteBaseUrl: 'https://live.example.com' }]
+    ])
+
+    pool.unreachable.add('https://dead.example.com')
+
+    const tracker = new RemoteLivenessTracker()
+
+    for (let attempt = 1; attempt < REMOTE_LIVENESS_FAILURE_LIMIT; attempt += 1) {
+      await pool.run(tracker)
+    }
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
+    expect(pool.stopBackend).toHaveBeenCalledTimes(1)
+    expect(pool.stopBackend).toHaveBeenCalledWith('coder')
   })
 })

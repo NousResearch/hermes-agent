@@ -97,6 +97,31 @@ export function getNested(obj: HermesConfigRecord, path: string): unknown {
   return cur
 }
 
+/**
+ * True when an edit clears the entire "Enabled Toolsets" list — i.e. the
+ * previous config had a non-empty toolsets array and the next one is an
+ * explicit empty array.
+ *
+ * A *missing* toolsets key is deliberately NOT a clear: `PUT /api/config`
+ * deep-merges the override onto the stored config (`_deep_merge` preserves base
+ * keys absent from the override), so an import that omits `toolsets` leaves the
+ * existing toolsets intact. Prompting there would warn about a wipe that never
+ * happens. Only an explicit `[]` actually empties the list.
+ *
+ * Clearing every toolset silently disables memory, terminal, web search,
+ * delegation, and most tools, and config auto-saves with no undo, so callers
+ * use this to confirm the destructive transition before applying it. Any edit
+ * that keeps at least one toolset — or that never had one — returns false.
+ */
+export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConfigRecord): boolean {
+  const prevToolsets = getNested(prev, 'toolsets')
+  const nextToolsets = getNested(next, 'toolsets')
+  const hadToolsets = Array.isArray(prevToolsets) && prevToolsets.length > 0
+  const clearsToolsets = Array.isArray(nextToolsets) && nextToolsets.length === 0
+
+  return hadToolsets && clearsToolsets
+}
+
 export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   if (typeof value === 'boolean') {
     return { type: 'boolean' }
@@ -259,6 +284,12 @@ function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'
   return [...names]
 }
 
+// Voice sets per OpenAI speech model, per the OpenAI TTS API docs: tts-1 and
+// tts-1-hd support 9 voices; gpt-4o-mini-tts supports those plus ballad,
+// verse, marin, and cedar (13 total). Unknown/future models get the full
+// union (the field is free-input anyway — this only narrows suggestions).
+const OPENAI_TTS1_VOICES = new Set(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
+
 export function enumOptionsFor(
   key: string,
   value: unknown,
@@ -277,6 +308,16 @@ export function enumOptionsFor(
 
     if (custom.length > 0) {
       opts = [...opts, ...custom]
+    }
+  }
+
+  // Narrow OpenAI voice suggestions to what the selected model actually
+  // accepts — offering `marin` against tts-1 would 400 at the API.
+  if (!dynamicOptions && opts && key === 'tts.openai.voice') {
+    const model = asText(getNested(config, 'tts.openai.model'))
+
+    if (model === 'tts-1' || model === 'tts-1-hd') {
+      opts = opts.filter(voice => OPENAI_TTS1_VOICES.has(voice))
     }
   }
 

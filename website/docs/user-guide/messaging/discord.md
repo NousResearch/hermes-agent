@@ -348,6 +348,8 @@ discord:
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
+  voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -575,6 +577,19 @@ display:
   tool_progress_command: true
 ```
 
+#### `display.reasoning_style`
+
+**Type:** string — **Default (Discord):** `"subtext"` — **Values:** `code`, `blockquote`, `subtext`
+
+Controls how the model's reasoning block is rendered when reasoning display is enabled. Discord defaults to `subtext`, which uses Discord's native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. `blockquote` renders it as a `>` quote, and `code` (the default on other platforms) uses a fenced code block. Long reasoning is collapsed to the first 15 lines.
+
+```yaml
+display:
+  platforms:
+    discord:
+      reasoning_style: subtext   # code | blockquote | subtext
+```
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:
@@ -759,6 +774,8 @@ discord:
 ```
 
 Notes:
+- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
+- `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
 - The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
 - `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
 - All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
@@ -809,11 +826,17 @@ No Discord access policy configured; inbound Discord messages will be denied by 
 
 Hermes 0.18 intentionally fails closed on externally reachable adapters. A Discord bot with no `DISCORD_ALLOWED_USERS`, no `DISCORD_ALLOWED_ROLES`, no `DISCORD_ALLOWED_CHANNELS`, and no explicit allow-all flag will connect successfully but deny inbound users before normal message handling.
 
-### "Disallowed Intents" error on startup
+### "Privileged intents" / `PrivilegedIntentsRequired` error on startup
 
-**Cause**: Your code requests intents that aren't enabled in the Developer Portal.
+**Cause**: Hermes requests privileged Gateway Intents that are not enabled for your bot in the Developer Portal. Discord then rejects the WebSocket connection. Hermes always requests **Message Content Intent**. It also requests **Server Members Intent** when your allowlist uses usernames (not numeric IDs) or when `DISCORD_ALLOWED_ROLES` is set. Presence Intent is not required.
 
-**Fix**: Enable all three Privileged Gateway Intents (Presence, Server Members, Message Content) in the Bot settings, then restart.
+**Fix**:
+
+1. Go to [Developer Portal](https://discord.com/developers/applications) → your app → Bot → Privileged Gateway Intents.
+2. Enable **Message Content Intent** (required). Enable **Server Members Intent** if you use usernames or role allowlists.
+3. Click **Save Changes**, then restart the gateway (`hermes gateway restart`).
+
+The gateway log should name the exact intent(s) Hermes requested. Until they are enabled, Discord will keep rejecting the connection — this is a portal configuration error, not a flaky network issue.
 
 ### Bot can't see messages in a specific channel
 

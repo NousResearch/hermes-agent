@@ -76,7 +76,27 @@ function cleanErrorText(value: string) {
   return value.replace(/^Error:\s*/, '').trim()
 }
 
+/** True when an error string is a disk-full / ENOSPC / SQLITE_FULL failure. */
+export function isDiskFullErrorMessage(message: string): boolean {
+  return (
+    /no space left on device/i.test(message) ||
+    /not enough space/i.test(message) ||
+    /database or disk is full/i.test(message) ||
+    /\bENOSPC\b/i.test(message) ||
+    /disk full/i.test(message) ||
+    /full disk/i.test(message)
+  )
+}
+
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
+  {
+    // Disk full / ENOSPC — session DB write, backend crash, or any path that
+    // bubbles "no space left" / SQLITE_FULL through notifyError. Match before
+    // generic length truncation so the user gets a clear "free space" toast
+    // instead of a silent send or a raw errno dump.
+    test: isDiskFullErrorMessage,
+    summarize: () => translateNow('notifications.errors.diskFull')
+  },
   {
     test: msg => /['"]code['"]\s*:\s*['"]gateway_auth_failed['"]/i.test(msg),
     summarize: () => translateNow('notifications.errors.gatewayAuthFailed')
@@ -122,7 +142,9 @@ function summarizeErrorMessage(message: string, fallback: string) {
   return message.length > 180 ? fallback : message || fallback
 }
 
-function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
+// Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
+// rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
+export function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)

@@ -129,8 +129,14 @@ export const zhHant: Translations = {
     title: "工作階段",
     history: "歷史",
     overview: "總覽",
+    filterChats: "聊天",
+    filterAutomation: "自動化",
+    filterAll: "全部",
+    sourceFilter: "工作階段來源",
+    anySource: "任何來源",
     searchPlaceholder: "搜尋訊息內容...",
     noSessions: "尚無工作階段",
+    noSessionsInFilter: "此篩選條件下沒有工作階段",
     noMatch: "沒有符合的工作階段",
     startConversation: "開始對話後將顯示於此",
     noMessages: "尚無訊息",
@@ -611,6 +617,12 @@ export const zhHant: Translations = {
       "看板可將不相關的工作流分開——每個專案、程式碼庫或網域一個看板。一個看板上的工作者不會看到另一個看板的任務。",
     slug: "識別碼",
     slugHint: "— 小寫字母、連字號，例如 atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "顯示名稱",
     displayNameHint: "（選填）",
     description: "描述",

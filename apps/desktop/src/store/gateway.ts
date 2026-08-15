@@ -2,7 +2,9 @@ import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@h
 import { atom } from 'nanostores'
 
 import { HermesGateway } from '@/hermes'
-import { setGatewayState } from '@/store/session'
+import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { markNativeNotifyBaseline } from '@/store/notify-baseline'
+import { setConnection, setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -136,6 +138,12 @@ export function activeGateway(): HermesGateway | null {
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
 function reportGatewayState(profile: string, state: ConnectionState): void {
+  // Any socket opening replays parked prompts; hold OS notifications so a
+  // launch/reconnect doesn't alert about state that already existed.
+  if (state === 'open') {
+    markNativeNotifyBaseline()
+  }
+
   if (normKey(profile) === g.activeKey) {
     setGatewayState(state)
   }
@@ -169,6 +177,11 @@ async function openSecondary(entry: Secondary): Promise<void> {
   const conn = await desktop.getConnection(entry.profile)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
+
+  if (g.activeKey === entry.profile) {
+    setConnection(conn)
+  }
+
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
 }
 
@@ -177,8 +190,9 @@ function scheduleReconnect(entry: Secondary): void {
     return
   }
 
-  // 1s, 2s, 4s … capped at 15s — same backoff shape as the primary.
-  const delay = Math.min(15_000, 1_000 * 2 ** Math.min(entry.reconnectAttempt, 4))
+  // Full-jitter exponential backoff — same shape (and same reason: avoid a
+  // reconnect storm against a restarting gateway) as the primary's.
+  const delay = reconnectBackoffDelayMs(entry.reconnectAttempt)
   entry.reconnectAttempt += 1
   entry.reconnectTimer = setTimeout(() => {
     entry.reconnectTimer = null
@@ -238,6 +252,31 @@ function createSecondary(profile: string): Secondary {
   return entry
 }
 
+// True when `profile`'s backend route resolves to the SHARED primary backend
+// (global-remote case 3 in resolveProfileBackendRoute). Both shared-primary and
+// pooled descriptors carry `profile` so WebSocket URL minting targets the right
+// profile. `sharedPrimary` is the explicit discriminator; treating every tagged
+// descriptor as shared strands local/own-remote pooled profiles on the default
+// socket. Dialing a second socket at the shared descriptor is wrong — over SSH
+// the second dial fails (tunnel/token are per-backend) and the closed socket
+// poisons the active gateway with "not connected" even though the primary is
+// open right next to it.
+async function sharedPrimaryRoute(profile: string): Promise<boolean> {
+  const desktop = window.hermesDesktop
+
+  if (!desktop) {
+    return false
+  }
+
+  try {
+    const conn = await desktop.getConnection(profile)
+
+    return Boolean(conn && typeof conn === 'object' && (conn as { sharedPrimary?: boolean }).sharedPrimary === true)
+  } catch {
+    return false
+  }
+}
+
 // Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
 // (store/profile). Runs the same spawn + connect chain as a real switch, so by
 // click time ensureGatewayForProfile finds an open socket and just activates
@@ -248,6 +287,11 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
   const key = normKey(profile)
 
   if (key === g.primaryProfile) {
+    return
+  }
+
+  if (await sharedPrimaryRoute(key)) {
+    // Served by the primary backend — there is no per-profile socket to warm.
     return
   }
 
@@ -266,6 +310,17 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
   if (key === g.primaryProfile) {
     setActive(key)
+
+    return
+  }
+
+  // Global-remote share (routing case 3): one remote host serves every
+  // profile through the PRIMARY socket, scoped per request. Activate the
+  // primary instead of dialing a doomed duplicate socket at the same
+  // descriptor — $activeGatewayProfile still moves to `key`, so request
+  // scoping and profile-aware surfaces behave identically.
+  if (await sharedPrimaryRoute(key)) {
+    setActive(g.primaryProfile)
 
     return
   }

@@ -258,7 +258,10 @@ def _git_env(
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    env = os.environ.copy()
+    # git child with hand-isolated config env; exact preservation — a HOME
+    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -442,7 +445,8 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
-    init_env = os.environ.copy()
+    from tools.environments.local import build_subprocess_env
+    init_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -879,6 +883,38 @@ class CheckpointManager:
             "stat": stat_out if ok_stat else "",
             "diff": diff_out if ok_diff else "",
         }
+
+    def session_diff(self, working_dir: str) -> Dict:
+        """Show the cumulative diff of everything changed in this directory.
+
+        This powers ``/diff session``.  It answers "what has Hermes changed
+        here?" by diffing the *earliest retained checkpoint* — the snapshot
+        taken before the first recorded edit — against the current working
+        tree.  Because checkpoints are captured just before each file-mutating
+        tool call, that baseline is the pre-edit state, so the diff covers the
+        first edit and everything after it.
+
+        Note: checkpoints are a persistent per-project ref, so the earliest
+        *retained* checkpoint may predate the current session (or, after
+        pruning, postdate its true start).  It is an approximation of "what
+        Hermes changed", not an exact per-session ledger.
+
+        Returns the same shape as :meth:`diff` (``{"success", "stat",
+        "diff"}``).  When no checkpoints exist yet — nothing has been edited —
+        the call still *succeeds* with empty output and ``"empty": True`` so
+        callers can show a friendly "no changes" message rather than an error.
+        """
+        checkpoints = self.list_checkpoints(working_dir)
+        if not checkpoints:
+            return {"success": True, "stat": "", "diff": "", "empty": True}
+
+        baseline = checkpoints[-1].get("hash") or ""
+        result = self.diff(working_dir, baseline)
+        if result.get("success"):
+            result.setdefault("baseline", baseline)
+            if not result.get("stat") and not result.get("diff"):
+                result["empty"] = True
+        return result
 
     def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> Dict:
         """Restore files to a checkpoint state."""

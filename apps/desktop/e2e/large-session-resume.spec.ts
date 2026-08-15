@@ -19,6 +19,12 @@ import { RealSessionBuilder } from './real-session-builder'
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const SESSION_TITLE = 'E2E large persisted session'
 const EXPECTED_TEXT = 'E2E persisted user message 52'
+// The oldest seeded turn (HISTORY_TURNS[0]). The transcript first paints only
+// the newest turns (FIRST_PAINT_BUDGET) and backfills the rest in a rAF; a
+// baseline count taken before that backfill sees a clipped transcript and
+// falsely reports duplicates once the full list mounts. Waiting for this
+// oldest row means the baseline reflects the fully-mounted transcript.
+const OLDEST_SEEDED_TEXT = 'E2E persisted user message 0: audit the compatibility matrix'
 const BACKGROUND_PROMPT = 'E2E background inference must remain attached across resume'
 const HISTORY_TURNS = Array.from(
   { length: 27 },
@@ -210,6 +216,16 @@ test.describe('large session resume', () => {
       await waitForAppReady(fixture, 120_000)
 
       await openSeededSession(fixture.page)
+      // The transcript first paints only the newest turns (FIRST_PAINT_BUDGET)
+      // and backfills older turns in a rAF. Wait for the oldest seeded row to
+      // mount before taking the baseline so it reflects the full transcript —
+      // otherwise a clipped baseline makes the backfilled rows look like
+      // duplicates of the completed reply.
+      await fixture.page.waitForFunction(
+        expected => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
+        OLDEST_SEEDED_TEXT,
+        { timeout: 30_000 },
+      )
       const initialMockReplyCount = await textNodeOccurrences(fixture.page, MOCK_REPLY)
       await submitPrompt(fixture.page, BACKGROUND_PROMPT)
       await fixture.mock.waitForHeldStream()

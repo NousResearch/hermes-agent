@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -31,6 +31,7 @@ vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
+  getApiRequestProfile: () => 'default',
   getMoaModels: () => getMoaModels(),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
@@ -71,7 +72,7 @@ beforeEach(() => {
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
   getMoaModels.mockResolvedValue(null)
-  setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
+  setModelAssignment.mockResolvedValue({ ok: true, provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
@@ -212,6 +213,54 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
   })
 
+  it('preserves a user-defined provider endpoint when applying the main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true
+        },
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'local-ollama',
+      model: 'qwen3:latest',
+      gateway_tools: []
+    })
+
+    await renderModelSettings()
+
+    const providerSelect = (await screen.findAllByRole('combobox'))[0]
+    fireEvent.click(providerSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'qwen3:latest' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'main',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
+  })
+
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
@@ -269,8 +318,44 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'local-ollama', model: 'qwen3:latest' })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'local-ollama', model: 'qwen3:latest' },
+      tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'auxiliary',
+        task: 'vision',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
+  })
+
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
+      ok: true,
       provider: 'openrouter',
       model: 'anthropic/claude-opus-4.7',
       gateway_tools: [],

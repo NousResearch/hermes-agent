@@ -23,20 +23,29 @@ import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-s
 import {
   $activeTreeGroup,
   $layoutTree,
+  focusedSessionTabAnchor,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $activeSessionId,
+  $lastReadAtBySessionId,
   $selectedStoredSessionId,
-  $unreadFinishedSessionIds,
-  setActiveSessionStoredIdRotation
+  $sessions,
+  clearReadBaseline,
+  lineageAliases,
+  markSessionRead,
+  sessionMatchesStoredId,
+  setActiveSessionStoredIdRotation,
+  setSessions
 } from './session'
+import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -66,8 +75,13 @@ export function setSessionStalled(storedSessionId: string | null | undefined, st
   }
 }
 
-// --- Watchdog: marks busy sessions quiet after 8 min of stream silence -----
-export const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+// --- Watchdog: marks busy sessions quiet after a long stream silence -------
+// Tuned against what this app actually does rather than a round number: a
+// typecheck or a full test run here goes quiet for minutes at a stretch and is
+// perfectly healthy, so anything under ~4 min would paint normal work as
+// suspect. Eight minutes was the other failure — longer than a user is willing
+// to sit and wonder, so the hint arrived after they had already given up on it.
+export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armWatchdog(runtimeId: string) {
@@ -168,27 +182,116 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
   if (next.busy && !wasWorking) {
     clearSettled(storedId)
+    // A NEW turn is starting: the read baseline guarded the PREVIOUS
+    // completion's re-asserts. Dropping it here means this turn's finish
+    // re-lights even if it lands within the same millisecond as the last
+    // read (same-tick submit → finish in tests and fast local models).
+    clearReadBaseline(storedId)
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
 
-    if (storedId !== $selectedStoredSessionId.get()) {
-      const cur = $unreadFinishedSessionIds.get()
+    // FOCUSED, not selected: a session finishing in the tile the user is
+    // watching is already seen, and a tile is never the primary selection.
+    if (storedId !== $focusedStoredSessionId.get()) {
+      // Re-light only genuinely new completions: if the user already viewed
+      // this session (or its family) at or after this settle moment, a
+      // re-assert of the same completion must not re-arm the dot. `-1` for
+      // "never read" (not `0`) so fake-timer tests pinned to t=0 still light.
+      const lastReadAt = $lastReadAtBySessionId.get()[storedId] ?? -1
 
-      if (!cur.includes(storedId)) {
-        $unreadFinishedSessionIds.set([...cur, storedId])
+      if (Date.now() > lastReadAt) {
+        // Flags the transient atom AND persists a marker, so the green dot
+        // survives an app restart (see session-unread.ts).
+        markSessionUnreadFinished(storedId)
       }
     }
   }
 }
 
+/** Is any surface on THIS window still holding the runtime — the primary view
+ *  or an open tile? (A tile mid-resume references by stored id only; its
+ *  runtime binding is patched in after `resumeTile` returns.) */
+function runtimeReferenced(runtimeId: string, storedSessionId: null | string): boolean {
+  if (runtimeId === $activeSessionId.get()) {
+    return true
+  }
+
+  return $sessionTiles
+    .get()
+    .some(t => t.runtimeId === runtimeId || (storedSessionId !== null && t.storedSessionId === storedSessionId))
+}
+
+/** A state no surface needs anymore: its turn is over (not busy, not waiting
+ *  on the user) and neither the primary view nor any tile holds the runtime.
+ *  `needsInput` states stay — the sidebar's attention dot reads them. */
+function evictable(runtimeId: string, state: ClientSessionState): boolean {
+  return (
+    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId)
+  )
+}
+
 /** Publish one session's state. Automatically fires transition side-effects
  *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
  *  by diffing previous vs next — callers never need to manually call a
- *  transition handler. */
+ *  transition handler.
+ *
+ *  Skips the publish when the new state is identical to the existing one
+ *  (same reference) to avoid churning `$sessionStates` on periodic
+ *  `session.info` heartbeats that carry no change — otherwise every ~1/s
+ *  heartbeat creates a new Record spread, triggering computed atoms
+ *  ($workingSessionIds, $attentionSessionIds) and their subscribers
+ *  unnecessarily. The runtime-id→state cache (sessionStateByRuntimeIdRef)
+ *  is updated independently by the caller, so the visual path stays live
+ *  without the store churn.
+ *
+ *  A settled state nothing references releases its transcript instead of
+ *  republishing it. Gateway events keep flowing for sessions whose tile was
+ *  closed mid-turn, and parking each one's full transcript here forever is the
+ *  leak that made the app crawl after a day of tile use. Transition side
+ *  effects still fire, so lightweight status and the unread dot survive. A
+ *  FIRST publish always lands in full because a resume can publish its idle
+ *  state a beat before `$activeSessionId` / the tile binding points at it. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
-  const prev = $sessionStates.get()[runtimeId] ?? null
-  $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: state })
+  const current = $sessionStates.get()
+  const prev = current[runtimeId] ?? null
+
+  if (prev === state) {
+    return
+  }
+
+  if (prev && evictable(runtimeId, state)) {
+    handleTransition(prev, state, runtimeId)
+    releaseSessionTranscript(runtimeId, state)
+
+    return
+  }
+
+  $sessionStates.set({ ...current, [runtimeId]: state })
   handleTransition(prev, state, runtimeId)
+}
+
+/** Keep the cheap status projection for a cold session while releasing its
+ * transcript. Unread completion is stored separately, so it survives too. */
+export function releaseSessionTranscript(runtimeId: string, state?: ClientSessionState) {
+  const current = $sessionStates.get()
+
+  if (!(runtimeId in current)) {
+    return
+  }
+
+  const retained = state ?? current[runtimeId]
+
+  // Older persisted snapshots can contain an undefined state or omit the
+  // messages field. Treat either shape as already cold instead of throwing
+  // while memory pressure is being relieved.
+  if (!retained) {
+    return
+  }
+
+  const lightweight =
+    Array.isArray(retained.messages) && retained.messages.length === 0 ? retained : { ...retained, messages: [] }
+
+  $sessionStates.set({ ...current, [runtimeId]: lightweight })
 }
 
 export function dropSessionState(runtimeId: string) {
@@ -233,30 +336,88 @@ export function clearAllSessionStates() {
 // a turn), but these sets only change on busy/needsInput edges. `stableArray`
 // keeps the prior reference when membership is unchanged so `computed` skips the
 // emit — otherwise the whole sidebar + every row re-renders per token.
-const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientSessionState) => boolean) =>
-  Object.values(states)
-    .filter(s => pred(s) && s.storedSessionId)
-    .map(s => s.storedSessionId!)
+// Published under every id the conversation answers to, not just its current
+// tip: consumers hold whichever id they were created with, and compression
+// rotates the tip out from under them (see lineageAliases).
+//
+// A conversation that has not been persisted yet has no stored id at all, and
+// dropping it here is what left the FIRST turn of a new chat with no running
+// indicator anywhere — no dot, no row arc — for as long as it took the backend
+// to hand one back. Its runtime id is the right fallback because until a stored
+// id exists the two are the same value (submit.ts: "an unpersisted
+// conversation's queue key IS its runtime id"), so the row matches; once a
+// session is persisted its runtime id is nobody's key and the fallback is inert.
+const storedIds = (
+  states: Record<string, ClientSessionState>,
+  sessions: readonly SessionInfo[],
+  pred: (s: ClientSessionState) => boolean
+) => {
+  const ids = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries(states)) {
+    if (!pred(state)) {
+      continue
+    }
+
+    for (const alias of lineageAliases(state.storedSessionId ?? runtimeId, sessions)) {
+      ids.add(alias)
+    }
+  }
+
+  return [...ids]
+}
 
 let workingIds: readonly string[] = []
 export const $workingSessionIds = computed(
-  $sessionStates,
-  states =>
+  [$sessionStates, $sessions],
+  (states, sessions) =>
     (workingIds = stableArray(
       workingIds,
-      storedIds(states, s => s.busy)
+      storedIds(states, sessions, s => s.busy)
     ))
 )
 
 let attentionIds: readonly string[] = []
 export const $attentionSessionIds = computed(
-  $sessionStates,
-  states =>
+  [$sessionStates, $sessions],
+  (states, sessions) =>
     (attentionIds = stableArray(
       attentionIds,
-      storedIds(states, s => s.needsInput)
+      storedIds(states, sessions, s => s.needsInput)
     ))
 )
+
+// An open session nothing has ever been sent to — the ⌘T tab whose backend
+// session exists but is unlisted, or a tile still waiting on its first send.
+// `blankDraftTile`'s predicate, read as a status rather than as a slot to spend.
+//
+// The row's own `message_count` is the tiebreaker, and it is load-bearing: a
+// session RESUMING also holds an empty message list for the moment between
+// binding its runtime and loading its transcript, and calling that a draft
+// would flash the wrong mark on a conversation with years of history in it.
+let draftIds: readonly string[] = []
+export const $draftSessionIds = computed([$sessionStates, $sessions], (states, sessions) => {
+  const unsent = (state: ClientSessionState) => {
+    if (state.busy || state.messages.length > 0) {
+      return false
+    }
+
+    const storedId = state.storedSessionId
+
+    // No stored id is the ⌘T tab that hasn't reached the backend yet: a draft
+    // by definition, and no row to consult. Asking anyway would match a row on
+    // an empty lineage root.
+    if (!storedId) {
+      return true
+    }
+
+    const row = sessions.find(session => sessionMatchesStoredId(session, storedId))
+
+    return !row || row.message_count === 0
+  }
+
+  return (draftIds = stableArray(draftIds, storedIds(states, sessions, unsent)))
+})
 
 // ---------------------------------------------------------------------------
 // Session tiles.
@@ -507,7 +668,11 @@ function syncTileStripOrder() {
  *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop
  *  it on a zone/edge/strip and the tile goes there (drop-on-a-composer links
  *  instead, handled by the drag resolver). The session LOADED IN MAIN never
- *  opens as a tile (same transcript twice, fighting one runtime — silly). */
+ *  opens as a tile (same transcript twice, fighting one runtime — silly).
+ *
+ *  An unanchored open (⌘T, ⌘⇧T on a tile that predates anchors) docks into the
+ *  FOCUSED chat zone — the same zone ⌘1…⌘9 and ⌘W act on — so a new tab lands
+ *  in the strip the user is looking at, not always main's. */
 export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
@@ -516,12 +681,22 @@ export function openSessionTile(
 ) {
   const tiles = $sessionTiles.get()
 
+  // Opening a session in a tab/tile is "reading" it — clear its unread dot
+  // exactly like main-thread resume does. Previously only
+  // setSelectedStoredSessionId cleared unread, so tile-opened sessions kept
+  // their green dot even while the user was reading them. Acks the persisted
+  // watermark/marker too so a later list refresh doesn't repaint it.
+  markSessionRead(storedSessionId)
+  ackStoredSessionId(storedSessionId)
+
   if (storedSessionId === $selectedStoredSessionId.get()) {
     return
   }
 
+  const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
+
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
-    saveTiles([...tiles, { anchor, before, dir, storedSessionId }])
+    saveTiles([...tiles, { anchor: dock, before, dir, storedSessionId }])
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
@@ -531,11 +706,11 @@ export function openSessionTile(
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
   const tree = $layoutTree.get()
-  const target = tree ? findGroupOfPane(tree, anchor ?? 'workspace')?.id : null
+  const target = tree ? findGroupOfPane(tree, dock ?? 'workspace')?.id : null
 
   if (target) {
     moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
-    patchSessionTile(storedSessionId, { anchor, before: before ?? undefined, dir })
+    patchSessionTile(storedSessionId, { anchor: dock, before: before ?? undefined, dir })
     syncTileStripOrder()
   }
 }
@@ -572,11 +747,14 @@ export function nextSessionTileForWorkspace(): null | string {
 }
 
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —
- *  front its tab (and focus its zone) and return true. A sidebar click on an
- *  already-open chat JUMPS to its tab instead of reloading it; `false` means the
+ *  front its tab (and focus its zone) and report WHICH. A sidebar click on an
+ *  already-open chat JUMPS to its tab instead of reloading it; `null` means the
  *  caller must load it into main. Covers the two dead clicks: an open tile, and
- *  the main session while focus sits on a tile (route unchanged → no reload). */
-export function focusOpenSession(storedSessionId: string): boolean {
+ *  the main session while focus sits on a tile (route unchanged → no reload).
+ *  Callers that own the router need the `'main'` vs `'tile'` distinction: a
+ *  `'main'` hit only reaches the screen if the workspace pane is actually
+ *  showing the chat, whereas a tile renders in its own pane regardless. */
+export function focusOpenSession(storedSessionId: string): 'main' | 'tile' | null {
   if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
     const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
@@ -587,7 +765,7 @@ export function focusOpenSession(storedSessionId: string): boolean {
       noteActiveTreeGroup(group.id)
     }
 
-    return true
+    return 'tile'
   }
 
   // Already the main session: front the workspace tab and drop tile focus so
@@ -596,10 +774,55 @@ export function focusOpenSession(storedSessionId: string): boolean {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 
-    return true
+    return 'main'
   }
 
-  return false
+  return null
+}
+
+/** Does a sidebar click still need to navigate after `focusOpenSession`? A miss
+ *  always does. A `'main'` hit does too while the workspace pane is showing a
+ *  full page (artifacts, skills, …): fronting the workspace tab doesn't put the
+ *  chat back on screen — only a route change back to the session does. A tile
+ *  hit never does; its pane renders the chat regardless of the route. */
+export function focusedSessionNeedsRoute(focused: 'main' | 'tile' | null, workspaceIsPage: boolean): boolean {
+  return !focused || (focused === 'main' && workspaceIsPage)
+}
+
+/** The open tab that's still an empty "New session" draft, if there is one.
+ *  That tab is the one the user would have typed into, so an open-from-nowhere
+ *  spends it instead of stacking a second blank tab beside it. Most recent
+ *  wins; a tile whose runtime hasn't bound (or whose state hasn't published) is
+ *  unknown rather than empty, so it's left alone. */
+export function blankDraftTile(
+  tiles: readonly SessionTile[],
+  states: Record<string, ClientSessionState>
+): null | SessionTile {
+  return (
+    tiles.findLast(({ runtimeId }) => {
+      const state = runtimeId ? states[runtimeId] : undefined
+
+      return Boolean(state && !state.busy && state.messages.length === 0)
+    }) ?? null
+  )
+}
+
+/** Hand an open blank draft tab over to `storedSessionId`, keeping its slot.
+ *  False when there's no such tab, so the caller can fall back. The spent draft
+ *  is DISCARDED rather than closed: it never held a conversation, so ⌘⇧T
+ *  resurrecting it would just restore an empty tab. */
+export function reuseBlankDraftTile(storedSessionId: string): boolean {
+  const tile = blankDraftTile($sessionTiles.get(), $sessionStates.get())
+
+  if (!tile || tile.storedSessionId === storedSessionId) {
+    return false
+  }
+
+  discardSessionTile(tile.storedSessionId)
+  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+  revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
+
+  return true
 }
 
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the
@@ -616,6 +839,18 @@ export function closeSessionTile(storedSessionId: string) {
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
+
+  // A settled session may never publish again, so the publish-time eviction
+  // in publishSessionState can't reach it — drop its cached state here. A
+  // BUSY one stays: its turn keeps streaming in the background, the sidebar
+  // dot reads it, and settle evicts it. ⌘⇧T reopen re-publishes from the
+  // wiring cache (resumeTile's warm path), so nothing is lost.
+  const runtimeId = tile?.runtimeId
+  const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+
+  if (runtimeId && state && evictable(runtimeId, state)) {
+    dropSessionState(runtimeId)
+  }
 }
 
 /** Drop a DEAD tile — a persisted tile whose session no longer exists on the
@@ -632,8 +867,10 @@ export function discardSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 
-/** ⌘⇧T — reopen the most recently closed tab where it was. Skips ids that are
- *  live again (reopened, or now the primary). */
+/** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.
+ *  Adoption alone is silent (won't steal the active tab), so restore has to
+ *  front the pane explicitly. Skips ids that are live again (reopened / now
+ *  the primary). */
 export function reopenLastClosedTile(): void {
   const stack = closedStack()
 
@@ -646,6 +883,7 @@ export function reopenLastClosedTile(): void {
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+      focusOpenSession(storedSessionId)
 
       return
     }
@@ -698,10 +936,40 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
   !(selected && tiles.some(t => t.storedSessionId === selected))
 
+// Bringing a finished session to the front clears its green dot. Keyed on the
+// FOCUSED session, not the selected one: a tile is never $selectedStoredSessionId,
+// and a tile tab click goes through activateTreePane rather than focusOpenSession,
+// so this is the one hook that catches every way a tile reaches the front.
+// Clears the whole conversation family (markSessionRead) AND acks the
+// persisted watermark/marker (ackStoredSessionId) so the next list refresh
+// doesn't repaint the dot the user just cleared by looking at it.
+$focusedStoredSessionId.listen(focused => {
+  if (focused) {
+    markSessionRead(focused)
+    ackStoredSessionId(focused)
+  }
+})
+
+// Cold-start restore is the one selection change that is NOT a navigation: the
+// route already pointed at the primary session before the window loaded, and
+// homing on it would front the workspace tab over the PERSISTED active tab —
+// then persist that clobber, so the tab you reloaded on never comes back
+// (⌘R always landing on main). use-route-resume arms this one-shot right
+// before dispatching the boot resume; the very next selection change skips
+// homing and the restored layout tree keeps its say.
+let selectionRestoreInFlight = false
+
+export function markSelectionRestore() {
+  selectionRestoreInFlight = true
+}
+
 // Homing also FRONTS the workspace tab: the resumed chat loads in the workspace
 // pane, so a zone parked on a tile tab must switch back or the click looks dead.
 $selectedStoredSessionId.listen(selected => {
-  if (!selectionHomesToWorkspace(selected, $sessionTiles.get())) {
+  const restoring = selectionRestoreInFlight
+  selectionRestoreInFlight = false
+
+  if (restoring || !selectionHomesToWorkspace(selected, $sessionTiles.get())) {
     return
   }
 
@@ -710,13 +978,22 @@ $selectedStoredSessionId.listen(selected => {
 })
 
 // Dev hook for automation (mirrors __HERMES_LAYOUT_TREE__).
-if (import.meta.env.DEV && typeof window !== 'undefined') {
+if ((import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1') && typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__HERMES_SESSION_TILES__ = {
     close: closeSessionTile,
+    drop: dropSessionState,
     open: openSessionTile,
     patch: patchSessionTile,
     publish: publishSessionState,
+    /** Seed the recents list — models a populated sessions DB in perf runs. */
+    seedSessions: (rows: SessionInfo[]) => setSessions(rows),
+    sessions: () => $sessions.get(),
     states: () => $sessionStates.get(),
-    tiles: () => $sessionTiles.get()
+    tiles: () => $sessionTiles.get(),
+    /** THE real gateway write path (wiring cache + journal + publish + view
+     *  sync), unlike `publish` which only touches the store. Perf scenarios
+     *  must drive this or they under-model streaming cost. */
+    update: (runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      sessionTileDelegate()?.updateSession(runtimeId, updater)
   }
 }

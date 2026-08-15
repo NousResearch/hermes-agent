@@ -24,6 +24,7 @@ import {
   type ApprovalRequest,
   clearApprovalRequest,
   registerApprovalInlineAnchor,
+  replayPendingApproval,
   sessionApprovalInlineVisible,
   sessionApprovalRequest
 } from '@/store/prompts'
@@ -84,7 +85,7 @@ export const PendingApprovalFallback: FC = () => {
     <div
       className="pointer-events-none absolute left-1/2 z-30 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2"
       data-slot="tool-approval-fallback"
-      style={{ bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.875rem)' }}
+      style={{ bottom: 'calc(var(--composer-measured-height) + 0.875rem)' }}
     >
       <div className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]">
         <div className="flex min-w-0 items-center gap-2 text-sm text-primary">
@@ -144,16 +145,18 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       try {
         await gateway.request<{ resolved?: boolean }>('approval.respond', {
           choice,
+          request_id: request.requestId,
           session_id: request.sessionId ?? undefined
         })
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest(request.sessionId)
+        clearApprovalRequest(request.sessionId, request.requestId)
+        void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.requestId, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.

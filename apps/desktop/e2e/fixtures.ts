@@ -120,6 +120,17 @@ export function createSandbox(prefix: string): Sandbox {
     'utf8',
   )
 
+  // Pin Chromium actual-size zoom (level 0) for the suite. Fresh installs
+  // ship DEFAULT_ZOOM_LEVEL at the Appearance 90% preset, but Playwright
+  // click hit-testing and the committed visual baselines were calibrated at
+  // 100%. Without this file every sandbox would inherit the product default
+  // and fail pointer interception + snapshot diffs.
+  fs.writeFileSync(
+    path.join(userDataDir, 'zoom-state.json'),
+    JSON.stringify({ zoomLevel: 0 }, null, 2),
+    'utf8',
+  )
+
   return {
     root,
     hermesHome,
@@ -230,6 +241,10 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
     HERMES_DESKTOP_APP_NAME: `HermesE2E-${Date.now()}`,
+    // `app.close()` in teardown must exit even when a spec leaves a turn
+    // mid-flight — otherwise the quit confirmation waits on a click that no
+    // one is there to make, and the worker dies on a teardown timeout.
+    HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
     // Clear dev-server override — we want the built dist/, not a vite server.
     // The dev-server check in main.ts looks for this env var; if it's set,
     // it loads from the vite URL instead of the local file.
@@ -639,10 +654,10 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
 
   // On Electron 40.x, ready-to-show may never fire (electron/electron#51972)
   // and the window stays hidden even though the DOM is rendered. The main
-  // process has a TEST_WORKER_INDEX-gated fallback that force-shows the
-  // window, but the DOM can be ready before that fires. Poll until the
-  // window is actually visible so interactions (click, screenshot) don't
-  // hit a hidden surface.
+  // process reveals it anyway — immediately under TEST_WORKER_INDEX, and via
+  // wireWindowReveal's post-load fallback in production — but the DOM can be
+  // ready before that lands. Poll until the window is actually visible so
+  // interactions (click, screenshot) don't hit a hidden surface.
   if (app) {
     const deadline = Date.now() + timeoutMs
 

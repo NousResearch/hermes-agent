@@ -13,6 +13,7 @@ import {
   $reviewMaxChurn,
   $reviewOpen,
   $reviewRevertTarget,
+  $reviewScopeCwd,
   $reviewSelectedPath,
   $reviewShipBusy,
   $reviewShipInfo,
@@ -43,8 +44,10 @@ import { $currentCwd } from './session'
 const requestOneShot = vi.fn(async (_args: unknown) => 'generated message')
 vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneShot(args) }))
 // refreshRepoStatus is a fire-and-forget side effect of mutations; stub it so it
-// doesn't try to hit the (absent) probe and log.
-vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn() }))
+// doesn't try to hit the (absent) probe and log. repoStatusForCwd is read when a
+// new PR binds its session to the branch it came from — no probe here, so no
+// branch either.
+vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn(), repoStatusForCwd: () => ({ get: () => null }) }))
 
 function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
   return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile
@@ -92,6 +95,7 @@ beforeEach(() => {
   $reviewShipBusy.set(false)
   $reviewCommitMsgBusy.set(false)
   $reviewRevertTarget.set(undefined)
+  $reviewScopeCwd.set(null)
   $currentCwd.set('/repo')
 })
 
@@ -239,23 +243,58 @@ describe('view state', () => {
     const review = stubReview()
     openReview()
     expect($reviewOpen.get()).toBe(true)
+    expect($reviewScopeCwd.get()).toBeNull()
     // openReview fires refreshReview + refreshShipInfo without awaiting.
     await Promise.resolve()
     await Promise.resolve()
-    expect(review.list).toHaveBeenCalled()
+    expect(review.list).toHaveBeenCalledWith('/repo', 'uncommitted', null)
   })
 
-  it('closeReview closes the pane and clears the selection', () => {
+  it('openReview pins the pane to a tile worktree when scoped', async () => {
+    const review = stubReview({
+      list: vi.fn(async () => ({ files: [file('tile.ts')] }))
+    })
+
+    openReview('/tile-worktree')
+    expect($reviewOpen.get()).toBe(true)
+    expect($reviewScopeCwd.get()).toBe('/tile-worktree')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(review.list).toHaveBeenCalledWith('/tile-worktree', 'uncommitted', null)
+  })
+
+  it('closeReview closes the pane, clears selection, and drops scope', () => {
     stubReview()
     $reviewOpen.set(true)
+    $reviewScopeCwd.set('/tile-worktree')
     $reviewSelectedPath.set('a.ts')
     $reviewDiff.set('x')
 
     closeReview()
 
     expect($reviewOpen.get()).toBe(false)
+    expect($reviewScopeCwd.get()).toBeNull()
     expect($reviewSelectedPath.get()).toBeNull()
     expect($reviewDiff.get()).toBeNull()
+  })
+
+  it('scoped pane ignores main-pane cwd changes', async () => {
+    const review = stubReview({
+      list: vi.fn(async (cwd: string) => ({ files: [file(cwd === '/tile' ? 'tile.ts' : 'main.ts')] }))
+    })
+
+    openReview('/tile')
+    await Promise.resolve()
+    await Promise.resolve()
+    review.list.mockClear()
+
+    // Main session hops repos; the pane is still pinned to the tile.
+    $currentCwd.set('/somewhere-else')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect($reviewScopeCwd.get()).toBe('/tile')
+    expect(review.list).not.toHaveBeenCalled()
   })
 })
 

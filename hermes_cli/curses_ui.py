@@ -340,11 +340,10 @@ def _handle_active_search_key(
 def flush_stdin() -> None:
     """Flush any stray bytes from the stdin input buffer.
 
-    Must be called after ``curses.wrapper()`` (or any terminal-mode library
-    like simple_term_menu) returns, **before** the next ``input()`` /
-    ``getpass.getpass()`` call.  ``curses.endwin()`` restores the terminal
-    but does NOT drain the OS input buffer — leftover escape-sequence bytes
-    (from arrow keys, terminal mode-switch responses, or rapid keypresses)
+    Must be called after ``curses.wrapper()`` returns, and before the next
+    ``input()`` / ``getpass.getpass()`` call.
+    ``curses.endwin()`` restores the terminal but does NOT drain the OS input buffer.
+    Leftover escape-sequence bytes (from arrow keys, terminal mode-switch responses, or rapid keypresses)
     remain buffered and silently get consumed by the next ``input()`` call,
     corrupting user data (e.g. writing ``^[^[`` into .env files).
 
@@ -723,6 +722,7 @@ def curses_radiolist(
     cancel_returns: int | None = None,
     description: str | None = None,
     searchable: bool = False,
+    search_labels: List[str] | None = None,
 ) -> int:
     """Curses single-select radio list. Returns the selected index.
 
@@ -741,6 +741,8 @@ def curses_radiolist(
         searchable: When true, ``/`` opens a type-to-filter prompt. The
             returned value is always the original item index, not a filtered
             row position.
+        search_labels: Optional haystacks for type-to-filter (length must
+            match ``items``). Defaults to the display labels when omitted.
     """
     if cancel_returns is None:
         cancel_returns = selected
@@ -812,7 +814,11 @@ def curses_radiolist(
         fallback=lambda: _radio_numbered_fallback(title, items, selected, cancel_returns),
         cancel_value=cancel_returns,
         searchable=searchable,
-        search_labels=plain_labels if searchable else None,
+        search_labels=(
+            list(search_labels)
+            if searchable and search_labels is not None
+            else (plain_labels if searchable else None)
+        ),
     )
 
 
@@ -867,8 +873,7 @@ def curses_single_select(
 ) -> int | None:
     """Curses single-select menu. Returns selected index or None on cancel.
 
-    Works inside prompt_toolkit because curses.wrapper() restores the terminal
-    safely, unlike simple_term_menu which conflicts with /dev/tty.
+    Works inside prompt_toolkit. curses.wrapper() restores the terminal safely.
 
     When ``searchable`` is true, ``/`` opens a type-to-filter prompt; the
     returned value is always the original item index (or None for cancel).

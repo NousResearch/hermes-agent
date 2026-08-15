@@ -6,7 +6,8 @@ Runs an aiohttp webhook server to receive messages from Teams.
 Proactive messaging (send, typing) uses the SDK's App.send() method.
 
 Requires:
-    pip install microsoft-teams-apps aiohttp
+    the ``teams`` extra (auto-installed by the gateway on first start, or
+    manually: ``<hermes-venv>/bin/pip install microsoft-teams-apps aiohttp``)
     TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID env vars
 
 Configuration in config.yaml:
@@ -27,7 +28,9 @@ import html
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+import sys
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 from urllib.parse import quote
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
@@ -47,46 +50,37 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-try:
-    from microsoft_teams.apps import App, ActivityContext
-    from microsoft_teams.common.http.client import ClientOptions
-    from microsoft_teams.api import MessageActivity, ConversationReference
-    from microsoft_teams.api.activities.typing import TypingActivityInput
-    from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
-    from microsoft_teams.api.models.adaptive_card import (
-        AdaptiveCardActionCardResponse,
-        AdaptiveCardActionMessageResponse,
-    )
-    from microsoft_teams.api.models.invoke_response import InvokeResponse, AdaptiveCardInvokeResponse
-    from microsoft_teams.apps.http.adapter import (
-        HttpMethod,
-        HttpRequest,
-        HttpResponse,
-        HttpRouteHandler,
-    )
-    from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+# microsoft-teams-apps calls ``load_dotenv(find_dotenv(usecwd=True))`` at
+# ``microsoft_teams.apps.app`` import time. Importing it during plugin discovery
+# / ``TeamsSummaryWriter`` imports would pollute process ``os.environ`` from a
+# cwd-discovered ``.env`` (#62935). Detect presence via find_spec only; bind
+# symbols in ``check_teams_requirements()`` behind a dotenv no-op.
+import importlib.util
+import sys as _sys
 
-    TEAMS_SDK_AVAILABLE = True
-except ImportError:
-    TEAMS_SDK_AVAILABLE = False
-    ClientOptions = None  # type: ignore[assignment,misc]
-    App = None  # type: ignore[assignment,misc]
-    ActivityContext = None  # type: ignore[assignment,misc]
-    MessageActivity = None  # type: ignore[assignment,misc]
-    ConversationReference = None  # type: ignore[assignment,misc]
-    TypingActivityInput = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
-    InvokeResponse = None  # type: ignore[assignment,misc]
-    HttpMethod = str  # type: ignore[assignment,misc]
-    HttpRequest = None  # type: ignore[assignment,misc]
-    HttpResponse = None  # type: ignore[assignment,misc]
-    HttpRouteHandler = None  # type: ignore[assignment,misc]
-    AdaptiveCard = None  # type: ignore[assignment,misc]
-    ExecuteAction = None  # type: ignore[assignment,misc]
-    TextBlock = None  # type: ignore[assignment,misc]
+try:
+    TEAMS_SDK_AVAILABLE = importlib.util.find_spec("microsoft_teams") is not None
+except ValueError:
+    # Test stubs may inject a module without ``__spec__``.
+    TEAMS_SDK_AVAILABLE = "microsoft_teams" in _sys.modules
+ClientOptions = None  # type: ignore[assignment,misc]
+App = None  # type: ignore[assignment,misc]
+ActivityContext = None  # type: ignore[assignment,misc]
+MessageActivity = None  # type: ignore[assignment,misc]
+ConversationReference = None  # type: ignore[assignment,misc]
+TypingActivityInput = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
+AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
+InvokeResponse = None  # type: ignore[assignment,misc]
+HttpMethod = str  # type: ignore[assignment,misc]
+HttpRequest = None  # type: ignore[assignment,misc]
+HttpResponse = None  # type: ignore[assignment,misc]
+HttpRouteHandler = None  # type: ignore[assignment,misc]
+AdaptiveCard = None  # type: ignore[assignment,misc]
+ExecuteAction = None  # type: ignore[assignment,misc]
+TextBlock = None  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -99,12 +93,42 @@ from gateway.platforms.base import (
     cache_media_bytes,
 )
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
 # Bot Framework activities are JSON payloads well under 1 MiB; an explicit
 # aiohttp client_max_size keeps oversized/chunked request bodies bounded.
 _MAX_BODY_BYTES = 1_048_576
+# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
+# address family (IPv4 + IPv6). The old hardcoded "0.0.0.0" bound IPv4 ONLY
+# and was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) —
+# same bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
+# (d542894ad). Pin a host via TEAMS_HOST or extra.host.
+_DEFAULT_HOST = None
 _WEBHOOK_PATH = "/api/messages"
 
 
@@ -202,7 +226,7 @@ class TeamsSummaryWriter:
         env_defaults = {
             "delivery_mode": os.getenv("TEAMS_DELIVERY_MODE", ""),
             "incoming_webhook_url": os.getenv("TEAMS_INCOMING_WEBHOOK_URL", ""),
-            "access_token": os.getenv("TEAMS_GRAPH_ACCESS_TOKEN", ""),
+            "access_token": _get_scoped_secret("TEAMS_GRAPH_ACCESS_TOKEN", ""),
             "team_id": os.getenv("TEAMS_TEAM_ID", ""),
             "channel_id": os.getenv("TEAMS_CHANNEL_ID", ""),
             "chat_id": os.getenv("TEAMS_CHAT_ID", ""),
@@ -395,7 +419,12 @@ class _AiohttpBridgeAdapter:
 
 
 def check_requirements() -> bool:
-    """Return True when all Teams dependencies and credentials are present."""
+    """PASSIVE probe: are the Teams SDK and aiohttp importable right now?
+
+    Never installs anything — credentials are gated separately via
+    ``is_connected``/``validate_config``.  The ACTIVE lazy-installer is
+    ``check_teams_requirements`` (registered as ``ensure_deps_fn``).
+    """
     return TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE
 
 
@@ -403,7 +432,7 @@ def validate_config(config) -> bool:
     """Return True when the config has the minimum required credentials."""
     extra = getattr(config, "extra", {}) or {}
     client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
-    client_secret = os.getenv("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
+    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
     tenant_id = os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", "")
     return bool(client_id and client_secret and tenant_id)
 
@@ -425,7 +454,7 @@ def _env_enablement() -> dict | None:
     ``HomeChannel`` dataclass on the ``PlatformConfig`` via the core hook.
     """
     client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
-    client_secret = os.getenv("TEAMS_CLIENT_SECRET", "").strip()
+    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
     tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()
     if not (client_id and client_secret and tenant_id):
         return None
@@ -530,7 +559,7 @@ async def _standalone_send(
     """
     extra = getattr(pconfig, "extra", {}) or {}
     client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
-    client_secret = os.getenv("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
+    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET") or extra.get("client_secret", "")
     tenant_id = os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", "")
     if not (client_id and client_secret and tenant_id):
         return {"error": "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required"}
@@ -620,11 +649,37 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
-# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
-# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
-# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
-# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+# NOTE: ``check_requirements`` is the PASSIVE probe (registry ``check_fn``,
+# status / unit tests) — it must never trigger a pip install.
+# ``check_teams_requirements`` is the ACTIVE lazy-installer, registered as
+# ``ensure_deps_fn``: the registry's ``create_adapter()`` runs it when the
+# passive probe fails, right before the gateway connects Teams (#79812).
+# ``connect()`` re-checks defensively.
+@contextmanager
+def _suppress_third_party_dotenv() -> Iterator[None]:
+    """No-op ``dotenv.load_dotenv`` while importing the Teams SDK (#62935).
+
+    ``microsoft_teams.apps.app`` calls ``load_dotenv(find_dotenv(usecwd=True))``
+    at module import time. That mutates process-global ``os.environ`` from
+    whatever ``.env`` sits above cwd — typically a root profile's secrets.
+    Hermes owns dotenv loading; third-party import side effects must not.
+    """
+    try:
+        import dotenv as _dotenv
+    except ImportError:
+        yield
+        return
+    original = getattr(_dotenv, "load_dotenv", None)
+    if original is None:
+        yield
+        return
+    _dotenv.load_dotenv = lambda *args, **kwargs: False  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        _dotenv.load_dotenv = original  # type: ignore[assignment]
+
+
 def check_teams_requirements() -> bool:
     """Ensure the Teams SDK is importable, lazy-installing it on first use.
 
@@ -632,34 +687,39 @@ def check_teams_requirements() -> bool:
     ``tools.lazy_deps.ensure("platform.teams")`` if not present, then rebinds
     all module-level SDK globals on success. Returns True once the SDK (and
     aiohttp) are importable, False if they couldn't be installed/imported.
+
+    ``App is not None`` means symbols are already bound — ``TEAMS_SDK_AVAILABLE``
+    alone can be True from ``find_spec`` without an import having run yet.
     """
-    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+    if App is not None and AIOHTTP_AVAILABLE:
         return True
 
     def _import() -> dict:
         from aiohttp import web as _web
-        from microsoft_teams.apps import App, ActivityContext
-        from microsoft_teams.common.http.client import ClientOptions
-        from microsoft_teams.api import MessageActivity, ConversationReference
-        from microsoft_teams.api.activities.typing import TypingActivityInput
-        from microsoft_teams.api.activities.invoke.adaptive_card import (
-            AdaptiveCardInvokeActivity,
-        )
-        from microsoft_teams.api.models.adaptive_card import (
-            AdaptiveCardActionCardResponse,
-            AdaptiveCardActionMessageResponse,
-        )
-        from microsoft_teams.api.models.invoke_response import (
-            InvokeResponse,
-            AdaptiveCardInvokeResponse,
-        )
-        from microsoft_teams.apps.http.adapter import (
-            HttpMethod,
-            HttpRequest,
-            HttpResponse,
-            HttpRouteHandler,
-        )
-        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        with _suppress_third_party_dotenv():
+            from microsoft_teams.apps import App, ActivityContext
+            from microsoft_teams.common.http.client import ClientOptions
+            from microsoft_teams.api import MessageActivity, ConversationReference
+            from microsoft_teams.api.activities.typing import TypingActivityInput
+            from microsoft_teams.api.activities.invoke.adaptive_card import (
+                AdaptiveCardInvokeActivity,
+            )
+            from microsoft_teams.api.models.adaptive_card import (
+                AdaptiveCardActionCardResponse,
+                AdaptiveCardActionMessageResponse,
+            )
+            from microsoft_teams.api.models.invoke_response import (
+                InvokeResponse,
+                AdaptiveCardInvokeResponse,
+            )
+            from microsoft_teams.apps.http.adapter import (
+                HttpMethod,
+                HttpRequest,
+                HttpResponse,
+                HttpRouteHandler,
+            )
+            from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
 
         return {
             "web": _web,
@@ -700,11 +760,14 @@ class TeamsAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
-        self._client_secret = extra.get("client_secret") or os.getenv("TEAMS_CLIENT_SECRET", "")
+        self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
         self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
         self._port = _coerce_port(
             extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
         )
+        # Falsy host (unset/"") collapses to the dual-stack default (None).
+        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST
+        self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._dedup = MessageDeduplicator(max_size=1000)
@@ -713,13 +776,15 @@ class TeamsAdapter(BasePlatformAdapter):
         self._conv_refs: Dict[str, Any] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
-        # then re-check the module globals it rebinds.
+        # Defensive re-check: create_adapter() already ran the installer
+        # (ensure_deps_fn) if deps were missing, but connect() can also be
+        # reached via reconnect paths — re-run to bind SDK globals.
         check_teams_requirements()
         if not TEAMS_SDK_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
+                "microsoft-teams-apps could not be installed. "
+                f"Run: {sys.executable} -m pip install microsoft-teams-apps",
                 retryable=False,
             )
             return False
@@ -727,7 +792,7 @@ class TeamsAdapter(BasePlatformAdapter):
         if not AIOHTTP_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "aiohttp not installed. Run: pip install aiohttp",
+                f"aiohttp not installed. Run: {sys.executable} -m pip install aiohttp",
                 retryable=False,
             )
             return False
@@ -774,13 +839,14 @@ class TeamsAdapter(BasePlatformAdapter):
 
             self._runner = web.AppRunner(aiohttp_app)
             await self._runner.setup()
-            site = web.TCPSite(self._runner, "0.0.0.0", self._port)
+            site = web.TCPSite(self._runner, self._host, self._port)
             await site.start()
 
             self._running = True
             self._mark_connected()
             logger.info(
-                "[teams] Webhook server listening on 0.0.0.0:%d%s",
+                "[teams] Webhook server listening on %s:%d%s",
+                self._host or "* (all interfaces, IPv4+IPv6)",
                 self._port,
                 _WEBHOOK_PATH,
             )
@@ -1405,17 +1471,41 @@ def interactive_setup() -> None:
 
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
+def _install_hint() -> str:
+    """Build the Teams install hint from the canonical LAZY_DEPS pins.
+
+    Derived (not hardcoded) so a pin bump in ``tools/lazy_deps.py`` — aiohttp
+    is CVE-pinned, so bumps happen — never leaves this string stale.
+    ``feature_install_command(venv_pip=True)`` targets the actual Hermes
+    venv in every layout and sidesteps Ubuntu 24.04's PEP 668 failure that
+    a bare ``pip install`` hint invites.
+    """
+    try:
+        from tools.lazy_deps import feature_install_command
+        cmd = feature_install_command("platform.teams", venv_pip=True)
+    except Exception:  # pragma: no cover — defensive
+        cmd = None
+    if not cmd:
+        cmd = f"{sys.executable} -m pip install microsoft-teams-apps aiohttp"
+    return f"Teams SDK missing — restart the gateway to auto-install, or run: {cmd}"
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
         name="teams",
         label="Microsoft Teams",
         adapter_factory=lambda cfg: TeamsAdapter(cfg),
+        # PASSIVE probe — deps importable right now?  Never installs, so
+        # status displays / config loading can call it freely.
         check_fn=check_requirements,
+        # ACTIVE lazy-installer — create_adapter() calls this when check_fn
+        # is False, right before the gateway connects Teams (#79812).
+        ensure_deps_fn=check_teams_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
-        install_hint="pip install microsoft-teams-apps aiohttp",
+        install_hint=_install_hint(),
         setup_fn=interactive_setup,
         # Env-driven auto-configuration — seeds PlatformConfig.extra with
         # client_id/secret/tenant + port + home_channel so env-only setups

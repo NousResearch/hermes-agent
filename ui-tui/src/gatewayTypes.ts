@@ -9,6 +9,9 @@ export type GatewaySkin = HermesSkin
 
 export interface GatewayCompletionItem {
   display: string
+  /** Completion class, set by the gateway. `skill` covers skill commands and
+   *  skill bundles — the only kind offered for an inline `/skill` reference. */
+  kind?: string
   meta?: string
   text: string
 }
@@ -67,8 +70,8 @@ export type {
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
-  | { message?: string; name: string; type: 'skill' }
-  | { message: string; notice?: string; type: 'send' }
+  | { display?: string; message?: string; name: string; type: 'skill' }
+  | { display?: string; message: string; notice?: string; type: 'send' }
   | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
@@ -78,6 +81,8 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Focus view (/focus) — display-only reduced-output mode. */
+  focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
@@ -85,6 +90,9 @@ export interface ConfigDisplayConfig {
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
+  /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
+   *  honors on its user/assistant labels (#41531). */
+  timestamps?: boolean
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens
@@ -108,13 +116,20 @@ export interface ConfigDisplayConfig {
 }
 
 export interface ConfigVoiceConfig {
-  // Raw `yaml.safe_load()` value from config; may be non-string if hand-edited.
-  // Callers must normalize/validate at runtime (parseVoiceRecordKey()).
+  // Raw `yaml.safe_load()` values from config may be non-string if hand-edited.
+  // Callers must normalize/validate at runtime.
   record_key?: unknown
+  submit_mode?: unknown
+}
+
+export interface ConfigApprovalsConfig {
+  // Raw config value: only the explicit boolean false disables the safety gate.
+  destructive_slash_confirm?: unknown
 }
 
 export interface ConfigFullResponse {
   config?: {
+    approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig
     voice?: ConfigVoiceConfig
     paste_collapse_threshold?: number
@@ -139,6 +154,9 @@ export interface ConfigSetResponse {
   confirm_message?: string
   confirm_required?: boolean
   credential_warning?: string
+  // A model pick made mid-turn is queued and applied at the next turn start,
+  // not live yet — the handler says "next turn" instead of "model → X".
+  deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
   value?: string
@@ -315,6 +333,9 @@ export interface SessionSteerResponse {
 
 export interface PromptSubmitResponse {
   ok?: boolean
+  /** Set when the submitted text was a bare voice stop phrase consumed
+   *  server-side to end the voice chat instead of starting a turn. */
+  voice_stopped?: boolean
 }
 
 export interface BackgroundStartResponse {
@@ -386,6 +407,7 @@ export interface VoiceToggleResponse {
   details?: string
   enabled?: boolean
   record_key?: string
+  stop_hint?: string
   stt_available?: boolean
   tts?: boolean
 }
@@ -393,6 +415,38 @@ export interface VoiceToggleResponse {
 export interface VoiceRecordResponse {
   status?: 'busy' | 'recording' | 'stopped'
   text?: string
+}
+
+// ── Wake word ────────────────────────────────────────────────────────
+
+export interface WakeStartResponse {
+  enabled_persisted?: boolean
+  hint?: string
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
+  reason?: string
+  started?: boolean
+}
+
+export interface WakeStopResponse {
+  disabled_persisted?: boolean
+  reason?: null | string
+  stopped?: boolean
+}
+
+export interface WakeStatusResponse {
+  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  audio_silent?: boolean
+  available?: boolean
+  /** Config truth (wake_word.enabled). */
+  enabled?: boolean
+  hint?: string
+  listening?: boolean
+  owned_by_caller?: boolean
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
 }
 
 // ── Tools (TS keeps configure since it resets local history) ─────────
@@ -583,7 +637,16 @@ export type GatewayEvent =
       type: 'billing.step_up.verification'
     }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
-  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
+  | {
+      payload?: { no_speech_limit?: boolean; stop_phrase?: boolean; text?: string; typed?: boolean }
+      session_id?: string
+      type: 'voice.transcript'
+    }
+  | {
+      payload?: { phrase?: string; profile?: null | string; start_new_session?: boolean }
+      session_id?: string
+      type: 'wake.detected'
+    }
   | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
@@ -685,4 +748,5 @@ export type GatewayEvent =
       session_id?: string
       type: 'message.complete'
     }
+  | { payload?: { usage?: Usage }; session_id?: string; type: 'session.usage' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }

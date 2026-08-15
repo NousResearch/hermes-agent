@@ -203,6 +203,41 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
 
+### observability/nemo_relay
+
+Relays Hermes execution boundaries — sessions, turns, LLM calls, and tool invocations — to an [NVIDIA NeMo Relay](https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview) endpoint. Hermes core owns the Relay session/turn/LLM/tool scopes; the plugin configures exporters (ATOF JSONL, ATIF trajectories, OpenTelemetry) and adds observer marks for approvals and delegated subagents. Full exporter setup lives in the plugin's `README.md` under `plugins/observability/nemo_relay/`.
+
+**Enabling:**
+
+```bash
+hermes plugins enable observability/nemo_relay
+```
+
+#### Session-span segmentation (continuous sessions)
+
+Relay export is close-driven: a span exports when its scope pops. A continuous gateway session (the normal state for a Telegram/Slack agent) keeps its session scope open for days or weeks, so the session root span — and any marks attached to it — stays unexported until `/new` or idle-end, and a crash or redeploy loses the whole open segment. Turn spans are unaffected; they already export per-turn.
+
+Opt-in segmentation rotates the session scope at turn boundaries, in `config.yaml`:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false   # rotate the session scope when the session compacts
+      max_turns: 0           # 0 = unlimited; N = rotate after N turns per segment
+```
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `on_compaction` | `false` | Close and reopen the session scope after a context compaction completes (at the next turn boundary, never mid-turn) |
+| `max_turns` | `0` | Rotate after every N turns within a segment; `0` disables the cap |
+
+Both defaults are off — with no config set, the scope lifecycle is identical to previous releases (one session scope for the life of the session).
+
+Rotated segments keep the same `session_id` attribute and add `hermes.session.segment` (0-based index) plus `hermes.session.segment_reason` (`compaction` or `max_turns`), so dashboards that group on `session_id` are unaffected. Rotation happens exclusively at turn boundaries and rides the same bounded scope-op executor as every other native Relay call — a wedged exporter costs one segment span, never the agent.
+
+**Disabling:** remove the `session_segments` block (or set both keys back to their defaults).
+
 ### google_meet
 
 Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.
@@ -211,16 +246,17 @@ Lets the agent **join, transcribe, and participate in Google Meet calls** — ta
 
 - A headless virtual participant that joins a Meet URL using browser automation
 - Live transcription of the meeting audio via the configured STT provider
-- A `meet_summarize` / `meet_speak` / `meet_followup` toolset the agent invokes to act on what it heard
-- Post-meeting artifacts (transcript, speaker-attributed notes, action items) saved under `~/.hermes/cache/google_meet/<meeting_id>/`
+- A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
+- Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
 
 **Setup:**
 
 ```bash
 hermes plugins enable google_meet
-# Prompts you to sign in via the plugin's OAuth flow on first use —
-# needs a Google account with Meet access. Host approval may be required
-# if the meeting enforces "only invited participants can join".
+hermes meet setup   # preflight: playwright, chromium, auth file
+hermes meet auth    # opens a browser to sign into Google and saves session state —
+                    # needs a Google account with Meet access. Host approval may be
+                    # required if the meeting enforces "only invited participants can join".
 ```
 
 Usage from chat:
@@ -231,7 +267,7 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
-**Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
+**Disabling:** `hermes plugins disable google_meet`. Any saved transcripts stay in `~/.hermes/workspace/meetings/` until you remove them.
 
 ### hermes-achievements
 

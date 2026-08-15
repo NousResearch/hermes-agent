@@ -63,8 +63,38 @@ from gateway.platforms.webhook_filters import (
     DEFAULT_SCRIPT_TIMEOUT_SECONDS,
     WebhookRouteProcessor,
 )
+from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
+
+
+def _is_webhook_silence_response(content: Any) -> bool:
+    """Whether an agent response means "deliberately say nothing".
+
+    Webhook routes are autonomous background lanes: a subscription prompt tells
+    the agent to answer with ``[SILENT]`` when a tick produced nothing worth a
+    human's attention (a duplicate inbound, a stand-down because a sibling lane
+    already replied, a routine close).  Nobody is waiting on the other end, so
+    there is no reader for whom a "nothing happened" message is useful.
+
+    The reason this is the loose autonomous rule rather than the live gateway's
+    is what the two lanes optimise for.  In an interactive chat, swallowing a
+    real answer because it happens to open with a marker is much worse than
+    showing a stray marker, so ``is_intentional_silence_response`` demands the
+    response be EXACTLY a marker.  A webhook run has the opposite payoff: the
+    cost of a leaked non-story is a pointless notification on every tick, and
+    models reliably add a sentence explaining why they stayed quiet — which
+    under the strict rule flips the whole thing back to "deliver".  That is not
+    a hypothetical: it is why a Helper support lane kept messaging its owner to
+    report that it had nothing to report.
+
+    So use the shared autonomous-lane matcher (also used by cron), which treats
+    a marker on its own first or last line as silence while still delivering
+    prose that merely mentions one mid-sentence.  Sharing the function keeps
+    the two autonomous lanes from drifting apart, and keeps the interactive
+    path untouched.
+    """
+    return is_autonomous_silence_response(content)
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -336,6 +366,12 @@ class WebhookAdapter(BasePlatformAdapter):
         do not consume the entry and silently downgrade the final response
         to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
+        if _is_webhook_silence_response(content):
+            logger.info(
+                "[webhook] Response for %s is a silence marker — not delivering", chat_id
+            )
+            return SendResult(success=True)
+
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
@@ -427,6 +463,36 @@ class WebhookAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
+    def toolsets_for_source(self, source) -> Optional[List[str]]:
+        """Per-route toolset override.
+
+        Webhook session chat_ids are ``webhook:{route}:{delivery_id}``.
+        When the matching route config carries a ``toolsets`` list, that list
+        replaces the platform-level ``platform_toolsets.webhook`` resolution
+        for this run only. Routes without the key keep the platform default
+        (the intentionally constrained webhook-safe toolset), so a single
+        trusted route (e.g. a localhost monitoring push) can be granted
+        ``terminal`` without widening every other webhook route.
+
+        Set via ``platforms.webhook.extra.routes.<name>.toolsets`` in
+        config.yaml or a ``toolsets`` key on a subscription in
+        ``webhook_subscriptions.json`` (manual edit — deliberately NOT
+        exposed through `hermes webhook subscribe`, so an agent-created
+        subscription cannot self-grant elevated tools).
+        """
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        parts = chat_id.split(":", 2)
+        if len(parts) < 2 or parts[0] != "webhook":
+            return None
+        route_config = self._routes.get(parts[1])
+        if not isinstance(route_config, dict):
+            return None
+        toolsets = route_config.get("toolsets")
+        if not isinstance(toolsets, list) or not toolsets:
+            return None
+        cleaned = [str(t).strip() for t in toolsets if str(t).strip()]
+        return cleaned or None
+
     # ------------------------------------------------------------------
     # HTTP handlers
     # ------------------------------------------------------------------
@@ -516,12 +582,42 @@ class WebhookAdapter(BasePlatformAdapter):
             return None
         try:
             from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            served = {
+                name
+                for name, _ in profiles_to_serve(
+                    multiplex=True,
+                    profile_allowlist=getattr(
+                        cfg, "multiplex_profile_allowlist", None
+                    ),
+                )
+            }
         except Exception:
             return _PROFILE_REJECTED
         if profile not in served:
             return _PROFILE_REJECTED
         return profile
+
+    @staticmethod
+    def _route_allows_profile(
+        route_config: dict,
+        request_profile: Optional[str],
+    ) -> bool:
+        """Return whether a route is bound to the URL-selected profile.
+
+        Omitting ``profile`` keeps a route on the default profile. An explicit
+        null, blank, or non-string value is malformed and fails closed.
+        """
+        if "profile" not in route_config:
+            configured_profile = "default"
+        else:
+            configured_profile = route_config.get("profile")
+        if not isinstance(configured_profile, str):
+            return False
+        configured_profile = configured_profile.strip()
+        if not configured_profile:
+            return False
+        effective_profile = request_profile or "default"
+        return configured_profile == effective_profile
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -539,6 +635,19 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         if not route_config:
+            return web.json_response(
+                {"error": f"Unknown route: {route_name}"}, status=404
+            )
+
+        if not self._route_allows_profile(route_config, profile):
+            effective_profile = profile or "default"
+            logger.warning(
+                "[webhook] Route %s is not authorized for profile %r",
+                route_name,
+                effective_profile,
+            )
+            # Match the unknown-route response so callers cannot use profile
+            # mismatches to enumerate route bindings.
             return web.json_response(
                 {"error": f"Unknown route: {route_name}"}, status=404
             )

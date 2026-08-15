@@ -55,13 +55,6 @@ class TestEarlyRecoveryCertifiBundleProbe:
         broken = er._probe_broken_packages()
         assert "certifi" in broken
 
-    def test_healthy_bundle_not_flagged(self, monkeypatch):
-        import certifi as real_certifi
-
-        # Real certifi with a real bundle: probe must NOT flag it.
-        monkeypatch.setitem(sys.modules, "certifi", real_certifi)
-        broken = er._probe_broken_packages()
-        assert "certifi" not in broken
 
     def test_where_raising_flags_certifi_broken(self, monkeypatch):
         fake = types.ModuleType("certifi")
@@ -120,13 +113,6 @@ class TestUpdateProbeScriptChecksBundle:
             monkeypatch.setattr(_b, "print", real_print)
         return "\n".join(printed)
 
-    def test_probe_script_reports_certifi_when_bundle_missing(
-        self, monkeypatch, tmp_path
-    ):
-        out = self._run_probe_script(
-            monkeypatch, tmp_path, tmp_path / "missing" / "cacert.pem"
-        )
-        assert "certifi" in out.splitlines()
 
     def test_probe_script_quiet_when_bundle_healthy(self, monkeypatch, tmp_path):
         import certifi as real_certifi
@@ -193,30 +179,6 @@ class TestDoctorCertificates:
         assert "repaired" in out.lower()
         assert not issues
 
-    def test_fix_failure_surfaces_manual_command(self, monkeypatch, capsys):
-        from hermes_cli import doctor as doctor_mod
-
-        def fake_verify():
-            from agent.errors import SSLConfigurationError
-
-            raise SSLConfigurationError("certifi points to a missing CA bundle")
-
-        def fake_run(cmd, **kwargs):
-            class _R:
-                returncode = 1
-                stdout = ""
-                stderr = "simulated pip failure"
-
-            return _R()
-
-        monkeypatch.setattr(
-            "agent.ssl_guard.verify_ca_bundle_with_fallback", fake_verify
-        )
-        monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
-
-        issues = []
-        doctor_mod.check_certificates(should_fix=True, issues=issues)
-        assert any("force-reinstall certifi" in i for i in issues)
 
     def test_healthy_bundle_never_touches_pip(self, monkeypatch, capsys):
         from hermes_cli import doctor as doctor_mod

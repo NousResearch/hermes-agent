@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
+from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -54,6 +55,38 @@ _BUNDLE_MARKER = " skill bundle,"
 _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
+# The skill name sits in the first quoted span of the activation note, for both
+# the single-skill and the bundle header ("work" / "/clean /work").
+_SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
+
+# SQL LIKE pattern matching a skill-expanded turn, for listing queries that
+# have to recognize scaffolding before the row reaches Python. The prefix
+# contains no LIKE wildcards (`%`, `_`), so it needs no ESCAPE clause.
+SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
+
+# Marks where a preview query joined the head and tail of a long scaffolded
+# message. ``describe_skill_invocation`` may hand back a span that runs across
+# the joint (a bundle instruction cut off by the head window); callers cut the
+# description there rather than show the skill body on the far side.
+SKILL_EXCERPT_JOINT = "\x1e"
+
+
+def append_user_instruction(parts: list, instruction: str) -> str:
+    """Append the instruction line to ``parts``; return the stable prefix.
+
+    Shared by every builder that ends a static skill scaffold with the
+    caller-supplied volatile instruction (single-skill invocations, cron job
+    prompts). The returned prefix ends exactly at the instruction marker, so
+    registering it with ``agent.prompt_cache_boundary`` lets the Anthropic
+    cache planner put a breakpoint on the scaffold instead of caching the
+    whole message as one atomic block (#81867). Keeping construction in one
+    place guarantees the registered prefix stays a byte-prefix of the built
+    message — the invariant the request-time split depends on.
+    """
+    stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
+    parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{instruction}")
+    return stable_prefix
+
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
@@ -80,6 +113,45 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
         return _extract_single_skill_user_instruction(content)
 
     return None
+
+
+def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
+    """Render a slash-skill-expanded turn the way the user typed it.
+
+    The expanded message embeds the whole skill body, so any surface that
+    summarizes a user turn from its raw content — session titles, sidebar
+    previews, the ``/rewind`` picker — otherwise shows the skill's own prose
+    as if the user had written it. That is how a skill's opening line ends up
+    as a session title.
+
+    Returns ``"/work — fix the title leak"``, or ``"/work"`` for a bare
+    invocation, or ``None`` when *content* is not skill scaffolding (the
+    caller should then summarize it as an ordinary message).
+
+    *separator* joins the command and the instruction. Previews use the
+    default em dash; pass ``" "`` for the literal invocation the user typed,
+    which is what chat transcripts render.
+    """
+    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return None
+
+    match = _SKILL_NAME_RE.match(content)
+    name = (match.group(1) if match else "").strip()
+    # Bundle headers already carry their typed "/a /b" keys; a single skill is
+    # a bare name.
+    label = name if name.startswith("/") else f"/{name}"
+
+    instruction = extract_user_instruction_from_skill_message(content)
+    if instruction and instruction is not content:
+        # An excerpted message (head + tail, joined by SKILL_EXCERPT_JOINT) can
+        # put the joint inside the matched span — keep only the side the
+        # instruction marker was found on.
+        instruction = instruction.split(SKILL_EXCERPT_JOINT)[0]
+        instruction = " ".join(instruction.split())
+        if instruction:
+            return f"{label}{separator}{instruction}" if name else instruction
+
+    return label if name else None
 
 
 def _extract_single_skill_user_instruction(message: str) -> Optional[str]:
@@ -306,15 +378,25 @@ def _build_skill_message(
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
+    stable_prefix = None
     if user_instruction:
         parts.append("")
-        parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
+        # Everything before the caller-supplied instruction is a stable
+        # scaffold; declare the exact boundary so the Anthropic cache planner
+        # can put a breakpoint on it instead of caching the whole message as
+        # one atomic block (#81867). The static instruction prose stays on
+        # the stable side; the volatile instruction (webhook payload, ticket
+        # IDs, timestamps) and any runtime note ride in the tail.
+        stable_prefix = append_user_instruction(parts, user_instruction)
 
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
-    return "\n".join(parts)
+    message = "\n".join(parts)
+    if stable_prefix is not None and message.startswith(stable_prefix) and len(message) > len(stable_prefix):
+        register_stable_prefix(stable_prefix)
+    return message
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
@@ -541,7 +623,7 @@ def build_skill_invocation_message(
     # Track active usage for Curator lifecycle management (#17782)
     try:
         from tools.skill_usage import bump_use
-        bump_use(skill_name)
+        bump_use(skill_name, task_id=task_id)
     except Exception:
         pass  # Non-critical — skill invocation proceeds regardless
 
@@ -649,7 +731,7 @@ def build_stacked_skill_invocation_message(
         # Track active usage for Curator lifecycle management (#17782)
         try:
             from tools.skill_usage import bump_use
-            bump_use(skill_name)
+            bump_use(skill_name, task_id=task_id)
         except Exception:
             pass  # Non-critical
 
@@ -736,7 +818,7 @@ def build_preloaded_skills_prompt(
         # Track active usage for Curator lifecycle management (#17782)
         try:
             from tools.skill_usage import bump_use
-            bump_use(skill_name)
+            bump_use(skill_name, task_id=task_id)
         except Exception:
             pass  # Non-critical
 

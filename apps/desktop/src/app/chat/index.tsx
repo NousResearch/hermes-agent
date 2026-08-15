@@ -1,14 +1,17 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
+import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { Suspense, useCallback, useEffect, useMemo } from 'react'
-import { useLocation } from 'react-router-dom'
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
@@ -17,7 +20,7 @@ import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
@@ -37,9 +40,10 @@ import {
   $sessions,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
-  sessionPinId
+  sessionPinId,
+  shouldMigrateComposerScope
 } from '@/store/session'
-import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
@@ -55,11 +59,13 @@ import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { ProfileTag } from './profile-tag'
+import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
+import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -69,10 +75,11 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onCancel: () => Promise<void> | void
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
-  onBranchInNewChat: (messageId: string) => void
+  onBranchInNewChat?: (messageId: string) => void
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
+  onAttachPrCommentUrl?: (url: string) => boolean
   onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
@@ -111,7 +118,7 @@ function ChatHeader({
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous
@@ -130,7 +137,7 @@ function ChatHeader({
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // are compact side panels — they drop the session-actions header + border
   // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
+  if (isAuxiliaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
     return null
   }
 
@@ -175,6 +182,30 @@ interface ChatRuntimeBoundaryProps {
 const NO_MESSAGES: ChatMessage[] = []
 
 /**
+ * The view's $messages, live only while this surface is the VISIBLE tab.
+ *
+ * Keep-alive keeps every ever-active tab MOUNTED (tree-group.tsx), so without
+ * this gate a hidden tab re-renders its entire thread on every streaming
+ * delta flush (~30×/s) — five busy tabs quintuple the per-token render cost
+ * and the app crawls. Hidden tabs freeze their transcript instead (status
+ * dots stay live through the separate status atoms) and catch up in one
+ * commit on reveal — the subscribe fires immediately with the current value.
+ */
+function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+  const visible = usePaneVisible()
+  const [messages, setMessages] = useState(() => $messages.get())
+
+  // nanostores types the listener value ReadonlyIfObject; the store publishes
+  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
+  useEffect(
+    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
+    [$messages, visible]
+  )
+
+  return messages
+}
+
+/**
  * Owns the $messages subscription and the assistant-ui external-store runtime.
  *
  * Isolated from ChatView so the per-token delta flush (which replaces the
@@ -193,9 +224,38 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const storeMessages = useStore(useSessionView().$messages)
+  const view = useSessionView()
+  const runtimeId = useStore(view.$runtimeId)
+  const storeMessages = useMessagesWhileVisible(view.$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
-  const runtimeMessageRepository = useRuntimeMessageRepository(messages)
+
+  const [windowPages, setWindowPages] = useState(1)
+  const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
+  // Sticky-cut continuity across flushes (advanceTranscriptWindow). A ref, not
+  // state: it is derived from `messages` and must never trigger a render.
+  const windowStateRef = useRef<null | TranscriptWindowState>(null)
+
+  // Reset the window on session swap during RENDER, so a large expand from the
+  // previous chat can't leak into the next one's first paint (#55191).
+  if (windowSessionKey !== runtimeId) {
+    setWindowSessionKey(runtimeId)
+    setWindowPages(1)
+    windowStateRef.current = null
+  }
+
+  const { messages: windowedMessages, windowed } = useMemo(() => {
+    const next = advanceTranscriptWindow(windowStateRef.current, messages, windowPages)
+
+    windowStateRef.current = next
+
+    return next.window
+  }, [messages, windowPages])
+
+  const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
+
+  const expandWindow = useCallback(() => setWindowPages(pages => pages + 1), [])
+
+  const transcriptWindow = useMemo(() => ({ olderAvailable: windowed, expandWindow }), [expandWindow, windowed])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -210,10 +270,17 @@ function ChatRuntimeBoundary({
     onReload
   })
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+  return (
+    <TranscriptWindowProvider value={transcriptWindow}>
+      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+    </TranscriptWindowProvider>
+  )
 }
 
-export function ChatView({
+// Memoized: the tile caller (session-tile.tsx) and the contrib surface re-render
+// on idle ticks unrelated to the chat; with stable callback props (hoisted to
+// useCallback at the call sites) memo() lets the whole chat shell skip those.
+export const ChatView = memo(function ChatView({
   className,
   gateway,
   modelMenuContent,
@@ -224,6 +291,7 @@ export function ChatView({
   onAddUrl,
   onAttachImageBlob,
   onAttachDroppedItems,
+  onAttachPrCommentUrl,
   onBranchInNewChat,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
@@ -300,14 +368,19 @@ export function ChatView({
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
+  //
+  // ONLY same-conversation rekeys (tip → root). The route-driven queueSessionKey
+  // can flip to Session B a frame before the store selection leaves Session A;
+  // migrating on bare inequality would re-home A's queued prompts onto B and
+  // auto-drain them into the wrong chat.
   useEffect(() => {
-    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+    if (!shouldMigrateComposerScope(selectedSessionId, queueSessionKey, sessions)) {
       return
     }
 
     migrateSessionDraft(selectedSessionId, queueSessionKey)
     migrateQueuedPrompts(selectedSessionId, queueSessionKey)
-  }, [queueSessionKey, selectedSessionId])
+  }, [queueSessionKey, selectedSessionId, sessions])
 
   // Transcript-side stops (the streaming message's hover Stop, the runtime's
   // cancel) are explicit halts, same as the composer's Stop button: park any
@@ -328,13 +401,13 @@ export function ChatView({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
+  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
     isPrimary &&
-    !isSecondaryWindow() &&
+    !isAuxiliaryWindow() &&
     freshDraftReady &&
     !isRoutedSessionView &&
     !selectedSessionId &&
@@ -444,6 +517,7 @@ export function ChatView({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
     >
@@ -515,7 +589,7 @@ export function ChatView({
               config={COMPOSER_HEART_CONFIG}
               style={{
                 top: 0,
-                bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.25rem)'
+                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
               }}
             />
           )}
@@ -545,6 +619,7 @@ export function ChatView({
               onAddUrl={onAddUrl}
               onAttachDroppedItems={onAttachDroppedItems}
               onAttachImageBlob={onAttachImageBlob}
+              onAttachPrCommentUrl={onAttachPrCommentUrl}
               onCancel={onCancel}
               onPasteClipboardImage={onPasteClipboardImage}
               onPickFiles={onPickFiles}
@@ -563,4 +638,4 @@ export function ChatView({
       </ChatRuntimeBoundary>
     </div>
   )
-}
+})

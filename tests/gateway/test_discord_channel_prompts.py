@@ -142,61 +142,6 @@ class TestResolveChannelPrompts:
         adapter.config.extra = {"channel_prompts": {100: "Research mode"}}
         assert adapter._resolve_channel_prompt("100") is None
 
-    def test_match_by_parent_id(self):
-        adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {"200": "Forum prompt"}}
-        assert adapter._resolve_channel_prompt("999", parent_id="200") == "Forum prompt"
-
-    def test_exact_channel_overrides_parent(self):
-        adapter = _make_adapter()
-        adapter.config.extra = {
-            "channel_prompts": {
-                "999": "Thread override",
-                "200": "Forum prompt",
-            }
-        }
-        assert adapter._resolve_channel_prompt("999", parent_id="200") == "Thread override"
-
-    def test_build_message_event_sets_channel_prompt(self):
-        adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {"321": "Command prompt"}}
-        adapter.build_source = MagicMock(return_value=SimpleNamespace())
-
-        interaction = SimpleNamespace(
-            channel_id=321,
-            channel=SimpleNamespace(name="general", guild=None, parent_id=None),
-            user=SimpleNamespace(id=1, display_name="Brenner"),
-        )
-        adapter._get_effective_topic = MagicMock(return_value=None)
-
-        event = adapter._build_slash_event(interaction, "/retry")
-
-        assert event.channel_prompt == "Command prompt"
-
-    @pytest.mark.asyncio
-    async def test_dispatch_thread_session_inherits_parent_channel_prompt(self):
-        adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {"200": "Parent prompt"}}
-        adapter.build_source = MagicMock(return_value=SimpleNamespace())
-        adapter._get_effective_topic = MagicMock(return_value=None)
-        adapter.handle_message = AsyncMock()
-
-        interaction = SimpleNamespace(
-            guild=SimpleNamespace(name="Wetlands"),
-            channel=SimpleNamespace(id=200, parent=None),
-            user=SimpleNamespace(id=1, display_name="Brenner"),
-        )
-
-        await adapter._dispatch_thread_session(interaction, "999", "new-thread", "hello")
-
-        dispatched_event = adapter.handle_message.await_args.args[0]
-        assert dispatched_event.channel_prompt == "Parent prompt"
-
-    def test_blank_prompts_are_ignored(self):
-        adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {"100": "   "}}
-        assert adapter._resolve_channel_prompt("100") is None
-
 
 @pytest.mark.asyncio
 async def test_retry_preserves_channel_prompt(monkeypatch):

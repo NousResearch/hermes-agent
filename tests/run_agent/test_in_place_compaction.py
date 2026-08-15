@@ -141,27 +141,6 @@ class TestInPlaceCompaction:
             roles = [m["role"] for m in compressed if m.get("role") != "system"]
             assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
 
-    def test_in_place_skips_redundant_preflush(self):
-        """In-place must NOT pre-flush current-turn messages: replace_messages
-        rewrites the whole row, so a flush would INSERT rows it immediately
-        deletes (wasted writes). The current-turn tail survives via the
-        compressor's `compressed` output, not the flush."""
-        from hermes_state import SessionDB
-        from agent.conversation_compression import compress_context
-
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
-            _seed(db, "ip_flush", "f")
-            agent = _make_agent(db, "ip_flush", in_place=True)
-            calls = {"n": 0}
-            agent._flush_messages_to_session_db = lambda *a, **k: calls.__setitem__(
-                "n", calls["n"] + 1
-            )
-            compress_context(
-                agent, [{"role": "user", "content": "x"}] * 8,
-                approx_tokens=100_000, system_message="sys",
-            )
-            assert calls["n"] == 0
 
     def test_rotation_still_preflushes(self):
         """Rotation MUST pre-flush so current-turn messages survive in the
@@ -206,13 +185,16 @@ class TestRotationFallbackWhenFlagOff:
 
             # Identity rotated to a fresh id.
             assert agent.session_id != sid
-            # Old session ended via compression; continuation forked + renamed.
+            # Old session ended via compression; continuation forked and
+            # carries the SAME name. Compression is an internal detail — the
+            # conversation didn't change topic, so it must not be renumbered
+            # into "my-research #2" and shown as a separate piece of work.
             assert db.get_session(sid)["end_reason"] == "compression"
             child = db._conn.execute(
                 "SELECT id, title FROM sessions WHERE parent_session_id = ?", (sid,)
             ).fetchall()
             assert len(child) == 1
-            assert child[0]["title"] == "my-research #2"
+            assert child[0]["title"] == "my-research"
             # The compacted child is persisted atomically at the rotation
             # boundary, so a headless process killed before finalization can
             # still resume it without duplicating the two handoff messages.
@@ -261,6 +243,81 @@ class TestInPlaceConfigDefault:
         from hermes_cli.config import DEFAULT_CONFIG
 
         assert DEFAULT_CONFIG["compression"].get("in_place") is True
+
+
+class TestInPlaceAntiGrowthGuard:
+    """A compression whose result is LARGER than its input must never be
+    persisted. In-place compaction commits inside compress_context() via
+    archive_and_compact — BEFORE the gateway's rotation-only anti-growth
+    guard (#83339) can inspect the result — so the guard must live at the
+    commit site and cover the in-place path too. Observed failure: session
+    hygiene "compressed" 426 -> 426 msgs, ~379,216 -> ~687,888 tokens and
+    durably persisted the growth."""
+
+    def test_in_place_refuses_growing_compression(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_antigrow"
+            _seed(db, sid, "grow")
+            agent = _make_agent(db, sid, in_place=True)
+            agent._last_flushed_db_idx = 5
+
+            def _growing_compress(messages, current_tokens=None, focus_topic=None, force=False):
+                # A "summary" bigger than the entire input transcript.
+                return [
+                    {"role": "user", "content": "X" * 200_000},
+                    {"role": "assistant", "content": "tiny tail"},
+                ]
+
+            agent.context_compressor.compress = _growing_compress
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+            compressed, _sp = compress_context(
+                agent, messages, approx_tokens=100_000, system_message="sys"
+            )
+
+            # Guard refused: the original transcript is returned untouched.
+            assert compressed == messages
+            # No in-place commit signal — nothing was persisted.
+            assert getattr(agent, "_last_compaction_in_place", False) is False
+            # Durable state is byte-for-byte the pre-compression live set:
+            # nothing archived, nothing inserted.
+            reloaded = db.get_messages_as_conversation(sid)
+            assert [m["content"] for m in reloaded] == [f"msg {i}" for i in range(8)]
+            all_rows = db.get_messages(sid, include_inactive=True)
+            assert len(all_rows) == 8
+            assert not any(not m.get("active", 1) for m in all_rows)
+            # Session identity untouched.
+            assert agent.session_id == sid
+            assert db.get_session(sid)["end_reason"] is None
+
+    def test_in_place_still_commits_shrinking_compression(self):
+        """The guard must not block legitimate compressions — a result SMALLER
+        than the input still commits in place (regression net for #83339)."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_shrink"
+            _seed(db, sid, "shrink")
+            agent = _make_agent(db, sid, in_place=True)
+            agent._last_flushed_db_idx = 5
+
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+            compressed, _sp = compress_context(
+                agent, messages, approx_tokens=100_000, system_message="sys"
+            )
+
+            # The fake compressor returns a small summary — commit happens.
+            assert agent._last_compaction_in_place is True
+            reloaded = db.get_messages_as_conversation(sid)
+            assert [m.get("content") for m in reloaded] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
 
 
 class TestCompactedTurnsStaySearchable:

@@ -5,6 +5,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
+  clearsEnabledToolsets,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
@@ -209,6 +210,26 @@ describe('settings helpers', () => {
       expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
     })
 
+    it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
+      // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.
+      const full = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model: 'gpt-4o-mini-tts' } } })
+      expect(full).toContain('marin')
+      expect(full).toContain('cedar')
+      expect(full).toContain('ballad')
+      expect(full).toContain('verse')
+      expect(full).toHaveLength(13)
+
+      // tts-1 / tts-1-hd: the 9-voice set — no ballad/verse/marin/cedar.
+      for (const model of ['tts-1', 'tts-1-hd']) {
+        const narrowed = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model } } })
+        expect(narrowed).toEqual(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
+      }
+
+      // A hand-typed custom voice still stays selectable on tts-1.
+      const custom = enumOptionsFor('tts.openai.voice', 'my-cloned-voice', { tts: { openai: { model: 'tts-1' } } })
+      expect(custom).toContain('my-cloned-voice')
+    })
+
     it('appends a hand-typed value not in the known list so it stays selected', () => {
       const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
       expect(opts).toContain('my-custom-command-tts')
@@ -341,6 +362,46 @@ describe('settings helpers', () => {
 
     it('hides declared keys absent from both schema and config', () => {
       expect(sectionFieldEntries({}, {}).get('memory') ?? []).toHaveLength(0)
+    })
+  })
+
+  describe('clearsEnabledToolsets', () => {
+    it('flags a non-empty → empty transition', () => {
+      const prev: HermesConfigRecord = { toolsets: ['memory', 'terminal', 'web_search'] }
+      const next: HermesConfigRecord = { toolsets: [] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(true)
+    })
+
+    it('does not flag a non-empty → missing transition (deep-merge preserves the key)', () => {
+      // PUT /api/config deep-merges the override onto the stored config, so an
+      // import that omits `toolsets` keeps the existing list — no wipe happens,
+      // so there is nothing to confirm.
+      const prev: HermesConfigRecord = { toolsets: ['memory'] }
+      const next: HermesConfigRecord = {}
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+
+    it('does not flag when at least one toolset remains', () => {
+      const prev: HermesConfigRecord = { toolsets: ['memory', 'terminal'] }
+      const next: HermesConfigRecord = { toolsets: ['memory'] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+
+    it('does not flag when the list was already empty', () => {
+      const prev: HermesConfigRecord = { toolsets: [] }
+      const next: HermesConfigRecord = { toolsets: [] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+
+    it('does not flag an unrelated edit that never touched toolsets', () => {
+      const prev: HermesConfigRecord = { model: 'a', toolsets: ['memory'] }
+      const next: HermesConfigRecord = { model: 'b', toolsets: ['memory'] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
     })
   })
 })

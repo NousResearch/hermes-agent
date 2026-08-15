@@ -24,13 +24,17 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $connection } from '@/store/session'
+import { $connection, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
+import { setSessionDraftingTool } from '@/store/tool-drafting'
+import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
+  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -38,13 +42,60 @@ import {
   planEdit,
   planReload,
   planRestore,
+  rebindSurvivorRowIds,
   runRewindSubmit,
+  survivorRowIdsFrom,
+  type SurvivorUserRowIds,
   truncateSubmitParams
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
-import { type SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
+import {
+  markSessionRecentlyInterrupted,
+  shouldInterruptBeforeRewind,
+  type SubmitTextOptions
+} from '../session/hooks/use-prompt-actions/utils'
+import { upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
+
+/**
+ * List a tile's session in the sidebar/tab strip on its first send.
+ *
+ * A ⌘T tab's session is created UNLISTED (see `openNewSessionTile`), so it has
+ * no `$sessions` row until its first turn persists and a refresh surfaces it —
+ * for that whole first exchange the tab and the sidebar read "New session".
+ * ⌘N has no such gap: its session is created per-send and seeded with the
+ * user's text as the row preview. Seeding the same way here names the session
+ * within the first message; the server's auto-title supersedes it once the turn
+ * completes.
+ *
+ * No-ops on empty text and on a session that is already listed, so re-sends
+ * never clobber a real title with a raw message preview.
+ */
+export function listTileSessionRow(deps: {
+  cwd?: string
+  model?: string
+  preview: string
+  runtimeId: string
+  sessions: readonly SessionInfo[]
+  storedSessionId: string
+}): boolean {
+  const preview = deps.preview.trim()
+
+  if (!preview || deps.sessions.some(session => sessionMatchesStoredId(session, deps.storedSessionId))) {
+    return false
+  }
+
+  upsertOptimisticSession(
+    { info: { cwd: deps.cwd, model: deps.model }, session_id: deps.runtimeId, stored_session_id: deps.storedSessionId },
+    deps.storedSessionId,
+    null,
+    preview
+  )
+  broadcastSessionsChanged()
+
+  return true
+}
 
 interface SessionTileActionsArgs {
   runtimeId: string
@@ -61,6 +112,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   runtimeIdRef.current = runtimeId
   const storedIdRef = useRef(storedSessionId)
   storedIdRef.current = storedSessionId
+  // A tile IS its session (see the comment on the useSubmitPrompt call below)
+  // A tile owns one stable stored/runtime pair, so seed the shared ownership
+  // cache explicitly rather than relying on the primary route cache.
+  const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
+  runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -90,6 +146,23 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   const readState = useCallback(() => $sessionStates.get()[runtimeIdRef.current], [])
   const readMessages = useCallback(() => readState()?.messages ?? [], [readState])
 
+  // A ⌘T tab's session is unlisted until its first turn persists — seed the
+  // row from the user's first message so the tab and sidebar name it right
+  // away (see listTileSessionRow).
+  const listTileSession = useCallback((preview: string) => {
+    const runtimeId = runtimeIdRef.current
+    const state = $sessionStates.get()[runtimeId]
+
+    listTileSessionRow({
+      cwd: state?.cwd,
+      model: state?.model,
+      preview,
+      runtimeId,
+      sessions: $sessions.get(),
+      storedSessionId: storedIdRef.current
+    })
+  }, [])
+
   // Tile-side attachment staging: same upload rules as the primary submit
   // (skip synced/pathless, byte-upload files+images), against the tile scope.
   const syncAttachmentsForSubmit = useCallback(
@@ -97,22 +170,50 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       sessionId: string,
       attachments: ComposerAttachment[],
       options: { updateComposerAttachments?: boolean } = {}
-    ): Promise<ComposerAttachment[]> => {
+    ): Promise<{ attachments: ComposerAttachment[]; sessionId: string }> => {
       const remote = $connection.get()?.mode === 'remote'
+      let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
 
+      // A tile owns its own runtime binding, so a recovery here rebinds the
+      // tile's ref rather than the foreground session's.
+      const onSessionRecovered = (recoveredId: string) => {
+        liveSessionId = recoveredId
+        runtimeIdRef.current = recoveredId
+      }
+
       for (const attachment of attachments) {
-        if (!attachment.path || attachment.attachedSessionId === sessionId) {
+        if (!attachment.path || attachment.attachedSessionId === liveSessionId) {
           synced.push(attachment)
 
           continue
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const next = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const next = await uploadComposerAttachment(attachment, {
+            backendCwd: readState()?.cwd,
+            remote,
+            requestGateway,
+            sessionId: liveSessionId,
+            storedSessionId: storedIdRef.current,
+            onSessionRecovered
+          })
 
           if (options.updateComposerAttachments ?? true) {
-            scope.attachments.update(next)
+            if (attachment.occurrenceId) {
+              // Merge staging into the latest state for this exact tile-chip
+              // occurrence. A preview may complete while upload is pending,
+              // and remove + same-path reattach must not receive stale staging.
+              scope.attachments.updateIfCurrent(attachment, {
+                attachedSessionId: next.attachedSessionId,
+                label: next.label,
+                path: next.path,
+                refText: next.refText,
+                uploadState: next.uploadState
+              })
+            } else {
+              scope.attachments.update(next)
+            }
           }
 
           synced.push(next)
@@ -123,7 +224,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         synced.push(attachment)
       }
 
-      return synced
+      return { attachments: synced, sessionId: liveSessionId }
     },
     [requestGateway, scope.attachments]
   )
@@ -141,6 +242,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
+    runtimeIdByStoredSessionIdRef,
     // Tile ids are always bound before this hook mounts, so routed recovery is
     // unreachable here; keep the shared submit contract explicit.
     resumeStoredSession: () => undefined,
@@ -148,7 +250,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     syncAttachmentsForSubmit,
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
     scope: {
-      clearAttachments: scope.attachments.clear,
+      removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
       readAttachments: () => scope.attachments.$attachments.get(),
       // Busy/messages flow through updateSession -> the tile's state slice;
       // the primary view atoms must never see a tile turn.
@@ -163,6 +265,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       const visibleText = rawText.trim()
       const attachments = options?.attachments ?? scope.attachments.$attachments.get()
 
+      listTileSession(visibleText)
+
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
         await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
@@ -172,28 +276,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return await submitPromptText(rawText, options)
     },
-    [scope.attachments.$attachments, submitPromptText]
-  )
-
-  const appendSystemNote = useCallback(
-    (text: string) => {
-      update(state => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          {
-            id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            role: 'system',
-            parts: [textPart(text)]
-          }
-        ]
-      }))
-    },
-    [update]
+    [listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
+
+    // Frontend busy clears immediately; gateway wind-down can lag (#83855).
+    markSessionRecentlyInterrupted(sessionId)
 
     update(state => ({
       ...state,
@@ -209,6 +299,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
+    setSessionDraftingTool(sessionId, '')
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
 
@@ -222,38 +313,121 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = rawText.trim()
+      const sessionId = runtimeIdRef.current
 
-      if (!text) {
+      if (!text || !sessionId) {
         return false
       }
 
+      const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+      const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
+        sessionTileDelegate()?.updateSession(sessionId, updater)
+
+      // Match the primary composer: record the correction in arrival order —
+      // sealed already-streamed output above, correction below, post-redirect
+      // deltas below that — before awaiting the redirect RPC, whose completion
+      // can race us. The old insert-before-the-active-reply splice put the
+      // bubble above output the user had already read (#73793), and its
+      // last-assistant fallback could land it mid-thread when the stream id
+      // was missing or stale (#83151).
+      mutate(state =>
+        appendMidTurnUserMessage(state, {
+          id: messageId,
+          role: 'user' as const,
+          parts: [textPart(text)]
+        })
+      )
+
+      const discardOptimisticMessage = () =>
+        mutate(state => ({
+          ...state,
+          messages: state.messages.filter(message => message.id !== messageId)
+        }))
+
+      const moveOptimisticMessageToEnd = () =>
+        mutate(state => {
+          const message = state.messages.find(candidate => candidate.id === messageId)
+
+          return message
+            ? { ...state, messages: [...state.messages.filter(candidate => candidate.id !== messageId), message] }
+            : state
+        })
+
       try {
-        const result = await requestGateway<{ status?: string }>('session.steer', {
-          session_id: runtimeIdRef.current,
+        const result = await requestGateway<{ status?: string }>('session.redirect', {
+          session_id: sessionId,
           text
         })
 
-        if (result?.status === 'queued') {
+        if (result?.status === 'redirected') {
           triggerHaptic('submit')
-          appendSystemNote(`steer:${text}`)
+
+          return true
+        }
+
+        if (result?.status === 'queued') {
+          moveOptimisticMessageToEnd()
+          triggerHaptic('submit')
 
           return true
         }
       } catch {
+        discardOptimisticMessage()
         // Swallow — the caller queues the text so nothing is lost.
+
+        return false
       }
+
+      discardOptimisticMessage()
 
       return false
     },
-    [appendSystemNote, requestGateway]
+    [requestGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with
   // the primary chat so the two can't diverge.
   const submitRewind = useCallback(
-    (text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, runtimeIdRef.current, text, truncateOrdinal, interruptFirst),
+    (
+      text: string,
+      truncateOrdinal: number | undefined,
+      interruptFirst: boolean,
+      truncateMessageId?: string,
+      truncateRowId?: number
+    ) =>
+      runRewindSubmit(
+        requestGateway,
+        runtimeIdRef.current,
+        text,
+        truncateOrdinal,
+        truncateMessageId,
+        interruptFirst,
+        {
+          storedSessionId: storedIdRef.current,
+          onSessionRecovered: recoveredId => {
+            runtimeIdRef.current = recoveredId
+          }
+        },
+        truncateRowId
+      ),
     [requestGateway]
+  )
+
+  // After a durable rewind the surviving bubbles' cached rowIds are stale (the
+  // gateway re-inserted the kept prefix as new SQLite rows). Rebind them to the
+  // authoritative post-rewrite ids so the NEXT rewind/edit/regenerate doesn't
+  // send a dead id and get refused with 4018 (consecutive-rewind staleness,
+  // #83202 review).
+  const applySurvivorRowIds = useCallback(
+    (survivorRowIds: SurvivorUserRowIds | undefined) => {
+      if (!survivorRowIds) {
+        return
+      }
+
+      update(state => ({ ...state, messages: rebindSurvivorRowIds(state.messages, survivorRowIds) }))
+    },
+    [update]
   )
 
   const reloadFromMessage = useCallback(
@@ -273,21 +447,23 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(current => applyReloadOptimistic(current, plan))
 
       try {
-        await requestGateway(
+        const result = await requestGateway<{ survivor_user_row_ids?: unknown }>(
           'prompt.submit',
           {
             session_id: runtimeIdRef.current,
             text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal)
+            ...truncateSubmitParams(plan.truncateOrdinal, plan.truncateMessageId, plan.truncateRowId)
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
+
+        applySurvivorRowIds(survivorRowIdsFrom(result))
       } catch (err) {
         update(current => ({ ...current, busy: false, awaitingResponse: false }))
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [copy.regenerateFailed, readState, requestGateway, update]
+    [applySurvivorRowIds, copy.regenerateFailed, readState, requestGateway, update]
   )
 
   const restoreToMessage = useCallback(
@@ -300,18 +476,29 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
 
-      const wasBusy = readState()?.busy ?? false
+      const interruptFirst = shouldInterruptBeforeRewind({
+        busy: readState()?.busy ?? false,
+        sessionId
+      })
 
       update(state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy)
+        applySurvivorRowIds(
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId
+          )
+        )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         throw err
       }
     },
-    [readMessages, readState, submitRewind, update]
+    [applySurvivorRowIds, readMessages, readState, submitRewind, update]
   )
 
   const editMessage = useCallback(
@@ -329,18 +516,29 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
 
-      const wasBusy = readState()?.busy ?? false
+      const interruptFirst = shouldInterruptBeforeRewind({
+        busy: readState()?.busy ?? false,
+        sessionId
+      })
 
       update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
       try {
-        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy)
+        applySurvivorRowIds(
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId
+          )
+        )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         notifyError(err, copy.editFailed)
       }
     },
-    [copy.editFailed, readMessages, readState, submitRewind, update]
+    [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, update]
   )
 
   // Branch-visibility sync (assistant-ui hides non-active branches).

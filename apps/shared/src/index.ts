@@ -13,6 +13,7 @@ export type {
   BillingErrorPayload,
   BillingMonthlyCap,
   BillingMutationResponse,
+  BillingPaymentMethod,
   BillingRefusalCode,
   BillingStateResponse,
   ChargeFailureReason,
@@ -34,6 +35,11 @@ export {
   type SettlementOutcome
 } from './charge-settlement'
 export {
+  createCronTriggerController,
+  type CronTriggerController,
+  type CronTriggerRunResult
+} from './cron-trigger-controller'
+export {
   type ConnectionState,
   type GatewayClientOptions,
   type GatewayEvent,
@@ -43,6 +49,7 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,
   SKIN_BRANDING_TOKENS,

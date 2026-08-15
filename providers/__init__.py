@@ -1,9 +1,11 @@
 """Provider module registry.
 
-Provider profiles can live in two places:
+Provider profiles can live in three places:
 
 1. Bundled plugins: ``plugins/model-providers/<name>/`` (shipped with hermes-agent)
 2. User plugins: ``$HERMES_HOME/plugins/model-providers/<name>/``
+3. Pip-installed plugins: distributions exposing a ``hermes_agent.plugins``
+   entry point (``module:func`` callable or a self-registering ``module``)
 
 Each plugin directory contains:
   - ``__init__.py`` — calls ``register_provider(profile)`` at import
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
+_PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
@@ -57,9 +60,11 @@ def register_provider(profile: ProviderProfile) -> None:
     plugins under ``$HERMES_HOME/plugins/model-providers/`` can override
     bundled profiles without editing repo code.
     """
+    global _PROVIDER_LIST_CACHE
     _REGISTRY[profile.name] = profile
     for alias in profile.aliases:
         _ALIASES[alias] = profile.name
+    _PROVIDER_LIST_CACHE = None
 
 
 def get_provider_profile(name: str) -> ProviderProfile | None:
@@ -75,8 +80,11 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
+    global _PROVIDER_LIST_CACHE
     if not _discovered:
         _discover_providers()
+    if _PROVIDER_LIST_CACHE is not None:
+        return list(_PROVIDER_LIST_CACHE)
     # Deduplicate: _REGISTRY has canonical names; _ALIASES points to same objects
     seen: set[int] = set()
     result: list[ProviderProfile] = []
@@ -85,7 +93,8 @@ def list_providers() -> list[ProviderProfile]:
         if pid not in seen:
             seen.add(pid)
             result.append(profile)
-    return result
+    _PROVIDER_LIST_CACHE = result
+    return list(result)
 
 
 def _user_plugins_dir() -> Path | None:
@@ -137,6 +146,128 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
         sys.modules.pop(module_name, None)
 
 
+def _discover_entry_point_providers() -> None:
+    """Import pip-installed provider plugins via the ``hermes_agent.plugins``
+    entry-point group so they self-register.
+
+    A distribution ships::
+
+        [project.entry-points."hermes_agent.plugins"]
+        acme-inference = "acme_hermes_plugin:register"
+
+    The target may be either a **callable** (``module:func`` — invoked with no
+    args; typically calls ``register_provider(profile)``) or a **module**
+    (``module`` — imported for its module-level ``register_provider`` side
+    effect, mirroring the directory-plugin ``__init__.py`` contract).
+
+    Gating and safety:
+
+    * **Opt-in.** Entry-point plugins are subject to the same
+      ``plugins.enabled`` allow-list (and ``plugins.disabled`` deny-list) the
+      general PluginManager enforces — a pip package is never imported just
+      because it is installed. An entry point whose name is not enabled is
+      skipped without loading.
+    * **Provider targets only.** The ``hermes_agent.plugins`` group is shared
+      with general plugins whose target is ``register(ctx)``. Callables that
+      require arguments are skipped here (the PluginManager owns them);
+      provider registration hooks take no arguments by contract.
+
+    Failures are swallowed per-entry (a broken third-party package must not
+    break provider discovery) and logged at warning level. This scan runs
+    first, so filesystem plugins (bundled + ``$HERMES_HOME``) keep their
+    documented override precedence via last-writer-wins in
+    ``register_provider()`` — a pip package cannot hijack a first-party
+    provider name.
+    """
+    try:
+        import importlib.metadata as _md
+    except Exception:  # pragma: no cover — importlib.metadata always present ≥3.8
+        return
+
+    # Same opt-in gate as the general PluginManager: only entry points named
+    # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+
+        enabled = _get_enabled_plugins()  # None = nothing enabled yet (opt-in default)
+        disabled = _get_disabled_plugins()
+    except Exception:  # pragma: no cover — config layer unavailable
+        enabled, disabled = None, set()
+    if not enabled:
+        return
+
+    group = "hermes_agent.plugins"
+    try:
+        eps = _md.entry_points()
+        # Python 3.10+ exposes .select(); older returns a dict-like mapping.
+        if hasattr(eps, "select"):
+            group_eps = list(eps.select(group=group))
+        else:  # pragma: no cover — legacy interpreters
+            group_eps = list(eps.get(group, []))  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.debug("entry-point provider scan skipped: %s", exc)
+        return
+
+    for ep in group_eps:
+        if ep.name not in enabled or ep.name in disabled:
+            logger.debug(
+                "entry-point provider %r skipped: not enabled in config", ep.name
+            )
+            continue
+        try:
+            loaded = ep.load()
+        except Exception as exc:
+            logger.warning(
+                "Failed to load entry-point provider plugin %r: %s", ep.name, exc
+            )
+            continue
+        # ``module:func`` → callable we invoke; bare ``module`` → import side
+        # effect already happened during load(). Only call when it's callable
+        # AND zero-arg: general plugins in this shared group expose
+        # ``register(ctx)`` (requires an argument) and belong to the
+        # PluginManager, not the provider registry.
+        if callable(loaded):
+            if _requires_arguments(loaded):
+                logger.debug(
+                    "entry-point %r skipped by provider scan: target requires "
+                    "arguments (general plugin owned by PluginManager)",
+                    ep.name,
+                )
+                continue
+            try:
+                loaded()
+            except Exception as exc:
+                logger.warning(
+                    "Entry-point provider plugin %r raised on invocation: %s",
+                    ep.name,
+                    exc,
+                )
+
+
+def _requires_arguments(fn) -> bool:
+    """True when ``fn`` cannot be called with zero arguments.
+
+    Used to distinguish provider registration hooks (zero-arg by contract)
+    from general plugin hooks (``register(ctx)``) sharing the same entry-point
+    group. Unintrospectable callables (C extensions) are treated as zero-arg
+    and left to the per-entry exception guard.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):  # pragma: no cover — builtins/C callables
+        return False
+    for param in sig.parameters.values():
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ) and param.default is inspect.Parameter.empty:
+            return True
+    return False
+
+
 def _discover_providers() -> None:
     """Populate the registry by importing every provider plugin.
 
@@ -152,6 +283,22 @@ def _discover_providers() -> None:
     if _discovered:
         return
     _discovered = True
+
+    # 0. Pip-installed plugins — entry points in the ``hermes_agent.plugins``
+    #    group (the same group the general PluginManager uses). The manager
+    #    records model-provider manifests for introspection but deliberately
+    #    does NOT import them — provider lifecycle is owned here — so without
+    #    this step a ``pip install``ed provider never calls
+    #    ``register_provider()`` and is never selectable.
+    #
+    #    Discovered FIRST, i.e. lowest precedence: because
+    #    ``register_provider()`` is last-writer-wins, running this before the
+    #    filesystem steps means a bundled or ``$HERMES_HOME`` profile of the
+    #    same name always overrides a pip-installed one. That prevents a
+    #    third-party package from silently hijacking a first-party provider
+    #    name (e.g. ``openrouter``) while still letting pip packages add
+    #    genuinely new providers.
+    _discover_entry_point_providers()
 
     # 1. Bundled plugins — shipped with hermes-agent.
     if _BUNDLED_PLUGINS_DIR.is_dir():
@@ -189,3 +336,7 @@ def _discover_providers() -> None:
                 )
     except Exception:
         pass
+
+    # (Pip entry-point providers are discovered in step 0, before the
+    # filesystem plugins, so first-party profiles always win on name
+    # collision — see _discover_entry_point_providers.)

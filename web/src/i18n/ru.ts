@@ -129,8 +129,14 @@ export const ru: Translations = {
     title: "Сессии",
     history: "История",
     overview: "Обзор",
+    filterChats: "Чаты",
+    filterAutomation: "Автоматизация",
+    filterAll: "Все",
+    sourceFilter: "Источник сессии",
+    anySource: "Любой источник",
     searchPlaceholder: "Поиск по содержимому сообщений...",
     noSessions: "Сессий пока нет",
+    noSessionsInFilter: "В этом фильтре нет сессий",
     noMatch: "Нет сессий, соответствующих запросу",
     startConversation: "Начните разговор, чтобы увидеть его здесь",
     noMessages: "Нет сообщений",
@@ -612,6 +618,12 @@ export const ru: Translations = {
       "Доски позволяют разделять не связанные между собой потоки работы — по одной на проект, репозиторий или область. Воркеры одной доски никогда не видят задачи другой.",
     slug: "Slug",
     slugHint: "— строчные буквы, дефисы, например atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Отображаемое имя",
     displayNameHint: "(необязательно)",
     description: "Описание",

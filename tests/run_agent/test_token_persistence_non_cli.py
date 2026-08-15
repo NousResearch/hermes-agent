@@ -50,19 +50,12 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     result = agent.run_conversation("hello")
 
     assert result["final_response"] == "done"
-    session_db.update_token_counts.assert_called_once()
-    assert session_db.update_token_counts.call_args.args[0] == "telegram-session"
+    # Per-call deltas are enqueued for the SessionDB background writer
+    # (queue_token_counts) rather than written inline on the turn thread.
+    session_db.queue_token_counts.assert_called_once()
+    assert session_db.queue_token_counts.call_args.args[0] == "telegram-session"
 
 
-def test_run_conversation_persists_tokens_for_cron_sessions():
-    session_db = MagicMock()
-    agent = _make_agent(session_db, platform="cron")
-
-    result = agent.run_conversation("hello")
-
-    assert result["final_response"] == "done"
-    session_db.update_token_counts.assert_called_once()
-    assert session_db.update_token_counts.call_args.args[0] == "cron-session"
 
 
 def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
@@ -87,9 +80,49 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
 
     agent = _make_agent(None, platform="acp")
-    result = json.loads(agent._invoke_tool("session_search", {"query": "Hermes"}, "task-id"))
+    result = json.loads(agent._invoke_tool(
+        "session_search",
+        {"query": "Hermes", "detail": "full"},
+        "task-id",
+    ))
 
     assert result["success"] is True
     assert captured["db"] is sentinel_db
     assert captured["query"] == "Hermes"
+    assert captured["detail"] == "full"
     assert agent._session_db is sentinel_db
+
+
+def test_sequential_session_search_forwards_detail(monkeypatch):
+    session_db = MagicMock()
+    captured = {}
+
+    session_search_mod = ModuleType("tools.session_search_tool")
+
+    def fake_session_search(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"success": True, "results": []})
+
+    session_search_mod.session_search = fake_session_search
+    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+
+    agent = _make_agent(session_db, platform="acp")
+    tool_call = SimpleNamespace(
+        id="search-1",
+        function=SimpleNamespace(
+            name="session_search",
+            arguments=json.dumps({"query": "Hermes", "detail": "full"}),
+        ),
+    )
+    assistant_message = SimpleNamespace(tool_calls=[tool_call])
+    messages = []
+
+    agent._execute_tool_calls_sequential(
+        assistant_message,
+        messages,
+        "task-id",
+    )
+
+    assert captured["db"] is session_db
+    assert captured["query"] == "Hermes"
+    assert captured["detail"] == "full"

@@ -716,8 +716,12 @@ class S6ServiceManager:
         When the gateway exits with EX_CONFIG (78) — a fatal
         configuration error such as a token collision or no messaging
         platforms — we tell s6-supervise to stop restarting by exiting
-        125 (permanent failure).  Any other exit code lets s6 restart
-        normally.  See #51228.
+        125 (permanent failure).  A clean exit 0 is an intentional stop,
+        not a crash: restarting after it turns any normal gateway exit
+        into a reconnect loop (the ashriel-discord storm in #76435 —
+        1,000+ connections and a provider token reset).  Only non-zero,
+        non-78 exits (genuine crashes) let s6 restart normally.
+        See #51228, #76435.
         """
         from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
@@ -727,7 +731,11 @@ class S6ServiceManager:
             "# shellcheck shell=sh\n"
             "# $1 = exit code from the run script.\n"
             f"# Exit {code} (EX_CONFIG) = fatal config error — don't restart.\n"
+            "# Exit 0 (clean stop) = intentional stop — don't restart.\n"
             f'if [ "$1" = "{code}" ]; then\n'
+            "  exit 125\n"
+            "fi\n"
+            'if [ "$1" = "0" ]; then\n'
             "  exit 125\n"
             "fi\n"
             "exit 0\n"
@@ -783,18 +791,20 @@ class S6ServiceManager:
             f"# shellcheck shell=sh\n"
             f': "${{HERMES_HOME:=/opt/data}}"\n'
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
-            f'mkdir -p "$log_dir"\n'
-            # The gateways/ parent must be chowned too (non-recursively):
-            # `mkdir -p` creates it root-owned on a root-context boot, and a
-            # leaf-only chown leaves it that way — every profile registered
-            # later then runs its log service as hermes and crash-loops on
-            # `mkdir: Permission denied`. The parent chown runs on every
-            # root-context boot, so it also heals volumes already poisoned
-            # by older images. Non-recursive on purpose: sibling profile
-            # dirs are each managed by their own log/run. See #45258.
-            f'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
-            f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
-            f'rm -f "$log_dir/lock"\n'
+            # Create the leaf and clear a stale s6-log lock as hermes when
+            # this script starts as root. Never chown or unlink hermes-writable
+            # volume paths from this restartable root-context script:
+            # log/supervise/control is hermes-owned, so an unprivileged user
+            # can race a pathname op through a symlink swap (CWE-59 /
+            # CWE-367). Parent logs/gateways is seeded hermes-owned at stage2
+            # boot (#45258; tests/docker/test_log_dir_seed.py).
+            f'if [ "$(id -u)" = 0 ]; then\n'
+            f'  s6-setuidgid hermes mkdir -p "$log_dir"\n'
+            f'  s6-setuidgid hermes rm -f "$log_dir/lock"\n'
+            f'else\n'
+            f'  mkdir -p "$log_dir"\n'
+            f'  rm -f "$log_dir/lock"\n'
+            f'fi\n'
             # Skip the drop when already non-root (CAP_SETGID).
             f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
             f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'

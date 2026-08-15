@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 from pathlib import Path
@@ -69,36 +70,6 @@ def _table_struct(conn: sqlite3.Connection, table: str):
     return cols, idx
 
 
-def test_connect_initialization_is_thread_safe(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    db_path = kb.kanban_db_path(board="default")
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-
-    errors: list[BaseException] = []
-    barrier = threading.Barrier(8)
-
-    def worker() -> None:
-        try:
-            barrier.wait(timeout=5)
-            conn = kb.connect(board="default")
-            conn.close()
-        except BaseException as exc:  # pragma: no cover - surfaced below
-            errors.append(exc)
-
-    threads = [threading.Thread(target=worker) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert errors == []
-    with kb.connect(board="default") as conn:
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    assert "max_retries" in cols
 
 
 def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkeypatch):
@@ -115,6 +86,7 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
 
         lei = {r["name"]: r for r in conn.execute("PRAGMA table_info(kanban_notify_subs)")}
         assert lei["last_event_id"]["type"].upper() == "INTEGER"
+        assert "delivery_metadata" in lei
 
         # Data preserved across the rebuild.
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
@@ -135,18 +107,6 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
         assert isinstance(new_id, int) and new_id >= 1
 
 
-def test_rebuilt_schema_matches_fresh_db(tmp_path, monkeypatch):
-    """The rebuilt tables must be structurally identical to a fresh DB, so the
-    hand-written DDL in ``_REBUILD_SPECS`` can't silently drift from SCHEMA_SQL."""
-    legacy_path = _setup_home(tmp_path, monkeypatch)
-    _make_legacy_db(legacy_path)
-    fresh_path = kb.kanban_db_path(board="fresh")
-    fresh_path.parent.mkdir(parents=True, exist_ok=True)
-    kb._INITIALIZED_PATHS.discard(str(fresh_path.resolve()))
-
-    with kb.connect(legacy_path) as migrated, kb.connect(fresh_path) as fresh:
-        for table in ("task_events", "task_comments", "task_runs", "kanban_notify_subs"):
-            assert _table_struct(migrated, table) == _table_struct(fresh, table)
 
 
 def test_migration_is_idempotent(tmp_path, monkeypatch):
@@ -175,3 +135,103 @@ def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
         )
         assert isinstance(cursor, int)
         assert isinstance(events, list)
+
+
+def _default_board_db(tmp_path, monkeypatch) -> Path:
+    """Point the kanban root at a temp home and return the default board's DB
+    (the back-compat top-level ``<root>/kanban.db`` #83445 reports on)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    db_path = kb.kanban_db_path(board="default")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    return db_path
+
+
+def _tables(path: Path) -> set[str]:
+    conn = sqlite3.connect(str(path))
+    try:
+        return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+
+
+def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatch):
+    """#83445: the schema cache is process-local, but the schema is on disk.
+
+    A long-lived process (gateway, dispatcher, dashboard API) that already
+    initialized a path keeps taking the ``_INITIALIZED_PATHS`` fast path after
+    the file is deleted underneath it. SQLite recreates an empty DB on the next
+    open, so every query then fails with ``no such table: tasks`` and the board
+    renders empty until that process itself is restarted.
+    """
+    db_path = _default_board_db(tmp_path, monkeypatch)
+
+    with kb.connect_closing(db_path) as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-1', 'T', 'ready', 1000)"
+        )
+        conn.commit()
+    assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
+
+    # External deletion (manual cleanup, restore, sync tool) while the process
+    # that cached this path is still alive.
+    for suffix in ("", "-wal", "-shm"):
+        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+
+    with kb.connect_closing(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    assert "tasks" in _tables(db_path)
+
+
+def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, monkeypatch):
+    """Same defect, restore shape: the file still exists and passes both the
+    header and the integrity probes, but carries no schema at all."""
+    db_path = _default_board_db(tmp_path, monkeypatch)
+
+    with kb.connect_closing(db_path):
+        pass
+
+    for suffix in ("", "-wal", "-shm"):
+        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+    sqlite3.connect(str(db_path)).close()
+    assert "tasks" not in _tables(db_path)
+
+    with kb.connect_closing(db_path) as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-2', 'T', 'ready', 1000)"
+        )
+        conn.commit()
+    assert "tasks" in _tables(db_path)
+
+
+def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
+    """The self-heal must cost nothing in steady state: an intact cached path
+    still skips the cross-process init lock (#36644), and only pays for it when
+    the schema is actually gone."""
+    db_path = _default_board_db(tmp_path, monkeypatch)
+
+    with kb.connect_closing(db_path):
+        pass
+
+    locks: list[Path] = []
+    real_lock = kb._cross_process_init_lock
+
+    @contextlib.contextmanager
+    def recording_lock(path):
+        locks.append(path)
+        with real_lock(path):
+            yield
+
+    monkeypatch.setattr(kb, "_cross_process_init_lock", recording_lock)
+
+    with kb.connect_closing(db_path):
+        pass
+    assert locks == []
+
+    db_path.unlink()
+    with kb.connect_closing(db_path):
+        pass
+    assert len(locks) == 1

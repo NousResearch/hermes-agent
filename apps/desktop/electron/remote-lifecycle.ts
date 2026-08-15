@@ -37,6 +37,11 @@ const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
+// macOS sshd starts non-interactive shells with a 256-FD soft limit even when
+// the hard limit is unlimited. A Desktop backend can legitimately exceed that
+// while serving several profiles/tools, so raise only the child process limit.
+// Keep startup portable: restricted hosts retain their existing limit.
+const REMOTE_NOFILE_SOFT_LIMIT = 65_536
 
 function mintToken() {
   return crypto.randomBytes(32).toString('hex')
@@ -128,24 +133,15 @@ function expandRemotePath(p) {
 // non-login `ssh host cmd` PATH misses user installs), then known install paths.
 async function locateHermes(ssh, remoteHermesPath) {
   const resolveLauncher = async (candidate: string) => {
-    const script =
-      'import os,shlex,sys\n' +
-      `p=os.path.expanduser(${shq(candidate)})\n` +
-      'out=p\n' +
-      'try:\n' +
-      ' data=open(p,"r",encoding="utf-8",errors="ignore").read(4096)\n' +
-      ' for line in data.splitlines():\n' +
-      '  words=shlex.split(line)\n' +
-      '  if len(words)>1 and words[0]=="exec":\n' +
-      '   target=os.path.expanduser(words[1])\n' +
-      '   if os.path.isabs(target) and os.access(target,os.X_OK):out=target\n' +
-      '   break\n' +
-      'except (OSError,ValueError):pass\n' +
-      'print(out)'
-
-    const resolved = (await ssh.exec(`python3 -c ${shq(script)}`)).trim()
-
-    return resolved || candidate
+    // Return the candidate path directly. The hermes binary or wrapper script
+    // is executable and handles argument forwarding (e.g. `exec <python> <script> "$@"`)
+    // correctly on its own. Previously, this function followed `exec` wrappers and
+    // returned only the python interpreter, which broke:
+    //   - version checking: `<python> --version` printed "Python x.y.z" instead of
+    //     the Hermes version, and
+    //   - capability probing: `<python> serve --help` failed entirely.
+    // See https://github.com/NousResearch/hermes-agent/issues/74411
+    return candidate
   }
 
   const isExecutable = async (candidate: string) => {
@@ -451,7 +447,10 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
-  const dashCmd = `env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+
+  const dashCmd =
+    `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
+    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
 
   return (
     `mkdir -p "$(dirname ${logPath})" && ` +
@@ -713,6 +712,7 @@ async function connect(deps) {
       pidAlive &&
       owned &&
       lock.port > 0 &&
+      lock.profile === profile &&
       Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
       lock.hermesPath === hermesPath &&

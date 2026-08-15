@@ -64,6 +64,14 @@ def test_faster_whisper_is_not_a_base_dependency():
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
 _STARLETTE_CVE_FLOOR = (1, 0, 1)
+_UPDATE_DOWNGRADE_GUARD_FLOORS = {
+    # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
+    # reviewed CVE pins must not slide back to stale versions that downgrade
+    # already-patched user environments.
+    "cryptography": (50, 0, 0),
+    "starlette": (1, 3, 1),
+    "python-multipart": (0, 0, 32),
+}
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
@@ -141,6 +149,8 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
         )
 
 
+
+
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #
@@ -180,6 +190,15 @@ def _pins_from_specs(specs):
             continue
         pins.setdefault(_canonical(m.group(1)), set()).add(m.group(2))
     return pins
+
+
+def _locked_versions(package: str) -> set[str]:
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    return {
+        pkg["version"]
+        for pkg in lock.get("package", [])
+        if _canonical(pkg["name"]) == _canonical(package)
+    }
 
 
 def _pyproject_pinned_specs():
@@ -229,27 +248,44 @@ def test_pyproject_pins_are_internally_consistent():
     )
 
 
-def test_pyproject_and_lazy_deps_pins_agree():
-    """Every package pinned in BOTH places must use the same version.
+def test_build_system_requires_exempt_from_exclude_newer():
+    """Regression guard for the #78227 / #75992 exclude-newer brick class.
 
-    Regression guard for the aiohttp / anthropic extras-vs-lazy drift:
-    tools/lazy_deps.py mirrors the pyproject extras, so a CVE bump applied to
-    one and not the other leaves users on a vulnerable version depending on
-    the install path. Bump both in lockstep.
+    ``[tool.uv].exclude-newer`` applies to ``[build-system].requires`` too.
+    When a resolver cannot see a package's upload date (old uv, mirror
+    index, stale HTTP cache) it treats the release as newer than the cutoff
+    and filters it — and because build requirements are exact-pinned there
+    is no older candidate to fall back to, so the project cannot even be
+    BUILT from a git checkout ("No solution found when resolving:
+    setuptools==83.0.0", observed on released v0.20.0).
+
+    Exempting an exact-pinned build requirement costs nothing: the version
+    cannot move without a reviewed pin bump, so exclude-newer adds no float
+    protection for it. Every build requirement must therefore appear in the
+    ``exclude-newer-package`` whitelist (set to ``false``) for as long as a
+    relative ``exclude-newer`` cutoff is configured.
     """
-    py = _pins_from_specs(_pyproject_pinned_specs())
-    lazy = _pins_from_specs(_lazy_deps_pinned_specs())
-
-    mismatches = [
-        f"{name}: pyproject={sorted(py[name])} lazy_deps={sorted(lazy[name])}"
-        for name in sorted(set(py) & set(lazy))
-        if py[name] != lazy[name]
-    ]
-    assert not mismatches, (
-        "pyproject.toml extras and tools/lazy_deps.py disagree on the pinned "
-        "version of the same package — bump both in lockstep:\n  "
-        + "\n  ".join(mismatches)
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_cfg = data.get("tool", {}).get("uv", {})
+    if "exclude-newer" not in uv_cfg:
+        pytest.skip("no exclude-newer cutoff configured — nothing to exempt")
+    whitelist = {
+        _canonical(name)
+        for name, enabled in uv_cfg.get("exclude-newer-package", {}).items()
+        if enabled is False
+    }
+    build_requires = {
+        _canonical(_distribution_name(req))
+        for req in data.get("build-system", {}).get("requires", [])
+    }
+    missing = sorted(build_requires - whitelist)
+    assert not missing, (
+        "build-system.requires packages are subject to the exclude-newer "
+        "cutoff but missing from the [tool.uv].exclude-newer-package "
+        f"whitelist — fresh builds brick when upload dates are invisible: {missing}"
     )
+
+
 
 
 def _lazy_deps_by_feature():

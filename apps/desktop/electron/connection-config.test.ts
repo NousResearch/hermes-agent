@@ -21,6 +21,7 @@ import {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
@@ -36,6 +37,7 @@ import {
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
@@ -132,16 +134,47 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride(null, 'coder'), null)
 })
 
-test('SSH remains separate from URL-shaped remote modes', () => {
+test('SSH remains separate from URL-shaped remote modes and preserves an explicit remote profile', () => {
   assert.equal(modeIsRemoteLike('ssh'), false)
-  const config = { profiles: { coder: { mode: 'ssh', host: 'alice@box:2222', keyPath: '/key' } } }
+
+  const config = {
+    profiles: { coder: { mode: 'ssh', host: 'alice@box:2222', keyPath: '/key', remoteProfile: 'default' } }
+  }
+
   assert.equal(profileRemoteOverride(config, 'coder'), null)
+
   assert.deepEqual(profileSshOverride(config, 'coder'), {
     mode: 'ssh',
     host: 'box',
     user: 'alice',
     port: 2222,
-    keyPath: '/key'
+    keyPath: '/key',
+    remoteProfile: 'default'
+  })
+})
+
+test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'writer_2' }), {
+    mode: 'ssh',
+    host: 'box',
+    remoteProfile: 'writer_2'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'bad profile' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: '' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'root' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'default' }), {
+    mode: 'ssh',
+    host: 'box',
+    remoteProfile: 'default'
   })
 })
 
@@ -187,6 +220,65 @@ test('saved SSH drafts are inactive and explicit overrides take precedence', () 
   assert.equal(profileHasRemoteConnection(config, 'coder'), true)
 })
 
+// --- resolveProfileBackendRoute ---
+
+const ROUTES = [
+  {
+    name: 'the primary profile owns the window backend',
+    profile: 'default',
+    opts: { primaryProfile: 'default' },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a renamed primary profile still owns the window backend',
+    profile: ' coder ',
+    opts: { primaryProfile: 'coder', globalRemote: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'an unset profile resolves to the primary',
+    profile: '',
+    opts: { primaryProfile: 'default', globalRemote: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile inheriting the app-global remote shares the primary backend, scoped per request',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: false },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a profile with its own remote override gets a pooled descriptor for that host',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: true },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a local non-primary profile gets its own pooled backend',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+]
+
+for (const route of ROUTES) {
+  test(`resolveProfileBackendRoute: ${route.name}`, () => {
+    assert.deepEqual(resolveProfileBackendRoute(route.profile, route.opts), route.expected)
+  })
+}
+
+test('resolveProfileBackendRoute only tags a descriptor when the backend is shared', () => {
+  // A pooled backend is already scoped to its profile, so tagging it would
+  // imply a second scope the caller must reconcile. Only the shared
+  // global-remote route carries one.
+  for (const route of ROUTES) {
+    const resolved = resolveProfileBackendRoute(route.profile, route.opts)
+
+    assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
+    assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
+  }
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -196,6 +288,17 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
       profileRemoteOverride: false
     }),
     '/api/model/info?profile=iris'
+  )
+})
+
+test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
+      globalRemote: true,
+      primaryProfile: 'coder',
+      profileRemoteOverride: false
+    }),
+    '/api/model/info'
   )
 })
 
@@ -277,6 +380,19 @@ test('normalizeRemoteBaseUrl rejects non-http(s) protocols', () => {
 
 test('normalizeRemoteBaseUrl rejects garbage', () => {
   assert.throws(() => normalizeRemoteBaseUrl('not a url'), /not valid/)
+})
+
+test('normalizeRemoteBaseUrl auto-prepends http:// for scheme-less host:port input', () => {
+  assert.equal(normalizeRemoteBaseUrl('100.64.0.1:9119'), 'http://100.64.0.1:9119')
+  assert.equal(normalizeRemoteBaseUrl('mini.tailnet-1234.ts.net:9119'), 'http://mini.tailnet-1234.ts.net:9119')
+  assert.equal(normalizeRemoteBaseUrl('localhost:9119'), 'http://localhost:9119')
+  assert.equal(normalizeRemoteBaseUrl('gw.example.com'), 'http://gw.example.com')
+  assert.equal(normalizeRemoteBaseUrl('gw.example.com/hermes/'), 'http://gw.example.com/hermes')
+})
+
+test('normalizeRemoteBaseUrl still rejects explicit non-http(s) schemes after scheme-less handling', () => {
+  assert.throws(() => normalizeRemoteBaseUrl('ws://host:9119'), /http:\/\/ or https:\/\//)
+  assert.throws(() => normalizeRemoteBaseUrl('ftp://host:21'), /http:\/\/ or https:\/\//)
 })
 
 // --- buildGatewayWsUrl (token) ---
@@ -454,6 +570,42 @@ test('cookiesHavePrivySession is false for unrelated cookies and non-arrays', ()
   assert.equal(cookiesHavePrivySession(null), false)
   assert.equal(cookiesHavePrivySession(undefined), false)
   assert.equal(cookiesHavePrivySession([]), false)
+})
+
+test('cookiesHavePrivySession treats refresh-token material as a (renewable) session', () => {
+  // #73495: after a restart the ~1h `privy-token` is often gone while the
+  // 30-day renewal cookies survive. That jar is still SIGNED IN (renewable),
+  // so the session check must accept it — the access check below is what
+  // distinguishes "can discovery succeed right now".
+  assert.equal(cookiesHavePrivySession([{ name: 'privy-refresh-token', value: 'x' }]), true)
+})
+
+// --- cookiesHavePrivyAccessToken (short-lived access state for /api/agents) ---
+
+test('cookiesHavePrivyAccessToken detects privy-token and its secured prefixes', () => {
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: 'jwt' }]), true)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Host-privy-token', value: 'x' }]), true)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: '__Secure-privy-token', value: 'x' }]), true)
+})
+
+test('cookiesHavePrivyAccessToken rejects renewal-only jars (the #73495 cold-start state)', () => {
+  // Session/refresh material present, access token absent: signed in but
+  // discovery would 401 → the silent-renewal path must trigger, not re-login.
+  const renewalOnly = [
+    { name: 'privy-session', value: 'x' },
+    { name: 'privy-refresh-token', value: 'x' }
+  ]
+
+  assert.equal(cookiesHavePrivySession(renewalOnly), true)
+  assert.equal(cookiesHavePrivyAccessToken(renewalOnly), false)
+})
+
+test('cookiesHavePrivyAccessToken is false for empty values, gateway cookies, and non-arrays', () => {
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'privy-token', value: '' }]), false)
+  assert.equal(cookiesHavePrivyAccessToken([{ name: 'hermes_session_at', value: 'x' }]), false)
+  assert.equal(cookiesHavePrivyAccessToken(null), false)
+  assert.equal(cookiesHavePrivyAccessToken(undefined), false)
+  assert.equal(cookiesHavePrivyAccessToken([]), false)
 })
 
 // --- tokenPreview ---

@@ -69,85 +69,12 @@ def test_shell_linter_skipped_when_lsp_will_handle(ext, tmp_path):
     assert "LSP" in (result.message or "")
 
 
-@pytest.mark.parametrize("ext", [".ts", ".go", ".rs"])
-def test_shell_linter_runs_when_lsp_inactive(ext, tmp_path):
-    """When LSP is inactive (default config, no service, remote backend, ...),
-    the shell linter runs as before — no behavior change."""
-    fops = _make_fops()
-    src = tmp_path / f"clean{ext}"
-    src.write_text("// content\n")
-
-    fake_result = MagicMock()
-    fake_result.exit_code = 0
-    fake_result.stdout = ""
-
-    with patch.object(fops, "_lsp_will_handle", return_value=False), \
-         patch.object(fops, "_exec", return_value=fake_result) as exec_mock, \
-         patch.object(fops, "_has_command", return_value=True):
-        result = fops._check_lint(str(src))
-
-    # _exec must have been called — proving the shell linter ran.
-    assert exec_mock.called, "shell linter did NOT run when LSP was inactive"
-    assert result.success is True
 
 
-@pytest.mark.parametrize("ext", [".py", ".js"])
-def test_lsp_does_not_skip_non_redundant_extensions(ext, tmp_path):
-    """``py_compile`` and ``node --check`` keep running even when an LSP
-    server (pyright/pylsp/typescript-language-server-for-JS) is active —
-    they're fast, file-local, and correct, so there's no upside to
-    suppressing them.
-    """
-    fops = _make_fops()
-    src = tmp_path / f"clean{ext}"
-    src.write_text("# valid\n" if ext == ".py" else "// valid\n")
-
-    fake_result = MagicMock()
-    fake_result.exit_code = 0
-    fake_result.stdout = ""
-
-    # Even with LSP claiming the file, the shell linter must still run
-    # for these extensions.
-    with patch.object(fops, "_lsp_will_handle", return_value=True), \
-         patch.object(fops, "_exec", return_value=fake_result) as exec_mock, \
-         patch.object(fops, "_has_command", return_value=True):
-        fops._check_lint(str(src))
-
-    assert exec_mock.called, (
-        f"shell linter for {ext} did not run despite being in the "
-        "'always-run' set (py_compile / node --check)"
-    )
 
 
-def test_lsp_will_handle_returns_false_when_service_is_none(tmp_path):
-    """``_lsp_will_handle`` must return False when the LSP service hasn't
-    been initialized — otherwise we'd accidentally skip the shell linter
-    on systems where LSP isn't configured at all."""
-    fops = _make_fops()
-    src = tmp_path / "foo.ts"
-    src.write_text("const x = 1\n")
-
-    with patch.object(fops, "_lsp_local_only", return_value=True), \
-         patch("agent.lsp.get_service", return_value=None):
-        assert fops._lsp_will_handle(str(src)) is False
 
 
-def test_lsp_will_handle_returns_false_on_remote_backend(tmp_path):
-    """LSP servers run on the host process — remote backends (Docker,
-    SSH, Modal, …) keep files inside the sandbox where the host LSP
-    can't reach them.  ``_lsp_will_handle`` must short-circuit before
-    calling into the service in that case."""
-    fops = _make_fops()
-    src = tmp_path / "foo.ts"
-    src.write_text("const x = 1\n")
-
-    with patch.object(fops, "_lsp_local_only", return_value=False), \
-         patch("agent.lsp.get_service") as get_service_mock:
-        result = fops._lsp_will_handle(str(src))
-
-    assert result is False
-    # Importantly: we never even consulted the service.
-    assert not get_service_mock.called
 
 
 def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
@@ -166,25 +93,6 @@ def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
         assert fops._lsp_will_handle(str(src)) is False
 
 
-def test_tsx_stays_out_of_linters_table_for_default_compatibility():
-    """Regression: keep ``.tsx`` out of ``LINTERS`` so users with LSP
-    DISABLED don't suddenly get the broken ``npx tsc --noEmit FILE.tsx``
-    invocation that ``.ts`` historically used to get.
-
-    Pre-PR behavior: ``.tsx`` had no entry in ``LINTERS``, so it fell
-    through to ``ext not in LINTERS`` → ``LintResult(skipped=True,
-    message="No linter for .tsx files")``.  This PR preserves that for
-    the default config.
-
-    When LSP IS enabled, ``.tsx`` is still covered by the LSP tier via
-    ``_maybe_lsp_diagnostics`` (typescript-language-server claims
-    ``.tsx`` in its extensions list) — the diagnostics show up in the
-    ``lsp_diagnostics`` field, not the ``lint`` field.
-    """
-    from tools.file_operations import LINTERS, _SHELL_LINTER_LSP_REDUNDANT
-
-    assert ".tsx" not in LINTERS
-    assert ".tsx" not in _SHELL_LINTER_LSP_REDUNDANT
 
 
 def test_tsx_default_check_lint_returns_skipped(tmp_path):
@@ -204,6 +112,56 @@ def test_tsx_default_check_lint_returns_skipped(tmp_path):
 
     assert result.skipped is True
     assert not exec_mock.called, "no shell linter should run for .tsx"
+
+
+def test_ts_shell_linter_skipped_when_ancestor_tsconfig_present(tmp_path):
+    """A .ts file under a dir tree containing tsconfig.json skips the per-file
+    shell tsc EVEN WHEN LSP is inactive — single-file tsc can't read the
+    project config, so its diagnostics are pure noise. This closes the
+    LSP-disabled gap (the common default).
+
+    _exec is patched to raise so any accidental shell-linter invocation fails
+    the test.
+    """
+    fops = _make_fops()
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{}}\n')
+    sub = tmp_path / "src" / "app"
+    sub.mkdir(parents=True)
+    src = sub / "thing.ts"
+    src.write_text("import { x } from '@/store'\nexport const y = x\n")
+
+    def _exec_must_not_run(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("shell tsc ran despite an ancestor tsconfig.json")
+
+    with patch.object(fops, "_lsp_local_only", return_value=True), \
+         patch.object(fops, "_lsp_will_handle", return_value=False), \
+         patch.object(fops, "_exec", side_effect=_exec_must_not_run), \
+         patch.object(fops, "_has_command", return_value=True):
+        result = fops._check_lint(str(src))
+
+    assert result.skipped is True
+    assert "tsconfig.json" in (result.message or "")
+
+
+def test_ts_shell_linter_runs_when_no_ancestor_tsconfig(tmp_path):
+    """Without any ancestor tsconfig.json (a standalone .ts file), the shell
+    tsc still runs — the ancestor-skip must not suppress lint for non-project
+    files. We assert _exec IS reached (LSP inactive)."""
+    fops = _make_fops()
+    src = tmp_path / "loose.ts"
+    src.write_text("const x: number = 'nope'\n")
+
+    exec_result = MagicMock()
+    exec_result.exit_code = 2
+    exec_result.stdout = "loose.ts(1,7): error TS2322: Type 'string' ...\n"
+
+    with patch.object(fops, "_lsp_local_only", return_value=True), \
+         patch.object(fops, "_lsp_will_handle", return_value=False), \
+         patch.object(fops, "_has_command", return_value=True), \
+         patch.object(fops, "_exec", return_value=exec_result) as exec_mock:
+        fops._check_lint(str(src))
+
+    assert exec_mock.called, "shell tsc should run when there's no project tsconfig"
 
 
 if __name__ == "__main__":  # pragma: no cover

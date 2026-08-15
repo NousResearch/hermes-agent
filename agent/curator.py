@@ -138,8 +138,8 @@ def is_paused() -> bool:
 def _load_config() -> Dict[str, Any]:
     """Read curator.* config from ~/.hermes/config.yaml. Tolerates missing file."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
     except Exception as e:
         logger.debug("Failed to load config for curator: %s", e)
         return {}
@@ -325,7 +325,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
-    for row in _u.agent_created_report():
+    for row in _u.curated_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
@@ -902,7 +902,6 @@ def _reconcile_classification(
     Every removed skill is placed in exactly one bucket.
     """
     heur_cons = {e["name"]: e for e in heuristic.get("consolidated", [])}
-    heur_pruned = {e["name"] for e in heuristic.get("pruned", [])}
 
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
@@ -1472,15 +1471,16 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
-    rows = skill_usage.agent_created_report()
+    """Human/agent-readable list of curator-managed skills with usage stats."""
+    rows = skill_usage.curated_report()
     if not rows:
-        return "No agent-created skills to review."
+        return "No curator-managed skills to review."
     cron_referenced = _cron_referenced_skills()
-    lines = [f"Agent-created skills ({len(rows)}):\n"]
+    lines = [f"Curator-managed skills ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
+            f"provenance={r.get('provenance', 'agent')}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
             f"cron={'yes' if r['name'] in cron_referenced else 'no'}  "
@@ -1533,7 +1533,7 @@ def run_curator_review(
     if dry_run:
         # Count candidates without mutating state.
         try:
-            report = skill_usage.agent_created_report()
+            report = skill_usage.curated_report()
             counts = {
                 "checked": len(report),
                 "marked_stale": 0,
@@ -1586,7 +1586,7 @@ def run_curator_review(
         nonlocal auto_summary
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
         try:
-            before_report = skill_usage.agent_created_report()
+            before_report = skill_usage.curated_report()
         except Exception:
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
@@ -1612,7 +1612,7 @@ def run_curator_review(
             state2["last_run_duration_seconds"] = elapsed
             state2["last_run_summary"] = final_summary
             try:
-                after_report = skill_usage.agent_created_report()
+                after_report = skill_usage.curated_report()
             except Exception:
                 after_report = []
             try:
@@ -1699,7 +1699,7 @@ def run_curator_review(
         try:
             rename_lines = _build_rename_summary(
                 before_names=before_names,
-                after_report=skill_usage.agent_created_report(),
+                after_report=skill_usage.curated_report(),
                 tool_calls=llm_meta.get("tool_calls", []) or [],
                 model_final=llm_meta.get("final", "") or "",
             )
@@ -1717,7 +1717,7 @@ def run_curator_review(
         # reporting bug never breaks the curator itself. Report path is
         # recorded in state so `hermes curator status` can point at it.
         try:
-            after_report = skill_usage.agent_created_report()
+            after_report = skill_usage.curated_report()
         except Exception:
             after_report = []
         try:
@@ -1875,9 +1875,9 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _acp_args = None
     _model_name = ""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        _cfg = load_config()
+        _cfg = load_config_readonly()
         _binding = _resolve_review_runtime(_cfg)
         _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
@@ -1923,6 +1923,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             credential_pool=_credential_pool,
             request_overrides=_request_overrides,
             **_agent_kwargs,
+            enabled_toolsets=["skills", "terminal"],
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

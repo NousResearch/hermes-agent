@@ -391,7 +391,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
       )}
 
       <Dialog onOpenChange={open => !open && setDetail(null)} open={detail !== null}>
-        <DialogContent className="max-h-[80vh] max-w-2xl overflow-hidden">
+        <DialogContent bodyClassName="overflow-hidden" className="max-h-[80vh] max-w-2xl">
           {detail && (
             <>
               <DialogHeader>

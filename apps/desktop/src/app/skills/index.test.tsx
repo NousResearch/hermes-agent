@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
-import type * as ReactRouterDom from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
+import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -10,24 +10,28 @@ import { queryClient } from '@/lib/query-client'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
-const toggleSkill = vi.fn()
-const toggleToolset = vi.fn()
+const setSkillEnabled = vi.fn()
+const setToolsetEnabled = vi.fn()
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
+const getProfiles = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
-// calls we assert on.
+// calls we assert on. Args are forwarded so the per-profile scope arg is
+// observable.
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
   getSkills: () => getSkills(),
-  getToolsets: () => getToolsets(),
-  toggleSkill: (name: string, enabled: boolean) => toggleSkill(name, enabled),
-  toggleToolset: (name: string, enabled: boolean) => toggleToolset(name, enabled),
-  getToolsetConfig: (name: string) => getToolsetConfig(name),
+  getToolsets: (profile?: null | string) => getToolsets(profile),
+  setSkillEnabled: (name: string, enabled: boolean) => setSkillEnabled(name, enabled),
+  setToolsetEnabled: (name: string, enabled: boolean, profile?: null | string) =>
+    setToolsetEnabled(name, enabled, profile),
+  getToolsetConfig: (name: string, profile?: null | string) => getToolsetConfig(name, profile),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
-  getUsageAnalytics: (days: number) => getUsageAnalytics(days)
+  getUsageAnalytics: (days: number) => getUsageAnalytics(days),
+  getProfiles: () => getProfiles()
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -40,7 +44,7 @@ vi.mock('@/store/notifications', () => ({
 // so the deep-link target is assertable.
 const navigateSpy = vi.fn()
 
-vi.mock('react-router-dom', async importOriginal => ({
+vi.mock('react-router', async importOriginal => ({
   ...(await importOriginal<typeof ReactRouterDom>()),
   useNavigate: () => navigateSpy
 }))
@@ -78,9 +82,12 @@ async function renderSkills() {
 beforeEach(() => {
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
-  toggleToolset.mockResolvedValue({ ok: true, name: 'web', enabled: false })
+  setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
+  // Single profile by default → the scope selector stays hidden (>1 gate),
+  // so existing tests see unchanged single-profile behavior.
+  getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
 })
 
 afterEach(() => {
@@ -94,14 +101,16 @@ describe('SkillsView toolset management', () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 
-    const sw = await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
+    // The switch names the action, so an enabled toolset offers to turn it off.
+    const sw = await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
     expect(sw.getAttribute('aria-checked')).toBe('true')
 
     await act(async () => {
       fireEvent.click(sw)
     })
 
-    await waitFor(() => expect(toggleToolset).toHaveBeenCalledWith('web', false))
+    await waitFor(() => expect(setToolsetEnabled).toHaveBeenCalled())
+    expect(setToolsetEnabled.mock.calls[0].slice(0, 2)).toEqual(['web', false])
   })
 
   it('renders toolset titles without leading emoji', async () => {
@@ -112,7 +121,7 @@ describe('SkillsView toolset management', () => {
     // The label renders in both the row and the auto-selected detail header, so
     // assert via the switch's (emoji-stripped) accessible name and the absence
     // of the emoji rather than a single-match text lookup.
-    await screen.findByRole('switch', { name: 'Toggle Cron Jobs toolset' })
+    await screen.findByRole('switch', { name: 'Turn Cron Jobs toolset off' })
     expect(screen.queryByText(/⏰/)).toBeNull()
   })
 
@@ -122,8 +131,47 @@ describe('SkillsView toolset management', () => {
     // and renders its config panel directly, which fetches on mount.
     await renderSkills()
 
-    await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
-    await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web'))
+    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+    await waitFor(() => expect(getToolsetConfig).toHaveBeenCalled())
+    expect(getToolsetConfig.mock.calls[0][0]).toBe('web')
+  })
+
+  it('scopes Tools config to the profile chosen in the selector', async () => {
+    // Two profiles → the "Configuring:" selector renders. Picking a non-active
+    // profile must re-fetch toolsets scoped to THAT profile.
+    // jsdom's scrollIntoView is missing/non-functional; Radix Select calls it
+    // on open. Force a stub so the dropdown can render in the test env.
+    Element.prototype.scrollIntoView = vi.fn()
+    getProfiles.mockResolvedValue({
+      profiles: [
+        { name: 'default', is_default: true },
+        { name: 'researcher', is_default: false }
+      ]
+    })
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // The selector appears with >1 profile.
+    const trigger = await screen.findByRole('combobox')
+    await act(async () => {
+      fireEvent.click(trigger)
+    })
+    const option = await screen.findByRole('option', { name: 'researcher' })
+    await act(async () => {
+      fireEvent.click(option)
+    })
+
+    // Toolsets refetch scoped to the picked profile.
+    await waitFor(() => expect(getToolsets).toHaveBeenCalledWith('researcher'))
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {

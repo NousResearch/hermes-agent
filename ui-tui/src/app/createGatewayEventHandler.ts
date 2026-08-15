@@ -22,8 +22,8 @@ import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
-import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
+import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
+import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -32,8 +32,43 @@ import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+
+type VoiceSubmitMode = 'direct' | 'draft'
+
+const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
+  typeof value === 'string' && value.trim().toLowerCase() === 'draft' ? 'draft' : 'direct'
+
+// Shallow-compare Usage to avoid creating a new object reference when values
+// haven't changed. A fresh reference on every streaming event forces every
+// $uiState subscriber (including the status rule) to re-render, which showed
+// up as per-delta status-bar flicker on iTerm2 (#41480). The comparator
+// iterates the union of keys generically so a future Usage field (e.g.
+// active_subagents, consumed by the status rule's subagent segment) can never
+// be silently dropped from the comparison.
+export const usageChanged = (prev: Usage, next: Usage): boolean => {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)]) as Set<keyof Usage>
+
+  for (const key of keys) {
+    if (prev[key] !== next[key]) {
+      return true
+    }
+  }
+
+  return false
+}
+
+export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined): Usage => {
+  if (!patch) {
+    return prev
+  }
+
+  const merged: Usage = { ...prev, ...patch }
+
+  return usageChanged(prev, merged) ? merged : prev
+}
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
@@ -126,11 +161,13 @@ const themesEqual = (a: Theme, b: Theme) => {
 // the theme's text color. Without the pair, a dark skin on a light terminal
 // leaves default-fg text at the HOST's near-black: invisible. Opt-in stays
 // intact: no `background` ⇒ both defaults restore to the terminal's own.
+// The text tone resolves through themeToneHex because a limited-palette
+// terminal quantizes it to `ansi256(N)`, which OSC-10 cannot speak.
 const paintTerminalDefaults = (theme: Theme) => {
   const background = lastSkin?.colors?.background ?? ''
 
   setTerminalBackground(background)
-  setTerminalForeground(isPaintableHex(background) ? theme.color.text : '')
+  setTerminalForeground(isPaintableHex(background) ? themeToneHex(theme.color.text) : '')
 }
 
 const applySkin = (s: GatewaySkin) => {
@@ -619,6 +656,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // "too many re-renders" guard in embedded dashboard PTYs.
     ensureAgentsNudgeConfig()
 
+    // Arm "Hey Hermes" if this surface owns it (server gates on config).
+    // Fire-and-forget + idempotent server-side, so reconnects are harmless.
+    // Skipped when the user explicitly ran `/wake off` this session — an
+    // explicit opt-out must survive gateway reconnects (see wakeState.ts).
+    if (!isWakeUserDisabled()) {
+      void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
+    }
+
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
         if (!r?.pairs) {
@@ -729,10 +774,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
-          usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
+          usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+
+        return
+      }
+
+      case 'session.usage': {
+        // Live usage tick while a turn runs (see tui_gateway
+        // _start_usage_ticker) — keeps the status-bar context window current
+        // mid-turn instead of only at message.complete. The session filter at
+        // the top of this handler already dropped ticks for non-focused
+        // sessions.
+        const usage = ev.payload?.usage
+
+        if (usage) {
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+        }
 
         return
       }
@@ -903,6 +963,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'voice.transcript': {
+        // Explicit user-intent stop: the user said (or typed) a bare stop
+        // phrase. The backend already halted the capture loop and flipped
+        // voice mode off — mirror it here like a manual /voice off, and say
+        // so (this is intent, not the no-speech timeout below).
+        if (ev.payload?.stop_phrase) {
+          setVoiceEnabled(false)
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+          sys('voice: stop phrase — voice chat ended')
+
+          return
+        }
+
         // CLI parity: the 3-strikes silence detector flipped off automatically.
         // Mirror that on the UI side and tell the user why the mode is off.
         if (ev.payload?.no_speech_limit) {
@@ -920,16 +993,62 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // CLI parity: _pending_input.put(transcript) unconditionally feeds
-        // the transcript to the agent as its next turn — draft handling
-        // doesn't apply because voice-mode users are speaking, not typing.
-        //
-        // We can't branch on composer input from inside a setInput updater
-        // (React strict mode double-invokes it, duplicating the submit).
-        // Just clear + defer submit so the cleared input is committed before
-        // submit reads it.
-        setInput('')
-        setTimeout(() => submitRef.current(text), 0)
+        void getFullConfigOnce().then(cfg => {
+          const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
+
+          if (submitMode === 'draft') {
+            setInput(current => (current.trim() ? `${current.trimEnd()} ${text}` : text))
+
+            return
+          }
+
+          // Default to CLI parity. Clear + defer submit so the cleared input
+          // is committed before submit reads it; invalid config also falls
+          // back to this established direct-submit behavior.
+          setInput('')
+          setTimeout(() => submitRef.current(text), 0)
+        })
+
+        return
+      }
+
+      case 'wake.detected': {
+        // "Hey Hermes": optionally open a fresh session (start_new_session),
+        // then arm voice capture so the user can speak hands-free. Mirrors CLI.
+        void (async () => {
+          // Multi-profile routing: the TUI is a single-profile process, so a
+          // phrase enrolled by ANOTHER profile can't be routed here — surface
+          // the switch command instead of starting voice on the wrong profile.
+          const wakeProfile = ev.payload?.profile?.trim()
+          const ownProfile = getUiState().info?.profile_name || 'default'
+
+          if (wakeProfile && wakeProfile !== ownProfile) {
+            sys(`wake phrase for profile '${wakeProfile}' — run: hermes -p ${wakeProfile} --tui`)
+            await rpc('wake.resume', {}).catch(() => undefined)
+
+            return
+          }
+
+          if (ev.payload?.start_new_session !== false) {
+            await newSession()
+          }
+
+          const sid = getUiState().sid
+
+          if (!sid) {
+            await rpc('wake.resume', {}).catch(() => undefined)
+
+            return
+          }
+
+          setVoiceEnabled(true)
+          await rpc('voice.toggle', { action: 'on' })
+          await rpc('voice.record', { action: 'start', session_id: sid })
+        })().catch((e: unknown) => {
+          sys(`wake: ${rpcErrorMessage(e)}`)
+
+          void rpc('wake.resume', {}).catch(() => undefined)
+        })
 
         return
       }
@@ -1295,7 +1414,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('ready')
 
         if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage) }))
         }
 
         // Billing wall (out of credits / payment required): open a proper

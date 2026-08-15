@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import {
+  cronEditorUpdates,
+  jobIsScriptOnly,
+  parseCronDeliveryTargets,
+  toggleCronDeliveryTarget,
+  validateCronEditor
+} from './cron-job-model'
 
 describe('jobIsScriptOnly', () => {
   it('is true when no_agent is set and a script is present', () => {
@@ -28,6 +34,28 @@ describe('validateCronEditor', () => {
 
   it('still requires schedule for script-only jobs', () => {
     expect(validateCronEditor({ prompt: '', schedule: '', scriptOnlyJob: true })).toBe('schedule')
+  })
+})
+
+describe('cron delivery targets', () => {
+  it('parses comma-separated targets and removes duplicates', () => {
+    expect(parseCronDeliveryTargets('local, telegram,local')).toEqual(['local', 'telegram'])
+  })
+
+  it('falls back to local for an empty stored value', () => {
+    expect(parseCronDeliveryTargets('')).toEqual(['local'])
+  })
+
+  it('adds a second target in the scheduler comma-separated format', () => {
+    expect(toggleCronDeliveryTarget('local', 'origin', true)).toBe('local,origin')
+  })
+
+  it('removes one target while keeping the other selection', () => {
+    expect(toggleCronDeliveryTarget('local,origin', 'local', false)).toBe('origin')
+  })
+
+  it('does not allow the final delivery target to be unchecked', () => {
+    expect(toggleCronDeliveryTarget('origin', 'origin', false)).toBe('origin')
   })
 })
 

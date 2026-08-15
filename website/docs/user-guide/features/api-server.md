@@ -134,13 +134,15 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
   "status": "completed",
   "model": "hermes-agent",
   "output": [
-    {"type": "function_call", "name": "terminal", "arguments": "{\"command\": \"ls\"}", "call_id": "call_1"},
-    {"type": "function_call_output", "call_id": "call_1", "output": "README.md src/ tests/"},
+    {"type": "function_call", "status": "completed", "name": "terminal", "arguments": "{\"command\": \"ls\"}", "call_id": "call_1"},
+    {"type": "function_call_output", "status": "completed", "call_id": "call_1", "output": "README.md src/ tests/"},
     {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Your project has..."}]}
   ],
   "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
 }
 ```
+
+Tool calls in the `output` array were already executed server-side by the Hermes agent — they are replayed with `"status": "completed"` for structured tool UI, never as pending calls for the client to execute.
 
 **Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
 
@@ -375,6 +377,17 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+When the agent delegates work to background subagents, the stream also carries
+`subagent.start` and `subagent.complete` lifecycle events, so clients can
+observe delegation outcomes — including timeouts and failures — instead of the
+run going silent while a child works. The `subagent.complete` payload carries
+the child's status, summary, duration, token/cost figures, and a
+`child_session_id` for correlation; free-text fields pass forced secret
+redaction before leaving the process. Per-tool child events
+(`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
+are high-volume UI noise; use the per-child live transcript files for
+play-by-play.
+
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is
 still executing remains visible to status polling, approval, stop control, and
@@ -506,6 +519,27 @@ Authorization: Bearer ***
 
 Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
+### Multi-profile routing (`/p/<profile>/…`)
+
+When [multi-profile gateway routing](/user-guide/multi-profile-gateways) is
+enabled (`gateway.multiplex_profiles`), the shared listener serves every
+profile through a `/p/<profile>/` URL prefix — and **authentication is bound
+to the routed profile**:
+
+- Requests to `/p/<profile>/v1/...` must present that profile's own
+  `API_SERVER_KEY` (from `~/.hermes/profiles/<profile>/.env`). The default
+  listener's key is rejected on named-profile prefixes.
+- Unprefixed routes and `/p/default/...` keep using the default profile's key.
+- A named profile with no `API_SERVER_KEY` of its own fails closed — its
+  prefix is unreachable until you set one.
+
+:::warning Breaking change (July 2026)
+Before this fix, a valid default-profile key was accepted on any
+`/p/<profile>/` prefix. If you relied on one shared key across profile
+prefixes, set a distinct `API_SERVER_KEY` in each profile's `.env` — reused
+default keys on named prefixes now return `401`.
+:::
+
 :::warning Security
 The API server gives full access to hermes-agent's toolset, **including terminal commands**. `API_SERVER_KEY` is **required for every deployment**, including the default loopback bind on `127.0.0.1`. Keep `API_SERVER_CORS_ORIGINS` narrow to control browser access when you explicitly allow browser callers.
 :::
@@ -536,9 +570,14 @@ gateway:
     key: your-secret-key
     cors_origins: http://localhost:3000
     model_name: my-hermes
+    max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
 ```
 
 `port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
+
+### Concurrent-run cap
+
+The API server limits how many agent runs may execute at once across the OpenAI-compatible and Runs endpoints. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
 
 ## Security Headers
 

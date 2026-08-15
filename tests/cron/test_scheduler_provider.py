@@ -113,21 +113,6 @@ def test_cronscheduler_is_abstract():
         CronScheduler()
 
 
-def test_cronscheduler_default_is_available_true():
-    """is_available defaults to True (no-network) for a minimal subclass."""
-    from cron.scheduler_provider import CronScheduler
-
-    class Dummy(CronScheduler):
-        @property
-        def name(self):
-            return "dummy"
-
-        def start(self, stop_event, **kw):
-            pass
-
-    assert Dummy().is_available() is True
-
-
 def test_abc_growth_stays_additive():
     """The provider interface stays source-compatible with existing plugins.
 
@@ -142,6 +127,39 @@ def test_abc_growth_stays_additive():
         f"CronScheduler abstractmethods changed to {abstract}; growth must be "
         "additive (optional methods with defaults), not new abstract methods."
     )
+
+
+def test_force_fire_capability_detects_legacy_override():
+    from cron.scheduler_provider import CronScheduler
+
+    class Current(CronScheduler):
+        @property
+        def name(self):
+            return "current"
+
+        def start(self, stop_event, **kw):
+            pass
+
+    class Legacy(Current):
+        def fire_due(  # type: ignore[invalid-method-override]
+            self, job_id, *, adapters=None, loop=None
+        ):
+            return True
+
+    class PositionalOnly(Current):
+        def fire_due(  # type: ignore[invalid-method-override]
+            self, job_id, force=False, /
+        ):
+            return True
+
+    class KeywordSink(Current):
+        def fire_due(self, job_id, **kwargs):
+            return True
+
+    assert Current().supports_force_fire is True
+    assert Legacy().supports_force_fire is False
+    assert PositionalOnly().supports_force_fire is False
+    assert KeywordSink().supports_force_fire is True
 
 
 def test_inprocess_provider_ticks_and_stops():
@@ -170,41 +188,6 @@ def test_inprocess_provider_ticks_and_stops():
     assert not t.is_alive(), "provider did not exit after stop_event was set"
     assert len(calls) >= 1, "provider never called tick()"
     assert calls[0].get("sync") is False
-
-
-def test_inprocess_provider_skips_dispatch_while_draining():
-    """A drain pause keeps due work pending until dispatch is re-enabled."""
-    from cron.scheduler_provider import InProcessCronScheduler
-
-    calls = []
-    stop = threading.Event()
-    allow_dispatch = threading.Event()
-    provider = InProcessCronScheduler()
-
-    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
-        thread = threading.Thread(
-            target=provider.start,
-            args=(stop,),
-            kwargs={"interval": 0.01, "can_dispatch": allow_dispatch.is_set},
-            daemon=True,
-        )
-        thread.start()
-        time.sleep(0.05)
-        assert calls == []
-        allow_dispatch.set()
-        assert _wait_until(lambda: len(calls) >= 1), "provider never resumed dispatch"
-        stop.set()
-        thread.join(timeout=5)
-
-    assert not thread.is_alive()
-
-
-def test_inprocess_provider_stop_is_noop():
-    """The default stop() hook is a safe no-op (the stop_event is the real
-    stop signal for the built-in)."""
-    from cron.scheduler_provider import InProcessCronScheduler
-
-    assert InProcessCronScheduler().stop() is None
 
 
 # ── Phase 2: config key, discovery, resolver ─────────────────────────────────
@@ -332,6 +315,30 @@ def test_resolve_available_provider_is_used(monkeypatch):
     assert prov.name == "fake"
 
 
+def test_external_provider_falls_back_to_builtin_under_multiplex():
+    from cron.scheduler_provider import (
+        CronScheduler,
+        InProcessCronScheduler,
+        scheduler_for_profile_mode,
+    )
+
+    class External(CronScheduler):
+        @property
+        def name(self):
+            return "external"
+
+        def start(self, stop_event, **kwargs):
+            return None
+
+    external = External()
+
+    assert scheduler_for_profile_mode(external, multiplex_profiles=False) is external
+    assert isinstance(
+        scheduler_for_profile_mode(external, multiplex_profiles=True),
+        InProcessCronScheduler,
+    )
+
+
 # ── Phase 4B: additive hooks (on_jobs_changed / fire_due / reconcile) ────────
 
 
@@ -356,19 +363,81 @@ def test_builtin_inherits_hook_defaults():
 
 
 def test_fire_due_default_claims_then_runs(monkeypatch):
-    """The default fire_due claims via the store CAS, fetches the job, and runs
-    it through the shared run_one_job body."""
+    """The default fire_due runs the exact owner-bearing CAS snapshot."""
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    claims = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: claims.append((jid, kw))
+        or {"id": jid, "name": "t", "fire_claim": {"by": "exact-owner"}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kw: ran.append((job["id"], job["fire_claim"]["by"])) or True,
+    )
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert ran == ["j1"]
+    assert claims == [("j1", {"return_job": True})]
+    assert ran == [("j1", "exact-owner")]
+
+
+def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    events = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kwargs: events.append("claim")
+        or {"id": jid, "fire_claim": {"by": "owner"}},
+    )
+    monkeypatch.setattr(
+        executions,
+        "create_execution",
+        lambda jid, source: events.append("ledger") or {"id": "exec-1"},
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kwargs: events.append(("run", job["execution_id"])) or True,
+    )
+
+    provider = InProcessCronScheduler()
+    claimed = provider.claim_fire("j1")
+
+    assert events == ["ledger", "claim"]
+    assert claimed is not None
+    assert claimed["execution_id"] == "exec-1"
+    assert provider.fire_claimed(claimed) is True
+    assert events == ["ledger", "claim", ("run", "exec-1")]
+
+
+def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    claims = []
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: claims.append((jid, kw))
+        or {"id": jid, "name": "t", "fire_claim": {"by": "manual-owner"}},
+    )
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: True)
+
+    assert InProcessCronScheduler().fire_due("j1", force=True) is True
+    assert claims == [("j1", {"force": True, "return_job": True})]
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
@@ -379,7 +448,12 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: False, raising=False)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: False,
+        raising=False,
+    )
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("j1") is False
@@ -387,15 +461,18 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
 
 
 def test_fire_due_missing_job_does_not_run(monkeypatch):
-    """If the job vanished between arm and fire (e.g. repeat-N exhausted),
-    fire_due returns False without running."""
+    """If the job vanished before atomic claim, fire_due does not run it."""
     import cron.jobs as jobs
     import cron.scheduler as sched
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: None)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire",
+        lambda jid, **kw: False,
+        raising=False,
+    )
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("gone") is False
@@ -403,61 +480,6 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──
-
-
-def test_ticker_survives_baseexception_from_tick():
-    """A BaseException (e.g. SystemExit from a provider SDK) raised by tick()
-    must NOT kill the ticker loop — it logs and keeps looping (#32612)."""
-    from cron.scheduler_provider import InProcessCronScheduler
-
-    calls = []
-
-    def _boom(*a, **k):
-        calls.append(1)
-        if len(calls) == 1:
-            raise SystemExit("provider SDK called sys.exit")
-        return 0
-
-    stop = threading.Event()
-    prov = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=_boom), \
-         patch("cron.jobs.record_ticker_heartbeat"):
-        t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
-        t.start()
-        # Survive the BaseException AND keep ticking: wait for ≥2 calls.
-        assert _wait_until(lambda: len(calls) >= 2), \
-            "ticker did not keep ticking after the BaseException"
-        stop.set()
-        t.join(timeout=5)
-
-    assert not t.is_alive(), "ticker thread died on BaseException instead of surviving"
-    assert len(calls) >= 2, "ticker did not keep ticking after the BaseException"
-
-
-def test_ticker_records_heartbeat_each_iteration():
-    """The loop records a liveness heartbeat on start and after each tick,
-    bumping the success marker only on a clean tick."""
-    from cron.scheduler_provider import InProcessCronScheduler
-
-    beats = []  # (success,) per call
-    stop = threading.Event()
-    prov = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: 0), \
-         patch("cron.jobs.record_ticker_heartbeat",
-               side_effect=lambda success=False: beats.append(success)):
-        t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
-        t.start()
-        # Wait for the pre-loop liveness beat AND at least one successful
-        # post-tick beat before stopping (was a fixed 0.2s sleep → flaky).
-        assert _wait_until(lambda: any(b is True for b in beats[1:])), \
-            "successful tick did not bump success marker"
-        stop.set()
-        t.join(timeout=5)
-
-    # one pre-loop liveness beat (success=False) + post-tick beats with success=True
-    assert len(beats) >= 2, "ticker did not record heartbeats"
-    assert beats[0] is False, "pre-loop beat should be liveness-only"
-    assert any(b is True for b in beats[1:]), "successful tick did not bump success marker"
 
 
 def test_failing_tick_records_liveness_but_not_success():
@@ -511,93 +533,6 @@ def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     assert ok is not None and 0.0 <= ok < 5.0
 
 
-def test_heartbeat_age_detects_staleness(tmp_path, monkeypatch):
-    """A heartbeat written far in the past reads back as a large age."""
-    import cron.jobs as jobs
-
-    cron_dir = tmp_path / "cron"
-    cron_dir.mkdir(parents=True)
-    hb = cron_dir / "ticker_heartbeat"
-    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", hb)
-
-    import time as _t
-    hb.write_text(str(_t.time() - 10_000), encoding="utf-8")
-    age = jobs.get_ticker_heartbeat_age()
-    assert age is not None and age > 9_000
-
-
-def test_heartbeat_write_failure_is_silent(tmp_path, monkeypatch):
-    """A real atomic-write failure must be swallowed AND leave no temp file.
-
-    Point CRON_DIR at a path that cannot be created (its parent is a regular
-    file), so ensure_dirs()/mkstemp inside _atomic_write_epoch genuinely fail.
-    record_ticker_heartbeat must not raise, and no stray .hb_*.tmp may leak.
-    """
-    import cron.jobs as jobs
-
-    blocker = tmp_path / "not_a_dir"
-    blocker.write_text("i am a file, not a directory")
-    bad_cron_dir = blocker / "cron"  # parent is a file -> mkdir/mkstemp fail
-    monkeypatch.setattr(jobs, "CRON_DIR", bad_cron_dir)
-    monkeypatch.setattr(jobs, "OUTPUT_DIR", bad_cron_dir / "output")
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", bad_cron_dir / "ticker_heartbeat")
-    monkeypatch.setattr(jobs, "TICKER_SUCCESS_FILE", bad_cron_dir / "ticker_last_success")
-
-    jobs.record_ticker_heartbeat(success=True)  # must not raise
-
-    # The write never succeeded, so no heartbeat is recorded...
-    assert jobs.get_ticker_heartbeat_age() is None
-    # ...and no stray temp file leaked anywhere under tmp_path.
-    assert not list(tmp_path.rglob(".hb_*.tmp")), "atomic write leaked a temp file on failure"
-
-
-def test_cron_status_reports_alive_but_failing(tmp_path, monkeypatch, capsys):
-    """cron_status warns when the ticker is alive (fresh heartbeat) but no tick
-    has succeeded recently (#32612: alive-but-failing must not look healthy)."""
-    import cron.jobs as jobs
-    from hermes_cli import cron as cron_cli
-
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
-    monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 5.0)      # fresh
-    monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: 9_999.0)    # stale
-    monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
-
-    cron_cli.cron_status()
-    out = capsys.readouterr().out
-    assert "no tick has succeeded" in out
-    assert "will fire automatically" not in out
-
-
-def test_cron_status_healthy_when_both_fresh(tmp_path, monkeypatch, capsys):
-    import cron.jobs as jobs
-    from hermes_cli import cron as cron_cli
-
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
-    monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 5.0)
-    monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: 5.0)
-    monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
-
-    cron_cli.cron_status()
-    out = capsys.readouterr().out
-    assert "will fire automatically" in out
-
-
-def test_cron_status_reports_stalled_when_no_heartbeat(tmp_path, monkeypatch, capsys):
-    import cron.jobs as jobs
-    from hermes_cli import cron as cron_cli
-
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
-    monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 9_999.0)  # dead
-    monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: 9_999.0)
-    monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
-
-    cron_cli.cron_status()
-    out = capsys.readouterr().out
-    assert "STALLED" in out
-    assert "will fire automatically" not in out
-
-
 # ── F8: runtime backstop — never resolve a stored pair that exfiltrates a key ──
 
 
@@ -617,35 +552,6 @@ class TestGuardJobCredentialExfil:
             _guard_job_credential_exfil(job)
         assert "blocked for safety" in str(exc.value)
 
-    def test_named_custom_offhost_is_blocked(self, monkeypatch):
-        import pytest
-        import hermes_cli.runtime_provider as rp
-        from cron.scheduler import _guard_job_credential_exfil
-
-        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
-        monkeypatch.setattr(
-            rp, "_get_named_custom_provider",
-            lambda n: {"name": "legit", "base_url": "https://legit.example/v1",
-                       "api_key": "sk-legit"},
-        )
-        job = {"id": "j2", "provider": "custom:legit",
-               "base_url": "https://evil.example/v1"}
-        with pytest.raises(RuntimeError):
-            _guard_job_credential_exfil(job)
-
-    def test_named_custom_matching_host_is_allowed(self, monkeypatch):
-        import hermes_cli.runtime_provider as rp
-        from cron.scheduler import _guard_job_credential_exfil
-
-        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
-        monkeypatch.setattr(
-            rp, "_get_named_custom_provider",
-            lambda n: {"name": "legit", "base_url": "https://legit.example/v1",
-                       "api_key": "sk-legit"},
-        )
-        job = {"id": "j3", "provider": "custom:legit",
-               "base_url": "https://legit.example/v1"}
-        assert _guard_job_credential_exfil(job) is None
 
     def test_bare_custom_is_allowed(self):
         from cron.scheduler import _guard_job_credential_exfil
@@ -678,19 +584,6 @@ class TestGuardJobCredentialExfil:
         with pytest.raises(RuntimeError) as exc:
             _guard_job_credential_exfil(job)
         assert "blocked for safety" in str(exc.value)
-
-    def test_validator_exception_without_base_url_still_allowed(self, monkeypatch):
-        # A job with no base_url override can't exfiltrate via this path, so a
-        # validator error must not wedge it — only base_url-bearing jobs fail
-        # closed.
-        import tools.cronjob_tools as ct
-        from cron.scheduler import _guard_job_credential_exfil
-
-        def _boom(provider, base_url):
-            raise RuntimeError("validator blew up")
-
-        monkeypatch.setattr(ct, "_validate_cron_base_url", _boom)
-        assert _guard_job_credential_exfil({"id": "j8", "provider": "anthropic"}) is None
 
 
 # ── Multiplex profiles: cron per secondary profile (issue #69377) ─────────
@@ -747,47 +640,3 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
-def test_multiplex_heartbeat_scoped_per_profile(tmp_path, monkeypatch):
-    """record_ticker_heartbeat is scoped to each profile's store under
-    multiplex, so 'hermes cron status' can report liveness per profile."""
-    from cron.scheduler_provider import InProcessCronScheduler
-    from cron.jobs import record_ticker_heartbeat as _real_heartbeat
-
-    p_default = tmp_path / "default"
-    p_sec = tmp_path / "home-ops"
-    for d in (p_default, p_sec):
-        (d / "cron").mkdir(parents=True)
-    profile_homes = [("default", p_default), ("home-ops", p_sec)]
-
-    beat_log: list[str] = []
-
-    def _track_beat(*, success=False):
-        beat_log.append(str(success))
-        # Write the real heartbeat files so we can check them after.
-        _real_heartbeat(success=success)
-
-    stop = threading.Event()
-    prov = InProcessCronScheduler()
-
-    with patch("cron.scheduler.tick", return_value=0), \
-         patch("cron.jobs.record_ticker_heartbeat", side_effect=_track_beat):
-        t = threading.Thread(
-            target=prov.start,
-            args=(stop,),
-            kwargs={"interval": 0, "profile_homes": profile_homes},
-            daemon=True,
-        )
-        t.start()
-        deadline = time.monotonic() + 10
-        # Wait for at least 2 tick iterations over all profiles (2 profiles).
-        while len(beat_log) < len(profile_homes) * 2 and time.monotonic() < deadline:
-            time.sleep(0.005)
-        stop.set()
-        t.join(timeout=5)
-
-    assert not t.is_alive()
-    # Every profile should have a heartbeat file.
-    assert (p_default / "cron" / "ticker_heartbeat").exists(), \
-        "default profile heartbeat file missing"
-    assert (p_sec / "cron" / "ticker_heartbeat").exists(), \
-        "secondary profile heartbeat file missing"

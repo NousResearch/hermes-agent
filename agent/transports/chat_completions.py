@@ -9,6 +9,7 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import json
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -16,6 +17,70 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+
+def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
+    """Return the stable system/developer prefix used for cache routing.
+
+    Chat Completions carries instructions in its message list rather than a
+    separate ``instructions`` field.  Only a leading system/developer message
+    is static by contract; later messages are conversation state and must not
+    split a warm prefix bucket on every turn.
+    """
+    if not messages or not isinstance(messages[0], dict):
+        return ""
+    first = messages[0]
+    if first.get("role") not in {"system", "developer"}:
+        return ""
+    content = first.get("content")
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(content or "")
+
+
+def _add_prompt_cache_key(
+    api_kwargs: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    supports_prompt_cache_key: bool,
+    session_id: str | None = None,
+    cache_scope_id: str | None = None,
+) -> None:
+    """Add a content-addressed key only for an explicitly capable endpoint.
+
+    ``cache_scope_id``, when provided, is the rotation-stable logical scope
+    (compression-lineage root — agent/prompt_cache_scope.py) and takes
+    precedence over the physical ``session_id`` so the key survives
+    context-compression session rotation (#79017).
+    """
+    if not supports_prompt_cache_key:
+        return
+
+    # An explicit caller body field is authoritative too.  Do not add a
+    # duplicate top-level field whose SDK merge precedence could overwrite it.
+    extra_body = api_kwargs.get("extra_body")
+    if "prompt_cache_key" in api_kwargs or (
+        isinstance(extra_body, dict) and "prompt_cache_key" in extra_body
+    ):
+        return
+
+    # Reuse the Responses transport's single authoritative hash algorithm and
+    # session-scope normalization so equivalent static prefixes route to the
+    # same cache bucket across modes, without concentrating unrelated
+    # sessions into one shared bucket (see #78941).
+    from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+
+    cache_key = _content_cache_key(
+        _static_prompt_instructions(messages),
+        tools,
+        _cache_scope_from_session_id(cache_scope_id or session_id),
+    )
+    if cache_key:
+        api_kwargs["prompt_cache_key"] = cache_key
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -112,6 +177,24 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _is_openai_api_base_url(base_url: Any) -> bool:
+    """True only for api.openai.com itself (exact host).
+
+    OpenAI documents ``prompt_cache_key`` as a first-class body field and
+    GPT-5.6+ docs recommend it for reliable cache routing, so the flag is
+    implied for the real endpoint. Deliberately NOT a substring match:
+    Azure OpenAI and strict OpenAI-compat endpoints may reject unknown
+    fields and must stay opt-in via ``supports_prompt_cache_key``.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.openai.com"
+
+
 def _model_consumes_thought_signature(model: Any) -> bool:
     """True when the outgoing model is a Gemini family model that requires
     ``extra_content`` (thought_signature) to be replayed on tool calls.
@@ -196,6 +279,25 @@ class ChatCompletionsTransport(ProviderTransport):
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                # Defense-in-depth: a strict OpenAI-compatible provider
+                # (e.g. onerouter / Qwen, DeepSeek v4) rejects an assistant
+                # message carrying ``tool_calls: []`` (empty array) with
+                # HTTP 400 "Empty tool_calls is not supported in message."
+                # The pre-API sanitizer in agent_runtime_helpers drops these,
+                # but only on the conversation_loop path — other routes can
+                # reach the wire without it. For every request that
+                # serializes through this transport (conversation loop and
+                # any caller using it), this is the last boundary, so
+                # normalize here. Requests built by fully separate payload
+                # paths (e.g. some auxiliary clients) never pass through
+                # this layer and are out of scope for it. (#58755 follow-up)
+                if (
+                    msg.get("role") == "assistant"
+                    and "tool_calls" in msg
+                    and not tool_calls
+                ):
+                    needs_sanitize = True
+                    break
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
                         "call_id" in tc
@@ -206,6 +308,15 @@ class ChatCompletionsTransport(ProviderTransport):
                         break
                 if needs_sanitize:
                     break
+            elif (
+                isinstance(tool_calls, type(None))
+                and msg.get("role") == "assistant"
+                and "tool_calls" in msg
+            ):
+                # Explicit ``tool_calls: null`` is equally invalid on strict
+                # providers — treat it like the empty-array case.
+                needs_sanitize = True
+                break
 
         if not needs_sanitize:
             return messages
@@ -252,6 +363,19 @@ class ChatCompletionsTransport(ProviderTransport):
 
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                # Strip empty/invalid tool_calls arrays at the transport
+                # layer (see detection above). Strict OpenAI-compatible
+                # providers reject ``tool_calls: []`` with HTTP 400; dropping
+                # the key keeps the message schema-valid. Matches the
+                # pre-API sanitizer's behaviour so all routes agree.
+                if (
+                    msg.get("role") == "assistant"
+                    and "tool_calls" in msg
+                    and not tool_calls
+                ):
+                    out_msg = mutable_msg()
+                    out_msg.pop("tool_calls", None)
+                    continue
                 copied_tool_calls: list[Any] | None = None
                 for tc_idx, tc in enumerate(tool_calls):
                     if isinstance(tc, dict):
@@ -271,6 +395,14 @@ class ChatCompletionsTransport(ProviderTransport):
                             copied_tool_calls[tc_idx] = copied_tc
                 if copied_tool_calls is not None:
                     mutable_msg()["tool_calls"] = copied_tool_calls
+            elif (
+                isinstance(tool_calls, type(None))
+                and msg.get("role") == "assistant"
+                and "tool_calls" in msg
+            ):
+                # Explicit ``tool_calls: null`` is invalid on strict
+                # providers — drop the key entirely.
+                mutable_msg().pop("tool_calls", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -327,6 +459,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
             extra_body_additions: dict | None
+            supports_prompt_cache_key: bool — explicit endpoint capability for
+                the top-level Chat Completions request field; defaults off.
         """
         # Codex sanitization: drop reasoning_items / call_id / response_item_id.
         # Pass model so the Gemini thought_signature (extra_content) is kept for
@@ -378,7 +512,6 @@ class ChatCompletionsTransport(ProviderTransport):
         ephemeral = params.get("ephemeral_max_output_tokens")
         max_tokens = params.get("max_tokens")
         anthropic_max_out = params.get("anthropic_max_output")
-        is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
@@ -436,7 +569,6 @@ class ChatCompletionsTransport(ProviderTransport):
         extra_body: dict[str, Any] = {}
 
         is_openrouter = params.get("is_openrouter", False)
-        is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
@@ -508,6 +640,16 @@ class ChatCompletionsTransport(ProviderTransport):
         overrides = params.get("request_overrides")
         if overrides:
             api_kwargs.update(overrides)
+
+        _add_prompt_cache_key(
+            api_kwargs,
+            messages=sanitized,
+            tools=api_kwargs.get("tools"),
+            supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key"))
+            or _is_openai_api_base_url(params.get("base_url")),
+            session_id=params.get("session_id"),
+            cache_scope_id=params.get("cache_scope_id"),
+        )
 
         return api_kwargs
 
@@ -651,6 +793,15 @@ class ChatCompletionsTransport(ProviderTransport):
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
+        _add_prompt_cache_key(
+            api_kwargs,
+            messages=sanitized,
+            tools=api_kwargs.get("tools"),
+            supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
+            session_id=params.get("session_id"),
+            cache_scope_id=params.get("cache_scope_id"),
+        )
+
         return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -685,7 +836,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 if extra is not None:
                     if hasattr(extra, "model_dump"):
                         try:
-                            extra = extra.model_dump()
+                            extra = extra.model_dump(warnings=False)
+                        except TypeError:
+                            try:
+                                extra = extra.model_dump()
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra

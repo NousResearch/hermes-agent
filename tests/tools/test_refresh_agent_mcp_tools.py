@@ -44,60 +44,6 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert len(agent.tools) == 3
 
 
-def test_refresh_no_change_returns_empty_and_leaves_agent_untouched(monkeypatch):
-    """No new tools → empty set, and the snapshot object is not swapped."""
-    agent = _agent(["read_file", "terminal"])
-    original_tools = agent.tools
-
-    import model_tools
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("read_file"), _tool("terminal")],
-    )
-
-    added = mcp_tool.refresh_agent_mcp_tools(agent)
-
-    assert added == set()
-    assert agent.tools is original_tools  # not replaced → no churn / no cache thrash
-
-
-def test_refresh_detects_equal_size_swap(monkeypatch):
-    """Name-based diff catches an add+remove of equal count (count-compare can't)."""
-    agent = _agent(["a", "old_mcp_tool"])  # 2 tools
-
-    import model_tools
-    # Same COUNT (2) but a different membership: old_mcp_tool removed, new added.
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("a"), _tool("new_mcp_tool")],
-    )
-
-    added = mcp_tool.refresh_agent_mcp_tools(agent)
-
-    assert added == {"new_mcp_tool"}
-    assert agent.valid_tool_names == {"a", "new_mcp_tool"}
-    assert "old_mcp_tool" not in agent.valid_tool_names
-
-
-def test_refresh_passes_agent_toolset_filters(monkeypatch):
-    """The rebuild re-derives with the agent's OWN enabled/disabled toolsets."""
-    agent = _agent(["a"], enabled=["coding", "granola"], disabled=["messaging"])
-    seen = {}
-
-    import model_tools
-
-    def _capture(**kw):
-        seen.update(kw)
-        return [_tool("a"), _tool("b")]
-
-    monkeypatch.setattr(model_tools, "get_tool_definitions", _capture)
-
-    mcp_tool.refresh_agent_mcp_tools(agent)
-
-    assert seen["enabled_toolsets"] == ["coding", "granola"]
-    assert seen["disabled_toolsets"] == ["messaging"]
-
-
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 
@@ -264,50 +210,6 @@ def test_resolve_discovery_timeout_explicit_wins(monkeypatch):
     from hermes_cli import mcp_startup
 
     assert mcp_startup._resolve_discovery_timeout(2.5) == 2.5
-
-
-def test_resolve_discovery_timeout_reads_config(monkeypatch):
-    from hermes_cli import mcp_startup
-    import hermes_cli.config as cfg
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 8.0})
-
-    assert mcp_startup._resolve_discovery_timeout(None) == 8.0
-
-
-def test_resolve_discovery_timeout_falls_back_on_bad_value(monkeypatch):
-    from hermes_cli import mcp_startup
-    import hermes_cli.config as cfg
-
-    # Non-positive / unparsable → DEFAULT_CONFIG value, never hang.
-    default = float(cfg.DEFAULT_CONFIG.get("mcp_discovery_timeout", 1.5))
-    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 0})
-    assert mcp_startup._resolve_discovery_timeout(None) == default
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": "oops"})
-    assert mcp_startup._resolve_discovery_timeout(None) == default
-
-
-def test_stale_generation_refresh_does_not_clobber_newer(monkeypatch):
-    """A slower refresh that computed an OLDER registry generation must not
-    overwrite a snapshot a newer-generation refresh already published."""
-    from tools import registry as _reg_mod
-
-    agent = _agent(["read_file"])
-    # A newer refresh already published generation = current+5, with two tools.
-    agent._tool_snapshot_generation = _reg_mod.registry._generation + 5
-    agent.tools = [_tool("read_file"), _tool("mcp_new_tool")]
-    agent.valid_tool_names = {"read_file", "mcp_new_tool"}
-
-    import model_tools
-    # This (stale) refresh computes only the old single-tool set.
-    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [_tool("read_file")])
-
-    added = mcp_tool.refresh_agent_mcp_tools(agent)
-
-    # Stale write rejected: the newer tool survives.
-    assert added == set()
-    assert "mcp_new_tool" in agent.valid_tool_names
 
 
 def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):

@@ -15,11 +15,14 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import display_hermes_home
 
 
-def clarify_callback(cli, question, choices):
+def clarify_callback(cli, question, choices, multi_select=False):
     """Prompt for clarifying question through the TUI.
 
     Sets up the interactive selection UI, then blocks until the user
     responds. Returns the user's choice or a timeout message.
+
+    When ``multi_select`` is True, shows checkboxes and the user can
+    select multiple options with Space, confirming with Enter.
     """
     from cli import CLI_CONFIG
     from tools.clarify_gateway import resolve_clarify_timeout
@@ -29,11 +32,14 @@ def clarify_callback(cli, question, choices):
     timeout = resolve_clarify_timeout(CLI_CONFIG)
     response_queue = queue.Queue()
     is_open_ended = not choices
+    effective_multi = multi_select and not is_open_ended
 
     cli._clarify_state = {
         "question": question,
         "choices": choices if not is_open_ended else [],
         "selected": 0,
+        "multi_select": effective_multi,
+        "selected_indices": set() if effective_multi else None,
         "response_queue": response_queue,
     }
     cli._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
@@ -244,4 +250,4 @@ def approval_callback(cli, command: str, description: str) -> str:
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
         cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-        return "deny"
+        return "timeout"

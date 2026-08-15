@@ -8,15 +8,42 @@ import {
   appendReasoningPart,
   chatMessageText,
   collectUnspokenTurnSpeech,
+  completeOpenTimelineParts,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
   renderMediaTags,
+  sealOpenToolParts,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
 
 describe('toChatMessages', () => {
+  it('rebuilds the full command from a gateway tool row carrying args', () => {
+    // Gateway watch-window hydration projects tool rows as
+    // {role:'tool', name, context, args?}. `context` is an 80-char preview;
+    // the backend also ships the full args, and the part must carry them so
+    // the expanded `$` transcript shows the whole command.
+    const longCommand = `echo ${'x'.repeat(200)}`
+
+    const messages = toChatMessages([
+      { role: 'user', content: 'run it', timestamp: 1 },
+      {
+        role: 'tool',
+        name: 'terminal',
+        content: '',
+        context: `${longCommand.slice(0, 79)}…`,
+        args: { command: longCommand },
+        timestamp: 2
+      }
+    ])
+
+    const toolPart = messages.flatMap(m => m.parts).find(part => part.type === 'tool-call')
+
+    expect(toolPart).toBeDefined()
+    expect((toolPart as { args: { command?: string } }).args.command).toBe(longCommand)
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },
@@ -32,6 +59,25 @@ describe('toChatMessages', () => {
     expect(messages).toHaveLength(1)
     expect(messages[0].parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
     expect(chatMessageText(messages[0])).toBe('Planning.Done.')
+    expect(messages[0].timestamp).toBe(1)
+    expect(messages[0].parts.map(p => p.timestamp)).toEqual([1, 2, 3])
+  })
+
+  it('starts a hydrated bubble at an earlier leading tool call', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc', function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { role: 'tool', tool_call_id: 'tc', content: 'ok', timestamp: 2 },
+      { role: 'assistant', content: 'Done.', timestamp: 3 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].timestamp).toBe(1)
+    expect(messages[0].parts.map(part => part.timestamp)).toEqual([1, 3])
   })
 
   it('keeps assistant tool-call iterations in one loaded assistant bubble', () => {
@@ -69,6 +115,11 @@ describe('toChatMessages', () => {
     const assistantMessages = messages.filter(message => message.role === 'assistant')
 
     expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0].timestamp).toBe(2)
+    expect(assistantMessages[0].parts.map(part => part.timestamp)).toEqual([2, 2, 4, 4, 6])
+    expect(assistantMessages[0].parts.filter(part => part.type === 'tool-call').map(part => part.completedAt)).toEqual([
+      3, 5
+    ])
     expect(assistantMessages[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(2)
     expect(chatMessageText(assistantMessages[0])).toContain("Let me also check if there's a top-level lint workflow.")
     expect(chatMessageText(assistantMessages[0])).toContain('Now let me check git status and commit.')
@@ -133,6 +184,65 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('Here you go.')
   })
 
+  it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png\nwhat is in this photo?',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('keeps a user turn that carried only an attached image (no caption)', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png',
+        timestamp: 1
+      }
+    ])
+
+    // The bubble has no visible text, but must survive the empty-turn filter
+    // because it carries attachment refs — otherwise a stand-alone attachment
+    // vanishes from the transcript after a session switch / restart.
+    expect(chatMessageText(message)).toBe('')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('renders a native-vision turn as caption plus thumbnail, not raw placeholder text', () => {
+    // How a turn sent to a natively-vision-capable model comes back out of the
+    // session store: a backtick-quoted ref (the path has spaces) and the
+    // `[screenshot]` stand-in left by flattening the parts list.
+    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: `${ref}\nwhat is in this photo?\n[screenshot]`,
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
+  })
+
+  it('leaves a plain user prompt without attachment refs untouched', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'just a question',
+        timestamp: 1
+      }
+    ])
+
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toBeUndefined()
+  })
+
   it('coerces non-string message content without throwing', () => {
     const [message] = toChatMessages([
       {
@@ -161,6 +271,58 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
 
+  it('leaves an inline @ ref in place instead of hoisting a duplicate', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content:
+          'summarize @file:`src/main.ts` for me\n\n--- Attached Context ---\n\n📄 @file:`src/main.ts` (10 tokens)\n```ts\nconst x = 1\n```',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('summarize @file:`src/main.ts` for me')
+  })
+
+  it('never paints redirect scaffolding as an assistant bubble', () => {
+    // What the desktop actually receives after a mid-stream steer: the runtime
+    // keeps the interrupt scaffolding in a server-only api_content sidecar
+    // (never shipped to the client) so content is already clean, and marks a
+    // prose-free checkpoint display_kind:'hidden'. The transcript must show the
+    // partial reply and the user's correction — never
+    // "[This response was interrupted by a user correction.]".
+    const messages = toChatMessages([
+      { role: 'user', content: 'go', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Hey. I was mid-Figma MCP fix when we paused.',
+        timestamp: 2
+      },
+      { role: 'user', content: 'i love you', timestamp: 3 },
+      {
+        // Nothing had reached the screen — checkpoint exists only for the model.
+        role: 'assistant',
+        content: '[This response was interrupted by a user correction.]',
+        display_kind: 'hidden',
+        timestamp: 4
+      },
+      { role: 'user', content: 'keep going', timestamp: 5 }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual([
+      'go',
+      'Hey. I was mid-Figma MCP fix when we paused.',
+      'i love you',
+      'keep going'
+    ])
+
+    for (const message of messages) {
+      expect(chatMessageText(message)).not.toContain('This response was interrupted')
+      expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
+      expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
+    }
+  })
+
   it('projects durable timeline kinds without inspecting their text', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'real user turn', timestamp: 1 },
@@ -182,15 +344,29 @@ describe('toChatMessages', () => {
         content: 'opaque delegation context payload',
         display_kind: 'async_delegation_complete',
         timestamp: 5
+      },
+      {
+        role: 'user',
+        content: '[System note: Your previous turn was interrupted mid-run…]\n\noriginal prompt',
+        display_kind: 'auto_continue',
+        timestamp: 6
+      },
+      {
+        role: 'user',
+        content: "[System: The user has changed the assistant's personality…]",
+        display_kind: 'personality_switch',
+        timestamp: 7
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system'])
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system', 'system'])
     expect(messages.map(chatMessageText)).toEqual([
       'real user turn',
       'real assistant reply',
       'model changed',
-      'background agent work finished'
+      'background agent work finished',
+      'resumed interrupted turn',
+      'personality changed'
     ])
   })
 
@@ -238,39 +414,37 @@ describe('renderMediaTags', () => {
   })
 })
 
-describe('interleaved reasoning/text coalescing', () => {
-  it('keeps narration contiguous when reasoning interrupts mid-sentence', () => {
-    // Models that interleave reasoning_content + content deltas emit
-    // text → reasoning → text within one tool-bounded segment. The two text
-    // fragments are really one sentence and must not be split by the
-    // "Thinking" block between them.
-    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me ')
-    parts = appendReasoningPart(parts, 'checking the file...')
-    parts = appendAssistantTextPart(parts, 'verify the full file is correct:')
+describe('interleaved reasoning/text boundaries', () => {
+  it('preserves text → reasoning → text as three ordered activities', () => {
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me ', 1)
+    parts = appendReasoningPart(parts, 'checking the file...', 2)
+    parts = appendAssistantTextPart(parts, 'verify the full file is correct:', 3)
 
-    expect(parts.map(p => p.type)).toEqual(['text', 'reasoning'])
-    expect((parts[0] as { text: string }).text).toBe('Let me verify the full file is correct:')
-    expect((parts[1] as { text: string }).text).toBe('checking the file...')
+    expect(parts.map(p => p.type)).toEqual(['text', 'reasoning', 'text'])
+    expect(parts.map(p => p.timestamp)).toEqual([1, 2, 3])
+    expect(parts.map(p => p.completedAt)).toEqual([2, 3, undefined])
   })
 
-  it('merges reasoning bursts that straddle a narration fragment', () => {
-    let parts: ChatMessagePart[] = appendReasoningPart([], 'first thought ')
-    parts = appendAssistantTextPart(parts, 'Working on it.')
-    parts = appendReasoningPart(parts, 'second thought')
+  it('preserves reasoning → text → reasoning as three ordered activities', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'first thought ', 1)
+    parts = appendAssistantTextPart(parts, 'Working on it.', 2)
+    parts = appendReasoningPart(parts, 'second thought', 3)
 
-    expect(parts.map(p => p.type)).toEqual(['reasoning', 'text'])
-    expect((parts[0] as { text: string }).text).toBe('first thought second thought')
-    expect((parts[1] as { text: string }).text).toBe('Working on it.')
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'text', 'reasoning'])
+    expect(parts.map(p => p.timestamp)).toEqual([1, 2, 3])
+    expect(parts.map(p => p.completedAt)).toEqual([2, 3, undefined])
   })
 
   it('starts a fresh text part after a tool call (segment boundary)', () => {
-    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.')
-    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
-    parts = appendAssistantTextPart(parts, 'Now editing.')
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.', 10.125)
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running', 11.25)
+    parts = appendAssistantTextPart(parts, 'Now editing.', 12.5)
 
     expect(parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
     expect((parts[0] as { text: string }).text).toBe('Let me check.')
     expect((parts[2] as { text: string }).text).toBe('Now editing.')
+    expect(parts.map(p => p.timestamp)).toEqual([10.125, 11.25, 12.5])
+    expect(parts[0].completedAt).toBe(11.25)
   })
 
   it('does not merge reasoning across a tool call', () => {
@@ -285,6 +459,25 @@ describe('interleaved reasoning/text coalescing', () => {
 })
 
 describe('preserveLocalAssistantErrors', () => {
+  it('preserves richer live boundaries when the durable row has only its completion time', () => {
+    const durable = toChatMessages([{ role: 'assistant', content: 'Done.', timestamp: 3 }])
+
+    const live: ChatMessage[] = [
+      {
+        completedAt: 3,
+        id: 'assistant-stream',
+        parts: [{ completedAt: 3, text: 'Done.', timestamp: 1, type: 'text' }],
+        role: 'assistant',
+        timestamp: 1
+      }
+    ]
+
+    const [message] = preserveLocalAssistantErrors(durable, live)
+
+    expect([message.timestamp, message.completedAt]).toEqual([1, 3])
+    expect(message.parts[0]).toMatchObject({ completedAt: 3, timestamp: 1, type: 'text' })
+  })
+
   it('preserves a local user+error pair when hydration omits the failed turn', () => {
     const nextMessages: ChatMessage[] = [
       {
@@ -452,6 +645,48 @@ describe('preserveLocalAssistantErrors', () => {
 })
 
 describe('upsertToolPart', () => {
+  it('preserves call time through progress and records completion time', () => {
+    const started = upsertToolPart([], { name: 'read_file', tool_id: 'call-1' }, 'running', 100.125)
+
+    const progressed = upsertToolPart(
+      started,
+      { name: 'read_file', preview: 'still reading', tool_id: 'call-1' },
+      'running',
+      101.5
+    )
+
+    const completed = upsertToolPart(
+      progressed,
+      { name: 'read_file', result: { content: 'done' }, tool_id: 'call-1' },
+      'complete',
+      102.875
+    )
+
+    expect(completed).toHaveLength(1)
+    expect(completed[0].timestamp).toBe(100.125)
+    expect(completed[0].completedAt).toBe(102.875)
+  })
+
+  it('closes active commentary when a tool starts', () => {
+    const text = appendAssistantTextPart([], 'Checking first.', 20)
+    const withTool = upsertToolPart(text, { name: 'read_file', tool_id: 'call-2' }, 'running', 21)
+
+    expect(withTool[0].completedAt).toBe(21)
+  })
+
+  it('closes active commentary when only a tool completion arrives', () => {
+    const text = appendAssistantTextPart([], 'Checking first.', 20)
+    const withTool = upsertToolPart(text, { name: 'read_file', tool_id: 'call-2' }, 'complete', 21)
+
+    expect(withTool[0].completedAt).toBe(21)
+  })
+
+  it('closes unfinished timeline segments when a turn completes', () => {
+    const parts = appendAssistantTextPart([], 'Done.', 30.25)
+
+    expect(completeOpenTimelineParts(parts, 31.75)[0].completedAt).toBe(31.75)
+  })
+
   it('preserves inline diffs from tool completion events', () => {
     const parts = upsertToolPart(
       [],
@@ -880,6 +1115,23 @@ describe('upsertToolPart', () => {
 })
 
 describe('mergeFinalAssistantText', () => {
+  it('keeps confirmed text-reasoning-text boundaries in the final response', () => {
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'First. ', 1)
+    parts = appendReasoningPart(parts, 'Think.', 2)
+    parts = appendAssistantTextPart(parts, 'Last.', 3)
+
+    const result = mergeFinalAssistantText(parts, 'First. Last.', 4)
+
+    expect(result.map(part => part.type)).toEqual(['text', 'reasoning', 'text'])
+    expect(result.map(part => part.timestamp)).toEqual([1, 2, 3])
+  })
+
+  it('timestamps completion-only text when no streamed text preceded it', () => {
+    const result = mergeFinalAssistantText([], 'final answer', 12.5)
+
+    expect(result[0]).toMatchObject({ text: 'final answer', timestamp: 12.5, type: 'text' })
+  })
+
   it('removes all text parts and appends the final text', () => {
     const parts = [
       { type: 'text' as const, text: 'streamed delta 1' },
@@ -1014,5 +1266,67 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+})
+
+describe('sealOpenToolParts', () => {
+  const toolPart = (over: Partial<ChatMessagePart> = {}): ChatMessagePart =>
+    ({
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'terminal',
+      args: {},
+      argsText: '{}',
+      ...over
+    }) as ChatMessagePart
+
+  const assistantWithParts = (parts: ChatMessagePart[], over: Partial<ChatMessage> = {}): ChatMessage =>
+    ({
+      id: 'a1',
+      role: 'assistant',
+      parts,
+      ...over
+    }) as ChatMessage
+
+  it('seals open tool-call parts in settled assistant messages', () => {
+    const messages = [assistantWithParts([toolPart()])]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).toHaveProperty('result')
+  })
+
+  it('leaves already-completed tool parts untouched', () => {
+    const done = toolPart({ result: { code: 0 } })
+    const messages = [assistantWithParts([done])]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).toBe(done)
+  })
+
+  it('leaves pending messages alone', () => {
+    const messages = [assistantWithParts([toolPart()], { pending: true })]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).not.toHaveProperty('result')
+  })
+
+  it('leaves non-tool parts untouched', () => {
+    const text = { type: 'text', text: 'hello' } as ChatMessagePart
+    const messages = [assistantWithParts([text, toolPart()])]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).toBe(text)
+    expect(next[0].parts[1]).toHaveProperty('result')
+  })
+
+  it('returns the same array reference when nothing needs sealing', () => {
+    const done = toolPart({ result: { code: 0 } })
+    const messages = [assistantWithParts([done])]
+
+    expect(sealOpenToolParts(messages)).toBe(messages)
   })
 })

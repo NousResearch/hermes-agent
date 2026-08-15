@@ -1,23 +1,15 @@
 import type * as React from 'react'
-import { useState } from 'react'
 
+import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { openWorktreeDialog } from '@/store/coding-status'
 import { copyPath, revealPath } from '@/store/projects'
 
-import { SidebarCount, SidebarRowLead } from '../chrome'
-
-import { WorktreeDialog } from './worktree-dialog'
+import { SidebarRowLead } from '../chrome'
 
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
@@ -30,7 +22,9 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
   const tail = label.slice(label.length - tailLen)
 
   return (
-    <span className="flex min-w-0" title={title}>
+    // overflow-hidden: the pinned tail is shrink-0, so at extreme narrow widths
+    // it must clip inside the label rather than push the trailing icons out.
+    <span className="flex min-w-0 overflow-hidden" title={title}>
       <span className="truncate">{head}</span>
       <span className="shrink-0 whitespace-pre">{tail}</span>
     </span>
@@ -83,40 +77,77 @@ export function WorkspaceShowMoreButton({
 // Per-worktree actions (linked worktree lanes only), mirroring the session row
 // and ProjectMenu kebab: reveal in the file manager, copy path, and remove the
 // worktree (runs a real `git worktree remove` via the caller's confirm dialog).
-export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
+// Shared by the kebab dropdown and the header's right-click menu so both match.
+function useWorkspaceItems({ path, onRemove }: { path: null | string; onRemove: () => void }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
 
+  return (kit: MenuKit) => (
+    <>
+      {renderActionItem(kit, {
+        disabled: !path,
+        icon: 'folder-opened',
+        key: 'reveal',
+        label: p.reveal,
+        onSelect: () => void revealPath(path)
+      })}
+      {renderActionItem(kit, {
+        disabled: !path,
+        icon: 'copy',
+        key: 'copy',
+        label: p.copyPath,
+        onSelect: () => void copyPath(path)
+      })}
+      <kit.Separator />
+      {renderActionItem(kit, {
+        icon: 'trash',
+        key: 'remove',
+        label: `${p.removeWorktree}…`,
+        onSelect: onRemove,
+        variant: 'destructive'
+      })}
+    </>
+  )
+}
+
+export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const items = useWorkspaceItems({ onRemove, path })
+
   return (
-    <DropdownMenu>
-      <Tip label={p.menu}>
-        <DropdownMenuTrigger asChild>
-          <button
-            aria-label={p.menu}
-            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
-            onClick={event => event.stopPropagation()}
-            type="button"
-          >
-            <Codicon name="kebab-vertical" size="0.75rem" />
-          </button>
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
-        <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
-          <Codicon name="folder-opened" size="0.875rem" />
-          <span>{p.reveal}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={!path} onSelect={() => void copyPath(path)}>
-          <Codicon name="copy" size="0.875rem" />
-          <span>{p.copyPath}</span>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onRemove} variant="destructive">
-          <Codicon name="trash" size="0.875rem" />
-          <span>{`${p.removeWorktree}…`}</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ActionsMenu ariaLabel={p.menu} contentClassName="w-48" items={items}>
+      <button
+        aria-label={p.menu}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
+        onClick={event => event.stopPropagation()}
+        type="button"
+      >
+        <Codicon name="kebab-vertical" size="0.75rem" />
+      </button>
+    </ActionsMenu>
+  )
+}
+
+// Wrap a worktree lane's header so right-clicking it opens the same actions as
+// its kebab. `disabled` renders children bare (a lane with no removable path).
+export function WorkspaceContextMenu({
+  path,
+  onRemove,
+  children
+}: {
+  path: null | string
+  onRemove?: () => void
+  children: React.ReactNode
+}) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const items = useWorkspaceItems({ onRemove: onRemove ?? (() => {}), path })
+
+  return (
+    <ActionsContextMenu ariaLabel={p.menu} contentClassName="w-48" disabled={!onRemove} items={items}>
+      {children}
+    </ActionsContextMenu>
   )
 }
 
@@ -125,25 +156,23 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
-export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onStarted: (path: string) => void }) {
+export function StartWorkButton({ repoPath }: { repoPath: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
-  const [open, setOpen] = useState(false)
 
   return (
-    <>
-      <Tip label={p.startWork}>
-        <button
-          aria-label={p.startWork}
-          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
-          onClick={() => setOpen(true)}
-          type="button"
-        >
-          <Codicon name="git-branch" size="0.75rem" />
-        </button>
-      </Tip>
-      <WorktreeDialog onOpenChange={setOpen} onStarted={onStarted} open={open} repoPath={repoPath} />
-    </>
+    <Tip label={p.startWork}>
+      <button
+        aria-label={p.startWork}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
+        // Publish the intent. The one WorktreeDialog in the sidebar renders it.
+        // This button pins its own repo, so it targets this section.
+        onClick={() => void openWorktreeDialog({ repoPath })}
+        type="button"
+      >
+        <Codicon name="git-branch" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 
@@ -151,16 +180,16 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
 // button with a leading glyph, plus an optional trailing action (the +).
 export function WorkspaceHeader({
   action,
-  count,
   emphasis = false,
   icon,
   label,
   onToggle,
   open,
-  title
+  title,
+  ref,
+  ...rest
 }: {
   action?: React.ReactNode
-  count: React.ReactNode
   emphasis?: boolean
   icon: React.ReactNode
   label: string
@@ -168,13 +197,15 @@ export function WorkspaceHeader({
   open: boolean
   /** Hover tooltip — the lane's full on-disk path (worktree / repo root). */
   title?: string
-}) {
+} & React.ComponentProps<'div'>) {
   return (
     <div
       className={cn(
         'group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem]',
         emphasis ? 'font-semibold text-(--ui-text-secondary)' : 'font-medium text-(--ui-text-tertiary)'
       )}
+      ref={ref}
+      {...rest}
     >
       <button
         className={cn(
@@ -186,9 +217,6 @@ export function WorkspaceHeader({
       >
         <SidebarRowLead>{icon}</SidebarRowLead>
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
-        <span className="shrink-0">
-          <SidebarCount>{count}</SidebarCount>
-        </span>
         <DisclosureCaret
           className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
           open={open}

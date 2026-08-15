@@ -153,6 +153,7 @@ export function initOpenFindBarListener(): () => void {
     if (released) {
       return
     }
+
     released = true
     openFindBarRefs -= 1
 

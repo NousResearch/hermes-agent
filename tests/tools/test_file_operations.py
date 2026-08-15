@@ -906,23 +906,27 @@ class TestEscapeNativeToolArg:
 # =========================================================================
 
 class TestSearchTruncatedFlag:
-    """Regression for #86480: truncated flag is unreachable in content search.
+    """Regression for #86480: truncated is true only when an extra hit exists.
 
-    When the search backend is capped at `fetch_limit = limit + offset` lines
-    by `head -n`, a result that exactly fills the cap must be reported as
-    truncated.  The bug used `total > offset + limit`, which is always False
-    because `total` can never exceed the cap.  The fix uses `>=` for content
-    matches and adds the same check to `files_only` branches.
+    Fetching ``head -n (limit + offset)`` and then testing
+    ``total >= offset + limit`` cannot tell a complete result of exactly
+    that size from a capped page.  The backends fetch one extra row and
+    set ``truncated`` only when that extra hit is present.
     """
 
     def _make_ops(self, payload: str, exit_code: int = 0):
-        """Return a ShellFileOperations whose _exec always returns `payload`."""
+        """Return a ShellFileOperations whose _exec honors `head -n`."""
         env = MagicMock()
         env.cwd = "/tmp/test"
         ops = ShellFileOperations(env)
 
-        def _mock_exec(*args, **kwargs):
-            return ExecuteResult(stdout=payload, exit_code=exit_code)
+        def _mock_exec(cmd, *args, **kwargs):
+            stdout = payload
+            head = re.search(r"head\s+-n\s+(\d+)", cmd)
+            if head:
+                lines = [ln for ln in payload.split("\n") if ln]
+                stdout = "\n".join(lines[: int(head.group(1))])
+            return ExecuteResult(stdout=stdout, exit_code=exit_code)
 
         object.__setattr__(ops, "_exec", _mock_exec)
         return ops
@@ -933,35 +937,38 @@ class TestSearchTruncatedFlag:
     def _file_lines(self, n: int) -> str:
         return "\n".join(f"src/file_{i:02d}.py" for i in range(n))
 
-    @pytest.mark.parametrize("backend", ["rg", "grep"])
-    def test_content_exactly_at_cap_is_truncated(self, backend):
-        """A full page at the head cap means there may be more matches."""
-        limit, offset = 10, 0
-        fetch_limit = limit + offset
-        payload = self._content_lines(fetch_limit)
+    def _search(self, backend, payload, limit, offset, mode):
         ops = self._make_ops(payload)
-
         if backend == "rg":
-            result = ops._search_with_rg("match", ".", None, limit, offset, "content", 0)
-        else:
-            result = ops._search_with_grep("match", ".", None, limit, offset, "content", 0)
+            return ops._search_with_rg("match", ".", None, limit, offset, mode, 0)
+        return ops._search_with_grep("match", ".", None, limit, offset, mode, 0)
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_content_exactly_at_cap_is_not_truncated(self, backend):
+        """Exactly limit matches is a complete result, not a truncated page."""
+        limit, offset = 10, 0
+        result = self._search(backend, self._content_lines(limit + offset), limit, offset, "content")
 
         assert result.error is None
         assert len(result.matches) == limit
-        assert result.total_count == fetch_limit
+        assert result.total_count == limit + offset
+        assert result.truncated is False
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_content_extra_hit_is_truncated(self, backend):
+        """One extra fetched hit is the only reliable truncation signal."""
+        limit, offset = 10, 0
+        result = self._search(backend, self._content_lines(limit + offset + 1), limit, offset, "content")
+
+        assert result.error is None
+        assert len(result.matches) == limit
+        assert result.total_count == limit + offset + 1
         assert result.truncated is True
 
     @pytest.mark.parametrize("backend", ["rg", "grep"])
     def test_content_below_cap_is_not_truncated(self, backend):
         """Fewer matches than the cap means the result is complete."""
-        limit, offset = 10, 0
-        payload = self._content_lines(9)
-        ops = self._make_ops(payload)
-
-        if backend == "rg":
-            result = ops._search_with_rg("match", ".", None, limit, offset, "content", 0)
-        else:
-            result = ops._search_with_grep("match", ".", None, limit, offset, "content", 0)
+        result = self._search(backend, self._content_lines(9), 10, 0, "content")
 
         assert result.error is None
         assert len(result.matches) == 9
@@ -969,37 +976,67 @@ class TestSearchTruncatedFlag:
         assert result.truncated is False
 
     @pytest.mark.parametrize("backend", ["rg", "grep"])
-    def test_content_with_offset_is_truncated(self, backend):
-        """A page starting at offset can still hit the cap."""
+    def test_content_with_offset_extra_hit_is_truncated(self, backend):
+        """A page starting at offset is truncated only when a later hit exists."""
         limit, offset = 10, 5
-        fetch_limit = limit + offset
-        payload = self._content_lines(fetch_limit)
-        ops = self._make_ops(payload)
-
-        if backend == "rg":
-            result = ops._search_with_rg("match", ".", None, limit, offset, "content", 0)
-        else:
-            result = ops._search_with_grep("match", ".", None, limit, offset, "content", 0)
+        result = self._search(backend, self._content_lines(limit + offset + 1), limit, offset, "content")
 
         assert result.error is None
         assert len(result.matches) == limit
-        assert result.total_count == fetch_limit
+        assert result.total_count == limit + offset + 1
         assert result.truncated is True
 
     @pytest.mark.parametrize("backend", ["rg", "grep"])
-    def test_files_only_at_cap_is_truncated(self, backend):
-        """Files-only search also reports truncation when the cap is hit."""
-        limit, offset = 10, 0
-        fetch_limit = limit + offset
-        payload = self._file_lines(fetch_limit)
-        ops = self._make_ops(payload)
+    def test_content_with_offset_exact_window_is_not_truncated(self, backend):
+        """offset+limit matches with no extra hit is a complete tail page."""
+        limit, offset = 10, 5
+        result = self._search(backend, self._content_lines(limit + offset), limit, offset, "content")
 
-        if backend == "rg":
-            result = ops._search_with_rg("match", ".", None, limit, offset, "files_only", 0)
-        else:
-            result = ops._search_with_grep("match", ".", None, limit, offset, "files_only", 0)
+        assert result.error is None
+        assert len(result.matches) == limit
+        assert result.total_count == limit + offset
+        assert result.truncated is False
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_files_only_extra_hit_is_truncated(self, backend):
+        """Files-only search reports truncation only when an extra file exists."""
+        limit, offset = 10, 0
+        result = self._search(backend, self._file_lines(limit + offset + 1), limit, offset, "files_only")
 
         assert result.error is None
         assert len(result.files) == limit
-        assert result.total_count == fetch_limit
+        assert result.total_count == limit + offset + 1
         assert result.truncated is True
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_files_only_exactly_at_cap_is_not_truncated(self, backend):
+        """Exactly limit files is a complete listing."""
+        limit, offset = 10, 0
+        result = self._search(backend, self._file_lines(limit + offset), limit, offset, "files_only")
+
+        assert result.error is None
+        assert len(result.files) == limit
+        assert result.total_count == limit + offset
+        assert result.truncated is False
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_files_only_with_offset_extra_hit_is_truncated(self, backend):
+        """Files-only pagination is truncated only when a later file exists."""
+        limit, offset = 10, 5
+        result = self._search(backend, self._file_lines(limit + offset + 1), limit, offset, "files_only")
+
+        assert result.error is None
+        assert len(result.files) == limit
+        assert result.total_count == limit + offset + 1
+        assert result.truncated is True
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_files_only_with_offset_exact_window_is_not_truncated(self, backend):
+        """offset+limit files with no extra hit is a complete tail page."""
+        limit, offset = 10, 5
+        result = self._search(backend, self._file_lines(limit + offset), limit, offset, "files_only")
+
+        assert result.error is None
+        assert len(result.files) == limit
+        assert result.total_count == limit + offset
+        assert result.truncated is False

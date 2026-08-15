@@ -261,10 +261,16 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# The [agui] extra (ag-ui-protocol + fastapi/uvicorn/starlette) is baked in so
+# the AG-UI adapter (`hermes agui` / `hermes-agui`) works in the published
+# image. It is a standalone extra, not part of `[all]`; without it the adapter
+# fails to import in the container (`ModuleNotFoundError: No module named
+# 'ag_ui'`).
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra agui
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

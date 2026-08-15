@@ -33,6 +33,20 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # AG-UI HTTP/SSE adapter (`hermes agui`). Behavioral settings only — the
+    # session token is a secret and lives in .env (HERMES_AGUI_SESSION_TOKEN),
+    # never here. `provider`/`model`/`api_mode`/`base_url` are optional
+    # per-adapter overrides; left blank they defer to the top-level `model`
+    # config + provider resolver (same pattern as the `auxiliary` section).
+    "agui": {
+        "host": "127.0.0.1",
+        "port": 8000,
+        "toolsets": ["hermes-acp"],
+        "provider": "",
+        "model": "",
+        "api_mode": "",
+        "base_url": "",
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -3415,6 +3429,17 @@ DEFAULT_CONFIG = {
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
+    # ── AG-UI adapter (`hermes agui`) ──
+    # Secret, so it belongs in .env. All other AG-UI settings are behavioral
+    # and live under the `agui` section of config.yaml.
+    "HERMES_AGUI_SESSION_TOKEN": {
+        "description": "Session token required when `hermes agui` binds a non-loopback address (an open bind to a terminal-capable agent is RCE). Generate with `openssl rand -hex 32`.",
+        "prompt": "AG-UI session token (only needed for a networked bind)",
+        "url": None,
+        "password": True,
+        "category": "setting",
+        "advanced": True,
+    },
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",

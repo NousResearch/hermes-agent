@@ -4601,7 +4601,27 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
-    
+
+    # AG-UI adapter
+    print()
+    print(color("◆ AG-UI Adapter", Colors.CYAN, Colors.BOLD))
+    agui = config.get("agui", {})
+    if not isinstance(agui, dict):
+        agui = {}
+    agui_toolsets = agui.get("toolsets") or ["hermes-acp"]
+    if isinstance(agui_toolsets, str):
+        agui_toolsets_display = agui_toolsets
+    elif isinstance(agui_toolsets, list):
+        agui_toolsets_display = ", ".join(str(item) for item in agui_toolsets)
+    else:
+        agui_toolsets_display = "hermes-acp"
+    print(f"  Listener:     {agui.get('host', '127.0.0.1')}:{agui.get('port', 8000)}")
+    print(f"  Toolsets:     {agui_toolsets_display}")
+    agui_model = agui.get("model") or "(main Hermes model)"
+    print(f"  Model:        {agui_model}")
+    agui_token = get_env_value("HERMES_AGUI_SESSION_TOKEN")
+    print(f"  Session token:{' configured' if agui_token else ' not configured'}")
+
     # Timezone
     print()
     print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
@@ -4691,6 +4711,7 @@ def show_config():
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
     print(color("  hermes config set <key> <value>", Colors.DIM))
     print(color("  hermes setup           # Run setup wizard", Colors.DIM))
+    print(color("  hermes setup agui      # Configure the AG-UI adapter", Colors.DIM))
     print()
 
 

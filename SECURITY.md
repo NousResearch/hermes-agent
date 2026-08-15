@@ -184,8 +184,9 @@ authorization model, but the rules below apply uniformly.
   (`base.py`, Signal, API server, webhooks, …), with discovery and
   deferred loading via `gateway/platform_registry.py`.
 - **Network-exposed HTTP surfaces.** The API server adapter, the
-  dashboard plugin, the kanban plugin's HTTP endpoints, and any
-  other plugin that binds a listening socket.
+  dashboard plugin, the kanban plugin's HTTP endpoints, the AG-UI adapter
+  (`agui_adapter/`, HTTP/SSE), and any other plugin that binds a listening
+  socket.
 - **Editor / IDE adapters.** The ACP adapter (`acp_adapter/`) and
   equivalent integrations that accept requests from a local client
   process.

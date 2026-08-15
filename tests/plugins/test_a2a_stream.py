@@ -200,11 +200,13 @@ class TestHttpPostSse:
         got = list(tools._http_post_sse("http://p/", {}, {}, 5))
         assert got == [json.loads(body)]
 
-    def test_malformed_data_line_yields_none(self, monkeypatch):
+    def test_malformed_data_line_skipped(self, monkeypatch):
+        # Malformed/hostile frames are skipped silently (skip, do not abort);
+        # the reader never yields None.
         lines = [b": keepalive\n", b"\n", b"data: {not json\n", b"\n",
                  b'data: "ok"\n', b"\n"]
         install_urlopen(monkeypatch, FakeResponse(lines=lines))
-        assert list(tools._http_post_sse("http://p/", {}, {}, 5)) == [None, "ok"]
+        assert list(tools._http_post_sse("http://p/", {}, {}, 5)) == ["ok"]
 
     def test_empty_stream_yields_nothing(self, monkeypatch):
         lines = [b": keepalive\n\n", b": done\n\n"]
@@ -242,12 +244,13 @@ class TestHappyPath:
         assert reply == "all done, no artifact"
         assert state == "TASK_STATE_COMPLETED"
 
-    def test_bare_message_frame_yields_reply_text_and_empty_state(self):
+    def test_bare_message_without_terminal_raises(self):
+        # Stream closing after a bare message frame never delivered a terminal
+        # state — task outcome unknown, so fail loud (review fix 1) instead of
+        # returning partial speech as success.
         frames = [status_update("TASK_STATE_WORKING"), bare_message("hi from peer")]
-        (reply, ctx, state), _ = run_stream(frames)
-        assert reply == "hi from peer"
-        assert ctx == "ctx-abc"
-        assert state == ""   # bare Message carries no task state
+        with pytest.raises(tools._A2aTransportError, match="terminal state"):
+            run_stream(frames)
 
 
 class TestTerminalBreak:
@@ -274,13 +277,16 @@ class TestTerminalBreak:
         assert reply == "EARLY ARTIFACT"
         assert state == "TASK_STATE_COMPLETED"
 
-    def test_multiple_artifacts_last_one_wins(self):
+    def test_multiple_artifacts_accumulated(self):
+        # Multi-artifact / chunked streams keep every part (review fix).
         frames = [artifact_update("first", artifact_id="a-1"),
                   artifact_update("second draft", artifact_id="a-2"),
                   artifact_update("final answer", artifact_id="a-3"),
                   status_update("TASK_STATE_COMPLETED")]
         (reply, _ctx, _state), _ = run_stream(frames)
-        assert reply == "final answer"
+        assert "first" in reply
+        assert "second draft" in reply
+        assert "final answer" in reply
 
 
 class TestErrorAndEdgeCases:
@@ -337,25 +343,22 @@ class TestSendTaskIntegration:
             tools._send_task("researcher", dict(self.PEER), "hi", "")
         assert ei.value.code == 502
 
-    def test_value_error_falls_back_to_message_send(self, monkeypatch):
-        """ValueError from the stream (peer error frame) DOES fall back."""
+    def test_rpc_error_does_not_fallback(self, monkeypatch):
+        """Application-level JSON-RPC error on a healthy stream must NOT fall
+        back to message/send (would resubmit the task) — review fix 4."""
         self._patch_card(monkeypatch, self.STREAMING_CARD)
 
         def bad_stream(url, body, headers, timeout):
             def gen():
                 yield error_frame(-32000, "stream unsupported")
-                yield None
             return gen()
 
         monkeypatch.setattr(tools, "_http_post_sse", bad_stream)
         monkeypatch.setattr(tools, "_http_post_json",
-                            lambda *a, **k: rpc({"message": {
-                                "contextId": "ctx-abc", "role": "ROLE_AGENT",
-                                "parts": [{"text": "via send fallback",
-                                           "mediaType": "text/plain"}]}}))
-        reply, ctx, _state = tools._send_task("researcher", dict(self.PEER), "hi", "")
-        assert reply == "via send fallback"
-        assert ctx == "ctx-abc"
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("must not fall back")))
+        with pytest.raises(ValueError, match="stream unsupported"):
+            tools._send_task("researcher", dict(self.PEER), "hi", "")
 
     def test_streaming_path_chosen_when_card_advertises(self, monkeypatch):
         self._patch_card(monkeypatch, self.STREAMING_CARD)

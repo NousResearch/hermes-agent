@@ -266,12 +266,14 @@ class TurnController {
 
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
+
     // Seal any open reasoning segment so its isLiveReasoning flag drops the
     // moment the reasoning phase ends — the panel must stop tracking the
     // turn's global reasoningActive, not stay "live" for the rest of the turn.
     if (this.reasoningSegmentIndex !== null) {
       this.syncReasoningSegment(false)
     }
+
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 

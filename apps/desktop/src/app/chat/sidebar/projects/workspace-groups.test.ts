@@ -962,7 +962,12 @@ describe('overlayLiveLanes', () => {
           sessionCount: 1,
           groups: [
             lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [session] }),
-            lane({ id: '/www/app/.worktrees/feature', label: 'feature', path: '/www/app/.worktrees/feature', sessions: [] })
+            lane({
+              id: '/www/app/.worktrees/feature',
+              label: 'feature',
+              path: '/www/app/.worktrees/feature',
+              sessions: []
+            })
           ]
         }
       ]

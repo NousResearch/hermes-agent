@@ -45,7 +45,7 @@ const cases: Array<[string, string, string]> = [
   ['DEL-space-DEL + char', '\x7f \x7fô', 'ô'],
   ['trailing text after multi DEL', '\x7f\x7f\x7fươn', 'ươn'],
   ['char then DEL then char fused', 'o\x7fô', 'ô'],
-  ['multiple syllable fused', 'vuon\x7f\x7f\x7fương', 'vương'],
+  ['multiple syllable fused', 'vuon\x7f\x7f\x7fương', 'vương']
   // CR/LF are intentionally NOT split (preserve paste/return semantics), so a
   // text token with an embedded CR is left whole; assert it is NOT split into
   // surviving letters here — that path is covered by the composer's return /

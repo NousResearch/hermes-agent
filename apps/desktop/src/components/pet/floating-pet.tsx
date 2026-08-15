@@ -191,6 +191,7 @@ export function FloatingPet() {
         // re-sent over the WebSocket on every backstop refresh.
         const held = $petInfo.get()
         const knownRevision = held.enabled && held.spritesheetBase64 ? held.spritesheetRevision : undefined
+
         const next = await requestGateway<PetInfo & { spritesheetUnchanged?: boolean }>('pet.info', {
           knownRevision,
           profile: petProfile()
@@ -253,10 +254,7 @@ export function FloatingPet() {
     // Always keep a timer. Event-capable backends use the slow backstop (same
     // contract as cron/sessions in use-background-sync); legacy keeps the
     // historical fast-while-inactive cadence.
-    const timer = window.setInterval(
-      pullIfVisible,
-      petInfoPollIntervalMs(changeEventsAvailable, active)
-    )
+    const timer = window.setInterval(pullIfVisible, petInfoPollIntervalMs(changeEventsAvailable, active))
 
     return () => {
       cancelled = true

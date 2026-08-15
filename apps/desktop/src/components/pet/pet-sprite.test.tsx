@@ -251,12 +251,14 @@ describe('PetSprite RAF scheduling', () => {
 
   it('draws sprite frames with bicubic smoothing for illustration art', () => {
     const raf = installRaf()
+
     const ctxMock = {
       clearRect: vi.fn(),
       drawImage: vi.fn(),
       imageSmoothingEnabled: false,
       imageSmoothingQuality: 'low'
     } as unknown as CanvasRenderingContext2D
+
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctxMock)
 
     render(<PetSprite info={INFO} />)

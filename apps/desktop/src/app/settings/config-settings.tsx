@@ -28,7 +28,14 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
-import { clearsEnabledToolsets, enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
+import {
+  clearsEnabledToolsets,
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  sectionFieldEntries,
+  setNested
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'

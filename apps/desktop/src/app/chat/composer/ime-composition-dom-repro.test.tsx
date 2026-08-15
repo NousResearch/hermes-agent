@@ -154,7 +154,9 @@ describe('composer IME composition — send button visibility (#39614)', () => {
             composingRef.current = true
           }}
           onInput={event => {
-            if (composingRef.current) {return}
+            if (composingRef.current) {
+              return
+            }
             flushEditorToDraft(event.currentTarget)
           }}
           onKeyDown={handleKeyDown}

@@ -4677,6 +4677,7 @@ function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
 
     const client = parsed.protocol === 'https:' ? https : http
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
     const req = client.request(
       parsed,
       {
@@ -6838,6 +6839,7 @@ function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
     }
 
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
     const request = electronNet.request({
       method: 'GET',
       url,
@@ -6845,6 +6847,7 @@ function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     } as any)
+
     let settled = false
 
     const timer = setTimeout(() => {
@@ -6910,6 +6913,7 @@ async function finalizeGatewayDownload(res, statusCode, headers, ctx: any = {}) 
 
   const disposition = headers['content-disposition'] || headers['Content-Disposition']
   const filename = filenameFromContentDisposition(disposition) || ctx.suggested || ctx.fallbackName
+
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: filename,
     title: 'Save File'
@@ -6967,10 +6971,12 @@ async function saveGatewayFile(payload: any = {}) {
   const suggested = String(payload.suggestedName || '').trim()
   const fallbackName = path.basename(filePath) || suggested || 'download'
   const ctx = { suggested, fallbackName }
+
   const requestPath = pathWithGlobalRemoteProfile(`/api/fs/download?path=${encodeURIComponent(filePath)}`, profile, {
     globalRemote: globalRemoteActive(),
     profileRemoteOverride: profileHasRemoteOverride(profile)
   })
+
   const url = `${connection.baseUrl}${requestPath}`
 
   try {
@@ -7002,10 +7008,13 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
       profileRemoteOverride: profileHasRemoteOverride(profile)
     }
   )
+
   const url = `${connection.baseUrl}${requestPath}`
+
   const json = (
     connection.authMode === 'oauth' ? await fetchJsonViaOauthSession(url) : await fetchJson(url, connection.token)
   ) as any
+
   const dataUrl = json?.dataUrl
 
   if (!dataUrl) {
@@ -7014,6 +7023,7 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
 
   const buffer = parseDataUrlToBuffer(dataUrl)
   const filename = ctx.suggested || ctx.fallbackName
+
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: filename,
     title: 'Save File'

@@ -68,11 +68,7 @@ export function useElapsedSeconds(active = true, timerKey?: string, since?: numb
     }
   }, [active, since, timerKey])
 
-  useViewedInterval(
-    () => setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000))),
-    1000,
-    active
-  )
+  useViewedInterval(() => setElapsed(Math.max(0, Math.floor((Date.now() - start.current) / 1000))), 1000, active)
 
   return elapsed
 }

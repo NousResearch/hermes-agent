@@ -319,7 +319,8 @@ function explicitToolArtifactKey(keyPath: string, producerTool: boolean): boolea
     .split('.')
     .filter(segment => segment && !/^\d+$/.test(segment))
     .some(
-      segment => STRONG_TOOL_ARTIFACT_KEY_RE.test(segment) || (producerTool && PRODUCER_TOOL_ARTIFACT_KEY_RE.test(segment))
+      segment =>
+        STRONG_TOOL_ARTIFACT_KEY_RE.test(segment) || (producerTool && PRODUCER_TOOL_ARTIFACT_KEY_RE.test(segment))
     )
 }
 

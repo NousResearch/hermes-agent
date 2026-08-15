@@ -44,10 +44,7 @@ test('keeps URL-dependent image actions when srcURL is available', () => {
   const { actions, calls } = createActions()
   const url = 'https://example.com/image.png'
 
-  const items = imageContextMenuItems(
-    { mediaType: 'image', hasImageContents: true, srcURL: url, x: 5, y: 8 },
-    actions
-  )
+  const items = imageContextMenuItems({ mediaType: 'image', hasImageContents: true, srcURL: url, x: 5, y: 8 }, actions)
 
   assert.deepEqual(
     items.map(item => item.label),

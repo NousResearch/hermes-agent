@@ -13,10 +13,7 @@ export const PET_BACKSTOP_MS = 15_000
 /** Cold-start retries after the first connect pull (fail-open recovery). */
 export const PET_STARTUP_RETRY_MS = [1_000, 3_000, 8_000] as const
 
-export function petInfoPollIntervalMs(
-  changeEventsAvailable: boolean,
-  active: boolean
-): number {
+export function petInfoPollIntervalMs(changeEventsAvailable: boolean, active: boolean): number {
   if (changeEventsAvailable) {
     return PET_BACKSTOP_MS
   }

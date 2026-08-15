@@ -572,10 +572,7 @@ export function overlayRepoLanes(
         (placed.isMain && placedKey
           ? lanes.find(
               g =>
-                g.isMain &&
-                pathKey(g.path) === placedKey &&
-                !g.id.includes('::branch::') &&
-                !g.id.includes('::kanban')
+                g.isMain && pathKey(g.path) === placedKey && !g.id.includes('::branch::') && !g.id.includes('::kanban')
             )
           : undefined) ??
         (!placed.isMain && placedKey ? lanes.find(g => pathKey(g.path) === placedKey) : undefined)

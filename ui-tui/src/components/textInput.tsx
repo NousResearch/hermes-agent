@@ -944,9 +944,11 @@ export function TextInput({
         // guard. Use a short real-time window that spans a recompose burst;
         // normal typing re-enables fast-echo via the append path below.
         inkRepaintedRef.current = true
+
         if (inkRepaintResetTimer.current) {
           clearTimeout(inkRepaintResetTimer.current)
         }
+
         inkRepaintResetTimer.current = setTimeout(() => {
           inkRepaintResetTimer.current = null
           inkRepaintedRef.current = false
@@ -1446,10 +1448,12 @@ export function TextInput({
               // terminal baseline is synced again — clear any pending Ink-repaint
               // fast-echo suppression so normal backspace fast-echo resumes.
               inkRepaintedRef.current = false
+
               if (inkRepaintResetTimer.current) {
                 clearTimeout(inkRepaintResetTimer.current)
                 inkRepaintResetTimer.current = null
               }
+
               // ASCII-printable text advances the physical cursor by exactly
               // text.length cells (canFastAppendShape rejects non-ASCII,
               // wide chars, newlines). Notify Ink so the cached displayCursor

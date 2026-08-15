@@ -65,10 +65,7 @@ describe('session row details', () => {
 
   it('omits zero counts from metadata so the sidebar stays clean', () => {
     expect(
-      sessionRowDetails(
-        session({ git_branch: null, message_count: 0, model: null, tool_call_count: 0 }),
-        en
-      )
+      sessionRowDetails(session({ git_branch: null, message_count: 0, model: null, tool_call_count: 0 }), en)
     ).toEqual({ metadata: '', preview: 'Explore Gmail-like density tiers for session rows.' })
   })
 
@@ -99,10 +96,7 @@ describe('session row details', () => {
     }
 
     expect(
-      sessionRowDetails(
-        session({ git_branch: null, message_count: 3, model: null, tool_call_count: 5 }),
-        ja
-      )
+      sessionRowDetails(session({ git_branch: null, message_count: 3, model: null, tool_call_count: 5 }), ja)
     ).toEqual({
       metadata: '3 件のメッセージ · 5 件のツール呼び出し',
       preview: 'Explore Gmail-like density tiers for session rows.'

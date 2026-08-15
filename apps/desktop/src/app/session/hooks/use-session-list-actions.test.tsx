@@ -177,11 +177,7 @@ describe('refreshSessions identity + loading hygiene', () => {
     // both honor the tombstone, or a deleted platform thread resurrects.
     removed.ids = new Set(['tg-2'])
     listSidebarSessions.mockResolvedValue(
-      sidebar(
-        { sessions: [] },
-        [],
-        [row('tg-1', { source: 'telegram' }), row('tg-2', { source: 'telegram' })]
-      )
+      sidebar({ sessions: [] }, [], [row('tg-1', { source: 'telegram' }), row('tg-2', { source: 'telegram' })])
     )
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
@@ -194,7 +190,11 @@ describe('refreshSessions identity + loading hygiene', () => {
 
     // Per-platform pager: backend page still lists the doomed row.
     listAllProfileSessions.mockResolvedValue({
-      sessions: [row('tg-1', { source: 'telegram' }), row('tg-2', { source: 'telegram' }), row('tg-3', { source: 'telegram' })],
+      sessions: [
+        row('tg-1', { source: 'telegram' }),
+        row('tg-2', { source: 'telegram' }),
+        row('tg-3', { source: 'telegram' })
+      ],
       total: 3
     })
 

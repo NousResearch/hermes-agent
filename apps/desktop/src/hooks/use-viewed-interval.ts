@@ -21,12 +21,14 @@ export function useViewedInterval(callback: () => void, intervalMs: number, enab
     }
 
     let intervalId: null | number = null
+
     const stop = () => {
       if (intervalId !== null) {
         window.clearInterval(intervalId)
         intervalId = null
       }
     }
+
     const sync = () => {
       const viewed = document.visibilityState === 'visible' && document.hasFocus()
 

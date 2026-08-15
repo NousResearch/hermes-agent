@@ -116,6 +116,7 @@ test('merge preserves fields the editor does not carry (org, ssh extras)', () =>
     org: 'nous',
     url: 'https://a.cloud'
   }
+
   const renamed = mergeConnectionInput({ id: 'c', kind: 'cloud', label: 'Renamed', url: 'https://a.cloud' }, cloud)
 
   assert.equal(renamed.org, 'nous')

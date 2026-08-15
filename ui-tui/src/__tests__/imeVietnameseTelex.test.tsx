@@ -145,9 +145,27 @@ describe('Vietnamese Telex IME recomposition', () => {
     // Captured byte stream for Telex "vuonwg syx hanhj": each syllable injects a
     // U+202F marker, erases, and re-emits. Verified across read timings.
     const reads = [
-      'v', 'u', 'o', NNBSP, '\x7f\x7f', '\x7f\u01B0\u01A1', 'n', 'g',
-      ' ', 's', 'y', NNBSP, '\x7f', '\x7f\u1EF9',
-      ' ', 'h', 'a', 'n', 'h', NNBSP, '\x7f\x7f\x7f\x7f\u1EA1nh'
+      'v',
+      'u',
+      'o',
+      NNBSP,
+      '\x7f\x7f',
+      '\x7f\u01B0\u01A1',
+      'n',
+      'g',
+      ' ',
+      's',
+      'y',
+      NNBSP,
+      '\x7f',
+      '\x7f\u1EF9',
+      ' ',
+      'h',
+      'a',
+      'n',
+      'h',
+      NNBSP,
+      '\x7f\x7f\x7f\x7f\u1EA1nh'
     ]
 
     for (const gapMs of [0, 17, 25]) {

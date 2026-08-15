@@ -72,6 +72,29 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
     return None
 
 
+def _load_durable_truncation_history(session: dict, fallback_sid: str = ""):
+    """Load the durable live-replay transcript, or None when it cannot be proven safe."""
+    session_key = str(session.get("session_key") or fallback_sid or "")
+    if not session_key:
+        return []
+    try:
+        with _session_db(session) as db:
+            get_conv = getattr(db, "get_messages_as_conversation", None)
+            if not callable(get_conv):
+                return None
+            history = get_conv(
+                session_key, repair_alternation=True, include_row_ids=True
+            )
+    except Exception:
+        logger.debug(
+            "prompt.submit: failed loading durable history for session %s",
+            session_key,
+            exc_info=True,
+        )
+        return None
+    return history if isinstance(history, list) else None
+
+
 def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     """Resolve ``truncate_before_row_id`` to ``(user_ordinal, history_index)``.
 
@@ -85,35 +108,8 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     if hit is not None:
         return hit
 
-    session_key = str(session.get("session_key") or "")
-    if not session_key:
-        return None
-
-    try:
-        db = _get_db()
-    except Exception:
-        db = None
-    if db is None:
-        return None
-
-    get_conv = getattr(db, "get_messages_as_conversation", None)
-    if not callable(get_conv):
-        return None
-
-    try:
-        db_history = get_conv(
-            session_key, repair_alternation=True, include_row_ids=True
-        )
-    except Exception:
-        logger.debug(
-            "prompt.submit: failed loading DB history for row_id %s session %s",
-            target_row_id,
-            session_key,
-            exc_info=True,
-        )
-        return None
-
-    if not isinstance(db_history, list):
+    db_history = _load_durable_truncation_history(session)
+    if db_history is None:
         return None
 
     # Heal missing in-memory stamps when the live list still lines up 1:1 with
@@ -495,12 +491,26 @@ def _(rid, params: dict) -> dict:
                 if err is not None:
                     return err
             else:
-                # Once active user turns carry durable row ids, an ordinal-only
-                # target is an unsafe downgrade: renderer and gateway ordinals
-                # can diverge after compaction/rebuild while the row id remains
-                # stable. Require the client to prove which durable turn it
-                # means instead of persisting a potentially mis-aimed cut.
-                if any(_message_row_id(history[h_idx]) is not None for h_idx in user_indices):
+                if client_ordinal < 0 or client_ordinal >= len(user_indices):
+                    return _err(
+                        rid, 4018, "target user message is no longer in session history"
+                    )
+                # Durability is a state.db property, not an optional annotation
+                # on the live copy. Resume/reload paths historically omitted
+                # _row_id stamps, which made an ordinal-only request look safe
+                # even though it could destructively replace a long transcript.
+                # If the durable state cannot be read, fail closed too: absence
+                # of proof is not proof that this is an ephemeral conversation.
+                has_stamped_user = any(
+                    _message_row_id(history[h_idx]) is not None
+                    for h_idx in user_indices
+                )
+                durable_history = (
+                    []
+                    if has_stamped_user
+                    else _load_durable_truncation_history(session, sid)
+                )
+                if has_stamped_user or durable_history is None or durable_history:
                     logger.warning(
                         "prompt.submit: REFUSED ordinal-only truncation of durable "
                         "session %s (ordinal=%d); truncate_before_row_id required",
@@ -1436,6 +1446,7 @@ def register(server) -> None:
         _message_row_id,
         _mem_db_pair_agrees,
         _find_user_turn_by_row_id,
+        _load_durable_truncation_history,
         _resolve_truncate_row_id,
         _coerce_truncate_int,
         _reconcile_client_ordinal,

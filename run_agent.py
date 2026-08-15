@@ -8539,6 +8539,7 @@ class AIAgent:
                     conversation_history = _turn_db.get_messages_as_conversation(
                         self.session_id,
                         repair_alternation=True,
+                        include_row_ids=True,
                     )
 
                 # Long model/tool/compression turns outlive a fixed TTL. Refresh

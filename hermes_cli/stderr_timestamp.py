@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import signal
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Sequence, TextIO
+
+from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 
 
 _TIMESTAMP_PREFIX = re.compile(
@@ -66,6 +70,28 @@ def _restore_signal_handlers(previous: dict[int, object]) -> None:
         signal.signal(signum, handler)
 
 
+def _child_env_for_command(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Preserve launchd supervision across this one-hop wrapper.
+
+    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on its *direct*
+    child. This module is that child when the generated plist wraps
+    ``gateway run`` for timestamped stderr. The grandchild then sees
+    ``XPC_SERVICE_NAME=0`` and ``_guard_supervised_gateway_conflict``
+    treats the service's own spawn as a foreign supervised gateway
+    (#86893). Forward the existing opt-in marker so the grandchild
+    still recognizes itself as the supervised process.
+    """
+    env = os.environ if environ is None else environ
+    xpc_service = str(env.get("XPC_SERVICE_NAME", "")).strip()
+    if not xpc_service or xpc_service == "0":
+        return None
+    child_env = dict(env)
+    child_env[EXTERNAL_GATEWAY_SUPERVISOR_ENV] = "1"
+    return child_env
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a command and timestamp each stderr line into a log file."
@@ -85,7 +111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_path: Path = args.error_log
 
     try:
-        proc = subprocess.Popen(args.command, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            args.command,
+            stderr=subprocess.PIPE,
+            env=_child_env_for_command(),
+        )
     except OSError as exc:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8", buffering=1) as log_file:

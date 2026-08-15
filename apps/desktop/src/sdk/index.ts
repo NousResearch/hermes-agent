@@ -23,7 +23,7 @@ import { atom, type ReadableAtom } from 'nanostores'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
-import { getLogs, getStatus } from '@/hermes'
+import { getLogs, getStatus, type HermesGateway } from '@/hermes'
 import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
@@ -212,7 +212,14 @@ export const host = {
     }
 
     return gateway.request<T>(method, params)
-  }
+  },
+
+  /** The LIVE gateway instance for the active profile (null before the first
+   *  socket opens). Most plugins want `host.request`; this exists for SDK
+   *  components that take a `HermesGateway` prop directly (e.g. `McpTab`),
+   *  which need the instance, not just a JSON-RPC door. Re-read per use — the
+   *  active instance changes on a profile swap. */
+  getGateway: (): HermesGateway | null => $gateway.get()
 }
 
 // -- react bridge -------------------------------------------------------------
@@ -226,6 +233,11 @@ export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddlewar
 
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+/** THE full per-toolset config panel core Settings renders — provider picker,
+ *  env vars / API keys, model catalog picker, and post-setup runners. Route-
+ *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
+ *  `toolset`, optional `onConfiguredChange`, and an optional `profile`. */
+export { ToolsetConfigPanel } from '@/app/settings/toolset-config-panel'
 /** THE model catalog menu — the same searchable, provider-grouped, family-
  *  collapsing picker the chat composer uses, including the per-row
  *  thinking/effort/fast submenu. Drive it with a `ModelMenuController`: the
@@ -241,6 +253,11 @@ export {
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
+/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
+ *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
+ *  renders anywhere (a plugin dialog); pass a live `gateway` (see
+ *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
+export { McpTab } from '@/app/skills/mcp-tab'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above
  *  it — it takes no width from any zone, has no tab, and can't be docked.
@@ -319,6 +336,9 @@ export type {
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 export type { Contribution } from '@/contrib/types'
+/** The live gateway instance type — for typing the `gateway` prop `McpTab`
+ *  takes; obtain the instance from `host.getGateway()`. */
+export type { HermesGateway } from '@/hermes'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
  *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
 export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'

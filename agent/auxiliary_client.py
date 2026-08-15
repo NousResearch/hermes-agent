@@ -2218,6 +2218,9 @@ class _BedrockCompletionsAdapter:
             # allowed output, matching the no-cap-by-default policy every
             # other aux wire already follows (#10809: vision descriptions
             # stayed capped at the shim's old hardcoded 4096 on Bedrock).
+            # Truthiness (not `is None`) is deliberate — it matches the
+            # sibling Anthropic shim's reading of max_tokens above, so a
+            # nonsense explicit 0 is treated as "no cap" on both wires.
             max_tokens=int(max_tokens) if max_tokens else None,
             temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"),

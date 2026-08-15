@@ -423,6 +423,27 @@ class TestBuildConverseKwargs:
         )
         assert "inferenceConfig" not in kwargs
 
+    def test_call_converse_stream_omits_cap_for_none(self):
+        """The streaming entry point funnels through the same builder — pin
+        that max_tokens=None omits the cap there too."""
+        from unittest.mock import MagicMock, patch as mock_patch
+        from agent.bedrock_adapter import call_converse_stream
+        boto3_client = MagicMock()
+        boto3_client.converse_stream.return_value = {"stream": []}
+        with mock_patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=boto3_client,
+        ):
+            call_converse_stream(
+                region="us-east-1",
+                model="test-model",
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=None,
+                temperature=0.2,
+            )
+        wire_kwargs = boto3_client.converse_stream.call_args.kwargs
+        assert "maxTokens" not in wire_kwargs.get("inferenceConfig", {})
+
 
 
 

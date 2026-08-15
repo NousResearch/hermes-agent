@@ -52,9 +52,13 @@ class TestToolsCompletionsReadonlyConfig:
             return {}
 
         # The completer imports the loader inside the function, so patch the
-        # source module.
+        # source module. Portable-MCP lookup is stubbed because it triggers
+        # one-time plugin discovery (which legitimately calls load_config
+        # during process init) — this test asserts on the completer's own
+        # per-keystroke reads, not discovery's one-off startup reads.
         with patch("hermes_cli.config.load_config", counting_deepcopy), \
              patch("hermes_cli.config.load_config_readonly", counting_readonly), \
+             patch("hermes_cli.plugins.get_portable_mcp_server_names_nowait", lambda: set()), \
              patch("hermes_cli.tools_config._get_plugin_toolset_keys", lambda: set()), \
              patch("hermes_cli.tools_config._homeassistant_credentials_present", lambda: False), \
              patch("hermes_cli.tools_config._xai_credentials_present", lambda: False):

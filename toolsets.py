@@ -870,6 +870,10 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
         except Exception:
             registry_id = 0
             generation = 0
+        # Entries from previous registry generations are never hit again;
+        # keep the memo bounded across long sessions with many MCP refreshes.
+        if len(_resolve_toolset_memo) >= 256:
+            _resolve_toolset_memo.clear()
         _resolve_toolset_memo[(name, include_registry, registry_id, generation)] = list(result)
     return result
 

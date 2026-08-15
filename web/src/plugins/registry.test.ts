@@ -14,7 +14,7 @@ import { exposePluginSDK } from "./registry";
 describe("plugin SDK dialog/toast surface", () => {
   beforeEach(() => {
     // Reset window between tests so exposePluginSDK() writes fresh.
-    (globalThis as any).window = {
+    (globalThis as unknown as { window: Record<string, unknown> }).window = {
       __HERMES_PLUGINS__: undefined,
       __HERMES_PLUGIN_SDK__: undefined,
     };
@@ -22,7 +22,7 @@ describe("plugin SDK dialog/toast surface", () => {
 
   it("exposes Dialog + subcomponents on components", () => {
     exposePluginSDK();
-    const sdk = (globalThis as any).window.__HERMES_PLUGIN_SDK__;
+    const sdk = (globalThis as unknown as { window: { __HERMES_PLUGIN_SDK__: { components: Record<string, unknown>; hooks: Record<string, unknown> } } }).window.__HERMES_PLUGIN_SDK__;
     expect(sdk.components.Dialog).toBeDefined();
     expect(sdk.components.DialogContent).toBeDefined();
     expect(sdk.components.DialogHeader).toBeDefined();
@@ -36,7 +36,7 @@ describe("plugin SDK dialog/toast surface", () => {
 
   it("exposes useToast and useConfirmDelete on hooks", () => {
     exposePluginSDK();
-    const sdk = (globalThis as any).window.__HERMES_PLUGIN_SDK__;
+    const sdk = (globalThis as unknown as { window: { __HERMES_PLUGIN_SDK__: { components: Record<string, unknown>; hooks: Record<string, unknown> } } }).window.__HERMES_PLUGIN_SDK__;
     expect(typeof sdk.hooks.useToast).toBe("function");
     expect(typeof sdk.hooks.useConfirmDelete).toBe("function");
     // Original React hooks still present (no accidental removal).

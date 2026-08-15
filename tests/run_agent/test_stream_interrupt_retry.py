@@ -272,6 +272,21 @@ class TestStreamInterruptJoinsWorkerBeforeRaise:
 
         monkeypatch.setattr(threading.Thread, "join", spy_join)
 
+        # The join is gated on Relay managed execution being live (it is
+        # pointless — and delays interrupt detection — when no Relay
+        # consumers are registered). Simulate a live runtime.
+        from agent import relay_runtime as rr
+
+        monkeypatch.setattr(
+            rr,
+            "get_runtime",
+            lambda *a, **k: SimpleNamespace(
+                managed_execution_enabled=lambda: True,
+                get_session=lambda *a2, **k2: None,
+                ensure_session=lambda *a2, **k2: None,
+            ),
+        )
+
         class HangUntilClosedStream:
             response = SimpleNamespace(headers={})
 

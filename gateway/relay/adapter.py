@@ -95,6 +95,9 @@ class RelayAdapter(BasePlatformAdapter):
         # feedback off SendResult — see send()). Consumed by the gateway's
         # semantic thread-rename lane; bounded like the sibling caches.
         self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
+        # Bounded FIFO seen-set for inbound replay dedupe (finding #3);
+        # dict preserves insertion order, giving cheap oldest-first eviction.
+        self._seen_inbound: Dict[str, None] = {}
         # chat_id -> event fired when the entry above lands, so a consumer that
         # arrives before the send can wait for it instead of polling. See
         # wait_for_auto_thread_info.
@@ -361,6 +364,24 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        # Inbound replay dedupe (live-canary finding #3, Alice staging): the
+        # relay leg is at-least-once — on WS re-handshake the connector
+        # replays its durable per-instance buffer, and a long multi-tool turn
+        # (60-100s) straddling a quiet socket drop gets its ORIGINAL inbound
+        # replayed after the turn completes, re-running the whole turn (user
+        # saw the final answer 2-5x). Platform message identity (chat_id +
+        # message_id/ts) is stable across replays, so a bounded seen-set
+        # drops them. Consumer-side idempotency; no wire change.
+        dedupe_key = self._inbound_dedupe_key(event)
+        if dedupe_key is not None:
+            if dedupe_key in self._seen_inbound:
+                logger.info(
+                    "relay inbound dropped as replay (dedupe key=%s)", dedupe_key
+                )
+                return
+            self._seen_inbound[dedupe_key] = None
+            while len(self._seen_inbound) > self._SEEN_INBOUND_MAX:
+                self._seen_inbound.pop(next(iter(self._seen_inbound)))
         self._capture_scope(event)
         self._stamp_slack_session_thread(event)
         # Phase 3: a structured prompt answer resolves its waiting primitive
@@ -371,6 +392,22 @@ class RelayAdapter(BasePlatformAdapter):
             return
         await self._localize_inbound_media(event)
         await self.handle_message(event)
+
+    _SEEN_INBOUND_MAX = 512
+
+    def _inbound_dedupe_key(self, event) -> Optional[str]:
+        """Stable replay identity: (chat, platform message id).
+
+        Returns None when the event carries no platform message id (synthetic
+        events, some prompt responses) — those never dedupe, fail-open by
+        design: dropping a real user message is strictly worse than rerunning
+        one, so only dedupe when identity is certain.
+        """
+        message_id = getattr(event, "message_id", None)
+        chat_id = getattr(event, "chat_id", None)
+        if not message_id or not chat_id:
+            return None
+        return f"{chat_id}:{message_id}"
 
     def _relay_slack_extra(self) -> Dict[str, Any]:
         """The Slack-behavior subset of the RELAY platform config.

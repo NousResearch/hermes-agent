@@ -36,13 +36,20 @@ interface InlineTextSegment {
   text: string
 }
 
-type TopSegment = FenceSegment | InlineSegment
+interface QuoteSegment {
+  kind: 'quote'
+  text: string
+}
+
+type TopSegment = FenceSegment | InlineSegment | QuoteSegment
 type InlineNode = InlineCodeSegment | InlineTextSegment
 
-const FENCE_RE = /```([^\n`]*)\n([\s\S]*?)```/g
+const FENCE_RE = /^[ \t]{0,3}```([^\n`]*)\n([\s\S]*?)^[ \t]{0,3}```[^\S\n]*(?=\n|$)/gm
 
 // Greedy backtick run length so ``code with `backticks` inside`` works.
 const INLINE_CODE_RE = /(`+)([^`\n][\s\S]*?)\1/g
+// A Markdown blockquote line: up to three spaces, `>`, one optional space.
+const QUOTE_LINE_RE = /^[ \t]{0,3}>[ ]?/
 
 // A directive's value is BACKTICK-QUOTED whenever it needs to be (`@url:`
 // always, and any path with a space), so the inline-code scanner would claim
@@ -66,6 +73,46 @@ function inlineCodeOutsideDirectives(text: string): RegExpMatchArray[] {
   })
 }
 
+/** Group runs of prefixed lines, then parse their unquoted contents. */
+function splitQuotes(text: string): TopSegment[] {
+  if (!text.includes('>')) {
+    return text ? [{ kind: 'inline', text }] : []
+  }
+
+  const segments: TopSegment[] = []
+  let inline: string[] = []
+  let quoted: string[] = []
+
+  const flushInline = () => {
+    if (inline.length > 0) {
+      segments.push({ kind: 'inline', text: inline.join('\n') })
+      inline = []
+    }
+  }
+
+  const flushQuote = () => {
+    if (quoted.length > 0) {
+      segments.push({ kind: 'quote', text: quoted.join('\n') })
+      quoted = []
+    }
+  }
+
+  for (const line of text.split('\n')) {
+    if (QUOTE_LINE_RE.test(line)) {
+      flushInline()
+      quoted.push(line.replace(QUOTE_LINE_RE, ''))
+    } else {
+      flushQuote()
+      inline.push(line)
+    }
+  }
+
+  flushQuote()
+  flushInline()
+
+  return segments
+}
+
 function splitFences(text: string): TopSegment[] {
   const segments: TopSegment[] = []
   let cursor = 0
@@ -74,7 +121,7 @@ function splitFences(text: string): TopSegment[] {
     const start = match.index ?? 0
 
     if (start > cursor) {
-      segments.push({ kind: 'inline', text: text.slice(cursor, start) })
+      segments.push(...splitQuotes(text.slice(cursor, start)))
     }
 
     segments.push({
@@ -86,7 +133,7 @@ function splitFences(text: string): TopSegment[] {
   }
 
   if (cursor < text.length) {
-    segments.push({ kind: 'inline', text: text.slice(cursor) })
+    segments.push(...splitQuotes(text.slice(cursor)))
   }
 
   return segments
@@ -123,7 +170,7 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
   const top = useMemo(() => splitFences(text), [text])
 
   return (
-    <span className={cn('block', className)} data-slot="aui_user-message-text">
+    <div className={cn('block', className)} data-slot="aui_user-message-text">
       {top.map((segment, segmentIndex) => {
         if (segment.kind === 'fence') {
           return (
@@ -137,15 +184,38 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
           )
         }
 
+        if (segment.kind === 'quote') {
+          return (
+            <blockquote
+              className="my-1.5 border-s-2 border-(--ui-stroke-tertiary) ps-2.5 italic text-muted-foreground/85"
+              data-slot="aui_user-quote"
+              dir="auto"
+              key={`quote-${segmentIndex}`}
+            >
+              <UserMessageText text={segment.text} />
+            </blockquote>
+          )
+        }
+
         return (
           <Fragment key={`inline-${segmentIndex}`}>
             <InlineSegmentView text={segment.text} />
           </Fragment>
         )
       })}
-    </span>
+    </div>
   )
 }
+
+const FenceView: FC<{ segment: FenceSegment }> = ({ segment }) => (
+  <pre
+    className="my-1.5 max-w-full overflow-x-auto rounded-md border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,currentColor_5%,transparent)] px-2.5 py-2 font-mono text-[0.86em] leading-snug not-italic"
+    data-slot="aui_user-fence"
+    dir="ltr"
+  >
+    <code className="block whitespace-pre">{segment.code}</code>
+  </pre>
+)
 
 const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
   const nodes = useMemo(() => splitInlineCode(text), [text])
@@ -161,6 +231,7 @@ const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
           <code
             className="mx-px rounded bg-[color-mix(in_srgb,currentColor_8%,transparent)] px-1 py-px font-mono text-[0.92em]"
             data-slot="aui_user-inline-code"
+            dir="ltr"
             key={`code-${nodeIndex}`}
           >
             {node.code}

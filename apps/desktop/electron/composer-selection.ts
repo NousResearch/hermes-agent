@@ -2,6 +2,14 @@ interface ComposerSelectionContext {
   canCompose: boolean
   isEditable: boolean
   selectionText: string
+  x: number
+  y: number
+}
+
+export interface ComposerSelectionPayload {
+  text: string
+  x: number
+  y: number
 }
 
 export interface ComposerSelectionMenuItem {
@@ -16,7 +24,7 @@ export interface ComposerSelectionMenuItem {
  */
 export function createComposerSelectionMenuItem(
   context: ComposerSelectionContext,
-  sendSelection: (text: string) => void,
+  sendSelection: (payload: ComposerSelectionPayload) => void,
   reportError: (message: string) => void
 ): ComposerSelectionMenuItem | null {
   if (!context.canCompose || context.isEditable || !context.selectionText.trim()) {
@@ -27,7 +35,7 @@ export function createComposerSelectionMenuItem(
     label: 'Send Selection to Composer',
     click: () => {
       try {
-        sendSelection(context.selectionText)
+        sendSelection({ text: context.selectionText, x: context.x, y: context.y })
       } catch (error) {
         reportError(error instanceof Error ? error.message : String(error))
       }

@@ -8,6 +8,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { isPastedContentPath } from '@/app/chat/composer/large-paste'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { type I18nContextValue, useI18n } from '@/i18n'
+import { composerQuoteLabel } from '@/lib/composer-quote'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { ExternalLink, openLink } from '@/lib/external-link'
@@ -306,6 +307,14 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
 export function refChipLabel(type: string, id: string): string {
   if (type === 'terminal') {
     return id || 'terminal'
+  }
+
+  if (type === 'quote') {
+    return composerQuoteLabel(id) || 'quote'
+  }
+
+  if (type === 'quote') {
+    return composerQuoteLabel(id) || 'quote'
   }
 
   if (type === 'session') {

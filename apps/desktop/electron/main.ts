@@ -12649,7 +12649,11 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   log: rememberLog,
   preloadPath: PRELOAD_PATH,
   rendererIndex: resolveRendererIndex,
-  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
+  wireWindow: window =>
+    wireCommonWindowHandlers(window, {
+      ...zoomWiringForWindowKind('wakeIndicator'),
+      composerEnabled: false
+    })
 })
 
 registerWindowSizing({ mainWindow: (): BrowserWindow | null => mainWindow })

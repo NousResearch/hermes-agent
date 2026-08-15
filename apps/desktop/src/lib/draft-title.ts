@@ -1,5 +1,7 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 
+import { composerQuoteLabelsIn } from './composer-quote'
+
 /** Matches `agent/title_generator.py`'s MAX_DERIVED_TITLE_CHARS, so a draft
  *  doesn't visibly reflow the moment the backend's derived title replaces it. */
 const MAX_DRAFT_TITLE_CHARS = 48
@@ -16,8 +18,10 @@ const MAX_DRAFT_TITLE_CHARS = 48
  * rather than showing a title that says less than the placeholder.
  */
 export function deriveDraftTitle(text: string): string {
+  const titleText = composerQuoteLabelsIn(text)
+
   const line =
-    text
+    titleText
       .split('\n')
       .find(candidate => candidate.trim())
       ?.trim() ?? ''

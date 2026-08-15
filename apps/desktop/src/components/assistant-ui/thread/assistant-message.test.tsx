@@ -9,8 +9,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
 import { en } from '@/i18n/en'
 import type { ErrorCardCopy } from '@/i18n/types'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { $activeSessionId } from '@/store/session'
@@ -185,9 +188,11 @@ function Harness({
   onCancel,
   onRestoreToMessage,
   onReload,
+  target = 'main',
   isRunning = false,
   isDisabled = false
 }: {
+  target?: string
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => void
@@ -205,9 +210,11 @@ function Harness({
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread onBranchInNewChat={onBranchInNewChat} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
-    </AssistantRuntimeProvider>
+    <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread onBranchInNewChat={onBranchInNewChat} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
+      </AssistantRuntimeProvider>
+    </ComposerScopeProvider>
   )
 }
 
@@ -706,5 +713,35 @@ describe('message timeline timestamps', () => {
     )
 
     expect(stamps.filter(stamp => stamp === formatTimelineRange(startedAt, completedAt))).toHaveLength(1)
+  })
+})
+
+describe('message Reply composer routing', () => {
+  it('routes both message Reply actions to the composer that owns the thread', async () => {
+    const inserts: Array<{ mode: string; target: string; text: string }> = []
+    const unsubscribe = onComposerInsertRequest(detail => inserts.push(detail))
+
+    render(<Harness target="tile:stored-42" />)
+
+    const replyButtons = await screen.findAllByRole('button', { name: 'Reply' })
+
+    expect(replyButtons).toHaveLength(2)
+
+    for (const button of replyButtons) {
+      expect(button.getAttribute('data-size')).toBe('icon-xs')
+      expect(button.getAttribute('title')).toBeNull()
+      expect(button.querySelector('svg')).not.toBeNull()
+    }
+
+    fireEvent.click(replyButtons[0]!)
+    fireEvent.click(replyButtons[1]!)
+
+    await waitFor(() => expect(inserts).toHaveLength(2))
+    expect(inserts.map(({ mode, target, text }) => ({ mode, target, text: expandComposerQuotes(text) }))).toEqual([
+      { mode: 'block', target: 'tile:stored-42', text: '> question one' },
+      { mode: 'block', target: 'tile:stored-42', text: '> done' }
+    ])
+
+    unsubscribe()
   })
 })

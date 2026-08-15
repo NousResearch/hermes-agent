@@ -74,6 +74,40 @@ hermes acp --version
 hermes acp --check
 ```
 
+### Remote workspaces over SSH
+
+An ACP editor session can use an SSH-hosted workspace without changing the
+profile-wide terminal backend. Configure the route on the Hermes host:
+
+```yaml
+terminal:
+  backend: local
+
+acp:
+  workspace:
+    backend: ssh
+    host: workspace.example
+    user: developer
+    port: 22
+    key: ~/.ssh/id_ed25519  # optional
+    sync: false
+```
+
+The editor-provided working directory becomes the remote working directory for
+that ACP session. Terminal, file, and code-execution tools share the same SSH
+environment; ordinary Hermes sessions continue to use `terminal.backend`.
+
+The route is persisted with each ACP session, so reconnecting or resuming the
+session restores the same workspace before tools initialize. Delegated child
+tasks inherit the same route. Invalid non-empty routes fail closed instead of
+falling back to local execution. This does not create another Hermes profile or
+copy its session database.
+
+`sync` defaults to `false` for ACP workspace routes. With synchronization
+disabled, Hermes operates on the existing remote workspace in place and does
+not upload profile files. Configure passwordless SSH first; `key` is resolved
+on the Hermes host.
+
 ### Browser tools (optional)
 
 Browser tools (`browser_navigate`, `browser_click`, etc.) depend on the

@@ -302,6 +302,12 @@ DEFAULT_CONFIG = {
         "reasoning_overrides": {},
     },
 
+    "acp": {
+        # Optional task-scoped workspace route for ACP editor sessions. Empty
+        # keeps the profile-wide terminal backend unchanged.
+        "workspace": {},
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

@@ -21,6 +21,7 @@ Usage:
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -139,7 +140,7 @@ def _week_review(profile: str, since: int) -> dict:
         "skills_events": skills_related,
         "top_event_types": sorted(counts.items(), key=lambda kv: -kv[1])[:5],
         "files": files,
-        "recommendation": _assess_activity(total_activity),
+        "recommendation": _assess_activity(total_activity, profile),
     }
 
 
@@ -164,7 +165,7 @@ def _month_review(profile: str, since: int) -> dict:
         "always_skills_count": len(skills.get("always_skills") or []),
         "auto_promotions": auto_promotions,
         "files": files,
-        "recommendation": _assess_activity(total_activity),
+        "recommendation": _assess_activity(total_activity, profile),
     }
 
 
@@ -203,13 +204,46 @@ def _quarter_review(profile: str, since: int) -> dict:
     }
 
 
-def _assess_activity(total: int) -> str:
+def _assess_activity(total: int, profile: str = "") -> str:
+    # Gateway/Tier-1 override: profiles that run an active systemd gateway or
+    # are listed Tier 1 in the registry are NEVER dormant, even with zero
+    # ledger events (they work through the gateway ticker, not the ledger).
+    if profile and _is_active_gateway(profile):
+        return "active - gateway lead (tier-1 override)"
     if total >= 100:
         return "active - profile is in regular use"
     elif total >= 10:
         return "low activity - monitor for obsolescence"
     else:
         return "dormant - consider archival or removal"
+
+
+def _is_active_gateway(profile: str) -> bool:
+    """True if the profile runs an active systemd gateway unit or is Tier 1 in the registry."""
+    try:
+        # 1) systemd gateway unit check (profiles run hermes-gateway-<name>.service)
+        unit = f"hermes-gateway-{profile}.service"
+        r = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip() == "active":
+            return True
+    except Exception:
+        pass
+    try:
+        # 2) profile-tier-registry.md Tier-1 check (fallback when unit name differs)
+        reg = HERMES_HOME / "governance" / "profile-tier-registry.md"
+        if reg.exists():
+            for line in reg.read_text(errors="ignore").splitlines():
+                if profile.lower() in line.lower() and "tier" in line.lower() and "1" in line:
+                    # Require an explicit tier-1 designation rather than a random "1" digit
+                    low = line.lower()
+                    if "tier 1" in low or "tier-1" in low or "tier1" in low:
+                        return True
+    except Exception:
+        pass
+    return False
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

@@ -907,7 +907,9 @@ class WebhookAdapter(BasePlatformAdapter):
         generic_sig = headers.get("X-Webhook-Signature", "")
         if generic_sig:
             route_config = self._routes.get(route_name, {})
-            if not route_config.get("allow_legacy_v1", False):
+            # Identity check only: YAML "false", 1, and non-empty objects
+            # are all truthy and must not re-enable replayable V1 HMAC.
+            if route_config.get("allow_legacy_v1") is not True:
                 logger.warning(
                     "[webhook] Route '%s' sent legacy V1 signature (X-Webhook-Signature) which is replayable "
                     "(no timestamp binding). V1 is rejected by default; set 'allow_legacy_v1: true' on the "

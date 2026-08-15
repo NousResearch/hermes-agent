@@ -253,6 +253,7 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
+import { clearStaleGitLocks } from './gitlock'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -2660,6 +2661,12 @@ async function checkUpdates() {
       fetchedAt: Date.now()
     }
   }
+
+  // Self-heal abandoned git lock files before fetching. A stale
+  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
+  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
+  // check reports 'fetch-failed' forever — git never removes these itself.
+  await clearStaleGitLocks(updateRoot)
 
   const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
 

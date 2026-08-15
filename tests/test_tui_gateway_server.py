@@ -5291,6 +5291,73 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
         server._sessions.pop("row-id-trunc-sid", None)
 
 
+def test_prompt_submit_row_id_truncates_profile_owned_history(monkeypatch, tmp_path):
+    """A remote-profile edit must write through the same DB used to resolve it."""
+    from hermes_state import SessionDB
+
+    profile_home = tmp_path / "remote-profile"
+    profile_home.mkdir()
+    session_key = "profile-row-id-session"
+    db = SessionDB(db_path=profile_home / "state.db")
+    try:
+        db.create_session(session_key, source="desktop")
+        db.append_messages_batch(
+            session_key,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply 1"},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "reply 2"},
+            ],
+        )
+        history = db.get_messages_as_conversation(
+            session_key, include_row_ids=True
+        )
+        target_row_id = history[2]["_row_id"]
+    finally:
+        db.close()
+
+    sess = _session(history=list(history), session_key=session_key)
+    sess["profile_home"] = str(profile_home)
+    server._sessions["profile-row-id-sid"] = sess
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: pytest.fail("must not write through the launch-profile DB"),
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "profile-row-id-sid",
+                    "text": "edited second",
+                    "truncate_before_row_id": target_row_id,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is None
+        assert [message["content"] for message in sess["history"]] == [
+            "first",
+            "reply 1",
+        ]
+        verify_db = SessionDB(db_path=profile_home / "state.db")
+        try:
+            persisted = verify_db.get_messages_as_conversation(session_key)
+        finally:
+            verify_db.close()
+        assert [message["content"] for message in persisted] == [
+            "first",
+            "reply 1",
+        ]
+    finally:
+        server._sessions.pop("profile-row-id-sid", None)
+
+
 def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     """#82959: String row IDs in history match correctly against integer truncate_before_row_id."""
     replaced = []

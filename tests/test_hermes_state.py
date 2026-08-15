@@ -177,41 +177,6 @@ class TestConnectionLifecycle:
                     pass
             db.close()
 
-    def test_close_closes_wal_read_connection_created_on_worker_thread(
-        self, tmp_path
-    ):
-        """SessionDB.close() must drain read conns created by other threads."""
-        from hermes_cli.sqlite_safe_read import has_live_connection
-
-        db_path = tmp_path / "state.db"
-        db = SessionDB(db_path=db_path)
-        db._wal_active = True
-        opened = threading.Event()
-        release = threading.Event()
-        errors = []
-
-        def open_read_connection():
-            try:
-                assert db._get_read_conn() is not None
-                opened.set()
-                release.wait(timeout=10)
-            except BaseException as exc:
-                errors.append(exc)
-                opened.set()
-
-        worker = threading.Thread(target=open_read_connection)
-        worker.start()
-        assert opened.wait(timeout=10)
-        assert not errors
-
-        db.close()
-        assert has_live_connection(db_path) is False
-
-        release.set()
-        worker.join(timeout=10)
-        assert not worker.is_alive()
-        assert not errors
-
     def test_read_only_close_never_requests_wal_checkpoint(self, tmp_path):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)

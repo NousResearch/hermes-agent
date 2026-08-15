@@ -21,6 +21,8 @@ suite stays free of timing flakes under parallel load.
 """
 
 import concurrent.futures
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 from cron.scheduler import run_job

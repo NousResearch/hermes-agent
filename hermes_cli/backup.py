@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 # Exclusion rules
 # ---------------------------------------------------------------------------
 
+# Where ``hermes backup --quick`` / ``/snapshot`` / the pre-update safety net
+# write their state snapshots (see ``create_quick_snapshot`` below). Defined up
+# here because the exclusion set needs it.
+_QUICK_SNAPSHOTS_DIR = "state-snapshots"
+
 # Directory names to skip entirely (matched against each path component)
 # ``hermes-agent`` is special-cased to root level only in ``_should_exclude``
 # so that skill directories like ``skills/autonomous-ai-agents/hermes-agent/``
@@ -66,6 +71,9 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps — reinstalled on demand
     "backups",          # prior auto-backups — don't nest backups exponentially
+    _QUICK_SNAPSHOTS_DIR,  # quick/pre-update state snapshots — same reason as
+                        # ``backups``: each holds a full copy of state.db, so
+                        # zipping them re-ships the DB once per snapshot
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
     # Python dependency trees (plugin / MCP-server venvs under HERMES_HOME) —
@@ -1309,7 +1317,7 @@ _QUICK_STATE_FILES = (
     "feishu_comment_pairing.json",      # Feishu comment subscription pairings
 )
 
-_QUICK_SNAPSHOTS_DIR = "state-snapshots"
+# ``_QUICK_SNAPSHOTS_DIR`` lives with the exclusion rules at the top of the module.
 _QUICK_DEFAULT_KEEP = 20
 
 

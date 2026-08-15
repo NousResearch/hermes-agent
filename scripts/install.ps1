@@ -760,7 +760,65 @@ function Install-Uv {
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
         $psHostExe = Get-PowerShellHostExe
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+
+        # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
+        # byte-identical copy published on GitHub releases.  Corporate
+        # proxies and AV products frequently block astral.sh while
+        # github.com is reachable (issue #69216), so a second source turns
+        # a hard failure into a working install.  Capture the installer
+        # output (Tee-Object) instead of discarding it: when every source
+        # fails, the real error (download blocked, AV quarantine,
+        # permissions) must reach the user instead of only the generic
+        # "installed but not found" message.
+        $installerOutput = @()
+        $astralOut = @()
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+        $installerOutput += "--- uv installer source: astral.sh ---"
+        $installerOutput += @($astralOut | ForEach-Object { "$_" })
+        if (Test-Path $managedUv) {
+            Write-Info "uv installer succeeded via astral.sh"
+        } else {
+            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
+            $ghOut = @()
+            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+            $installerOutput += "--- uv installer source: GitHub releases ---"
+            $installerOutput += @($ghOut | ForEach-Object { "$_" })
+            if (Test-Path $managedUv) {
+                Write-Info "uv installer succeeded via GitHub releases"
+            }
+        }
+
+        # Rung 3: salvage an existing uv.exe.  When the installer cannot run
+        # at all (network fully blocked) but a working uv already exists --
+        # on PATH, or at ~/.local/bin (the astral default location when
+        # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
+        # the managed location so the managed-first invariant holds
+        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        if (-not (Test-Path $managedUv)) {
+            $existingUv = $null
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
+                $existingUv = $uvOnPath.Source
+            }
+            if (-not $existingUv) {
+                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
+            }
+            if ($existingUv) {
+                Write-Info "Salvaging existing uv from $existingUv"
+                try {
+                    Copy-Item $existingUv $managedUv -Force
+                    # Verify the salvaged binary actually runs before
+                    # trusting it as the managed uv.
+                    $null = & $managedUv --version
+                } catch {
+                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
+                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -771,6 +829,10 @@ function Install-Uv {
         }
 
         Write-Err "uv installed but not found at $managedUv"
+        if ($installerOutput.Count -gt 0) {
+            Write-Info "uv installer output (last 15 lines):"
+            $installerOutput | Select-Object -Last 15 | ForEach-Object { Write-Info "  $_" }
+        }
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     } catch {

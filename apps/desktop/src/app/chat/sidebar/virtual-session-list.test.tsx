@@ -82,4 +82,29 @@ describe('VirtualSessionList', () => {
     expect(spacer?.style.paddingTop).toBe('')
     expect(spacer?.style.paddingBottom).toBe('')
   })
+
+  it('lets wheel overscroll chain to the outer sidebar scroller (#84964)', () => {
+    const { getByTestId } = render(
+      <VirtualSessionList
+        activeSessionId={null}
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onTogglePin={noop}
+        pinned={false}
+        rows={rows}
+        sortable={false}
+      />
+    )
+
+    const scroller = getByTestId('divider-Today').parentElement?.parentElement?.parentElement
+
+    // The inner virtualized scroller must NOT contain overscroll: it is nested
+    // inside the sidebar's own scroll container, and containing it swallowed
+    // wheel events at the inner scroll boundary — the mid-list wheel dead-zone
+    // at 25+ sessions. Chaining stays inside the sidebar because the OUTER
+    // scroller keeps overscroll-contain.
+    expect(scroller?.className).toContain('overflow-y-auto')
+    expect(scroller?.className).not.toContain('overscroll-contain')
+  })
 })

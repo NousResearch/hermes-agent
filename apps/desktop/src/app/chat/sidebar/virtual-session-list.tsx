@@ -155,10 +155,16 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       // fade bar reserves its 4px on every platform but stays invisible until
       // hover — and the wrapper no longer stacks a second scroller, so the
       // double-gutter this class change was reaching for is already gone.
-      className={cn(
-        'scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
-        className
-      )}
+      //
+      // No `overscroll-contain` here: this scroller is NESTED inside the
+      // sidebar's own scroll container (index.tsx SCROLL_Y). Containing
+      // overscroll on the inner scroller swallowed wheel events at its scroll
+      // boundaries instead of chaining them to the outer sidebar scroller,
+      // which read as a wheel dead-zone mid-list once 25+ sessions
+      // virtualized (#84964) — the scrollbar still dragged, only the wheel
+      // died. The outer sidebar scroller keeps its own overscroll-contain, so
+      // the gesture still never escapes the sidebar.
+      className={cn('scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto', className)}
       ref={scrollerRef}
     >
       <div className="relative" style={{ height: `${totalSize}px` }}>

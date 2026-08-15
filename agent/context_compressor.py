@@ -2484,6 +2484,11 @@ class ContextCompressor(ContextEngine):
         # 429/aux-model fault. The in-conversation compressor has its own
         # budget and must still be allowed to run (#86972).
         if _is_hygiene_idle_timeout_error(state.get("error")):
+            # A later hygiene write can overwrite a previous aux-model row
+            # on the shared column. Drop any in-memory cooldown so the
+            # in-agent compressor is not still blocked after this refresh.
+            self._summary_failure_cooldown_until = 0.0
+            self._last_summary_error = None
             return None
 
         self._summary_failure_cooldown_until = now_mono + remaining_seconds

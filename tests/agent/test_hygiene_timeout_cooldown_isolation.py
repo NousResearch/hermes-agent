@@ -65,3 +65,30 @@ def test_aux_model_fault_cooldown_still_blocks_in_agent_compressor(tmp_path: Pat
     assert state is not None
     assert state["error"] == "rate limited"
     db.close()
+
+
+def test_hygiene_row_clears_stale_in_memory_aux_cooldown(tmp_path: Path):
+    """A later hygiene overwrite must not leave the in-memory aux cooldown armed."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "hyg-overwrite-sid"
+    db.create_session(session_id, source="telegram")
+    db.record_compression_failure_cooldown(
+        session_id,
+        time.time() + 300,
+        "rate limited",
+    )
+
+    compressor = _bound_compressor(db, session_id)
+    loaded = compressor.get_active_compression_failure_cooldown()
+    assert loaded is not None
+    assert loaded["error"] == "rate limited"
+
+    db.record_compression_failure_cooldown(
+        session_id,
+        time.time() + 300,
+        _HYGIENE_TIMEOUT_ERROR,
+    )
+
+    assert compressor.get_active_compression_failure_cooldown(refresh=True) is None
+    assert compressor.get_active_compression_failure_cooldown() is None
+    db.close()

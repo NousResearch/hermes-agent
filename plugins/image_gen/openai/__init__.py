@@ -92,32 +92,28 @@ def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
     return openai.OpenAI(**kwargs)
 
 
+_MIME_EXTENSIONS = {
+    "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+    "image/webp": "webp", "image/bmp": "bmp",
+}
+
+
+def _source_filename(resolved, ref: str) -> str:
+    if resolved.origin == "http":
+        name = ref.split("?", 1)[0].rsplit("/", 1)[-1]
+        if name:
+            return name
+    if resolved.path is not None:
+        return os.path.basename(str(resolved.path)) or "image.png"
+    ext = _MIME_EXTENSIONS.get(resolved.mime or "", "png")
+    return f"image.{ext}"
+
+
 def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
-    """Load ``(data, filename)`` from a URL, data URI or local path; raises on IO/network error."""
-    ref = ref.strip()
-    lower = ref.lower()
-    if lower.startswith(("http://", "https://")):
-        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+    from tools.image_source import resolve_source_sync
 
-        if not is_safe_url(ref):
-            raise ValueError(f"Image reference URL failed the SSRF safety check: {ref}")
-        with create_ssrf_safe_client(timeout=60, follow_redirects=True) as client:
-            resp = client.get(ref)
-        resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
-        return resp.content, name
-    if lower.startswith("data:"):
-        import base64
-
-        header, _, b64 = ref.partition(",")
-        ext = (header.split("image/", 1)[1].split(";", 1)[0] if "image/" in header else "") or "png"
-        return base64.b64decode(b64), f"image.{ext}"
-    from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
-
-    raise_if_read_blocked(ref)
-    with open(ref, "rb") as fh:
-        data = fh.read()
-    return data, os.path.basename(ref) or "image.png"
+    resolved = resolve_source_sync(ref)
+    return resolved.data, _source_filename(resolved, ref.strip())
 
 
 def _named_bytes_io(ref: str) -> io.BytesIO:

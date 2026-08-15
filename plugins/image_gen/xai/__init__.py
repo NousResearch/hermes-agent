@@ -171,21 +171,9 @@ def _resolve_resolution() -> str:
 
 
 def _xai_image_field(source: str) -> Dict[str, str]:
-    """Edit ``image`` field: URL / data URI pass through; local paths are inlined as ``data:`` URIs."""
-    source = source.strip()
-    if source.lower().startswith(_REMOTE_PREFIXES):
-        return {"url": source, "type": "image_url"}
-    import base64
+    from tools.image_source import resolve_source_to_url_sync
 
-    from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
-
-    raise_if_read_blocked(source)
-    with open(os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
-        raw = fh.read()
-    ext = (os.path.splitext(source)[1].lstrip(".") or "png").lower()
-    if ext == "jpg":
-        ext = "jpeg"
-    return {"url": f"data:image/{ext};base64,{base64.b64encode(raw).decode('utf-8')}", "type": "image_url"}
+    return {"url": resolve_source_to_url_sync(source), "type": "image_url"}
 
 
 def _check_source_images(

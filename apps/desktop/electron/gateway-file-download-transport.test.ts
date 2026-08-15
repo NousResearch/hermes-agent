@@ -9,8 +9,9 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+
+import { test } from 'vitest'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const source = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')

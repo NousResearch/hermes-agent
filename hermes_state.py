@@ -57,6 +57,8 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_RAW_SELECT,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
+    _CONTINUATION_PARENT_REASONS,
+    _CONTINUATION_PARENT_REASONS_SQL,
     _ephemeral_child_sql,
     _legacy_reset_child_sql,
     _shape_preview,
@@ -8544,10 +8546,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return f"{base} #{max_num + 1}"
 
     def get_compression_tip(self, session_id: str) -> Optional[str]:
-        """Walk the compression-continuation chain forward and return the tip.
+        """Walk the continuation chain forward and return the tip.
 
-        A compression continuation is a child of a session whose
-        ``end_reason = 'compression'``.  Older builds tried to distinguish
+        A continuation is a child of a session whose ``end_reason`` is in
+        ``_CONTINUATION_PARENT_REASONS`` (compression plus reset /new
+        boundaries).  Older builds only followed ``compression``, so a
+        ``/new`` lineage kept listing the stale root (#84870).
         continuations from branches/subagents by requiring
         ``child.started_at >= parent.ended_at``.  That ordering is too brittle:
         gateway + compression races can insert the real continuation row before
@@ -8576,9 +8580,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
+                      AND parent.end_reason IN ({_CONTINUATION_PARENT_REASONS_SQL})
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._reset_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -8861,9 +8866,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM chain c
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
-                    WHERE parent.end_reason = 'compression'
+                    WHERE parent.end_reason IN ({_CONTINUATION_PARENT_REASONS_SQL})
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._reset_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 chain_max AS (
@@ -8977,7 +8983,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # every tip id first, then fetch all tip rows in a single query.
             tip_ids_by_root: Dict[str, str] = {}
             for s in sessions:
-                if s.get("end_reason") != "compression":
+                if s.get("end_reason") not in _CONTINUATION_PARENT_REASONS:
                     continue
                 tip_id = self.get_compression_tip(s["id"])
                 if tip_id != s["id"]:

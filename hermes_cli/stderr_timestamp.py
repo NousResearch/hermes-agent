@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Sequence, TextIO
 
-from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
+EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 
 
 _TIMESTAMP_PREFIX = re.compile(
@@ -70,26 +70,53 @@ def _restore_signal_handlers(previous: dict[int, object]) -> None:
         signal.signal(signum, handler)
 
 
-def _child_env_for_command(
-    environ: Mapping[str, str] | None = None,
-) -> dict[str, str] | None:
-    """Preserve launchd supervision across this one-hop wrapper.
-
-    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on its *direct*
-    child. This module is that child when the generated plist wraps
-    ``gateway run`` for timestamped stderr. The grandchild then sees
-    ``XPC_SERVICE_NAME=0`` and ``_guard_supervised_gateway_conflict``
-    treats the service's own spawn as a foreign supervised gateway
-    (#86893). Forward the existing opt-in marker so the grandchild
-    still recognizes itself as the supervised process.
-    """
+def _is_launchd_supervised(environ: Mapping[str, str] | None = None) -> bool:
+    """True when this process is launchd's direct child (not an interactive shell)."""
     env = os.environ if environ is None else environ
     xpc_service = str(env.get("XPC_SERVICE_NAME", "")).strip()
-    if not xpc_service or xpc_service == "0":
-        return None
-    child_env = dict(env)
-    child_env[EXTERNAL_GATEWAY_SUPERVISOR_ENV] = "1"
-    return child_env
+    return bool(xpc_service and xpc_service != "0")
+
+
+def _is_hermes_gateway_run_argv(command: Sequence[str]) -> bool:
+    """True for Hermes ``gateway run`` argv this wrapper is allowed to upgrade.
+
+    The wrapper is generic. Only historical/current Hermes gateway shapes
+    get ``--external-supervisor``; an arbitrary launchd child must not be
+    marked as gateway-supervised (#87005).
+    """
+    try:
+        from gateway.status import looks_like_gateway_command_line
+    except Exception:
+        return False
+    return bool(looks_like_gateway_command_line(" ".join(str(part) for part in command)))
+
+
+def _with_external_supervisor_flag(command: Sequence[str]) -> list[str]:
+    argv = [str(part) for part in command]
+    if EXTERNAL_SUPERVISOR_FLAG not in argv:
+        argv.append(EXTERNAL_SUPERVISOR_FLAG)
+    return argv
+
+
+def _prepare_child_command(
+    command: Sequence[str],
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Return the argv to exec, upgrading stale launchd-wrapped gateway commands.
+
+    launchd stamps ``XPC_SERVICE_NAME=<job label>`` only on this wrapper.
+    The grandchild sees ``XPC_SERVICE_NAME=0``. Newly generated plists put
+    ``--external-supervisor`` on the inner ``gateway run`` so ``hermes update``
+    can see the flag on the live process argv. Stale plists still wrap the
+    historical ``gateway run --replace`` shape without that flag; append it
+    here, and only for that shape.
+    """
+    argv = [str(part) for part in command]
+    if not _is_launchd_supervised(environ):
+        return argv
+    if not _is_hermes_gateway_run_argv(argv):
+        return argv
+    return _with_external_supervisor_flag(argv)
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -112,9 +139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         proc = subprocess.Popen(
-            args.command,
+            _prepare_child_command(args.command),
             stderr=subprocess.PIPE,
-            env=_child_env_for_command(),
         )
     except OSError as exc:
         log_path.parent.mkdir(parents=True, exist_ok=True)

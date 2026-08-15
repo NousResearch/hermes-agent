@@ -4419,8 +4419,22 @@ def _gateway_run_command() -> list[str]:
     return cmd
 
 
-def _timestamped_stderr_gateway_command(error_log: Path) -> list[str]:
-    """Wrap gateway run so raw stderr lines are timestamped before file write."""
+def _timestamped_stderr_gateway_command(
+    error_log: Path,
+    *,
+    external_supervisor: bool = False,
+) -> list[str]:
+    """Wrap gateway run so raw stderr lines are timestamped before file write.
+
+    ``external_supervisor=True`` is for launchd ProgramArguments only: the
+    inner ``gateway run`` must carry ``--external-supervisor`` so
+    ``hermes update`` sees the flag on the live grandchild argv and hands
+    the process back to launchd instead of starting a detached watcher
+    (#86893 / #87005). The detached nohup fallback stays unmarked.
+    """
+    inner = _gateway_run_command()
+    if external_supervisor and "--external-supervisor" not in inner:
+        inner = [*inner, "--external-supervisor"]
     return [
         get_python_path(),
         "-m",
@@ -4428,7 +4442,7 @@ def _timestamped_stderr_gateway_command(error_log: Path) -> list[str]:
         "--error-log",
         str(error_log),
         "--",
-        *_gateway_run_command(),
+        *inner,
     ]
 
 
@@ -4526,7 +4540,9 @@ def generate_launchd_plist() -> str:
     # timestamps to raw stderr lines before they land in gateway.error.log.
     prog_args = [
         f"<string>{part}</string>"
-        for part in _timestamped_stderr_gateway_command(err_path)
+        for part in _timestamped_stderr_gateway_command(
+            err_path, external_supervisor=True
+        )
     ]
     prog_args_xml = "\n        ".join(prog_args)
 

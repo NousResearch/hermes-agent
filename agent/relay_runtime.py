@@ -573,6 +573,20 @@ class RelayRuntime:
 
         def close_with_drain() -> None:
             def current_top() -> Any:
+                # Version-correct accessor first: the pinned nemo-relay
+                # binding exposes ``scope.get_handle()`` returning the
+                # current top-of-stack ScopeHandle.  Its
+                # ``get_scope_stack()`` returns a native ScopeStack object
+                # that ``scope.pop`` rejects with TypeError, so it must
+                # never be treated as a handle (#81601 review).
+                get_handle = getattr(
+                    getattr(self.relay, "scope", None), "get_handle", None
+                )
+                if callable(get_handle):
+                    try:
+                        return get_handle()
+                    except Exception:
+                        pass
                 top = self.relay.get_scope_stack()
                 # Some Relay builds return the live stack (list). Others
                 # return the top handle directly — including tuple handles
@@ -581,6 +595,18 @@ class RelayRuntime:
                 if isinstance(top, list):
                     return top[-1] if top else None
                 return top
+
+            def same_handle(a: Any, b: Any) -> bool:
+                # Native ScopeHandle instances do not implement __eq__ by
+                # value — two handles for the same scope compare unequal —
+                # so compare by uuid when both sides expose one.
+                if a is None or b is None:
+                    return a is b
+                if a is b or a == b:
+                    return True
+                a_uuid = getattr(a, "uuid", None)
+                b_uuid = getattr(b, "uuid", None)
+                return a_uuid is not None and a_uuid == b_uuid
 
             try:
                 self.relay.scope.pop(
@@ -594,12 +620,12 @@ class RelayRuntime:
 
             for _ in range(drain_limit):
                 top = current_top()
-                if top is None or top == handle:
+                if top is None or same_handle(top, handle):
                     break
                 # Never pop the session root while draining for a nested handle.
                 if (
                     session_root is not None
-                    and top == session_root
+                    and same_handle(top, session_root)
                     and handle is not session_root
                 ):
                     break

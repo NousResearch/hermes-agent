@@ -395,20 +395,68 @@ class TestBackendCdpResolution:
         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
         assert err and "no" in err.lower() and "CDP" in err
 
-    def test_named_session_skips_backend_resolution(self, tmp_path, monkeypatch):
-        """session=<name> (BU_NAME cloud browser) must not consume a backend
-        provider session."""
+    def test_named_session_composes_with_provider_backend(self, tmp_path, monkeypatch):
+        """session=<name> composes with a configured provider backend: the
+        name keys its OWN provider browser (bu-named-<name>), so concurrent
+        named sessions never share one browser (#86894)."""
         import tools.browser_tool as bt
 
-        def fail(task_id):
-            raise AssertionError("backend resolution must be skipped")
+        seen = []
 
-        monkeypatch.setattr(bt, "_get_session_info", fail)
-        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
+        def fake_session_info(key):
+            seen.append(key)
+            return {"cdp_url": "wss://browser.example/cdp/" + key}
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert result["success"] is True
+        assert seen == ["bu-named-r7k2"]
         assert "bu:r7k2" in result["output"]
+        assert "ws:wss://browser.example/cdp/bu-named-r7k2" in result["output"]
+
+    def test_named_session_key_stable_across_tasks(self, monkeypatch):
+        """The same session name maps to the same provider cache key no
+        matter which task calls it — that is what lets a follow-up call
+        reattach to the same cloud browser."""
+        import tools.browser_tool as bt
+
+        seen = []
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(
+            bt, "_get_session_info",
+            lambda key: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
+        )
+        env1, env2 = {}, {}
+        assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
+        assert bu_cli._resolve_backend_cdp(env2, "task-B", session_name="research") is None
+        assert seen == ["bu-named-research", "bu-named-research"]
+
+    def test_named_session_direct_api_bu_cloud_still_skips_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Direct-API Browser Use cloud configs keep the native named-daemon
+        path: resolving through the provider would double-session and
+        double-bill."""
+        import tools.browser_tool as bt
+
+        class _BUProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr(
+            bt, "_get_session_info",
+            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
+        )
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
+        env = {}
+        assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
+        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
 
 class TestProviderPickerIntegration:

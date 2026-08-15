@@ -495,6 +495,24 @@ def _(rid, params: dict) -> dict:
                 if err is not None:
                     return err
             else:
+                # Once active user turns carry durable row ids, an ordinal-only
+                # target is an unsafe downgrade: renderer and gateway ordinals
+                # can diverge after compaction/rebuild while the row id remains
+                # stable. Require the client to prove which durable turn it
+                # means instead of persisting a potentially mis-aimed cut.
+                if any(_message_row_id(history[h_idx]) is not None for h_idx in user_indices):
+                    logger.warning(
+                        "prompt.submit: REFUSED ordinal-only truncation of durable "
+                        "session %s (ordinal=%d); truncate_before_row_id required",
+                        sid,
+                        client_ordinal,
+                    )
+                    return _err(
+                        rid,
+                        4004,
+                        "ordinal-only truncation is unsafe for durable session history; "
+                        "include truncate_before_row_id",
+                    )
                 ordinal = client_ordinal
 
             # Reject out-of-range ordinals on BOTH ends. A negative value would

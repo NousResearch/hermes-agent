@@ -5090,6 +5090,52 @@ def test_prompt_submit_refuses_ordinal_and_message_id_mismatch(monkeypatch):
         server._sessions.pop("mismatch-trunc-sid", None)
 
 
+def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch):
+    """A durable session must not trust an ordinal without a row-id target."""
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+            replaced.append((key, list(messages)))
+
+    history = [
+        {"_row_id": 101, "role": "user", "content": "first"},
+        {"_row_id": 102, "role": "assistant", "content": "reply 1"},
+        {"_row_id": 103, "role": "user", "content": "second"},
+        {"_row_id": 104, "role": "assistant", "content": "reply 2"},
+    ]
+    server._sessions["ordinal-only-durable-sid"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "ordinal-only-durable-sid",
+                    "text": "retry",
+                    "truncate_before_user_ordinal": 1,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 4004
+        assert "truncate_before_row_id" in resp["error"]["message"]
+        assert server._sessions["ordinal-only-durable-sid"]["history"] == history
+        assert server._sessions["ordinal-only-durable-sid"]["running"] is False
+        assert replaced == []
+    finally:
+        server._sessions.pop("ordinal-only-durable-sid", None)
+
+
 def test_prompt_submit_truncates_by_row_id(monkeypatch):
     """#82959: prompt.submit with truncate_before_row_id must cut at the target row id."""
     replaced = []

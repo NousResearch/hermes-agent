@@ -402,6 +402,13 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
 
 
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
+    # _session_info embeds get_update_result(), whose value flips whenever the
+    # background update-check thread happens to finish. This test compares two
+    # snapshots taken at different times, so pin the value to keep it
+    # deterministic regardless of how long the preceding tests ran.
+    import hermes_cli.banner as _banner
+
+    monkeypatch.setattr(_banner, "get_update_result", lambda timeout=0.5: None)
     session = _session(
         agent=None,
         agent_ready=threading.Event(),

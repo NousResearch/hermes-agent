@@ -4537,10 +4537,26 @@ class GatewaySlashCommandsMixin:
         Usage: ``/save [json|md|html] [filename] [redact]``
         """
         from hermes_cli.session_export import (
+            SAVE_USAGE,
             default_save_filename,
             normalize_save_format,
             render_session_for_save,
         )
+
+        parts = event.get_command_args().split()
+        if not parts:
+            return SAVE_USAGE
+        redact = False
+        if parts[-1].lower() in ("redact", "--redact"):
+            redact = True
+            parts = parts[:-1]
+            if not parts:
+                return SAVE_USAGE
+
+        try:
+            fmt = normalize_save_format(parts[0])
+        except ValueError as e:
+            return f"{e}\n\n{SAVE_USAGE}"
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
@@ -4548,16 +4564,6 @@ class GatewaySlashCommandsMixin:
 
         if not self._session_db:
             return "Session database not available."
-
-        parts = event.get_command_args().split()
-        redact = False
-        if parts and parts[-1].lower() in ("redact", "--redact"):
-            redact = True
-            parts = parts[:-1]
-        try:
-            fmt = normalize_save_format(parts[0] if parts else None)
-        except ValueError as e:
-            return str(e)
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         # The filename is echoed to the platform only — never trust path
         # separators from chat input.

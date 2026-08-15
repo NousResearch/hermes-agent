@@ -323,6 +323,26 @@ def _finish_markdown(lines: List[str]) -> str:
 
 SAVE_FORMATS = ("json", "md", "html")
 
+SAVE_USAGE = """/save — export the current session to a file
+Usage: /save <format> [filename] [redact]
+
+Formats:
+  json    full session snapshot (canonical export shape)
+  md      readable Markdown transcript
+  html    standalone single-file HTML page (shareable, no dependencies)
+
+Options:
+  filename   optional output name/path (default: auto-named;
+             CLI saves under ~/.hermes/sessions/saved/)
+  redact     scrub API keys, tokens, and credentials before writing
+
+Examples:
+  /save json
+  /save html
+  /save md notes.md
+  /save html session.html redact"""
+
+
 
 def normalize_save_format(fmt: Optional[str]) -> str:
     """Map a user-typed /save format token to a canonical format."""

@@ -9355,20 +9355,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         redaction pass before writing.
         """
         from hermes_cli.session_export import (
+            SAVE_USAGE,
             normalize_save_format,
             render_session_for_save,
         )
 
         parts = cmd.split()[1:]
+        if not parts:
+            print(SAVE_USAGE)
+            return
         redact = False
-        if parts and parts[-1].lower() in ("redact", "--redact"):
+        if parts[-1].lower() in ("redact", "--redact"):
             redact = True
             parts = parts[:-1]
+            if not parts:
+                print(SAVE_USAGE)
+                return
 
         try:
-            fmt = normalize_save_format(parts[0] if parts else None)
+            fmt = normalize_save_format(parts[0])
         except ValueError as e:
             print(f"(._.) {e}")
+            print(SAVE_USAGE)
             return
         filename = parts[1] if len(parts) > 1 else None
 

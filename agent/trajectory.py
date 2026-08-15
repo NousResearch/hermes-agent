@@ -8,6 +8,7 @@ the file-write logic live here.
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -22,11 +23,9 @@ def default_trajectory_path(completed: bool) -> Path:
     """Return the profile-aware implicit export path for the current CWD."""
     cwd = Path.cwd().resolve()
     name = re.sub(r"[^A-Za-z0-9._-]", "-", cwd.name).strip("-.") or "cwd"
-    digest = hashlib.sha256(
-        str(cwd).encode("utf-8", "surrogateescape")
-    ).hexdigest()[:8]
+    digest = hashlib.sha256(os.fsencode(cwd)).hexdigest()[:8]
     filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
-    return get_hermes_home() / "trajectories" / f"{name}-{digest}" / filename
+    return get_hermes_home() / "trajectories" / f"{name[:32]}-{digest}" / filename
 
 
 def convert_scratchpad_to_think(content: str) -> str:

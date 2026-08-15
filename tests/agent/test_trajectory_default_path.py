@@ -10,6 +10,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from agent import trajectory
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -33,9 +35,7 @@ def _git_repo(path: Path) -> Path:
 
 def _expected_path(home: Path, cwd: Path, completed: bool) -> Path:
     canonical_cwd = cwd.resolve()
-    digest = hashlib.sha256(
-        str(canonical_cwd).encode("utf-8", "surrogateescape")
-    ).hexdigest()[:8]
+    digest = hashlib.sha256(os.fsencode(canonical_cwd)).hexdigest()[:8]
     filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
     return home / "trajectories" / f"{canonical_cwd.name}-{digest}" / filename
 
@@ -120,14 +120,77 @@ def test_bucket_name_has_safe_nonempty_fallback(tmp_path, monkeypatch):
     finally:
         reset_hermes_home_override(token)
 
-    digest = hashlib.sha256(
-        str(repo.resolve()).encode("utf-8", "surrogateescape")
-    ).hexdigest()[:8]
+    digest = hashlib.sha256(os.fsencode(repo.resolve())).hexdigest()[:8]
     bucket_name = path.parent.name
     assert bucket_name.endswith(f"-{digest}")
     safe_name = bucket_name[: -len(digest) - 1]
     assert safe_name
     assert re.fullmatch(r"[A-Za-z0-9._-]+", safe_name)
+
+
+def test_247_character_cwd_saves_to_bounded_bucket(tmp_path, monkeypatch):
+    profile_home = tmp_path / "profile-home"
+    long_name = "a" * 247
+    repo = _git_repo(tmp_path / long_name)
+    monkeypatch.chdir(repo)
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        trajectory.save_trajectory(SENTINEL, "long-cwd", completed=True)
+    finally:
+        reset_hermes_home_override(token)
+
+    paths = list((profile_home / "trajectories").glob("*/trajectory_samples.jsonl"))
+    assert len(paths) == 1
+    bucket = paths[0].parent.name
+    prefix, digest = bucket.rsplit("-", 1)
+    assert prefix == long_name[:32]
+    assert re.fullmatch(r"[0-9a-f]{8}", digest)
+    assert len(bucket) <= 41
+    _assert_entry(_read_jsonl(paths[0])[0], model="long-cwd", completed=True)
+
+
+def test_canonical_cwd_is_hashed_with_filesystem_encoding(tmp_path, monkeypatch):
+    profile_home = tmp_path / "profile-home"
+    repo = _git_repo(tmp_path / "project")
+    canonical = repo.resolve()
+    encoded = b"filesystem-native-path-bytes"
+    calls = []
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(os, "fsencode", lambda path: calls.append(path) or encoded)
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        path = trajectory.default_trajectory_path(True)
+    finally:
+        reset_hermes_home_override(token)
+
+    digest = hashlib.sha256(encoded).hexdigest()[:8]
+    assert calls == [canonical]
+    assert path.parent.name == f"project-{digest}"
+
+
+def test_symlink_alias_and_real_cwd_share_canonical_bucket(tmp_path, monkeypatch):
+    profile_home = tmp_path / "profile-home"
+    real = _git_repo(tmp_path / "real-project")
+    alias = tmp_path / "alias-project"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        # POSIX getcwd() commonly returns the physical path even after chdir(alias),
+        # so feed Path.cwd() the real symlink spellings while keeping resolve() real.
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: real))
+        real_path = trajectory.default_trajectory_path(True)
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: alias))
+        alias_path = trajectory.default_trajectory_path(True)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert alias_path == real_path
 
 
 def test_explicit_relative_and_absolute_filenames_remain_exact(tmp_path, monkeypatch):

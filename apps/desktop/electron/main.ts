@@ -5127,11 +5127,29 @@ async function copyImageFromUrl(rawUrl) {
 
 async function saveImageFromUrl(rawUrl) {
   const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
-  const fallbackName = filenameFromUrl(rawUrl, `image${extensionForMimeType(mimeType) || '.png'}`)
+  const extension = extensionForMimeType(mimeType) || '.png'
+  // Generated-image URLs (fal.media etc.) usually end in an extensionless
+  // content hash. Keep the name but always guarantee an extension — without
+  // one Windows saves an unopenable "All Files" blob (#image18 report).
+  const baseName = filenameFromUrl(rawUrl, `image${extension}`)
+  const fallbackName = path.extname(baseName) ? baseName : `${baseName}${extension}`
+
+  let downloadsDir = ''
+
+  try {
+    downloadsDir = app.getPath('downloads')
+  } catch {
+    // Leave the dialog at its last-used location when the OS has no
+    // Downloads directory to offer.
+  }
 
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Image',
-    defaultPath: fallbackName
+    defaultPath: downloadsDir ? path.join(downloadsDir, fallbackName) : fallbackName,
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
   })
 
   if (result.canceled || !result.filePath) {
@@ -6095,6 +6113,36 @@ function isMediaCapturePermission(permission, details) {
   }
 
   return mediaTypes.includes('audio') || mediaTypes.includes('video')
+}
+
+// Chromium-initiated downloads (renderer anchor/blob downloads, drag-outs)
+// land here. Without a handler the OS save dialog opens with the process cwd
+// as the default directory (win-unpacked in packaged installs) and whatever
+// extensionless name the anchor carried. Route every download to the user's
+// Downloads directory and guarantee a MIME-derived extension.
+function installDownloadHandling() {
+  session.defaultSession.on('will-download', (_event, item) => {
+    const suggested = item.getFilename() || 'download'
+    const hasExtension = Boolean(path.extname(suggested))
+    const extension = hasExtension ? '' : extensionForMimeType(item.getMimeType())
+    const filename = `${suggested}${extension}`
+
+    try {
+      item.setSaveDialogOptions({
+        title: 'Save File',
+        defaultPath: path.join(app.getPath('downloads'), filename),
+        filters:
+          extension || /^image\//i.test(item.getMimeType() || '')
+            ? [
+                { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+                { name: 'All Files', extensions: ['*'] }
+              ]
+            : undefined
+      })
+    } catch {
+      // No Downloads directory to offer — keep Chromium's default prompt.
+    }
+  })
 }
 
 function installMediaPermissions() {
@@ -13212,6 +13260,7 @@ app.whenReady().then(() => {
   }
 
   installMediaPermissions()
+  installDownloadHandling()
   registerMediaProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()

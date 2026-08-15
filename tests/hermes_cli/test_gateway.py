@@ -447,6 +447,8 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
 
         # _get_service_pids returns the launchd-managed gateway PID.
         monkeypatch.setattr(gateway, "_get_service_pids", lambda: {launchd_pid})
+        # No pidfile-recorded gateway in this scenario.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
 
         # find_gateway_pids returns the launchd PID plus a real orphan.
         # The reaper should only kill the orphan, not the launchd PID.
@@ -478,6 +480,7 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
         monkeypatch.setattr(gateway, "is_macos", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "_get_service_pids", lambda: {launchd_pid})
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
 
         # find_gateway_pids would return the launchd PID, but it's excluded.
         monkeypatch.setattr(

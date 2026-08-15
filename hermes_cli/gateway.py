@@ -1555,44 +1555,42 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     own = {os.getpid()}
     if extra_exclude:
         own |= extra_exclude
-    # On macOS, exclude the launchd-managed gateway PID so the orphan reaper
-    # doesn't kill a supervised gateway when Hermes Desktop opens (the serve
-    # process calls this on startup).  supports_systemd_services() returns
-    # False on macOS, so without this the launchd gateway looks like an
-    # unsupervised orphan and gets SIGTERM'd, causing launchd to restart it.
-    if is_macos():
-        try:
-            own |= _get_service_pids()
-        except Exception:
-            pass
-    # On Windows there is no systemd/launchd service query to fall back on
+    # Service-managed gateways are not orphans — never reap them.  This
+    # covers macOS launchd (supports_systemd_services() is False there, so
+    # without this the launchd gateway looks like an unsupervised orphan and
+    # gets SIGTERM'd, causing launchd to restart it — or leaving it down
+    # under KeepAlive.SuccessfulExit=false) and any systemd unit reachable
+    # from a host that got past the gate above (#83683, #85344).
+    try:
+        own |= _get_service_pids()
+    except Exception:
+        pass
+    # On Windows there is no systemd/launchd service query at all
     # (_get_service_pids() returns an empty set), so a gateway supervised by
     # a Scheduled Task / Startup VBS looks like an unsupervised orphan to the
-    # process scan.  Exempt the recorded healthy gateway PID and its parent
-    # chain: the Scheduled Task launches a ``gateway run`` bootstrap whose
-    # argv matches the gateway scan, and killing that bootstrap takes the
-    # detached gateway it spawned down with it (#86098).
-    if is_windows():
-        try:
-            from gateway.status import get_running_pid
-
-            recorded = get_running_pid()
-            if recorded and recorded > 0:
-                own.add(recorded)
-                try:
-                    import psutil  # type: ignore
-
-                    parent = psutil.Process(recorded).parent()
-                    while parent is not None:
-                        own.add(parent.pid)
-                        parent = parent.parent()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    # process scan (#86098).  The same holds on every platform for a healthy
+    # gateway launched standalone (no service registration) whose PID the
+    # runtime record can see (#83683).  Exempt the recorded healthy gateway
+    # PID and its parent chain: a recorded, liveness-verified gateway is by
+    # definition not an orphan "the pidfile/runtime record can't see", and
+    # the Scheduled-Task bootstrap's argv (``gateway run``) matches the
+    # gateway scan — killing that bootstrap takes the detached gateway it
+    # spawned down with it.
     try:
-        # launchd/systemd-supervised gateways are not orphans — never reap them.
-        own |= _get_service_pids()
+        from gateway.status import get_running_pid
+
+        recorded = get_running_pid()
+        if recorded and recorded > 0:
+            own.add(recorded)
+            try:
+                import psutil  # type: ignore
+
+                parent = psutil.Process(recorded).parent()
+                while parent is not None:
+                    own.add(parent.pid)
+                    parent = parent.parent()
+            except Exception:
+                pass
     except Exception:
         pass
     try:

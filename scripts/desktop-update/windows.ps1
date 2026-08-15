@@ -447,7 +447,19 @@ function Start-DesktopRelaunch {
     # the pid exists, or the fallback spawn returned a live process). The
     # finally block downgrades the on-screen/on-disk outcome when it didn't
     # — the sibling truth contract to posix.sh's launch acceptance.
-    if (-not ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe))) { return $false }
+    if (-not $RelaunchExe) { return $false }
+    # electron-builder replaces win-unpacked in place. After a successful
+    # update it can remove the old Hermes.exe before writing the replacement,
+    # so a one-shot existence check races the rebuild and strands the user.
+    $relaunchDeadline = (Get-Date).AddSeconds(120)
+    while (-not (Test-Path -LiteralPath $RelaunchExe)) {
+        if ((Get-Date) -ge $relaunchDeadline) {
+            Write-HandoffLog "WARNING: desktop relaunch executable did not reappear within 120s: $RelaunchExe"
+            return $false
+        }
+        Start-Sleep -Milliseconds 500
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
     Write-HandoffLog "relaunching desktop: $RelaunchExe"
     # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
     # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched

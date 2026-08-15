@@ -4205,7 +4205,15 @@ class GatewayRunner(
         ("compression", "proactive_prune_min_result_chars"),
         ("compression", "proactive_prune_min_reclaim_tokens"),
         ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
-        ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
+        ("memory", "provider"),
+        # load_config_readonly() is keyed on the config file's (mtime, size), so
+        # the resolver already sees an edit on its next call. These two are
+        # registered for the other half: the skills prompt is baked into the
+        # agent at construction, so without an eviction the fresh values would
+        # not reach a running session until some unrelated cache bust.
+        ("skills", "compact_categories"),
+        ("skills", "keep_full_categories"),
+        ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
 
     _HONCHO_CACHE_BUSTING_KEYS = (

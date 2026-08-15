@@ -1191,6 +1191,9 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    pinned_categories: "frozenset[str] | None" = None,
+    demote_all_categories: bool = False,
+    keep_full_categories: "frozenset[str] | None" = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1198,6 +1201,13 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+
+    Operator pins (``skills.*`` in config.yaml) do the same by choice rather
+    than posture: ``pinned_categories`` demotes named categories,
+    ``demote_all_categories`` demotes every category except
+    ``keep_full_categories``. Explicitly named demotions always apply;
+    ``keep_full_categories`` only guards against ``demote_all_categories``
+    and matches either the full category path or its top-level segment.
     """
     _home_token = None
     if skills_dir_override is not None:
@@ -1213,7 +1223,9 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs,
+            pinned_categories=pinned_categories, demote_all_categories=demote_all_categories,
+            keep_full_categories=keep_full_categories)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1275,18 +1287,49 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    pinned_categories: "frozenset[str] | None" = None,
+    demote_all_categories: bool = False,
+    keep_full_categories: "frozenset[str] | None" = None,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
-    hidden_note = (
-        "\n(Categories marked [names only] are outside the current coding "
-        "context, so their descriptions are omitted — the skills work "
-        "normally and load with skill_view(name) as usual.)"
-    ) if demoted else ""
+    #
+    # Matching widened: a category used to be demoted only when its top-level
+    # segment was listed, so "social-media/twitter" in the set hit nothing.
+    # It now also matches the full nested path. That is a real semantic change
+    # for compact_categories — but a no-op for every in-repo caller, because
+    # the sole producer is coding_context._NON_CODING_SKILL_CATEGORIES (all
+    # top-level, no "/"). Pinned by test_posture_compact_categories_are_top_level_only.
+    _named = set(compact_categories or frozenset()) | set(pinned_categories or frozenset())
+    _keep_full = set(keep_full_categories or frozenset())
+
+    def _is_kept_full(cat: str) -> bool:
+        return cat in _keep_full or cat.split("/", 1)[0] in _keep_full
+
+    demoted = frozenset(
+        cat for cat in skills_by_category
+        if cat in _named
+        or cat.split("/", 1)[0] in _named
+        or (demote_all_categories and not _is_kept_full(cat))
+    )
+    if demoted and (pinned_categories or demote_all_categories):
+        hidden_note = (
+            "\n(Categories marked [names only] have their descriptions "
+            "omitted per the skills.compact_categories config — the "
+            "skills work normally and load with skill_view(name) as "
+            "usual; skills_list shows full descriptions on demand.)"
+        )
+    elif demoted:
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        )
+    else:
+        hidden_note = ""
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
@@ -1329,6 +1372,9 @@ def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
     project_dirs: "list[Path] | None" = None,
+    pinned_categories: "frozenset[str] | None" = None,
+    demote_all_categories: bool = False,
+    keep_full_categories: "frozenset[str] | None" = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1339,6 +1385,8 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        tuple(sorted(pinned_categories or ())), demote_all_categories,
+        tuple(sorted(keep_full_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1396,7 +1444,11 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(
+        skills_by_category, category_descriptions, compact_categories, available_tools,
+        pinned_categories=pinned_categories, demote_all_categories=demote_all_categories,
+        keep_full_categories=keep_full_categories,
+    )
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

@@ -109,9 +109,10 @@ def _request_dump_keep() -> int:
         sessions = config.get("sessions", {}) if isinstance(config, dict) else {}
         if not isinstance(sessions, dict):
             return _REQUEST_DUMP_DEFAULT_KEEP
-        return int(
-            sessions.get("request_dump_retention", _REQUEST_DUMP_DEFAULT_KEEP)
-        )
+        value = sessions.get("request_dump_retention", _REQUEST_DUMP_DEFAULT_KEEP)
+        if isinstance(value, bool):
+            return _REQUEST_DUMP_DEFAULT_KEEP
+        return int(value)
     except Exception:
         return _REQUEST_DUMP_DEFAULT_KEEP
 
@@ -134,21 +135,24 @@ def _prune_request_dumps(directory: Path, keep: int, *, protect: Path) -> int:
         logger.debug("Could not scan request dumps in %s: %s", directory, error)
         return 0
 
-    excess = len(candidates) - keep
-    if excess <= 0:
-        return 0
-
+    candidates.sort(
+        key=lambda candidate: (
+            candidate[2] == protect,
+            candidate[0],
+            candidate[1],
+        ),
+        reverse=True,
+    )
     deleted = 0
-    for _, _, path in sorted(candidates):
-        if deleted >= excess:
-            break
-        if path == protect:
-            continue
+    for _, _, path in candidates[keep:]:
         try:
             path.unlink()
+        except FileNotFoundError:
             deleted += 1
         except OSError as error:
             logger.debug("Could not prune request dump %s: %s", path, error)
+        else:
+            deleted += 1
     return deleted
 
 

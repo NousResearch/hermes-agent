@@ -141,14 +141,19 @@ def test_pruning_leaves_non_dump_entries_and_symlink_untouched(
     assert outside.read_text(encoding="utf-8") == "outside"
 
 
-@pytest.mark.parametrize("keep", [0, -1])
-def test_non_positive_retention_opts_out(agent, hermes_home, keep):
+@pytest.mark.parametrize(
+    ("keep", "expected"),
+    [(0, 5), (-1, 5), (2, 2)],
+)
+def test_non_positive_retention_opts_out_with_positive_control(
+    agent, hermes_home, keep, expected
+):
     _write_config(hermes_home, keep)
 
     for index in range(5):
         _dump(agent, f"turn {index}", f"session-{index % 2}")
 
-    assert len(_real_dumps(agent.logs_dir)) == 5
+    assert len(_real_dumps(agent.logs_dir)) == expected
 
 
 def test_malformed_retention_falls_back_to_bounded_default(
@@ -163,6 +168,27 @@ def test_malformed_retention_falls_back_to_bounded_default(
     assert len(_real_dumps(agent.logs_dir)) == keep
 
 
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_boolean_retention_falls_back_to_bounded_default(hermes_home, value):
+    _write_config(hermes_home, value)
+
+    assert (
+        agent_runtime_helpers._request_dump_keep()
+        == agent_runtime_helpers._REQUEST_DUMP_DEFAULT_KEEP
+    )
+
+
+def test_absent_retention_key_resolves_to_bounded_default(hermes_home):
+    (hermes_home / "config.yaml").write_text(
+        "sessions: {}\n", encoding="utf-8"
+    )
+
+    assert (
+        agent_runtime_helpers._request_dump_keep()
+        == agent_runtime_helpers._REQUEST_DUMP_DEFAULT_KEEP
+    )
+
+
 def test_request_dump_default_is_one_invariant_across_code_and_config():
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
@@ -174,40 +200,72 @@ def test_request_dump_default_is_one_invariant_across_code_and_config():
     assert example_config["sessions"]["request_dump_retention"] == declared
 
 
-def test_unlink_failure_is_nonfatal_and_other_stale_dump_is_still_pruned(
-    agent, hermes_home, monkeypatch
-):
-    _write_config(hermes_home, 1)
-    blocked = agent.logs_dir / "request_dump_oldest.json"
-    removable = agent.logs_dir / "request_dump_later.json"
-    for index, path in enumerate((blocked, removable)):
+def _ordered_dumps(directory: Path, count: int):
+    paths = []
+    for index in range(count):
+        path = directory / f"request_dump_{index}.json"
         path.write_text("{}", encoding="utf-8")
         os.utime(path, (1_700_000_000.0 + index, 1_700_000_000.0 + index))
+        paths.append(path)
+    return paths
+
+
+@pytest.mark.parametrize("missing_count", [1, 2])
+def test_enoent_races_do_not_consume_newer_retained_dumps(
+    tmp_path, monkeypatch, missing_count
+):
+    paths = _ordered_dumps(tmp_path, 6)
+    raced = set(paths[:missing_count])
     real_unlink = Path.unlink
 
-    def fail_one_unlink(path, *args, **kwargs):
-        if path == blocked:
+    def race_unlink(path, *args, **kwargs):
+        if path in raced:
+            real_unlink(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", race_unlink)
+
+    deleted = agent_runtime_helpers._prune_request_dumps(
+        tmp_path, 2, protect=paths[-1]
+    )
+
+    assert deleted == 4
+    assert {path.name for path in _real_dumps(tmp_path)} == {
+        paths[-2].name,
+        paths[-1].name,
+    }
+
+
+def test_eperm_oldest_may_exceed_cap_but_preserves_newest_keep(
+    tmp_path, monkeypatch
+):
+    paths = _ordered_dumps(tmp_path, 5)
+    real_unlink = Path.unlink
+
+    def block_oldest(path, *args, **kwargs):
+        if path == paths[0]:
             raise PermissionError("in use")
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", fail_one_unlink)
+    monkeypatch.setattr(Path, "unlink", block_oldest)
 
-    current = _dump(agent, "fresh", "current-session")
+    deleted = agent_runtime_helpers._prune_request_dumps(
+        tmp_path, 2, protect=paths[-1]
+    )
 
-    assert current.exists()
-    assert blocked.exists()
-    assert not removable.exists()
+    assert deleted == 2
+    assert {path.name for path in _real_dumps(tmp_path)} == {
+        paths[0].name,
+        paths[-2].name,
+        paths[-1].name,
+    }
 
 
 def test_local_pruner_returns_successful_delete_count(tmp_path):
     directory = tmp_path / "sessions"
     directory.mkdir()
-    paths = []
-    for index in range(4):
-        path = directory / f"request_dump_{index}.json"
-        path.write_text("{}", encoding="utf-8")
-        os.utime(path, (1_700_000_000.0 + index, 1_700_000_000.0 + index))
-        paths.append(path)
+    paths = _ordered_dumps(directory, 4)
 
     deleted = agent_runtime_helpers._prune_request_dumps(
         directory, 2, protect=paths[-1]

@@ -83,6 +83,14 @@ import {
   savedProfileSsh,
   tokenPreview
 } from './connection-config'
+import {
+  migrateV1ToRegistry,
+  normalizeConnectionInput,
+  normalizeRegistry,
+  removeConnection,
+  setPrimaryConnection,
+  upsertConnection
+} from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
@@ -659,6 +667,11 @@ const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstr
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
+// v2 multi-connection registry (named agent sources). Lives BESIDE
+// connection.json — v1 stays on disk untouched so older builds sharing the
+// profile keep working; the registry imports from it once and then owns its
+// own file. Same secret posture as connection.json (encrypted tokens, 0600).
+const DESKTOP_CONNECTIONS_REGISTRY_PATH = path.join(app.getPath('userData'), 'connections.json')
 const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
@@ -1175,6 +1188,8 @@ let bootstrapRepairAttempt = 0
 const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+let connectionRegistryCache = null
+let connectionRegistryCacheMtime = null
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -7550,6 +7565,118 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
+// ── v2 connection registry (multi-source) ──────────────────────────────────
+
+/**
+ * Read the v2 registry, importing from v1 connection.json exactly once (when
+ * connections.json does not exist yet). Same mtime-cache + tighten-mode
+ * discipline as readDesktopConnectionConfig; a corrupt registry degrades to
+ * local-only via normalizeRegistry rather than throwing at boot.
+ */
+function readDesktopConnectionsRegistry() {
+  let mtime = null
+
+  try {
+    mtime = fs.statSync(DESKTOP_CONNECTIONS_REGISTRY_PATH).mtimeMs
+  } catch {
+    mtime = null
+  }
+
+  if (connectionRegistryCache && connectionRegistryCacheMtime === mtime) {
+    return connectionRegistryCache
+  }
+
+  let registry
+
+  if (mtime === null) {
+    // First run on this build: import the v1 single-connection config. The v1
+    // file is NOT modified or deleted — older builds keep reading it.
+    registry = migrateV1ToRegistry(readDesktopConnectionConfig())
+    writeDesktopConnectionsRegistry(registry)
+
+    return connectionRegistryCache
+  }
+
+  try {
+    // Same rationale as connection.json: tighten BEFORE parse so a corrupt
+    // file that still holds token bytes gets its mode fixed anyway.
+    tightenSecretFileMode(DESKTOP_CONNECTIONS_REGISTRY_PATH)
+    registry = normalizeRegistry(JSON.parse(fs.readFileSync(DESKTOP_CONNECTIONS_REGISTRY_PATH, 'utf8')))
+  } catch {
+    registry = normalizeRegistry(null)
+  }
+
+  connectionRegistryCache = registry
+  connectionRegistryCacheMtime = mtime
+
+  return registry
+}
+
+function writeDesktopConnectionsRegistry(registry) {
+  fs.mkdirSync(path.dirname(DESKTOP_CONNECTIONS_REGISTRY_PATH), { recursive: true })
+  // Owner-only for the same reason as connection.json: entries carry
+  // safeStorage-encrypted tokens plus URLs and SSH host/user/keyPath.
+  writeSecretFileAtomic(DESKTOP_CONNECTIONS_REGISTRY_PATH, JSON.stringify(registry, null, 2))
+  connectionRegistryCache = registry
+  connectionRegistryCacheMtime = fs.statSync(DESKTOP_CONNECTIONS_REGISTRY_PATH).mtimeMs
+}
+
+/**
+ * Renderer-facing view of a registry entry: token bytes never cross the IPC
+ * boundary — the renderer gets a preview + set flag, mirroring
+ * sanitizeDesktopConnectionConfig.
+ */
+function sanitizeRegistryConnection(entry) {
+  const { token, ...rest } = entry
+  const decrypted = decryptDesktopSecret(token)
+
+  return {
+    ...rest,
+    tokenSet: Boolean(decrypted),
+    tokenPreview: tokenPreview(decrypted)
+  }
+}
+
+function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()) {
+  return {
+    version: registry.version,
+    primary: registry.primary,
+    connections: registry.connections.map(sanitizeRegistryConnection)
+  }
+}
+
+/**
+ * Save (create or edit) a registry connection from a renderer payload.
+ * Token handling mirrors coerceDesktopConnectionConfig: an incoming plaintext
+ * token is encrypted (with the same plain-text opt-in seam); an absent token
+ * field inherits the stored envelope on edit.
+ */
+function saveRegistryConnection(input: any = {}) {
+  const registry = readDesktopConnectionsRegistry()
+  const existing = input.id ? registry.connections.find(c => c.id === input.id) : null
+  const incomingToken = typeof input.token === 'string' ? input.token.trim() : ''
+
+  const token = resolvePersistedRemoteToken({
+    incomingToken,
+    persistToken: true,
+    existingToken: existing?.token,
+    allowPlainText: input.allowPlainTextToken,
+    encryptSecret: encryptDesktopSecret
+  })
+
+  const entry = normalizeConnectionInput({ ...input, token }, registry)
+
+  // Token-auth remotes must actually have a token to be dialable. OAuth and
+  // cloud entries authenticate via cookies/native tokens instead.
+  if (entry.kind === 'remote' && entry.authMode !== 'oauth' && !decryptDesktopSecret(entry.token)) {
+    throw new Error('Remote gateway session token is required.')
+  }
+
+  writeDesktopConnectionsRegistry(upsertConnection(registry, entry))
+
+  return sanitizeRegistryConnection(entry)
+}
+
 // Returns the desktop's chosen profile name, or null when unset. "default" is
 // a valid stored value (pins the root HERMES_HOME explicitly); null means "no
 // preference" and preserves the legacy launch (no --profile flag).
@@ -11194,6 +11321,62 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
   })
 })
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
+
+// ── v2 connection registry IPC (multi-source) ───────────────────────────────
+// Storage-level CRUD for named agent sources. Routing/pooling consumption of
+// the registry lands separately; these handlers only manage the persisted
+// list, so they are safe to ship ahead of the switchover.
+ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
+ipcMain.handle('hermes:connections:save', async (_event, payload) => {
+  const saved = saveRegistryConnection(payload)
+
+  return { ok: true, connection: saved, registry: sanitizeConnectionsRegistry() }
+})
+ipcMain.handle('hermes:connections:remove', async (_event, id) => {
+  const registry = removeConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  writeDesktopConnectionsRegistry(registry)
+
+  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
+})
+ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
+  const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  writeDesktopConnectionsRegistry(registry)
+
+  return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
+})
+ipcMain.handle('hermes:connections:test', async (_event, id) => {
+  const registry = readDesktopConnectionsRegistry()
+  const entry = registry.connections.find(c => c.id === String(id || ''))
+
+  if (!entry) {
+    throw new Error(`No connection with id "${String(id || '')}".`)
+  }
+
+  // Reuse the existing probe stack by mapping the registry entry onto the
+  // settings-payload shape testDesktopConnectionConfig already understands.
+  if (entry.kind === 'local') {
+    return testDesktopConnectionConfig({ mode: 'local' })
+  }
+
+  if (entry.kind === 'ssh') {
+    return testDesktopConnectionConfig({
+      mode: 'ssh',
+      sshHost: entry.host,
+      sshUser: entry.user,
+      sshPort: entry.port,
+      sshKeyPath: entry.keyPath,
+      sshRemoteHermesPath: entry.remoteHermesPath
+    })
+  }
+
+  return testDesktopConnectionConfig({
+    mode: entry.kind,
+    remoteUrl: entry.url,
+    remoteAuthMode: entry.authMode,
+    remoteToken: decryptDesktopSecret(entry.token) || undefined,
+    cloudOrg: entry.org
+  })
+})
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:

@@ -669,6 +669,11 @@ class RelayRuntime:
                 session,
                 close_with_drain,
                 allow_closing=allow_closing,
+                # Bound the whole drain+close like the direct pops it
+                # replaced: a wedged native pipeline must cost at most one
+                # span, never block turn/session completion (see
+                # tests/agent/test_relay_runtime_bounded_scope_ops.py).
+                timeout=_SCOPE_OP_TIMEOUT,
             )
         except Exception as exc:
             return f"{failure_label}: {exc}"

@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
+import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
@@ -98,6 +99,7 @@ type HandlerMap = Record<string, () => void>
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
 export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const navigate = useNavigate()
+  const location = useLocation()
   const { resolvedMode, setMode } = useTheme()
 
   // Keep the latest closures without re-subscribing the listener.
@@ -256,7 +258,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // the Win/Linux path where ⌘W reaches the renderer directly.
     'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
-    'view.findInPage': openFindBar,
+    'view.findInPage': () => {
+      // Suppress on overlay routes so it doesn't collide with overlay-specific
+      // search surfaces (e.g. Settings search bar).
+      if (!isOverlayView(appViewForPath(location.pathname))) {
+        openFindBar()
+      }
+    },
     // ⌘G / ⌘⇧G are handled by the find bar's own capture-phase listener while
     // it is open (so they don't collide with `view.toggleReview`). These
     // registry handlers cover a user-assigned dedicated chord: stepping is a

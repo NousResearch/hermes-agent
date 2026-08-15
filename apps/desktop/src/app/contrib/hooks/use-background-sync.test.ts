@@ -113,6 +113,12 @@ function renderSync(
   )
 }
 
+beforeEach(() => {
+  // visiblePoll only ticks while the window is actively viewed; jsdom's
+  // document.hasFocus() is not reliably true, so pin it for these tests.
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+})
+
 afterEach(() => {
   cleanup()
   vi.clearAllTimers()
@@ -124,6 +130,7 @@ afterEach(() => {
   setMessagingSessions([])
   setBusy(false)
   vi.clearAllMocks()
+  vi.restoreAllMocks()
   clearAllSessionStates()
 })
 

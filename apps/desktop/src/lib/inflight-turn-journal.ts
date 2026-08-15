@@ -797,7 +797,11 @@ export function mergeInFlightMessages(
       applied: true,
       caughtUp: false,
       messages: [...baseMessages, ...withoutBaseIds(tailAssistants, baseMessages)],
-      streamId,
+      // Same idle-resume rule as the other exit paths: only a running turn
+      // keeps the stream target alive. Carrying the stale streamId here kept
+      // the journal entry alive (persistInFlightTurnState only clears when
+      // streamId is null), so the same tail was folded again on every open.
+      streamId: options.keepPending ? streamId : null,
       turnStartedAt: null
     }
   }

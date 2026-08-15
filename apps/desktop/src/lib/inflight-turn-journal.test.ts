@@ -577,6 +577,9 @@ describe('recoverInFlightTurnJournal', () => {
 
     expect(result.applied).toBe(true)
     expect(result.messages.map(m => m.id)).toEqual(['db-u1', 'assistant-stream-1'])
+    // Idle resume: the assistant-tail append path must not resurrect the
+    // stream target either, or the journal entry re-folds on every open.
+    expect(result.streamId).toBeNull()
     const tail = result.messages.at(-1)!
     expect(tail.pending).toBe(false)
     expect(tail.parts[0]).toMatchObject({ type: 'tool-call' })

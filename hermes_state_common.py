@@ -154,6 +154,22 @@ _RESET_CHILD_SQL = (
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
 )
 
+# Listing projection may follow compression plus *hidden* reset children
+# (CLI /new with no session_key). Same-key legacy reset children stay
+# independently listable. Resume uses get_compression_tip and must not
+# cross a reset boundary (#84870 vs test_resume_walker_does_not_cross_reset_boundary).
+_HIDDEN_RESET_PARENT_REASONS_SQL = _RESET_END_REASONS_SQL + ", 'new_session'"
+_LIST_CONTINUATION_EDGE_SQL = (
+    "(parent.end_reason = 'compression' OR ("
+    f"parent.end_reason IN ({_HIDDEN_RESET_PARENT_REASONS_SQL}) "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+    f"AND NOT ({_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)})"
+    ")) "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+    "AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+    "AND COALESCE(child.source, '') != 'tool'"
+)
+
 
 # Rows that surface in pickers: roots + branch/reset children. Subagent runs
 # and compression continuations stay hidden.

@@ -74,3 +74,19 @@ def test_compression_projection_still_walks(db):
 
     rows = db.list_sessions_rich(order_by_last_active=True)
     assert [s["id"] for s in rows] == ["tip"]
+
+
+def test_same_key_legacy_reset_keeps_both_rows(db):
+    """Gateway DM reset children with the same session_key stay listable."""
+    db.create_session("parent", source="telegram", session_key="agent:main:telegram:dm:lane")
+    db.end_session("parent", "session_reset")
+    db.create_session(
+        "child",
+        source="telegram",
+        session_key="agent:main:telegram:dm:lane",
+        parent_session_id="parent",
+    )
+    listed = {row["id"] for row in db.list_sessions_rich(source="telegram")}
+    assert listed == {"parent", "child"}
+    assert db.get_compression_tip("parent") == "parent"
+    assert db.get_list_surface_tip("parent") == "parent"

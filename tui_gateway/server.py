@@ -8074,6 +8074,8 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
     with session["history_lock"]:
+        if session.get("_closing"):
+            return False
         queued = session.get("queued_prompt")
         if not queued or session.get("running"):
             return False

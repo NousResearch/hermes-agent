@@ -10,7 +10,12 @@ bucket even though it is logically the same conversation continuing
 ``resolve_prompt_cache_scope()`` maps the physical session id to the ROOT of
 its *compression lineage* — the pre-rotation session id — using
 ``SessionDB.get_compression_lineage()``, whose fork-aware semantics
-(hardened in #79193) give exactly the scope boundaries the cache key needs:
+(hardened in #79193) give exactly the scope boundaries the cache key needs.
+NOT ``SessionDB.get_conversation_root`` / ``run_agent._conversation_root_id``
+(the Portal-attribution walk): that one follows ``parent_session_id`` blindly,
+collapsing /branch children and whole delegate trees into one id, which would
+violate the #79161 isolation this scope must preserve. The two resolvers are
+intentionally different — do not "deduplicate" them.
 
 - compression-rotation children walk back to the original segment
   (rotation-stable scope — the fix);
@@ -71,20 +76,31 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""
-    memo = getattr(agent, _MEMO_ATTR, None)
-    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == sid:
-        return memo[1]
     db = getattr(agent, "_session_db", None)
+    # Memo key includes DB presence: an agent that starts DB-less and gains a
+    # handle later (run_agent._get_session_db_for_recall lazily attaches one)
+    # must re-resolve instead of staying pinned to the physical id.
+    key = (sid, db is not None)
+    memo = getattr(agent, _MEMO_ATTR, None)
+    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == key:
+        return memo[1]
     root = _lineage_root(sid, db) if db is not None else None
     scope = root or sid
-    # Memoize on a successful walk, or when there is no DB to consult at all.
-    # A failed/empty walk (row not persisted yet, transient DB error) is NOT
-    # memoized: falling back to the physical id is the correct degraded
-    # answer right now, but pinning it for the whole segment would keep the
-    # scope wrong after the session row lands.
-    if root is not None or db is None:
+    # Memoize on a successful walk, or when there is no DB to consult at all,
+    # or when the agent will never persist a row (background-review forks set
+    # _persist_disabled but still hold a DB handle — without this, every API
+    # call would re-run the lineage query forever).
+    # A failed/empty walk on a persisting agent is NOT memoized: falling back
+    # to the physical id is the correct degraded answer right now (row not
+    # persisted yet, transient DB error), but pinning it for the whole segment
+    # would keep the scope wrong after the session row lands.
+    if (
+        root is not None
+        or db is None
+        or getattr(agent, "_persist_disabled", False)
+    ):
         try:
-            setattr(agent, _MEMO_ATTR, (sid, scope))
+            setattr(agent, _MEMO_ATTR, (key, scope))
         except Exception:
             # Frozen/slotted test doubles — resolution still works, just
             # unmemoized.

@@ -157,6 +157,33 @@ class TestResolvePromptCacheScope:
         db.create_session("late-row", source="webui", parent_session_id="late-root")
         assert resolve_prompt_cache_scope(agent) == "late-root"
 
+    def test_persist_disabled_agent_is_memoized_despite_missing_row(self, db):
+        """Background-review forks (_persist_disabled) never get a DB row —
+        they must memoize the fallback instead of re-querying per API call."""
+        agent = _agent("review-fork", db)
+        agent._persist_disabled = True
+        assert resolve_prompt_cache_scope(agent) == "review-fork"
+
+        calls = []
+        original = db.get_compression_lineage
+        db.get_compression_lineage = lambda sid: calls.append(sid) or original(sid)
+        try:
+            assert resolve_prompt_cache_scope(agent) == "review-fork"
+            assert calls == []  # memoized — no per-call re-query
+        finally:
+            db.get_compression_lineage = original
+
+    def test_db_attached_later_re_resolves(self, db):
+        """A DB-less memo must not survive a lazy _session_db attach."""
+        db.create_session("root-sess", source="webui")
+        _rotate(db, "root-sess", "rotated-1")
+        agent = _agent("rotated-1", None)
+        # No DB -> physical id, memoized for the DB-less state.
+        assert resolve_prompt_cache_scope(agent) == "rotated-1"
+        # Lazy attach (run_agent._get_session_db_for_recall pattern).
+        agent._session_db = db
+        assert resolve_prompt_cache_scope(agent) == "root-sess"
+
     def test_bogus_lineage_shape_falls_back(self):
         class WeirdDB:
             def get_compression_lineage(self, sid):

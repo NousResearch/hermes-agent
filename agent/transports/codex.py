@@ -347,10 +347,11 @@ class ResponsesApiTransport(ProviderTransport):
                 ``cache_scope_id`` is given
             cache_scope_id: str | None — rotation-stable logical scope id
                 (compression-lineage root; see agent/prompt_cache_scope.py).
-                Preferred over session_id for prompt_cache_key derivation and
-                the xAI x-grok-conv-id / Codex x-client-request-id routing
-                headers, so the cache stays warm across context-compression
-                session rotation (#79017)
+                Preferred over session_id when deriving the prompt_cache_key
+                content hash and the xAI x-grok-conv-id header; the Codex
+                x-client-request-id header mirrors the resulting body key.
+                Keeps the cache warm across context-compression session
+                rotation (#79017)
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in

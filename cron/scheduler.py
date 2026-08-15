@@ -6303,6 +6303,14 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
     return job
 
 
+# Dead-owner claim reclaim throttle (#86721): recover_interrupted_executions
+# opens the executions ledger, so the per-tick reap is rate-limited rather
+# than run on every idle 60s cycle. Tests may reset _last_dead_owner_reap_at
+# to None to force a reap on the next tick.
+_DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
+_last_dead_owner_reap_at: Optional[float] = None
+
+
 def tick(
     verbose: bool = True,
     adapters=None,
@@ -6359,6 +6367,37 @@ def tick(
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
+
+        # Dead-owner claim reclaim (#86721): execution rows carry their owner
+        # pid + process start time, but recovery previously ran only at
+        # scheduler STARTUP. A one-shot `hermes cron run` that claimed a job
+        # and died mid-run (its runner thread lived in the exiting CLI
+        # process) left the row 'claimed' forever while the long-lived
+        # gateway ticker kept running — blocking every future run of that
+        # job. Reap provably-dead owners periodically so stale claims
+        # auto-clear without a gateway restart. Only rows whose exact owner
+        # process is proved gone are touched (see _owner_is_live), so live
+        # runs in other processes are never rewritten. Throttled so idle
+        # 60s ticks don't pay a ledger connection every cycle (#33612).
+        global _last_dead_owner_reap_at
+        _reap_now = time.monotonic()
+        if (
+            _last_dead_owner_reap_at is None
+            or _reap_now - _last_dead_owner_reap_at >= _DEAD_OWNER_REAP_INTERVAL_SECONDS
+        ):
+            _last_dead_owner_reap_at = _reap_now
+            try:
+                from cron.executions import recover_interrupted_executions
+
+                _reclaimed = recover_interrupted_executions()
+                if _reclaimed:
+                    logger.warning(
+                        "Reclaimed %d cron execution(s) whose owner process died "
+                        "before reaching a terminal state (marked unknown)",
+                        _reclaimed,
+                    )
+            except Exception as _reap_exc:
+                logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
 
         due_jobs = get_due_jobs()
 

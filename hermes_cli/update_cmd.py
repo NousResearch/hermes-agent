@@ -5856,13 +5856,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                         _graceful_ok = False
                         if _main_pid > 0:
-                            print(
-                                f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                            from hermes_cli.gateway import (
+                                GATEWAY_LOOP_WEDGED,
+                                _escalate_wedged_gateway,
+                                probe_gateway_loop_liveness,
                             )
-                            _graceful_ok = _graceful_restart_via_sigusr1(
-                                _main_pid,
-                                drain_timeout=_drain_budget,
-                            )
+
+                            if (
+                                probe_gateway_loop_liveness(_main_pid)
+                                == GATEWAY_LOOP_WEDGED
+                            ):
+                                # Loop-liveness probe says the gateway's event
+                                # loop is provably dead (#81642): SIGUSR1 can
+                                # never drain it, so waiting the full budget
+                                # (180s default) only wedges the update too.
+                                # Bounded escalation (SIGTERM grace → SIGKILL,
+                                # ~10s) then restart the unit. A busy gateway
+                                # keeps a fresh heartbeat and never takes this
+                                # path — its drain (incl. the #86684 cron
+                                # floor) is untouched.
+                                print(
+                                    f"  ⚠ {svc_name}: gateway event loop is "
+                                    "unresponsive — skipping drain, forcing "
+                                    "a bounded stop..."
+                                )
+                                _escalate_wedged_gateway(_main_pid)
+                                _graceful_ok = True
+                            else:
+                                print(
+                                    f"  → {svc_name}: draining (up to {int(_drain_budget)}s)..."
+                                )
+                                _graceful_ok = _graceful_restart_via_sigusr1(
+                                    _main_pid,
+                                    drain_timeout=_drain_budget,
+                                )
 
                         if _graceful_ok:
                             # Gateway exited after a planned restart.
@@ -6127,10 +6154,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     f"  → {proc.profile}: draining gateway PID {pid} "
                     f"(up to {int(_drain_budget)}s)..."
                 )
-                drained = _graceful_restart_via_sigusr1(
-                    pid,
-                    drain_timeout=_drain_budget,
+                from hermes_cli.gateway import (
+                    GATEWAY_LOOP_WEDGED,
+                    _escalate_wedged_gateway,
+                    probe_gateway_loop_liveness,
                 )
+
+                if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+                    # Loop-liveness probe: this gateway's event loop is
+                    # provably dead (#81642) — SIGUSR1/SIGTERM shutdown can
+                    # never run, so the drain wait would burn the full budget
+                    # and stall the update. Bounded stop instead (SIGTERM
+                    # grace → SIGKILL, ~10s). A busy-but-alive gateway keeps
+                    # a fresh heartbeat and never takes this branch, so live
+                    # drains (incl. the #86684 cron floor) are unaffected.
+                    print(
+                        f"  ⚠ {proc.profile}: gateway event loop is "
+                        "unresponsive — skipping drain, forcing a bounded stop..."
+                    )
+                    _escalate_wedged_gateway(pid)
+                    drained = True
+                else:
+                    drained = _graceful_restart_via_sigusr1(
+                        pid,
+                        drain_timeout=_drain_budget,
+                    )
                 if not drained:
                     try:
                         os.kill(pid, _signal.SIGTERM)

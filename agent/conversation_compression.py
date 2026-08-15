@@ -2003,6 +2003,56 @@ def _strip_stale_todo_snapshot(content: Any) -> Any:
     return content
 
 
+# Retention-parity notice (#84718): compaction re-injects the todo list
+# verbatim while skill instructions are pruned to [SKILL_PRUNED: ...] markers,
+# so the imperative crosses the boundary without the policy that governed it.
+# When BOTH happen at the same boundary, couple them: the re-injected snapshot
+# carries an explicit instruction to reload the pruned skills BEFORE acting on
+# any preserved task. Deterministic (derived only from the compressed
+# transcript), bounded (marker cap shared with the summary re-injection), and
+# stripped together with the snapshot at the next boundary because it lives
+# after TODO_INJECTION_HEADER inside the same block.
+_PRUNED_SKILL_RELOAD_NOTICE_HEADER = (
+    "[Skills pruned during compression — reload before acting on these tasks]"
+)
+
+
+def _pruned_skill_reload_notice(compressed: list) -> str:
+    """Reload instruction for skills whose bodies were pruned, or ``""``.
+
+    Scans the post-compression transcript for the canonical
+    ``[SKILL_PRUNED: ...]`` markers (summary ``## Pruned Skills`` section,
+    pruned tool rows surviving in the protected tail) and renders one bounded
+    notice naming each skill with its exact ``skill_view`` reload call.
+    First-seen order, deduplicated, capped at ``_MAX_PRUNED_SKILL_MARKERS``.
+    """
+    from agent.context_compressor import (
+        _MAX_PRUNED_SKILL_MARKERS,
+        _extract_pruned_skill_names,
+    )
+
+    names: list = []
+    for message in compressed:
+        if not isinstance(message, dict):
+            continue
+        for name in _extract_pruned_skill_names(_message_text(message)):
+            if name not in names:
+                names.append(name)
+    del names[_MAX_PRUNED_SKILL_MARKERS:]
+    if not names:
+        return ""
+    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
+    return (
+        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
+        "The task list above crossed the compression boundary verbatim, but "
+        "the skill instructions that governed it were pruned. Before "
+        f"executing any preserved task that depends on these skills, reload "
+        f"them first: {calls}. After reloading, re-check that each pending "
+        "task is still justified — findings recorded before the boundary may "
+        "have invalidated it."
+    )
+
+
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     """Fold the human anchor into an existing user-role scaffolding turn.
 
@@ -3190,6 +3240,16 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
+            # Retention parity (#84718): the snapshot below re-injects the
+            # imperative verbatim. If this same boundary pruned skill bodies
+            # to [SKILL_PRUNED: ...] markers, the policy that governed those
+            # tasks is gone — couple a reload instruction to the snapshot so
+            # the imperative never crosses the boundary alone. Appended after
+            # TODO_INJECTION_HEADER, so the stale-snapshot strip removes both
+            # together at the next boundary.
+            _reload_notice = _pruned_skill_reload_notice(compressed)
+            if _reload_notice:
+                todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
             # Fold the snapshot into a trailing REAL user message so
             # compression never introduces a synthetic user/user pair. Any
             # snapshot merged at an earlier boundary is stripped first so

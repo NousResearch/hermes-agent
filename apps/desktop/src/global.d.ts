@@ -20,7 +20,10 @@ declare global {
       getConnection: (profile?: string | null) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
-      getConnectionFor?: (payload: { connectionId?: null | string; profile?: null | string }) => Promise<HermesConnection>
+      getConnectionFor?: (payload: {
+        connectionId?: null | string
+        profile?: null | string
+      }) => Promise<HermesConnection>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer

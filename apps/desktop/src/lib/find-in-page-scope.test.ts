@@ -271,10 +271,8 @@ describe('performScopedFind', () => {
     // a match used to null the walker's `current`, terminating the sibling
     // traversal — `<div>needle<span>needle</span></div>` only matched the
     // first occurrence. The sibling subtree must still be searched.
-    const surface = plantSurface(
-      'surface',
-      '<div>needle<span>needle</span></div><p>needle</p>'
-    )
+    const surface = plantSurface('surface', '<div>needle<span>needle</span></div><p>needle</p>')
+
     const result = performScopedFind(surface, 'needle', { forward: true, findNext: false })
 
     expect(result.count).toBe(3)

@@ -81,7 +81,9 @@ async function loadSuggestible(): Promise<SuggestibleServer[]> {
   const { entries } = await getMcpCatalog()
 
   const fromCatalog: SuggestibleServer[] = entries
-    .filter(entry => entry.suggest && entry.url && (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0))
+    .filter(
+      entry => entry.suggest && entry.url && (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0)
+    )
     .map(entry => ({
       hosts: entry.suggest!.hosts,
       keywords: entry.suggest!.keywords,

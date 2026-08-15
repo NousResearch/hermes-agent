@@ -13,9 +13,7 @@ function dependencies(overrides: Partial<MediaProtocolDependencies> = {}) {
     ensureRemoteBearer: vi.fn(async (_baseUrl: string) => null),
     fetchLocal: vi.fn(async (_resolvedPath: string, _headers: Headers) => new Response('local', { status: 206 })),
     fetchRemote: vi.fn(async (_url: string, _headers: Headers) => new Response('remote', { status: 206 })),
-    fetchRemoteWithCookies: vi.fn(async (_url: string, _headers: Headers) =>
-      new Response('cookie', { status: 206 })
-    ),
+    fetchRemoteWithCookies: vi.fn(async (_url: string, _headers: Headers) => new Response('cookie', { status: 206 })),
     resolveLocalFile: vi.fn(async (filePath: string) => filePath),
     resolveRemoteConnection: vi.fn(async (_profile?: string) => ({
       authMode: 'token' as const,
@@ -164,9 +162,7 @@ describe('createMediaProtocolHandler', () => {
       }))
     })
 
-    const response = await createMediaProtocolHandler(deps)(
-      request('hermes-media://remote/%2Ftmp%2Fclip.mp4')
-    )
+    const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
 
     expect(response.status).toBe(206)
     expect(deps.fetchRemote).toHaveBeenCalledOnce()
@@ -210,9 +206,7 @@ describe('createMediaProtocolHandler', () => {
       }))
     })
 
-    const response = await createMediaProtocolHandler(deps)(
-      request('hermes-media://remote/%2Ftmp%2Fclip.mp4')
-    )
+    const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
 
     expect(response.status).toBe(206)
     expect(deps.fetchRemote).not.toHaveBeenCalled()

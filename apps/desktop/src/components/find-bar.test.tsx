@@ -991,8 +991,7 @@ describe('FindBar files pane positioning', () => {
     const aside = document.createElement('aside')
     aside.setAttribute('aria-label', 'Right sidebar')
     // jsdom has no layout — stub the rect the component measures.
-    aside.getBoundingClientRect = () =>
-      ({ left: window.innerWidth - width, width } as DOMRect)
+    aside.getBoundingClientRect = () => ({ left: window.innerWidth - width, width }) as DOMRect
     // eslint-disable-next-line no-restricted-globals -- must land in the real DOM the component measures
     document.body.appendChild(aside)
 

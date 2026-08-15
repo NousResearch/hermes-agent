@@ -159,7 +159,13 @@ export function FindBar() {
   return (
     <div
       className={cn(
-        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,0px)+0.5rem)] z-50',
+        // Floats BELOW the titlebar band. The bar mounts at the overlay root,
+        // outside the app-shell subtree that defines --titlebar-height, so the
+        // fallback must be the real titlebar height (34px, matching
+        // floating-hud.ts / notifications.tsx) — a 0px fallback parks the bar
+        // inside the titlebar strip, underneath the native min/max/close
+        // window-controls overlay on Windows/Linux.
+        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,34px)+0.5rem)] z-50',
         'flex items-center gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1 shadow-md'
       )}
       role="search"

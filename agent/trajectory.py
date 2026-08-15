@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+from utils import open_private_append
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +65,8 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     try:
         if filename is None:
             filename = default_trajectory_path(completed)
-            filename.parent.mkdir(parents=True, exist_ok=True)
-        with open(filename, "a", encoding="utf-8") as f:
+            secure_artifact_dir(filename.parent)
+        with open_private_append(filename, mode=artifact_file_mode()) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:

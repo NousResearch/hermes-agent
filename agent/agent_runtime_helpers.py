@@ -54,29 +54,31 @@ _REQUEST_DUMP_LOCK = threading.RLock()
 def _request_dump_write_lock(directory: Path):
     """Serialize dump publication and pruning within and across processes."""
     with _REQUEST_DUMP_LOCK:
-        lock_fd = None
+        lock_handle = None
         try:
-            lock_fd = os.open(
+            from hermes_cli.config import artifact_file_mode
+            from utils import open_private_append
+
+            lock_handle = open_private_append(
                 directory / ".request_dump_retention.lock",
-                os.O_CREAT | os.O_RDWR,
-                0o600,
+                mode=artifact_file_mode(),
             )
             try:
                 import fcntl
 
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
             except (ImportError, OSError):
                 pass
             yield
         finally:
-            if lock_fd is not None:
+            if lock_handle is not None:
                 try:
                     import fcntl
 
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                 except (ImportError, OSError):
                     pass
-                os.close(lock_fd)
+                lock_handle.close()
 
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
@@ -2023,9 +2025,9 @@ def dump_api_request_debug(
         # Run the serialized dump through the same scrubber used for logs/tool
         # output, then hand the resulting payload back to the shared atomic
         # JSON writer so request dumps keep the same write semantics as before.
-        from agent.redact import redact_sensitive_text
-        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
-        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        from agent.redact_structured import redact_structured
+
+        _redacted_payload = redact_structured(dump_payload)
 
         # Keep publication and pruning in one critical section. Without this,
         # two writers can each protect their own dump, then delete the other

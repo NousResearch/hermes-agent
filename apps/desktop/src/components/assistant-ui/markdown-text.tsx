@@ -38,6 +38,7 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
+import { $currentCwd } from '@/store/session'
 
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
@@ -104,8 +105,9 @@ function preprocessWithTailRepair(text: string): string {
     // Opt-in plain-text path linkify (desktop.markdown_linkify_paths). The
     // flag lives in a module-scope atom set by MarkdownTextSurface so this
     // function keeps a stable identity (a changing `preprocess` prop would
-    // remount the render pipeline on every config change).
-    return $linkifyFilePaths.get() ? linkifyFilePaths(repaired) : repaired
+    // remount the render pipeline on every config change). Relative paths
+    // resolve against the current session cwd.
+    return $linkifyFilePaths.get() ? linkifyFilePaths(repaired, $currentCwd.get()) : repaired
   } catch {
     return text
   }

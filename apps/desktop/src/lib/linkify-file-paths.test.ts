@@ -37,4 +37,31 @@ describe('linkifyFilePaths', () => {
     const src = '目录 /Users/echo/notes 与相对路径 docs/README.md 不动'
     expect(linkifyFilePaths(src)).toBe(src)
   })
+
+  it('links project-relative paths when cwd is provided', () => {
+    const src = '见 docs/requirements/R-039.md 和 openspec/roadmap.md'
+    const out = linkifyFilePaths(src, '/Users/echo/Coding/sdata/sdata-tempo')
+    expect(out).toContain(
+      '[docs/requirements/R-039.md](#media:%2FUsers%2Fecho%2FCoding%2Fsdata%2Fsdata-tempo%2Fdocs%2Frequirements%2FR-039.md)'
+    )
+    expect(out).toContain(
+      '[openspec/roadmap.md](#media:%2FUsers%2Fecho%2FCoding%2Fsdata%2Fsdata-tempo%2Fopenspec%2Froadmap.md)'
+    )
+  })
+
+  it('resolves ./ and ../ relative paths against cwd', () => {
+    expect(linkifyFilePaths('./src/main.ts', '/repo/pkg')).toContain(
+      '[./src/main.ts](#media:%2Frepo%2Fpkg%2Fsrc%2Fmain.ts)'
+    )
+    expect(linkifyFilePaths('../shared/types.ts', '/repo/pkg/src')).toContain(
+      '[../shared/types.ts](#media:%2Frepo%2Fpkg%2Fshared%2Ftypes.ts)'
+    )
+  })
+
+  it('does not link relative paths without cwd, and skips URL path segments', () => {
+    expect(linkifyFilePaths('docs/guide.md')).toBe('docs/guide.md')
+    expect(linkifyFilePaths('见 https://github.com/user/repo/file.md', '/repo')).toBe(
+      '见 https://github.com/user/repo/file.md'
+    )
+  })
 })

@@ -768,6 +768,74 @@ class TestDiscoverAndRegister:
             for record in caplog.records
         )
 
+    def test_server_native_read_resource_wins_over_generated_utility(self, caplog):
+        """A server-native tool named 'read_resource' must not be dropped when the
+        generated 'read_resource' utility collides with it (regression #87112)."""
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read_resource"),
+                _make_mcp_tool("other_tool"),
+            ],
+        )
+        # Default config: resources=True → generated utility is emitted
+        config = {"tools": {}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        # The server-native read_resource must be registered; the generated
+        # utility must be dropped.
+        entry = registry.get_entry("mcp__srv__read_resource")
+        assert entry is not None, \
+            "server-native read_resource should be registered despite collision"
+        assert entry.toolset == "mcp-srv", \
+            "read_resource should be owned by the server's toolset"
+
+        # other_tool must still be registered (no name collision)
+        assert "mcp__srv__other_tool" in registry.get_all_tool_names()
+
+        # The generated utility's handler should NOT have been registered.
+        all_handlers = registry.get_all_tool_names()
+        assert "mcp__srv__read_resource" in all_handlers
+
+        # Log should warn about the collision, preserving the native tool.
+        assert any(
+            "name normalization collision" in record.message
+            and "preserving server-native tool" in record.message
+            for record in caplog.records
+        ), "expected a WARNING log about the collision resolution"
+
+    def test_server_native_read_resource_with_utility_disabled_still_registered(self):
+        """When resources are disabled, a server-native 'read_resource' tool
+        must still be registered (no collision to begin with)."""
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read_resource"),
+            ],
+        )
+        config = {"tools": {"resources": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"):
+            registered = _register_server_tools("srv", server, config)
+
+        assert "mcp__srv__read_resource" in registered
+        assert registry.get_entry("mcp__srv__read_resource") is not None
+
 # ---------------------------------------------------------------------------
 # MCPServerTask (run / start / shutdown)
 # ---------------------------------------------------------------------------

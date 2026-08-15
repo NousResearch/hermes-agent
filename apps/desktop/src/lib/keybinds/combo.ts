@@ -270,7 +270,10 @@ const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'en
 export function actionAllowedInInput(actionId: string, combo: string): boolean {
   const base = combo.split('+').pop()
 
-  if (base && TEXT_NAVIGATION_KEYS.has(base)) {
+  // A bare modifier (no key) is not a real chord — `comboFromEvent` never
+  // yields one, but reject it here so a malformed stored binding can't pass
+  // the shape-only mod/ctrl check below.
+  if (!base || base === 'mod' || base === 'ctrl' || TEXT_NAVIGATION_KEYS.has(base)) {
     return false
   }
 

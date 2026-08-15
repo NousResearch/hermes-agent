@@ -163,6 +163,11 @@ describe('actionAllowedInInput', () => {
     // would have to dodge shipped defaults (⌘K, ⌘W, ⌘D, ⌘F, ⌘B) or re-break them.
     expect(actionAllowedInInput('session.new', 'ctrl+a')).toBe(true)
 
+    // Bare modifiers are not real chords — `comboFromEvent` never yields
+    // them, so a malformed stored binding must not pass the shape-only check.
+    expect(actionAllowedInInput('session.new', 'mod')).toBe(false)
+    expect(actionAllowedInInput('session.new', 'ctrl')).toBe(false)
+
     // Bare/Shift-only combos must never hijack typing: a rebound ⌘N → 'n'
     // (or the pre-#76185 'shift+n') must not fire while the user types N.
     expect(actionAllowedInInput('session.new', 'n')).toBe(false)

@@ -50,7 +50,7 @@ describe('sendPtyShortcutSequence', () => {
   const socket = (readyState: number = WebSocket.OPEN) => ({
     readyState,
     send: vi.fn(),
-  })
+  }) as unknown as Pick<WebSocket, 'readyState' | 'send'> & { send: ReturnType<typeof vi.fn> }
 
   it('sends the sequence when the socket and PTY state are open', () => {
     const ws = socket()

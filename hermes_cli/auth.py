@@ -2180,7 +2180,18 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
-    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
+    # Scope-aware key reads: under multiplex a secondary profile's API keys
+    # live only in its secret scope, not os.environ — a bare getenv here
+    # would find nothing and auto-resolution would report "No LLM provider
+    # configured" for every secondary profile (same class as #86905).
+    try:
+        from agent.auxiliary_client import _scoped_key_env
+    except Exception:  # pragma: no cover — defensive
+        _scoped_key_env = lambda name: os.getenv(name) or ""
+
+    if has_usable_secret(_scoped_key_env("OPENAI_API_KEY")) or has_usable_secret(
+        _scoped_key_env("OPENROUTER_API_KEY")
+    ):
         return "openrouter"
 
     # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
@@ -2223,7 +2234,7 @@ def resolve_provider(
         if pid in {"copilot", "lmstudio"}:
             continue
         for env_var in pconfig.api_key_env_vars:
-            if has_usable_secret(os.getenv(env_var, "")):
+            if has_usable_secret(_scoped_key_env(env_var)):
                 # An exported API key now wins over a logged-in OAuth provider
                 # (the #29285 fix). Surface that so a user who deliberately uses
                 # OAuth but has a stale key in ~/.hermes/.env isn't silently

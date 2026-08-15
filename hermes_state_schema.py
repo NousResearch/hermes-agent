@@ -312,6 +312,33 @@ class SessionSchemaMixin:
             )
         )
 
+    _FTS_INTEGRITY_ENGINE_KEY = "fts_integrity_engine"
+
+    def _fts_integrity_engine_id(self, cursor: sqlite3.Cursor) -> str:
+        try:
+            row = cursor.execute("SELECT sqlite_version()").fetchone()
+        except sqlite3.DatabaseError:
+            return "fts5:unknown"
+        return f"fts5:{row[0] if row else 'unknown'}"
+
+    def _legacy_fts_integrity_probe_needed(self, cursor: sqlite3.Cursor) -> bool:
+        """True until a clean integrity-check has run on this SQLite engine."""
+        try:
+            row = cursor.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (self._FTS_INTEGRITY_ENGINE_KEY,),
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            return True
+        return not row or str(row[0] or "") != self._fts_integrity_engine_id(cursor)
+
+    def _record_legacy_fts_integrity_engine(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (self._FTS_INTEGRITY_ENGINE_KEY, self._fts_integrity_engine_id(cursor)),
+        )
+
     def _legacy_fts_index_corrupt(
         self, cursor: sqlite3.Cursor, *, include_trigram: bool
     ) -> bool:
@@ -1326,12 +1353,18 @@ class SessionSchemaMixin:
                         cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
                     )
                     self._trigram_available = trigram_enabled
-                    if triggers_need_repair or self._legacy_fts_index_corrupt(
-                        cursor, include_trigram=trigram_enabled
+                    probe_needed = self._legacy_fts_integrity_probe_needed(cursor)
+                    if triggers_need_repair or (
+                        probe_needed
+                        and self._legacy_fts_index_corrupt(
+                            cursor, include_trigram=trigram_enabled
+                        )
                     ):
                         self._rebuild_legacy_fts_indexes(
                             cursor, include_trigram=trigram_enabled
                         )
+                    if probe_needed:
+                        self._record_legacy_fts_integrity_engine(cursor)
             else:
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)

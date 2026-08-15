@@ -115,6 +115,33 @@ class TestLegacyFtsMalformedRebuild:
         finally:
             db.close()
 
+    def test_integrity_probe_runs_once_per_sqlite_engine(self, tmp_path):
+        """A healthy legacy DB must not rerun FTS integrity-check on every open."""
+        db_path = tmp_path / "state.db"
+        _create_legacy_db(db_path)
+        calls = {"n": 0}
+        original = SessionDB._legacy_fts_index_corrupt
+
+        def _counting(self, cursor, *, include_trigram):
+            calls["n"] += 1
+            return original(self, cursor, include_trigram=include_trigram)
+
+        SessionDB._legacy_fts_index_corrupt = _counting
+        try:
+            first = SessionDB(db_path=db_path)
+            first.close()
+            assert calls["n"] == 1
+            marker = sqlite3.connect(str(db_path)).execute(
+                "SELECT value FROM state_meta WHERE key = 'fts_integrity_engine'"
+            ).fetchone()
+            assert marker and str(marker[0]).startswith("fts5:")
+
+            second = SessionDB(db_path=db_path)
+            second.close()
+            assert calls["n"] == 1
+        finally:
+            SessionDB._legacy_fts_index_corrupt = original
+
     def test_non_malformed_error_is_not_classified_as_corruption(self):
         """Only the malformed-index class justifies a destructive rebuild; a
         transient lock/busy/IO DatabaseError must fall through to the caller's

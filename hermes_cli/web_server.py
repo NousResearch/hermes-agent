@@ -471,10 +471,23 @@ async def _lifespan(app: "FastAPI"):
         # the old gateway to launchd (PPID=1). It keeps holding the QQ
         # WebSocket, and a newly forked gateway then races the same credential,
         # splitting messages across parallel session trees (#77276).
+        #
+        # Only reap when no live, registered gateway is in the record: a
+        # healthy standalone gateway (launched via `hermes gateway run`, no
+        # service supervisor) is not an orphan, and the sweep would kill it.
+        # On Windows every layer of the launcher chain (stub -> venv python ->
+        # runtime python) carries "gateway run" in its command line, so
+        # find_gateway_pids() matches processes the pidfile exclusion cannot
+        # see, and os.kill(SIGTERM) is a hard TerminateProcess — the
+        # gateway's planned-stop watcher (0.5s poll) has no time to drain.
+        # cleanup_stale=False keeps the probe from deleting the registration
+        # record it is checking.
         try:
+            from gateway.status import get_running_pid
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            if get_running_pid(cleanup_stale=False) is None:
+                _reap_unsupervised_gateway_orphans()
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 

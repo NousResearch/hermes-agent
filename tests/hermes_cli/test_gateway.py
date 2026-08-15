@@ -677,7 +677,9 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         self._install_fake_psutil(monkeypatch, [recorded, bootstrap])
 
         # get_running_pid() returns the recorded healthy gateway PID.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: recorded_pid)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda cleanup_stale=True: recorded_pid
+        )
 
         # find_gateway_pids returns the recorded PID, its bootstrap parent
         # and a real orphan. The reaper should only kill the orphan.
@@ -720,7 +722,9 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: bootstrap)
         self._install_fake_psutil(monkeypatch, [recorded, bootstrap])
 
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: recorded_pid)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda cleanup_stale=True: recorded_pid
+        )
 
         # find_gateway_pids would return the recorded PID and its bootstrap
         # parent, but both are excluded.

@@ -2288,10 +2288,19 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # the Scheduled-Task bootstrap's argv (``gateway run``) matches the
     # gateway scan — killing that bootstrap takes the detached gateway it
     # spawned down with it.
+    #
+    # Probe the record with cleanup_stale=False so the sweep never deletes
+    # the registration it is about to use as exclusion evidence.  With the
+    # default cleanup, a record that fails liveness validation is unlinked
+    # mid-sweep; the recorded PID then never joins the exclusion set, and a
+    # healthy standalone gateway (no service supervisor — e.g. `hermes
+    # gateway run` on Windows) is hard-killed by the sweep.  On Windows
+    # SIGTERM is TerminateProcess, so the gateway's own planned-stop watcher
+    # never gets a chance to shut down gracefully.
     try:
         from gateway.status import get_running_pid
 
-        recorded = get_running_pid()
+        recorded = get_running_pid(cleanup_stale=False)
         if recorded and recorded > 0:
             own.add(recorded)
             try:

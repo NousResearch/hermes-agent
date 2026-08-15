@@ -81,9 +81,11 @@ describe('approval prompt store', () => {
 
   it('acknowledges an approval only after parking it', async () => {
     const calls: Array<[string, Record<string, unknown>]> = []
+
     const gateway = {
       request: async (method: string, params: Record<string, unknown>) => {
         calls.push([method, params])
+
         return { acknowledged: true }
       }
     }
@@ -101,9 +103,11 @@ describe('approval prompt store', () => {
 
   it('replays and acknowledges the oldest unresolved approval after reconnect', async () => {
     const calls: Array<[string, Record<string, unknown>]> = []
+
     const gateway = {
       request: async (method: string, params: Record<string, unknown>) => {
         calls.push([method, params])
+
         if (method === 'approval.pending') {
           return {
             approvals: [
@@ -112,6 +116,7 @@ describe('approval prompt store', () => {
             ]
           }
         }
+
         return { acknowledged: true }
       }
     }

@@ -1908,6 +1908,26 @@ def _approval_request_payload(data: dict | None) -> dict:
     return payload
 
 
+def _pending_clarify_request_payload(sid: str) -> dict | None:
+    """Read the clarify prompt still blocking a session, if there is one.
+
+    Clarify prompts share `_block()`'s pending registry, so a reconnecting
+    client whose transport was detached when `clarify.request` was emitted
+    would otherwise never see the question — the agent thread stays parked on
+    the Event until timeout. Same replay contract as `pending_approval`: a
+    read-only snapshot, the registry stays authoritative and `clarify.respond`
+    with the embedded request_id resolves it.
+    """
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid != sid:
+                continue
+            event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
+            if event == "clarify.request":
+                return dict(prompt_payload)
+    return None
+
+
 def _pending_approval_request_payload(session_key: str) -> dict | None:
     """Read the oldest unresolved approval in a session, if there is one."""
     try:
@@ -8493,6 +8513,8 @@ def _live_session_payload(
         payload["queued"] = queued
     if approval := _pending_approval_request_payload(str(session.get("session_key") or "")):
         payload["pending_approval"] = approval
+    if clarify := _pending_clarify_request_payload(sid):
+        payload["pending_clarify"] = clarify
     return payload
 
 

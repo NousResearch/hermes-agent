@@ -9,12 +9,12 @@ import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { setApprovalRequest } from '@/store/prompts'
 import {
   beginSessionMutation,
   endSessionMutation,
@@ -22,6 +22,7 @@ import {
   tombstoneSessions,
   untombstoneSessions
 } from '@/store/projects'
+import { setApprovalRequest } from '@/store/prompts'
 import {
   $activeSessionStoredIdRotation,
   $currentCwd,
@@ -205,9 +206,34 @@ function restorePendingApproval(response: SessionResumeResponse, sessionId: stri
     choices: pending.choices,
     command: pending.command ?? '',
     description: pending.description ?? 'dangerous command',
+    requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
     sessionId,
     smartDenied: pending.smart_denied === true
   })
+
+  return true
+}
+
+function restorePendingClarify(response: SessionResumeResponse, sessionId: string): boolean {
+  // Same replay class as pending_approval: the clarify.request event was
+  // emitted while this client's transport was detached, so without the resume
+  // snapshot the question stays invisible until it times out server-side.
+  const pending = response.pending_clarify
+
+  if (!pending || typeof pending.request_id !== 'string' || typeof pending.question !== 'string') {
+    return false
+  }
+
+  const choices = normalizeChoices(pending.choices)
+
+  setClarifyRequest({
+    choices: choices.length > 0 ? choices : null,
+    multiSelect: pending.multi_select === true,
+    question: pending.question,
+    requestId: pending.request_id,
+    sessionId
+  })
+
   return true
 }
 
@@ -787,6 +813,7 @@ export function useSessionActions({
               dropSessionState(cachedRuntimeId)
             } else {
               const pendingApproval = restorePendingApproval(activated, cachedRuntimeId)
+              const pendingClarify = restorePendingClarify(activated, cachedRuntimeId)
               const runtimeInfo = applyRuntimeInfo(activated.info)
 
               // `omit_messages` means the response carries NO transcript, not
@@ -843,7 +870,7 @@ export function useSessionActions({
                   messages: activatedMessages,
                   busy: running,
                   awaitingResponse: running,
-                  needsInput: pendingApproval || state.needsInput,
+                  needsInput: pendingApproval || pendingClarify || state.needsInput,
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
@@ -1061,6 +1088,7 @@ export function useSessionActions({
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
+        const pendingClarify = restorePendingClarify(resumed, resumed.session_id)
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
@@ -1073,7 +1101,7 @@ export function useSessionActions({
             messages: messagesForView,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
-            needsInput: pendingApproval || state.needsInput,
+            needsInput: pendingApproval || pendingClarify || state.needsInput,
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
             ...(inFlightRecovery.applied
               ? {

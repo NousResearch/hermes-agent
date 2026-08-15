@@ -207,8 +207,50 @@ def test_live_session_payload_replays_pending_approval(server, monkeypatch):
         if saved_queue is not None:
             approval._gateway_queues["stored-session"] = saved_queue
 
-    assert payload["pending_approval"] == first
     assert payload["pending_approval"] is not first
+    replayed = payload["pending_approval"]
+    # request_id is injected by _ApprovalEntry so reconnecting clients can
+    # correlate their approval.respond with the exact queued request.
+    assert replayed.pop("request_id")
+    assert replayed == first
+
+
+def test_live_session_payload_replays_pending_clarify(server):
+    """A reattached client also receives a clarify question emitted while detached."""
+    session = {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    clarify_payload = {
+        "choices": ["staging", "production"],
+        "question": "Which deployment target?",
+        "request_id": "rid-clarify",
+    }
+    with server._prompt_lock:
+        server._pending["rid-clarify"] = ("runtime-session", threading.Event())
+        server._pending_prompt_payloads["rid-clarify"] = (
+            "clarify.request",
+            dict(clarify_payload),
+        )
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+        other = server._live_session_payload("other-session", session)
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-clarify", None)
+            server._pending_prompt_payloads.pop("rid-clarify", None)
+
+    assert payload["pending_clarify"] == clarify_payload
+    # Snapshot, not a live reference into the registry.
+    assert payload["pending_clarify"] is not clarify_payload
+    # Scoped to the owning runtime session only.
+    assert "pending_clarify" not in other
 
 
 def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):

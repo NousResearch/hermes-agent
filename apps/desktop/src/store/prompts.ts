@@ -117,6 +117,7 @@ export const clearApprovalRequest = approval.clear
 
 export async function receiveApprovalRequest(gateway: ApprovalGateway | null, request: ApprovalRequest): Promise<void> {
   setApprovalRequest(request)
+
   if (gateway && request.requestId && request.sessionId) {
     await gateway.request('approval.received', {
       request_id: request.requestId,
@@ -129,14 +130,18 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   if (!gateway || !sessionId) {
     return
   }
+
   const rawResult = await gateway.request('approval.pending', {
     session_id: sessionId
   })
+
   const result = rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
   const pending = Array.isArray(result?.approvals) ? result.approvals[0] : undefined
+
   if (!pending || typeof pending.request_id !== 'string') {
     return
   }
+
   await receiveApprovalRequest(gateway, {
     allowPermanent: pending.allow_permanent !== false,
     choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,

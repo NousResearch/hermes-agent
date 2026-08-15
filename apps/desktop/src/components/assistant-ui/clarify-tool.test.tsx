@@ -377,6 +377,7 @@ describe('ClarifyTool recommended option', () => {
     $gateway.set({ request } as never)
     setClarifyRequest({
       choices: ['staging (Recommended)', 'production'],
+      multiSelect: false,
       question: 'Which deployment target?',
       requestId: 'request-1',
       sessionId: 'session-1'

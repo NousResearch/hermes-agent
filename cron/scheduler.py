@@ -63,6 +63,24 @@ from agent.delegation_context import (
 logger = logging.getLogger(__name__)
 
 
+def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
+    """Done-callback: close a SessionDB whose constructor finished after run_job's timeout.
+
+    When ``run_job``'s SessionDB init times out, the worker thread is abandoned
+    (``shutdown(wait=False)``) so the job can proceed without a session store.
+    If the constructor later completes inside that abandoned worker, the
+    Future's result — an open SessionDB holding .db / WAL / SHM file handles —
+    would be orphaned and never closed, leaking descriptors until EMFILE
+    (#72782).  This callback retrieves and closes that eventual late result.
+    """
+    try:
+        db = future.result()
+        if db is not None:
+            db.close()
+    except Exception:
+        pass
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -4186,8 +4204,17 @@ def run_job(
 
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            _session_db_future = _session_db_pool.submit(SessionDB)
             try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+                _session_db = _session_db_future.result(timeout=_session_db_timeout)
+            except concurrent.futures.TimeoutError:
+                # The worker is abandoned (shutdown below doesn't wait for it).
+                # If SessionDB() later completes inside it, the future's result
+                # would be orphaned and its SQLite FDs (.db, WAL, SHM) leak
+                # until process exit.  Register a done-callback that retrieves
+                # and closes any eventual late result (#72782).
+                _session_db_future.add_done_callback(_close_late_session_db_result)
+                raise
             finally:
                 # Don't wait for a wedged connect() to unwind — abandon the
                 # worker thread (same pattern as the agent inactivity timeout

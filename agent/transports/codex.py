@@ -433,11 +433,16 @@ class ResponsesApiTransport(ProviderTransport):
         if params.get("is_xai_responses", False):
             from agent.model_metadata import is_grok_46_family
 
-            # Grok 4.6 accepts xhigh as a wire value. Older Grok models top out
-            # at high, while max/ultra remain Hermes aliases for every xAI model.
-            if not is_grok_46_family(model):
+            # Grok 4.6 accepts xhigh as a wire value; older Grok models top
+            # out at high. max/ultra are Hermes ladder aliases for "this
+            # model's ceiling", so they clamp to the strongest level the
+            # model actually accepts — xhigh on grok-4.6, high elsewhere —
+            # never one rung below it (#87279).
+            if is_grok_46_family(model):
+                _effort_clamp.update({"max": "xhigh", "ultra": "xhigh"})
+            else:
                 _effort_clamp["xhigh"] = "high"
-            _effort_clamp.update({"max": "high", "ultra": "high"})
+                _effort_clamp.update({"max": "high", "ultra": "high"})
         if (params.get("provider") or "").strip().lower() == "actual":
             # Actual Computer relays to SGLang/vLLM backends that accept only
             # none/low/medium/high/max for reasoning effort — a forwarded

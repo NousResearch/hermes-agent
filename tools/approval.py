@@ -524,6 +524,11 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # In-place edits of the Hermes security policy / credential files are
+    # hardline too, but they are NOT expressible as a regex over the raw
+    # command text: deciding them correctly needs the real command word and
+    # the editor's option grammar. See _detect_hermes_inplace_edit() below,
+    # which detect_hardline_command() consults alongside these patterns.
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -573,6 +578,275 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+# =========================================================================
+# In-place edits of the Hermes security policy / credential files
+# =========================================================================
+#
+# ~/.hermes/config.yaml holds approvals.mode, yolo, and the permanent
+# allowlist; ~/.hermes/.env holds credentials.  Both are write-protected on
+# the file_tools side, and the smart-approval adjudicator has approved a
+# `sed -i` on config.yaml even while describing it correctly — so without a
+# terminal-side floor the agent can rewrite its own guardrails.
+#
+# This is deliberately NOT a regex over the command text.  A text search
+# gets both directions wrong, as the review of #60523 demonstrated:
+#
+#   * bypasses — `sed -e 's/a/b/' -i F` (the `i` is not in the first option
+#     token), `command sed -i F`, `env -i sed -i F`, `/usr/bin/sed -i F`.
+#     A pattern that hardcodes one spelling of the editor and one position
+#     for `-i` misses every equivalent spelling.
+#   * false positives — `sed -i 's|~/.hermes/config.yaml|config.yml|'
+#     README.md` (the protected path is inside the sed PROGRAM, the target
+#     is README.md) and `sed -i 's/a/b/' ~/.hermes/config.yaml.bak` (a
+#     backup copy, not the policy file).  Searching for the path anywhere
+#     after the options cannot tell an operand from program text.
+#
+# So resolve the command word for real, walk the editor's option grammar to
+# decide whether in-place mode is actually on, and compare the resulting
+# FILE OPERANDS against the protected paths as whole tokens.  Same
+# reasoning as _WRITE_TARGET_BOUNDARY above, which already keeps
+# `config.yaml.bak` out of the redirection deny.
+#
+# Out of scope on purpose (unchanged from the DANGEROUS/smart level, and
+# matching how the xargs/find rm rules are drawn): indirect path delivery
+# via xargs, find -exec, or shell variable expansion.  Those never name the
+# target at a command position we can resolve statically.
+
+# Wrapper commands that prefix a real command without being one.
+_EDITOR_WRAPPERS = frozenset({
+    "sudo", "doas", "env", "exec", "nohup", "setsid", "time",
+    "command", "builtin", "stdbuf", "nice", "ionice",
+})
+# Wrapper options that consume the FOLLOWING token as their argument, so we
+# do not mistake that argument for the command word (`env -u PATH sed ...`).
+_WRAPPER_OPTS_WITH_ARG = {
+    "sudo": frozenset({"-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U"}),
+    "doas": frozenset({"-u", "-C"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "-P"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+}
+# Editors with an in-place mode, and the short options that take a separate
+# argument.  Case matters: ruby/perl `-I` (include dir, takes an argument)
+# must not be confused with `-i` (in-place), so option parsing runs on the
+# original-case text.
+_INPLACE_EDITOR_ARG_OPTS = {
+    "sed": frozenset({"e", "f", "l"}),
+    "perl": frozenset({"e", "E", "F", "I", "M", "m"}),
+    "ruby": frozenset({"e", "I", "r", "C", "F", "K", "E"}),
+}
+# Long options taking a separate argument when written without "=".
+_INPLACE_EDITOR_LONG_ARG_OPTS = {
+    "sed": frozenset({"--expression", "--file", "--line-length"}),
+    "perl": frozenset(),
+    "ruby": frozenset({"--encoding"}),
+}
+# Long options that select a script inline, so the first operand is a FILE
+# rather than the program text.
+_INPLACE_SCRIPT_OPTS = {
+    "sed": frozenset({"e", "f"}),
+    "perl": frozenset({"e", "E"}),
+    "ruby": frozenset({"e"}),
+}
+_INPLACE_SCRIPT_LONG_OPTS = frozenset({"--expression", "--file"})
+# The protected files, as the path token a shell would hand the editor.
+_HERMES_PROTECTED_BASENAMES = frozenset({"config.yaml", ".env"})
+_HERMES_HOME_PREFIXES = (
+    "~/.hermes/",
+    "$home/.hermes/",
+    "${home}/.hermes/",
+    "$hermes_home/",
+    "${hermes_home}/",
+)
+
+
+def _shell_word_split(segment: str) -> list:
+    """Split one command segment into shell words, dropping quote marks.
+
+    Forgiving by design — this runs on adversarial and half-normalized text,
+    so an unterminated quote must yield tokens rather than raise.  Quotes are
+    removed because the operand comparison wants the path the shell would
+    actually pass ("~/.hermes/config.yaml" -> ~/.hermes/config.yaml), and a
+    quoted sed program collapses to a single token, which is exactly how it
+    reaches the editor.
+    """
+    tokens: list = []
+    current: list = []
+    quote = None
+    for ch in segment:
+        if quote is not None:
+            if ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+        elif ch in "'\"":
+            quote = ch
+        elif ch.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _resolve_command_word(tokens: list) -> tuple:
+    """Return (command_word, remaining_args) after stripping wrappers.
+
+    Resolves `/usr/bin/sed` to `sed` and steps over `sudo`/`env`/`command`
+    and friends, including their own options and `VAR=VAL` assignments, so
+    the caller sees the program that actually runs.
+    """
+    index = 0
+    limit = len(tokens)
+    while index < limit:
+        token = tokens[index]
+        if not token:
+            index += 1
+            continue
+        # Leading shell residue from subshell / command-substitution variants.
+        token = token.lstrip("(`{")
+        if not token:
+            index += 1
+            continue
+        # VAR=VAL assignments precede the command word.
+        if "=" in token and not token.startswith("-"):
+            name = token.split("=", 1)[0]
+            if name and (name[0].isalpha() or name[0] == "_") and all(
+                c.isalnum() or c == "_" for c in name
+            ):
+                index += 1
+                continue
+        base = token.replace("\\", "/").rsplit("/", 1)[-1]
+        if base in _EDITOR_WRAPPERS:
+            wrapper = base
+            index += 1
+            # Consume the wrapper's own options.
+            while index < limit:
+                opt = tokens[index]
+                if not opt.startswith("-") or opt == "-":
+                    break
+                if opt == "--":
+                    index += 1
+                    break
+                takes_arg = _WRAPPER_OPTS_WITH_ARG.get(wrapper, frozenset())
+                bare = opt.split("=", 1)[0]
+                index += 1
+                if bare in takes_arg and "=" not in opt and index < limit:
+                    index += 1
+            continue
+        return (base, tokens[index + 1:])
+    return ("", [])
+
+
+def _is_protected_hermes_operand(token: str) -> bool:
+    """True when this operand names ~/.hermes/config.yaml or ~/.hermes/.env.
+
+    Whole-token comparison with an exact filename match, so `config.yaml.bak`
+    and `config.yaml.orig` — distinct files that carry no policy — stay out.
+    """
+    candidate = token.strip().rstrip(")`;&|").replace("\\", "/").lower()
+    if not candidate:
+        return False
+    for prefix in _HERMES_HOME_PREFIXES:
+        if candidate.startswith(prefix):
+            if candidate[len(prefix):] in _HERMES_PROTECTED_BASENAMES:
+                return True
+    # Spelled-out home directory (/home/u/.hermes/config.yaml, and the
+    # /Users/u form on macOS). The tilde/$HOME spellings above are the ones
+    # an agent writes, but an absolute path mutates the very same file.
+    for basename in _HERMES_PROTECTED_BASENAMES:
+        if candidate.endswith("/.hermes/" + basename):
+            return True
+    return False
+
+
+def _editor_targets_protected_file(editor: str, args: list) -> bool:
+    """Walk an in-place editor's options; report a protected FILE operand.
+
+    Returns True only when in-place mode is genuinely enabled AND one of the
+    operands the editor would rewrite is a protected file.
+    """
+    short_arg_opts = _INPLACE_EDITOR_ARG_OPTS[editor]
+    long_arg_opts = _INPLACE_EDITOR_LONG_ARG_OPTS[editor]
+    script_opts = _INPLACE_SCRIPT_OPTS[editor]
+    in_place = False
+    have_script_option = False
+    operands: list = []
+    index = 0
+    limit = len(args)
+    end_of_options = False
+    while index < limit:
+        token = args[index]
+        index += 1
+        if not token:
+            continue
+        if end_of_options or not token.startswith("-") or token == "-":
+            operands.append(token)
+            continue
+        if token == "--":
+            end_of_options = True
+            continue
+        if token.startswith("--"):
+            name = token.split("=", 1)[0]
+            if name in ("--in-place", "--inplace"):
+                in_place = True
+                continue
+            if name in _INPLACE_SCRIPT_LONG_OPTS:
+                have_script_option = True
+            if name in long_arg_opts and "=" not in token and index < limit:
+                index += 1
+            continue
+        # Short option token, possibly a bundle: -ri, -i.bak, -ne, -pi
+        chars = token[1:]
+        position = 0
+        while position < len(chars):
+            letter = chars[position]
+            if letter == "i":
+                # Everything after `i` is the attached backup suffix.
+                in_place = True
+                break
+            if letter in short_arg_opts:
+                if letter in script_opts:
+                    have_script_option = True
+                # Attached argument, or the next token if nothing is attached.
+                if position + 1 >= len(chars) and index < limit:
+                    index += 1
+                break
+            position += 1
+    if not in_place:
+        return False
+    # Without an explicit script option the FIRST operand is the program
+    # text (`sed -i 's/a/b/' file`), not a file the editor rewrites.
+    files = operands if have_script_option else operands[1:]
+    return any(_is_protected_hermes_operand(operand) for operand in files)
+
+
+def _detect_hermes_inplace_edit(command_variant: str) -> bool:
+    """True when this variant runs an in-place editor on a protected file."""
+    for segment in command_variant.split("\n"):
+        if not segment.strip():
+            continue
+        tokens = _shell_word_split(segment)
+        if not tokens:
+            continue
+        editor, args = _resolve_command_word(tokens)
+        if editor in _INPLACE_EDITOR_ARG_OPTS and _editor_targets_protected_file(
+            editor, args
+        ):
+            return True
+    return False
+
+
+_HERMES_INPLACE_DESCRIPTION = (
+    "in-place edit of the Hermes approval policy / credential file "
+    "(~/.hermes/config.yaml, ~/.hermes/.env)"
+)
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches hardline blocklist patterns.
 
@@ -592,6 +866,11 @@ def detect_hardline_command(command: str) -> tuple:
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
             if pattern_re.search(variant_lower):
                 return (True, description)
+        # Option-grammar check, not a text search — see the block comment
+        # above _shell_word_split(). Runs on the original-case variant
+        # because ruby/perl `-I` and `-i` mean different things.
+        if _detect_hermes_inplace_edit(command_variant):
+            return (True, _HERMES_INPLACE_DESCRIPTION)
     return (False, None)
 
 

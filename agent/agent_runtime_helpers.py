@@ -3385,6 +3385,51 @@ def repair_empty_non_final_messages(
     return messages
 
 
+def drop_empty_tool_calls_arrays(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Strip empty / malformed ``tool_calls`` from assistant messages.
+
+    An assistant message carrying ``tool_calls: []`` (an empty array) — or a
+    non-list value under the key — is semantically identical to an assistant
+    message with no tool calls, but strict OpenAI-compatible providers reject
+    the empty array outright: DeepSeek v4 returns HTTP 400 "Invalid
+    'messages[N].tool_calls': empty array. Expected an array with minimum
+    length 1, but got an empty array instead." (#58755, follow-up to #56980).
+
+    Empty arrays reach here from session resume, host-fed histories, the
+    consecutive-assistant merge in ``repair_message_sequence`` (which preserves
+    a pre-existing ``[]`` on the surviving turn), and — the reason this lives in
+    a reusable helper rather than inline — from ``sanitize_api_messages``' own
+    later dedup pass, which can empty an array it did not create (#83312).
+
+    Per the #56980 review this normalization belongs on the per-call copy, not
+    in ``repair_message_sequence``, which would destructively rewrite the
+    persisted trajectory. Shallow-copy the message before dropping the key so
+    stored history (and prompt caching) stays byte-stable.
+    """
+    normalized: List[Dict[str, Any]] = []
+    dropped = 0
+    for msg in messages:
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and "tool_calls" in msg
+            and not (isinstance(msg["tool_calls"], list) and msg["tool_calls"])
+        ):
+            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+            dropped += 1
+        normalized.append(msg)
+    if dropped:
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped empty/invalid tool_calls on %d "
+            "assistant message(s)",
+            dropped,
+        )
+        return normalized
+    return messages
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -3415,39 +3460,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     messages = repair_empty_non_final_messages(messages)
 
     # --- Drop empty / malformed tool_calls arrays on assistant messages ---
-    # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
-    # non-list value under the key — is semantically identical to an assistant
-    # message with no tool calls, but strict OpenAI-compatible providers reject
-    # the empty array outright: DeepSeek v4 returns HTTP 400 "Invalid
-    # 'messages[N].tool_calls': empty array. Expected an array with minimum
-    # length 1, but got an empty array instead." (#58755, follow-up to #56980).
-    # Empty arrays reach here from session resume, host-fed histories, or the
-    # consecutive-assistant merge in ``repair_message_sequence`` (which
-    # preserves a pre-existing ``[]`` on the surviving turn). This is the final
-    # pre-API chokepoint, so normalize defensively — and, per the #56980
-    # review, do it HERE on the per-call copy rather than in
-    # ``repair_message_sequence``, which would destructively rewrite the
-    # persisted trajectory. Shallow-copy the message before dropping the key so
-    # stored history (and prompt caching) stays byte-stable.
-    normalized: List[Dict[str, Any]] = []
-    dropped_empty_tool_calls = 0
-    for msg in messages:
-        if (
-            isinstance(msg, dict)
-            and msg.get("role") == "assistant"
-            and "tool_calls" in msg
-            and not (isinstance(msg["tool_calls"], list) and msg["tool_calls"])
-        ):
-            msg = {k: v for k, v in msg.items() if k != "tool_calls"}
-            dropped_empty_tool_calls += 1
-        normalized.append(msg)
-    if dropped_empty_tool_calls:
-        messages = normalized
-        _ra().logger.debug(
-            "Pre-call sanitizer: dropped empty/invalid tool_calls on %d "
-            "assistant message(s)",
-            dropped_empty_tool_calls,
-        )
+    messages = drop_empty_tool_calls_arrays(messages)
 
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
@@ -3589,6 +3602,28 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+        # --- Re-establish the invariants the passes above already enforced ---
+        # This sanitizer is only useful if it is a fixpoint: every invariant it
+        # claims must still hold on the value it returns. The dedup pass breaks
+        # that. When EVERY call on an assistant turn is a duplicate (the normal
+        # shape after ``repair_message_sequence`` merges consecutive assistant
+        # turns and unions their call lists onto the text turn), ``kept_tcs``
+        # is empty and the turn is rewritten to ``tool_calls: []`` — re-creating
+        # the exact payload the empty-array pass deleted a few steps earlier,
+        # after that pass can no longer see it. DeepSeek then 400s on every
+        # send, and because the poisoned turn is persisted the session is
+        # wedged permanently (#83312).
+        #
+        # Healing at this one site would only cover the empty-array half. A
+        # collapsed turn that carried no text also comes back with empty
+        # content, which is a second, independent 400 ("messages must have
+        # non-empty content"). So re-run both invariant passes over the deduped
+        # list instead: cheap (only on the rare dedup path), idempotent, and it
+        # covers any future pass inserted before this return — not just this
+        # one. Order matters: drop the empty arrays first so the content healer
+        # sees the turn as genuinely payload-less and substitutes a placeholder.
+        messages = drop_empty_tool_calls_arrays(messages)
+        messages = repair_empty_non_final_messages(messages)
     return messages
 
 
@@ -4189,6 +4224,7 @@ __all__ = [
     "invoke_tool",
     "repair_tool_call",
     "sanitize_api_messages",
+    "drop_empty_tool_calls_arrays",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",

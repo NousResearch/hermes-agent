@@ -380,3 +380,71 @@ def test_sanitize_drops_empty_tool_calls_array():
 
 
 
+
+
+# ── Sanitizer fixpoint: dedup must not re-break earlier invariants ──────────
+# The tool_call_id dedup pass runs AFTER the empty-array and empty-content
+# passes. When every call on an assistant turn is a duplicate, dedup rewrites
+# that turn to ``tool_calls: []`` — re-creating the exact payload the earlier
+# pass deleted, where nothing downstream can see it. DeepSeek 400s on every
+# subsequent send and the persisted turn wedges the session (#83312).
+
+
+def _wedge_transcript(text: str | None) -> list[dict]:
+    """Transcript whose last assistant turn re-uses an already-seen call id.
+
+    This is the shape ``repair_message_sequence`` produces when it merges two
+    consecutive assistant turns and unions their tool_calls onto the survivor.
+    """
+    call = {
+        "id": "call_dup",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": "{}"},
+    }
+    return [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "call_dup", "content": "file body"},
+        {"role": "assistant", "content": text, "tool_calls": [dict(call)]},
+        {"role": "user", "content": "and now?"},
+    ]
+
+
+def test_dedup_does_not_reintroduce_empty_tool_calls_array():
+    """Collapsing every call on a turn must drop the key, not leave ``[]``."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    out = sanitize_api_messages(_wedge_transcript("here is the file"))
+
+    assert not any(
+        m.get("role") == "assistant" and m.get("tool_calls") == [] for m in out
+    ), "dedup re-introduced the empty tool_calls array DeepSeek rejects"
+    survivor = [m for m in out if m.get("content") == "here is the file"][0]
+    assert "tool_calls" not in survivor
+
+
+def test_dedup_collapse_heals_contentless_turn():
+    """A collapsed turn that carried no text must not be sent with empty
+    content either — that is a second, independent 400 ("messages must have
+    non-empty content"), so the content healer has to re-run after dedup."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    out = sanitize_api_messages(_wedge_transcript(""))
+
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert all(
+        m.get("content") or m.get("tool_calls") for m in assistants[:-1]
+    ), "a non-final assistant turn survived with neither content nor tool_calls"
+    assert not any(m.get("tool_calls") == [] for m in assistants)
+
+
+def test_sanitize_is_a_fixpoint_over_the_wedge_transcript():
+    """Sanitizing twice must equal sanitizing once. Any invariant a pass
+    enforces has to still hold on the value the function returns, otherwise a
+    later pass can silently undo an earlier one."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    for text in ("here is the file", "", None):
+        once = sanitize_api_messages(_wedge_transcript(text))
+        twice = sanitize_api_messages([dict(m) for m in once])
+        assert once == twice, f"sanitizer not idempotent for content={text!r}"

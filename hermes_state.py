@@ -1807,9 +1807,144 @@ def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
         logger.warning("Could not bump state.db schema cookie: %s", exc)
 
 
+# ── Repair-loop bounding + dead-backup hygiene (#86747) ─────────────────────
+#
+# ``_claim_repair_attempt`` above is an in-memory set: it bounds the loop
+# only WITHIN one process. A corruption class the strategies cannot heal
+# (b-tree page damage) failed repair on EVERY process start, and each pass
+# took a fresh ~900MB forensic backup — 105 attempts / 89GB of identical
+# dead copies in the reporting install. Two persistent bounds fix the class:
+#
+# * a sidecar attempt ledger (``<db>.repair-attempts.json``) that refuses
+#   further surgery after ``_MAX_PERSISTENT_REPAIR_ATTEMPTS`` failures on
+#   the SAME damaged file (fingerprint = size + mtime; any successful repair
+#   or replacement changes it and resets the count);
+# * backup dedupe + a retention cap in ``_backup_db_file`` — an identical
+#   damaged file is never copied twice, and only the newest
+#   ``_MAX_MALFORMED_BACKUPS`` forensic copies are kept.
+
+_MAX_PERSISTENT_REPAIR_ATTEMPTS = 3
+_MAX_MALFORMED_BACKUPS = 3
+
+
+def _repair_ledger_path(db_path: Path) -> Path:
+    return db_path.with_name(db_path.name + ".repair-attempts.json")
+
+
+def _db_fingerprint(db_path: Path) -> "Optional[str]":
+    """Cheap identity for a damaged DB file: size + mtime_ns.
+
+    Hashing a multi-GB corrupt file on every open is exactly the kind of
+    repeated cost this ledger exists to avoid; size+mtime is stable for a
+    file nothing can successfully write to, and any successful repair,
+    truncation or manual restore changes it (resetting the attempt count).
+    """
+    try:
+        st = db_path.stat()
+        return f"{st.st_size}:{st.st_mtime_ns}"
+    except OSError:
+        return None
+
+
+def _read_repair_ledger(db_path: Path) -> "Dict[str, Any]":
+    try:
+        raw = json.loads(_repair_ledger_path(db_path).read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def _persistent_repair_attempts_exhausted(db_path: Path) -> bool:
+    """Whether *db_path* has already burned its cross-restart repair budget.
+
+    True only when the ledger records ``_MAX_PERSISTENT_REPAIR_ATTEMPTS``
+    failed attempts against the CURRENT file fingerprint. Never raises; a
+    missing/corrupt ledger or unstatable DB reads as "not exhausted" (the
+    in-process claim and cross-process lock still bound a single run).
+    """
+    fp = _db_fingerprint(db_path)
+    if fp is None:
+        return False
+    ledger = _read_repair_ledger(db_path)
+    return (
+        ledger.get("fingerprint") == fp
+        and int(ledger.get("failed_attempts", 0)) >= _MAX_PERSISTENT_REPAIR_ATTEMPTS
+    )
+
+
+def _record_repair_outcome(
+    db_path: Path, *, repaired: bool, fingerprint: "Optional[str]" = None
+) -> None:
+    """Update the persistent attempt ledger after a repair pass. Never raises.
+
+    Defaults to the post-attempt fingerprint — the file state the NEXT
+    attempt's exhaustion probe will observe.
+    """
+    ledger_path = _repair_ledger_path(db_path)
+    try:
+        if repaired:
+            ledger_path.unlink(missing_ok=True)
+            return
+        fp = fingerprint if fingerprint is not None else _db_fingerprint(db_path)
+        if fp is None:
+            return
+        ledger = _read_repair_ledger(db_path)
+        attempts = (
+            int(ledger.get("failed_attempts", 0)) + 1
+            if ledger.get("fingerprint") == fp
+            else 1
+        )
+        import datetime
+
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "fingerprint": fp,
+                    "failed_attempts": attempts,
+                    "last_attempt": datetime.datetime.now().isoformat(
+                        timespec="seconds"
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Could not update state.db repair ledger: %s", exc)
+
+
+def _existing_malformed_backups(db_path: Path) -> "List[Path]":
+    """Timestamped forensic backups of *db_path*, newest first."""
+    prefix = f"{db_path.name}.malformed-backup-"
+    try:
+        found = [
+            p
+            for p in db_path.parent.iterdir()
+            if p.name.startswith(prefix)
+            and not p.name.endswith(("-wal", "-shm"))
+        ]
+    except OSError:
+        return []
+    return sorted(found, key=lambda p: p.name, reverse=True)
+
+
+def _prune_malformed_backups(db_path: Path, keep: int = _MAX_MALFORMED_BACKUPS) -> None:
+    """Delete all but the *keep* newest forensic backups (and sidecars)."""
+    for stale in _existing_malformed_backups(db_path)[keep:]:
+        for victim in (
+            stale,
+            stale.with_name(stale.name + "-wal"),
+            stale.with_name(stale.name + "-shm"),
+        ):
+            try:
+                victim.unlink(missing_ok=True)
+            except OSError as exc:  # pragma: no cover - best effort
+                logger.warning("Could not prune stale DB backup %s: %s", victim, exc)
+
+
 def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
     """Copy a (possibly malformed) DB file to a timestamped backup beside it.
-
     Raw file copy on purpose: the DB won't open cleanly, so we preserve the
     bytes exactly for forensics / manual restore. WAL and SHM sidecars are
     copied too when present. Returns ``(backup_path, None)`` on success or
@@ -1843,12 +1978,41 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
+    # Same-second collision (two distinct damaged states within one second)
+    # must not silently overwrite the earlier forensic copy.
+    seq = 1
+    while backup_path.exists():
+        backup_path = db_path.with_name(
+            f"{db_path.name}.malformed-backup-{stamp}_{seq}"
+        )
+        seq += 1
     try:
+        # Dedupe (#86747): a repair loop used to copy the SAME damaged bytes
+        # on every restart — ~900MB a pass, 89GB over 11 days in the
+        # reporting install. If the newest existing backup already matches
+        # this file (size + mtime preserved by copy2), reuse it.
+        try:
+            src_stat = db_path.stat()
+            for existing in _existing_malformed_backups(db_path)[:1]:
+                est = existing.stat()
+                if (
+                    est.st_size == src_stat.st_size
+                    and est.st_mtime_ns == src_stat.st_mtime_ns
+                ):
+                    logger.info(
+                        "Reusing existing forensic backup %s (identical to the "
+                        "damaged DB).", existing,
+                    )
+                    return existing, None
+        except OSError:
+            pass
         shutil.copy2(db_path, backup_path)
         for suffix in ("-wal", "-shm"):
             sidecar = db_path.with_name(db_path.name + suffix)
             if sidecar.exists():
                 shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
+        # Retention cap (#86747): keep only the newest few forensic copies.
+        _prune_malformed_backups(db_path)
         return backup_path, None
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
@@ -2116,6 +2280,25 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
+    # Cross-restart attempt cap (#86747): the in-memory claim bounds one
+    # process, but a corruption class the strategies below cannot heal
+    # (b-tree page damage) previously re-ran the whole surgery — and took a
+    # fresh multi-hundred-MB forensic backup — on EVERY restart, forever.
+    # After _MAX_PERSISTENT_REPAIR_ATTEMPTS failures against the same
+    # damaged file, stop retrying and surface a terminal, actionable error.
+    if _persistent_repair_attempts_exhausted(db_path):
+        report["error"] = (
+            f"automatic repair has already failed "
+            f"{_MAX_PERSISTENT_REPAIR_ATTEMPTS} times on this exact file — "
+            "the corruption is beyond the schema/FTS repair strategies "
+            "(likely b-tree page damage). Manual recovery required: restore "
+            f"a backup, or salvage with `sqlite3 {db_path} \".recover\"`. "
+            f"Delete {_repair_ledger_path(db_path).name} to force another "
+            "automatic attempt."
+        )
+        logger.error("state.db repair skipped: %s", report["error"])
+        return report
+
     with _cross_process_repair_lock(db_path) as holding_lock:
         if not holding_lock:
             # Another process is still inside its critical section. It may
@@ -2130,7 +2313,16 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                 "schema surgery to avoid racing it"
             )
             return report
-        return _repair_state_db_schema_locked(db_path, backup=backup, report=report)
+        result = _repair_state_db_schema_locked(db_path, backup=backup, report=report)
+        # Persist the outcome AFTER surgery, keyed on the post-attempt
+        # fingerprint — that is the file state the NEXT attempt's exhaustion
+        # probe will observe. Failures count toward the cross-restart cap;
+        # success clears the ledger. (A failing strategy that mutates the
+        # file re-keys the ledger and restarts the count: that keeps a
+        # genuinely NEW corruption event from inheriting a stale budget,
+        # while the backup dedupe/cap above bounds the disk cost either way.)
+        _record_repair_outcome(db_path, repaired=bool(result.get("repaired")))
+        return result
 
 
 def _repair_state_db_schema_locked(

@@ -153,6 +153,59 @@ class TestBuildWebUISkipsWhenFresh:
         assert args[0] == ["/usr/bin/npm", "ci", "--include=dev", "--silent", "--prefer-offline"]
         assert kwargs["cwd"] == web_dir
 
+    def test_workspace_root_install_names_update_closure(self, tmp_path, monkeypatch):
+        """From the workspace root, _build_web_ui must install the SAME
+        closure as `hermes update` (ui-tui + web + --include-workspace-root).
+
+        The install helper prefers `npm ci`, which deletes node_modules before
+        reifying the requested tree — a narrower `--workspace web`-only pass
+        right after the update step silently pruned root devDependencies and
+        the ui-tui workspace while exiting 0. See #43564/#64354.
+        """
+        web_dir, _ = _make_web_dir(tmp_path)
+        # Root lockfile only => _workspace_root(web_dir) == tmp_path.
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "ui-tui").mkdir()
+        (tmp_path / "ui-tui" / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        cmd = args[0]
+        assert "--include-workspace-root" in cmd
+        assert cmd.count("--workspace") == 2
+        assert "ui-tui" in cmd and "web" in cmd
+        assert kwargs["cwd"] == tmp_path
+
+    def test_workspace_root_install_skips_missing_ui_tui(self, tmp_path, monkeypatch):
+        """A checkout without the ui-tui workspace must not name it — npm
+        fails hard on a --workspace that doesn't exist."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        cmd = mock_run.call_args[0][0]
+        assert "ui-tui" not in cmd
+        assert "--include-workspace-root" in cmd
+        assert "web" in cmd
+
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
         """npm run build now goes through _run_with_idle_timeout (issue #33788).
 

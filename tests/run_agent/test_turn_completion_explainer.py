@@ -109,6 +109,28 @@ def test_explanation_persistence_locked_cause_says_busy_not_disk():
     assert "permission" not in lower
 
 
+def test_explanation_persistence_compression_cause_is_specific():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "compression"
+    )
+    lower = out.lower()
+    assert "compression" in lower
+    assert "database" not in lower
+    assert "disk" not in lower
+
+
+def test_explanation_persistence_turn_lease_cause_is_specific():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "turn_lease"
+    )
+    lower = out.lower()
+    assert "took over" in lower
+    assert "not saved" in lower
+    assert "disk" not in lower
+    assert "compression" not in lower
+    assert "hermes doctor" not in lower
+
+
 def test_explanation_persistence_disk_cause_keeps_disk_wording():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "disk"
@@ -194,7 +216,7 @@ def test_classify_persistence_error_reuses_disk_full_markers():
     ) == "disk"
 
 
-def test_classify_persistence_error_compression_busy_is_locked():
+def test_classify_persistence_error_compression_busy_is_distinct():
     """A live compression lease refusing the write is contention, not
     storage damage — but its message contains neither 'locked' nor 'busy',
     so it must classify by exception type (and by phrase for RPC-wrapped
@@ -209,17 +231,30 @@ def test_classify_persistence_error_compression_busy_is_locked():
         SessionCompressionInProgressError(
             "Session 'abc' is being compressed by another writer"
         )
-    ) == "locked"
+    ) == "compression"
     assert classify_persistence_error(
         CompressionSessionBusyError("Compression lease lost before publication: abc")
-    ) == "locked"
+    ) == "compression"
     # RPC-wrapped string forms (exception type lost in transit).
     assert classify_persistence_error(
         "Session 'abc' is being compressed by another writer"
-    ) == "locked"
+    ) == "compression"
     assert classify_persistence_error(
         "Compression lease lost before publication: abc"
-    ) == "locked"
+    ) == "compression"
+
+
+def test_classify_persistence_error_turn_lease_lost_is_distinct():
+    from hermes_state import SessionTurnLeaseLostError, classify_persistence_error
+
+    assert classify_persistence_error(
+        SessionTurnLeaseLostError(
+            "Session turn lease lost; refusing transcript write for 'abc'"
+        )
+    ) == "turn_lease"
+    assert classify_persistence_error(
+        "Session turn lease lost; refusing transcript write for 'abc'"
+    ) == "turn_lease"
 
 
 def test_persistence_error_causes_tuple_matches_classifier():
@@ -229,6 +264,8 @@ def test_persistence_error_causes_tuple_matches_classifier():
 
     probes = (
         "database is locked",
+        "Session 'abc' is being compressed by another writer",
+        "Session turn lease lost; refusing transcript write for 'abc'",
         "database or disk is full",
         "something else entirely",
         None,
@@ -254,6 +291,41 @@ def test_explainer_disabled_via_env():
         os.environ, {"HERMES_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
     ):
         assert agent._turn_completion_explainer_enabled() is False
+
+
+def test_explainer_config_read_once_then_cached():
+    """Measured-work pin: the config lookup happens once per agent.
+
+    The explainer gate runs at the end of every turn, so a fresh
+    ``load_config()`` per call is wasted work (measured ~0.9 ms/call on a
+    warm mtime-cache on this host; per-turn config reads were killed
+    repo-wide in #74211, and this seam was missed).  The config read must
+    be cached after the first call; the env-var override must still win on
+    every call, cached or not.
+    """
+    agent = _make_agent()
+    calls = {"n": 0}
+
+    def counting_load():
+        calls["n"] += 1
+        return {"display": {"turn_completion_explainer": True}}
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
+        with patch("hermes_cli.config.load_config", counting_load):
+            # First call reads config and caches the result.
+            assert agent._turn_completion_explainer_enabled() is True
+            assert calls["n"] == 1
+            # Subsequent calls must not re-read config.
+            assert agent._turn_completion_explainer_enabled() is True
+            assert agent._turn_completion_explainer_enabled() is True
+            assert calls["n"] == 1
+            # Env override stays authoritative even after the cache is warm.
+            with patch.dict(
+                os.environ, {"HERMES_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
+            ):
+                assert agent._turn_completion_explainer_enabled() is False
+            assert calls["n"] == 1  # env path never touches config
 
 
 

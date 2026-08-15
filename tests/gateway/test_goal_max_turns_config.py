@@ -15,7 +15,7 @@ class _FakeSessionStore:
     def __init__(self):
         self.entry = _FakeSessionEntry()
 
-    def get_or_create_session(self, source):
+    def get_or_create_session(self, source, **_kwargs):
         return self.entry
 
     def _generate_session_key(self, source):

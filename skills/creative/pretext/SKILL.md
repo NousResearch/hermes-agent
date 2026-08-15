@@ -158,7 +158,7 @@ See `templates/donut-orbit.html` and `templates/hello-orb-flow.html` for working
 4. **Tune the aesthetic** — font, palette, composition, interaction. This is the work; don't skip it.
 5. **Verify locally**:
    ```sh
-   cd <dir-with-html> && python3 -m http.server 8765
+   cd <dir-with-html> && python -m http.server 8765
    # then open http://localhost:8765/<file>.html
    ```
 6. **Check the console** — pretext will throw if `prepareWithSegments` is called with a bad font string; `Intl.Segmenter` is available in every modern browser.
@@ -194,14 +194,14 @@ See `templates/donut-orbit.html` and `templates/hello-orb-flow.html` for working
 
 ## Verification Checklist
 
-- [ ] Demo is a single self-contained `.html` file — opens by double-click or `python3 -m http.server`
+- [ ] Demo is a single self-contained `.html` file — opens by double-click or `python -m http.server`
 - [ ] `@chenglou/pretext` imported via `esm.sh` with pinned version
 - [ ] Corpus is real prose, not lorem ipsum, and matches the demo's concept
 - [ ] Font string passed to `prepare` matches the CSS font exactly
 - [ ] `prepare()` / `prepareWithSegments()` called once, not per frame
 - [ ] Dark background + considered palette — not the default white canvas
 - [ ] At least one interactive response (drag / hover / scroll / click) or idle auto-motion
-- [ ] Tested locally with `python3 -m http.server` and confirmed no console errors
+- [ ] Tested locally with `python -m http.server` and confirmed no console errors
 - [ ] 60fps on a mid-tier laptop (or graceful degradation documented)
 - [ ] One "extra mile" detail the user didn't ask for
 

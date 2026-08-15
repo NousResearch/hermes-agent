@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,41 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
-def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
+def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float, ssl_context=None):
     """Open catalog requests without forwarding headers across origins."""
-    return open_credentialed_url(req, timeout=timeout)
+    return open_credentialed_url(req, timeout=timeout, ssl_context=ssl_context)
+
+
+def _custom_provider_ssl_context(base_url: str):
+    """Build an ``ssl.SSLContext`` from a custom provider's TLS settings.
+
+    Mirrors the httpx/requests TLS resolution so the urllib ``/models``
+    discovery probe honors a provider's ``ssl_ca_cert`` / ``ssl_verify``
+    instead of falling back to the process-wide ``SSL_CERT_FILE`` / certifi
+    bundle. Returns None when no per-provider TLS override applies, so the
+    caller keeps urllib's default policy for public/unconfigured endpoints.
+    """
+    if not base_url:
+        return None
+    try:
+        from hermes_cli.config import get_custom_provider_tls_settings
+
+        tls = get_custom_provider_tls_settings(base_url)
+        if not tls:
+            return None
+        import ssl
+
+        if tls.get("ssl_verify") is False:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        ca = tls.get("ssl_ca_cert")
+        if isinstance(ca, str) and ca and os.path.isfile(ca):
+            return ssl.create_default_context(cafile=ca)
+    except Exception:
+        return None  # never break discovery on a TLS-config lookup
+    return None
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -67,11 +100,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",                    ""),
     # Google
     ("google/gemini-3.1-pro-preview",          ""),
-    ("google/gemini-3.6-flash",                ""),
+    ("google/gemini-3.7-flash",                ""),
     # xAI
-    ("x-ai/grok-4.5",                          ""),
+    ("x-ai/grok-4.6",                          ""),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
+    ("deepseek/deepseek-v4-pro-0813",          "dated snapshot of v4-pro"),
     ("deepseek/deepseek-v4-flash",             ""),
     ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
     # Qwen
@@ -154,6 +188,7 @@ def _codex_curated_models() -> list[str]:
 # (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
+    "grok-4.6",
     "grok-build-0.1",
     "grok-4.5",
     "grok-4.3",
@@ -164,12 +199,13 @@ _XAI_STATIC_FALLBACK: list[str] = [
 
 # Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
 _XAI_CURATED_EXTRAS: list[str] = [
+    "grok-4.6",  # GA 2026-08 — kept until the models.dev disk cache refreshes
     "grok-4.5",  # GA 2026-07 — kept until the models.dev disk cache refreshes
     "grok-composer-2.5-fast",
 ]
 
 
-_XAI_TOP_MODEL = "grok-build-0.1"
+_XAI_TOP_MODEL = "grok-4.6"
 
 
 def _xai_promote_top(ids: list[str]) -> list[str]:
@@ -191,16 +227,15 @@ def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
     return out
 
 
+def _xai_finalize_catalog(ids: list[str]) -> list[str]:
+    return _xai_promote_top(_xai_merge_curated_extras(ids))
+
+
 def _xai_curated_models() -> list[str]:
-    """Derive the xAI-direct curated list from models.dev disk cache.
+    """Offline curated floor for xAI / xAI OAuth pickers.
 
-    Reads $HERMES_HOME/models_dev_cache.json directly (no network) so this
-    runs at import time without blocking. Falls back to ``_XAI_STATIC_FALLBACK``
-    when the cache is empty or unreadable. Hermes refreshes the cache from
-    https://models.dev/api.json on normal use, so this list self-heals as
-    xAI renames models.
-
-    Mirrors ``_codex_curated_models()``'s role for openai-codex.
+    Reads $HERMES_HOME/models_dev_cache.json directly (no network). Falls
+    back to ``_XAI_STATIC_FALLBACK`` when the cache is empty or unreadable.
     """
     try:
         from agent.models_dev import _load_disk_cache
@@ -210,12 +245,12 @@ def _xai_curated_models() -> list[str]:
         if isinstance(models, dict) and models:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
-                return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))
+                return _xai_finalize_catalog(sorted(ids))
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
         pass
-    return _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
+    return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -239,11 +274,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-mini",
         # Google
         "google/gemini-3.1-pro-preview",
-        "google/gemini-3.6-flash",
+        "google/gemini-3.7-flash",
         # xAI
-        "x-ai/grok-4.5",
+        "x-ai/grok-4.6",
         # DeepSeek
         "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro-0813",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
         # Qwen
@@ -1121,7 +1157,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
-    ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
+    ProviderEntry("openai-codex",   "ChatGPT or Codex Subscription", "ChatGPT or Codex Subscription (Sign in with your ChatGPT account, uses Codex models)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
@@ -1205,7 +1241,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
-    "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
@@ -1501,6 +1537,218 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any]]:
+    """Normalize one OpenRouter catalog entry's reasoning metadata.
+
+    OpenRouter's ``/v1/models`` catalog advertises reasoning support two ways:
+    ``supported_parameters`` contains ``"reasoning"`` when the route accepts
+    reasoning controls at all, and a top-level ``reasoning`` object may add
+    detail (``mandatory``, ``supported_efforts``). Per OpenRouter semantics
+    the top-level object is only trusted after ``supported_parameters``
+    confirms the route accepts reasoning controls; ``supported_efforts``
+    omitted/None means every effort is accepted.
+
+    Returns:
+        ``{"supports_reasoning": True, "supported_efforts": [...] | None,
+        "mandatory": bool}`` when the entry advertises reasoning controls,
+        ``{"supports_reasoning": False}`` when it explicitly does not
+        (``supported_parameters`` is a list omitting ``reasoning``), or
+        ``None`` when capability can't be determined from the entry
+        (missing/malformed ``supported_parameters``).
+
+    Ported from PrimeIntellect-ai/prime-agent#1258 (derive reasoning levels
+    from provider metadata instead of hardcoded model-family lists).
+    """
+    if not isinstance(item, dict):
+        return None
+    params = item.get("supported_parameters")
+    if not isinstance(params, list):
+        # Field absent / malformed — unknown capability (mirror the
+        # permissive stance of _openrouter_model_supports_tools).
+        return None
+    if "reasoning" not in params:
+        return {"supports_reasoning": False}
+    reasoning = item.get("reasoning")
+    mandatory = isinstance(reasoning, dict) and reasoning.get("mandatory") is True
+    efforts: Optional[list[str]] = None
+    if isinstance(reasoning, dict):
+        raw_efforts = reasoning.get("supported_efforts")
+        if isinstance(raw_efforts, list):
+            efforts = list(dict.fromkeys(
+                str(effort).strip().lower()
+                for effort in raw_efforts
+                if str(effort).strip()
+            ))
+    return {
+        "supports_reasoning": True,
+        "supported_efforts": efforts,
+        "mandatory": mandatory,
+    }
+
+
+# model id → parsed reasoning capabilities (see
+# parse_openrouter_reasoning_capabilities). Populated by one full-catalog
+# fetch and kept for the process lifetime — model capabilities don't change.
+_openrouter_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
+# monotonic timestamp of the last FAILED fetch; suppresses re-fetch storms
+# from per-turn callers while the catalog is unreachable (60s TTL, mirrors
+# the LM Studio/Ollama capability-probe caching in run_agent.py).
+_openrouter_reasoning_caps_failed_at: float | None = None
+
+
+def _fetch_openrouter_reasoning_caps(timeout: float = 6.0) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Fetch + cache per-model reasoning capabilities from the live catalog.
+
+    Returns None (without poisoning the cache) when the catalog is
+    unreachable so callers can retry later and fall back in the meantime.
+    Failed fetches are remembered for 60 seconds so hot per-turn callers
+    don't pay an HTTP round-trip on every call while offline.
+    """
+    global _openrouter_reasoning_caps_cache, _openrouter_reasoning_caps_failed_at
+    if _openrouter_reasoning_caps_cache is not None:
+        return _openrouter_reasoning_caps_cache
+    if (
+        _openrouter_reasoning_caps_failed_at is not None
+        and (time.monotonic() - _openrouter_reasoning_caps_failed_at) < 60
+    ):
+        return None
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+        )
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return None
+    items = payload.get("data")
+    if not isinstance(items, list):
+        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return None
+    caps_by_id: dict[str, Optional[dict[str, Any]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        caps_by_id[mid] = parse_openrouter_reasoning_capabilities(item)
+    if not caps_by_id:
+        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return None
+    _openrouter_reasoning_caps_cache = caps_by_id
+    return caps_by_id
+
+
+def openrouter_model_reasoning_capabilities(
+    model_id: Optional[str],
+    *,
+    timeout: float = 6.0,
+    allow_fetch: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Return live-catalog reasoning capabilities for an OpenRouter model.
+
+    Tri-state contract for callers deciding whether to emit reasoning
+    controls:
+      - dict with ``supports_reasoning: True`` (+ ``supported_efforts``,
+        ``mandatory``) — the route advertises reasoning controls;
+      - dict with ``supports_reasoning: False`` — the catalog knows the model
+        and it does NOT accept reasoning controls (definitive negative);
+      - ``None`` — unknown: catalog not loaded yet, model not listed
+        (private/custom route), or entry malformed. Callers should fall back
+        to their static heuristics rather than treating this as a negative.
+
+    By default this is a CACHE-ONLY lookup — safe on per-request hot paths
+    (never blocks on HTTP). The cache is populated for free whenever
+    ``fetch_openrouter_models()`` runs (model picker, setup), by the
+    non-blocking ``warm_openrouter_reasoning_caps_async()`` warmer, or by
+    passing ``allow_fetch=True`` from non-latency-sensitive callers.
+    """
+    model = str(model_id or "").strip()
+    if not model:
+        return None
+    caps_by_id = _openrouter_reasoning_caps_cache
+    if caps_by_id is None and allow_fetch:
+        caps_by_id = _fetch_openrouter_reasoning_caps(timeout=timeout)
+    if caps_by_id is None:
+        return None
+    return caps_by_id.get(model)
+
+
+_openrouter_caps_warm_started = False
+
+
+def warm_openrouter_reasoning_caps_async() -> None:
+    """Warm the reasoning-capability cache in a background thread.
+
+    Fire-and-forget: called from hot paths that found the cache cold so the
+    NEXT call benefits, without ever blocking a turn on HTTP. One warm
+    attempt per process (the fetch has its own 60s failure TTL). Skipped
+    under pytest — a mid-suite background fetch would make cache state, and
+    therefore test behavior, timing-dependent.
+    """
+    global _openrouter_caps_warm_started
+    if _openrouter_caps_warm_started or _openrouter_reasoning_caps_cache is not None:
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _openrouter_caps_warm_started = True
+    threading.Thread(
+        target=_fetch_openrouter_reasoning_caps,
+        name="openrouter-reasoning-caps-warm",
+        daemon=True,
+    ).start()
+
+
+# Canonical low→high ordering used for nearest-level clamping. Superset of
+# hermes_constants.VALID_REASONING_EFFORTS ("none" included so an explicit
+# disable can be clamped too when a provider publishes it as a level).
+_REASONING_EFFORT_ORDER = (
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+)
+
+
+def clamp_reasoning_effort_to_supported(
+    effort: Optional[str],
+    supported_efforts: Optional[list[str]],
+) -> Optional[str]:
+    """Clamp a requested reasoning effort to a provider's supported levels.
+
+    Returns the requested effort unchanged when it is supported, when the
+    supported list is unknown (None/empty), or when the effort isn't a
+    recognized level (custom providers may use bespoke names — pass through
+    rather than guess). Otherwise returns the nearest supported level,
+    preferring the closest LOWER level so a clamp never silently escalates
+    cost (requesting ``xhigh`` against ``[low, medium, high]`` yields
+    ``high``; requesting ``minimal`` against ``[low, medium]`` yields
+    ``low`` because no lower level exists).
+
+    Ported from PrimeIntellect-ai/prime-agent#1258's thinking-level-map
+    normalization.
+    """
+    requested = str(effort or "").strip().lower()
+    if not requested or not supported_efforts:
+        return effort
+    supported = [
+        str(level).strip().lower()
+        for level in supported_efforts
+        if str(level).strip().lower() in _REASONING_EFFORT_ORDER
+    ]
+    if not supported or requested in supported:
+        return effort
+    if requested not in _REASONING_EFFORT_ORDER:
+        return effort
+    requested_idx = _REASONING_EFFORT_ORDER.index(requested)
+    below = [
+        level for level in supported
+        if _REASONING_EFFORT_ORDER.index(level) < requested_idx
+    ]
+    if below:
+        return max(below, key=_REASONING_EFFORT_ORDER.index)
+    return min(supported, key=_REASONING_EFFORT_ORDER.index)
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
@@ -1546,6 +1794,17 @@ def fetch_openrouter_models(
         if not mid:
             continue
         live_by_id[mid] = item
+
+    # Free warm-up for the reasoning-capability cache: this is the same
+    # payload _fetch_openrouter_reasoning_caps would fetch, so parse it once
+    # here and hot-path callers (openrouter_model_reasoning_capabilities)
+    # never need their own HTTP round-trip.
+    global _openrouter_reasoning_caps_cache
+    if _openrouter_reasoning_caps_cache is None and live_by_id:
+        _openrouter_reasoning_caps_cache = {
+            mid: parse_openrouter_reasoning_capabilities(item)
+            for mid, item in live_by_id.items()
+        }
 
     curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
@@ -2645,7 +2904,13 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
-    return _is_anthropic_fast_model(model_id) or _is_openai_fast_model(model_id)
+    from agent.model_metadata import is_grok_46_family
+
+    return (
+        _is_anthropic_fast_model(model_id)
+        or _is_openai_fast_model(model_id)
+        or is_grok_46_family(str(model_id or ""))
+    )
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
@@ -2673,6 +2938,7 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     Returns provider-appropriate overrides:
     - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
     - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
+    - Grok 4.6: ``{"service_tier": "priority"}`` (xAI Priority Processing)
 
     The overrides are injected into the API request kwargs by
     ``_build_api_kwargs`` in run_agent.py — each API path handles its own
@@ -2773,6 +3039,8 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "xai",
+    "xai-oauth",
 })
 
 
@@ -2884,8 +3152,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
-    if normalized == "xai-oauth":
-        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3103,7 +3369,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+        merged = _merge_with_models_dev(normalized, curated_static)
+        if normalized in {"xai", "xai-oauth"}:
+            return _xai_finalize_catalog(merged)
+        return merged
     return curated_static
 
 
@@ -3294,6 +3563,9 @@ def _load_provider_models_cache() -> dict:
         return {}
 
 
+_cache_write_lock = threading.Lock()
+
+
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
     try:
@@ -3301,6 +3573,31 @@ def _save_provider_models_cache(data: dict) -> None:
         path = _provider_models_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
+    except Exception:
+        pass
+
+
+def update_provider_cache_entry(provider: str, models: list[str]) -> None:
+    """Thread-safe single-entry update of the provider-models disk cache.
+
+    Used by parallel prefetch workers so concurrent fetches don't clobber
+    each other's writes via read-modify-write races on the shared JSON file.
+    Each worker loads the latest cache state under the lock, writes its own
+    entry, and saves — best-effort, silent on any error.
+    """
+    try:
+        normalized = normalize_provider(provider) or (provider or "")
+        if not normalized or not models:
+            return
+        fp = _credential_fingerprint(normalized)
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            cache[normalized] = {
+                "fp": fp,
+                "at": time.time(),
+                "models": list(models),
+            }
+            _save_provider_models_cache(cache)
     except Exception:
         pass
 
@@ -4394,12 +4691,19 @@ def probe_api_models(
 
         headers.update(normalize_extra_headers(request_headers))
 
+    _ssl_context = _custom_provider_ssl_context(normalized)
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
+        # Only thread ssl_context when a per-provider TLS override actually
+        # applies. Public/unconfigured endpoints keep the original 2-arg call,
+        # so nothing changes for them (and existing call-seam mocks stay valid).
+        _open_kwargs: dict[str, Any] = {"timeout": timeout}
+        if _ssl_context is not None:
+            _open_kwargs["ssl_context"] = _ssl_context
         try:
-            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, **_open_kwargs) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
@@ -4982,7 +5286,7 @@ def validate_requested_model(
     """
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
-    if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
+    if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
     requested_for_lookup = requested
     if normalized == "copilot":

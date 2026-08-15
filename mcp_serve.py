@@ -79,6 +79,22 @@ def _get_session_db():
         return None
 
 
+def _load_session_messages(session_id: str):
+    """Read one session and close the temporary database handle."""
+    db = _get_session_db()
+    if db is None:
+        return None, "Session database unavailable"
+    try:
+        return db.get_messages(session_id), None
+    except Exception as e:
+        return None, f"Failed to read messages: {e}"
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Failed to close MCP SessionDB", exc_info=True)
+
+
 def _load_sessions_index() -> dict:
     """Load the gateway session routing index.
 
@@ -448,6 +464,18 @@ class EventBridge:
         self._new_event.set()
 
     def _establish_baseline(self) -> None:
+        db = _get_session_db()
+        if not db:
+            return
+        try:
+            self._establish_baseline_with_db(db)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                logger.debug("Failed to close MCP baseline SessionDB", exc_info=True)
+
+    def _establish_baseline_with_db(self, db) -> None:
         """Record the latest per-session message timestamp and the current
         state.db mtime WITHOUT emitting events, so startup does not replay
         history (#13414).
@@ -457,9 +485,6 @@ class EventBridge:
         last_seen=0.0 in _poll_once, so a brand-new conversation's first
         message is still delivered on its state.db-change tick.
         """
-        db = _get_session_db()
-        if not db:
-            return
         try:
             from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"
@@ -486,7 +511,6 @@ class EventBridge:
                 latest = max(all_ts)
                 if latest > 0.0:
                     self._last_poll_timestamps[session_key] = latest
-
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages."""
         db = _get_session_db()
@@ -494,12 +518,18 @@ class EventBridge:
             logger.warning("EventBridge: SessionDB unavailable, event polling disabled")
             return
 
-        while self._running:
+        try:
+            while self._running:
+                try:
+                    self._poll_once(db)
+                except Exception as e:
+                    logger.debug("EventBridge poll error: %s", e)
+                time.sleep(POLL_INTERVAL)
+        finally:
             try:
-                self._poll_once(db)
-            except Exception as e:
-                logger.debug("EventBridge poll error: %s", e)
-            time.sleep(POLL_INTERVAL)
+                db.close()
+            except Exception:
+                logger.debug("Failed to close MCP polling SessionDB", exc_info=True)
 
     def _poll_once(self, db):
         """Check for new messages across all sessions.
@@ -722,14 +752,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         if not session_id:
             return json.dumps({"error": "No session ID for this conversation"})
 
-        db = _get_session_db()
-        if not db:
-            return json.dumps({"error": "Session database unavailable"})
-
-        try:
-            all_messages = db.get_messages(session_id)
-        except Exception as e:
-            return json.dumps({"error": f"Failed to read messages: {e}"})
+        all_messages, error = _load_session_messages(session_id)
+        if error:
+            return json.dumps({"error": error})
 
         filtered = []
         for msg in all_messages:
@@ -778,14 +803,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         if not session_id:
             return json.dumps({"error": "No session ID for this conversation"})
 
-        db = _get_session_db()
-        if not db:
-            return json.dumps({"error": "Session database unavailable"})
-
-        try:
-            all_messages = db.get_messages(session_id)
-        except Exception as e:
-            return json.dumps({"error": f"Failed to read messages: {e}"})
+        all_messages, error = _load_session_messages(session_id)
+        if error:
+            return json.dumps({"error": error})
 
         # Find the target message
         target_msg = None

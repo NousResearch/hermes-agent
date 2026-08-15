@@ -149,7 +149,13 @@ function TileChat({
     activeSessionId: runtimeId,
     currentCwd: cwd,
     requestGateway,
-    scope: { add: attachments.add, remove: attachments.remove, target: scope.target }
+    scope: {
+      add: attachments.add,
+      remove: attachments.remove,
+      target: scope.target,
+      update: attachments.update,
+      updateIfCurrent: attachments.updateIfCurrent
+    }
   })
 
   // ChatView is memo()d — every callback prop must be referentially stable or
@@ -200,6 +206,7 @@ function TileChat({
           onAddUrl={onAddUrl}
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
+          onAttachPrCommentUrl={composer.attachPrCommentUrl}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}

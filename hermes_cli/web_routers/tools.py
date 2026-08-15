@@ -175,11 +175,53 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
                 _save_platform_tools(config, target_platform, enabled)
 
     await asyncio.to_thread(_run)
+
+    # Install-on-enable: when the newly enabled toolset's provider carries a
+    # post_setup hook with a registered, UNSATISFIED install-state predicate
+    # (cua-driver binary missing, etc. — see _POST_SETUP_INSTALLED), spawn the
+    # same background install `hermes tools` runs interactively. Without this,
+    # a dashboard/desktop toggle "saves" but the tool silently never appears
+    # in the schema because its check_fn can't find the binary — the exact
+    # dead-end that forced users to discover `hermes computer-use install`
+    # by hand. Best-effort: a spawn failure never fails the toggle.
+    post_setup_started: Optional[str] = None
+    if body.enabled and name not in _CONFIG_ONLY_TOOLSETS:
+        def _pending_install_key() -> Optional[str]:
+            from hermes_cli.tools_config import (
+                TOOL_CATEGORIES,
+                _post_setup_already_installed,
+                _visible_providers,
+            )
+
+            cat = TOOL_CATEGORIES.get(name)
+            if not cat:
+                return None
+            with _profile_scope(body.profile or profile):
+                config = load_config()
+                for prov in _visible_providers(cat, config):
+                    key = prov.get("post_setup")
+                    if key and not _post_setup_already_installed(key):
+                        return key
+            return None
+
+        try:
+            pending_key = await asyncio.to_thread(_pending_install_key)
+            if pending_key:
+                _spawn_hermes_action(
+                    _profile_cli_args(body.profile or profile)
+                    + ["tools", "post-setup", pending_key],
+                    "tools-post-setup",
+                )
+                post_setup_started = pending_key
+        except Exception:
+            _log.exception("install-on-enable post-setup spawn failed for %s", name)
+
     return {
         "ok": True,
         "name": name,
         "platform": target_platform,
         "enabled": body.enabled,
+        "post_setup_started": post_setup_started,
     }
 
 

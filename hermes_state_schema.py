@@ -566,12 +566,35 @@ class SessionSchemaMixin:
                             f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
                         )
                     except sqlite3.OperationalError as exc:
-                        # Expected: "duplicate column name" from a race or
-                        # re-run.  Unexpected: "Cannot add a NOT NULL column
-                        # with default value NULL" from a schema mistake.
-                        # Log at DEBUG so it's visible in agent.log.
-                        logger.debug(
-                            "reconcile %s.%s: %s", table_name, col_name, exc,
+                        message = str(exc).lower()
+                        if "duplicate column" in message:
+                            # Expected: a sibling process won the race to ADD
+                            # this column between our PRAGMA diff and the
+                            # ALTER. The store ends up correct either way.
+                            logger.debug(
+                                "reconcile %s.%s: %s", table_name, col_name, exc,
+                            )
+                            continue
+                        if "locked" in message or "busy" in message:
+                            # Lock contention (e.g. an orphaned sibling
+                            # backend holding the write lock, #79531). This
+                            # used to be swallowed at DEBUG, leaving the
+                            # store half-reconciled: startup "succeeded" and
+                            # every session-list read then failed with
+                            # "no such column" until an unrelated writable
+                            # open. Re-raise instead so the open-time lock
+                            # patience in _connect_and_init_with_lock_patience
+                            # retries the WHOLE init (executescript is
+                            # idempotent CREATE IF NOT EXISTS) with jittered
+                            # backoff rather than serving a stale schema.
+                            raise
+                        # Anything else ("Cannot add a NOT NULL column with
+                        # default value NULL", ...) is a schema mistake that
+                        # permanently strands the store behind SCHEMA_SQL —
+                        # be loud, don't bury it at DEBUG.
+                        logger.warning(
+                            "reconcile %s.%s failed; store remains behind "
+                            "SCHEMA_SQL: %s", table_name, col_name, exc,
                         )
 
     def _heal_gateway_routing_pk(self, cursor: sqlite3.Cursor) -> None:
@@ -911,6 +934,7 @@ class SessionSchemaMixin:
             if current_version < 16:
                 # v16: tag delegate subagent rows so pickers stay clean after
                 # parent deletes that used to orphan them (parent_session_id → NULL).
+                # The shared predicate excludes user-visible reset children.
                 try:
                     cursor.execute(
                         "UPDATE sessions SET model_config = json_set("

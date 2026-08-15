@@ -98,6 +98,7 @@ def _(rid, params: dict) -> dict:
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
+            "pending_hidden": is_truthy_value(params.get("hidden", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,
@@ -456,7 +457,9 @@ def _(rid, params: dict) -> dict:
                 # history becomes the resumed session record's working conversation),
                 # so heal a durable ``user;user`` violation once here instead of
                 # re-firing the pre-request repair on every subsequent turn.
-                history = db.get_messages_as_conversation(target, repair_alternation=True)
+                history = db.get_messages_as_conversation(
+                    target, repair_alternation=True, include_row_ids=True
+                )
             except Exception as e:
                 if lease is not None:
                     lease.release()
@@ -1103,6 +1106,37 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5007, str(e))
 
 
+@method("session.set_hidden")
+def _(rid, params: dict) -> dict:
+    """Set/clear the generic ``hidden`` flag on a session (and its lineage).
+
+    Mirrors the durable ``pinned``/``archived`` setters: a hidden session is
+    dropped from the default global Sessions list (``list_sessions_rich``
+    without ``include_hidden``) but stays fully resumable by the surface that
+    owns it — for plugins that manage their own sessions and don't want them
+    cluttering the shared recents list. Flips the whole compression chain as a
+    unit in the DB layer.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    hidden = is_truthy_value(params.get("hidden", True))
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        key = session["session_key"]
+        try:
+            changed = db.set_session_hidden(key, hidden)
+            if not changed:
+                # No row yet (write deferred to the first prompt): remember the
+                # intent so _ensure_session_db_row is born hidden, mirroring the
+                # pending_title deferral.
+                session["pending_hidden"] = hidden
+            return _ok(rid, {"hidden": hidden, "session_key": key})
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
+
 @method("message.react")
 def _(rid, params: dict) -> dict:
     """Set or clear one author's emoji reaction on a persisted message.
@@ -1428,7 +1462,17 @@ def _(rid, params: dict) -> dict:
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
 
-        return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
+        payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+
+        # Send-once semantics for the multi-MB spritesheet (#54730): a caller
+        # that already holds the sheet passes the revision it has, and an
+        # unchanged sheet comes back as metadata only (spritesheetUnchanged).
+        known_revision = str(params.get("knownRevision", "") or "")
+        if known_revision and known_revision == payload.get("spritesheetRevision"):
+            payload.pop("spritesheetBase64", None)
+            payload["spritesheetUnchanged"] = True
+
+        return _ok(rid, payload)
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info failed: %s", exc)
         return _ok(rid, {"enabled": False})
@@ -1482,7 +1526,7 @@ def _(rid, params: dict) -> dict:
         except Exception:
             pet_cfg = {}
 
-        if not bool(pet_cfg.get("enabled")):
+        if not is_truthy_value(pet_cfg.get("enabled"), default=False):
             return _ok(rid, {"enabled": False})
 
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
@@ -1635,7 +1679,7 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {
-                "enabled": bool(pet_cfg.get("enabled")),
+                "enabled": is_truthy_value(pet_cfg.get("enabled"), default=False),
                 "active": str(pet_cfg.get("slug", "") or ""),
                 "pets": gallery,
             },
@@ -2769,7 +2813,41 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
         with session["history_lock"]:
-            history = [dict(msg) for msg in session.get("history", [])]
+            in_memory_history = [
+                dict(msg)
+                for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
+                if isinstance(msg, dict)
+            ]
+
+        def _visible_branch_history(messages):
+            visible = []
+            for message in messages or []:
+                if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+                    continue
+                if not _coerce_message_text(message.get("content")).strip():
+                    continue
+                # Keep the FULL row — the copy loop below preserves reasoning
+                # fields and timeline-marker tags (display_kind/display_metadata,
+                # #82756); a minimal role/content copy would silently drop them.
+                visible.append(dict(message))
+            return visible
+
+        # The live session history is the model projection. After compaction it
+        # may contain only a summary and the protected tail, while the persisted
+        # display projection still contains the complete visible transcript. A
+        # branch must snapshot the latter; otherwise the child permanently loses
+        # every turn archived before the fork.
+        history = None
+        get_resume_conversations = getattr(db, "get_resume_conversations", None)
+        if callable(get_resume_conversations):
+            try:
+                _, display_history = get_resume_conversations(old_key)
+                display_history = _reconcile_display_with_live(display_history, in_memory_history)
+                history = _visible_branch_history(display_history)
+            except Exception:
+                logger.debug("branch display projection read failed", exc_info=True)
+        if not history:
+            history = _visible_branch_history(in_memory_history)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
         count = params.get("count")
@@ -3245,6 +3323,10 @@ def _(rid, params: dict) -> dict:
         # text has no user bubble — the "my message vanished on reload" loss.
         with session["history_lock"]:
             _record_inflight_correction(session, text)
+            # #84417: steer does not cancel the live original, but a server
+            # queue self-copy of that original must still not re-fire after
+            # settle (same class as redirect).
+            _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
 
@@ -3281,6 +3363,9 @@ def _(rid, params: dict) -> dict:
     if accepted:
         with session["history_lock"]:
             _record_inflight_correction(session, text)
+            # #84417: purge server-queue self-duplicates of the live original
+            # so post-turn drain cannot restart the pre-correction prompt.
+            _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(
         rid,

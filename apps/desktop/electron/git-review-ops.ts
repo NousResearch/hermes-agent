@@ -618,6 +618,77 @@ const prPayload = pr => ({
   url: String(pr.url || '')
 })
 
+// A GitHub review-comment / issue-comment URL, as pasted from the browser.
+// Captures owner, repo, PR number, and the comment kind + id. Review threads
+// deep-link as `#discussion_r<id>`; conversation-tab comments as
+// `#issuecomment-<id>`.
+const PR_COMMENT_URL_RE =
+  /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:\/[^#\s]*)?#(discussion_r|issuecomment-)(\d+)$/
+
+function parsePrCommentUrl(url) {
+  const match = PR_COMMENT_URL_RE.exec(String(url || '').trim())
+
+  if (!match) {
+    return null
+  }
+
+  const [, owner, repo, prNumber, kind, id] = match
+
+  return { id, kind: kind === 'discussion_r' ? 'review' : 'issue', owner, prNumber: Number(prNumber), repo }
+}
+
+// Resolve a pasted PR comment URL into the structured context the composer
+// attaches: author, body, and — for review comments — the file, line range,
+// and the diff hunk the comment anchors to. Reads only; any failure (gh
+// missing, unauthenticated, private repo, deleted comment) yields null and the
+// paste falls back to being a plain URL.
+async function reviewFetchPrComment(repoPath, ghBin, url) {
+  const parsed = parsePrCommentUrl(url)
+
+  if (!parsed) {
+    return null
+  }
+
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review comment fetch' })
+  } catch {
+    return null
+  }
+
+  const endpoint =
+    parsed.kind === 'review'
+      ? `repos/${parsed.owner}/${parsed.repo}/pulls/comments/${parsed.id}`
+      : `repos/${parsed.owner}/${parsed.repo}/issues/comments/${parsed.id}`
+
+  const res = await runGh(['api', endpoint], cwd, ghBin)
+
+  if (!res.ok) {
+    return null
+  }
+
+  try {
+    const data = JSON.parse(res.stdout)
+
+    return {
+      author: String(data?.user?.login || ''),
+      body: String(data?.body || ''),
+      diffHunk: parsed.kind === 'review' ? String(data?.diff_hunk || '') : '',
+      kind: parsed.kind,
+      // `line` is the comment's anchor in the current diff; null once the code
+      // moved on (outdated comment) — `original_line` still says where it was.
+      line: data?.line ?? data?.original_line ?? null,
+      path: parsed.kind === 'review' ? String(data?.path || '') : '',
+      prNumber: parsed.prNumber,
+      startLine: data?.start_line ?? data?.original_start_line ?? null,
+      url: String(data?.html_url || url)
+    }
+  } catch {
+    return null
+  }
+}
+
 // The PR for each of the given branches, keyed by branch. Asks GitHub about the
 // branches we actually have sessions on rather than listing the repo's newest
 // PRs and hoping ours are in the page — on a busy repo they are not. One
@@ -820,6 +891,7 @@ export {
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
+  reviewFetchPrComment,
   reviewList,
   reviewPrList,
   reviewPush,

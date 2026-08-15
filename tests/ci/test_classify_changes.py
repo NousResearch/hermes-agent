@@ -29,6 +29,7 @@ DEFAULT = {
     "site": True,
     "scan": True,
     "deps": True,
+    "uv_lock": True,
     "npm_lock": True,
     "installer": True,
     "mcp_catalog": False,
@@ -36,7 +37,7 @@ DEFAULT = {
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     return {
@@ -47,6 +48,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm
         "site": site,
         "scan": scan,
         "deps": deps,
+        "uv_lock": uv_lock,
         "npm_lock": npm_lock,
         "installer": installer,
         "mcp_catalog": mcp_catalog,
@@ -57,14 +59,19 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm
 CASES = {
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
-    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True)),
-    "uv.lock → python": (["uv.lock"], _lanes(python=True)),
+    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True)),
+    "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
     "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
     "website → site": (["website/docs/intro.md"], _lanes(site=True)),
+    # uv lock --check re-resolves against PyPI, so it must stay off for any
+    # diff that can't desync the lockfile — a registry blip on a docs PR
+    # otherwise shows up as a blocking "uv.lock out of sync" red X.
+    "docs → no uv_lock": (["website/docs/user-guide/profiles.md"], _lanes(site=True)),
+    "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),

@@ -221,7 +221,7 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
         repo_path = _with_base_name(path, m.group(1))
         return _placement(repo_path, path, m.group(2), path, False, False)
 
-    return _placement(path, path, base, path, True, False)
+    return _placement(path, _branch_lane_id(path, DEFAULT_BRANCH_LABEL), base, path, True, False)
 
 
 def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str) -> Optional[dict]:
@@ -376,8 +376,6 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
         group = entry["group"]
         group["sessions"].sort(key=_session_time, reverse=True)
         count = len(group["sessions"])
-        if not hydrate:
-            group["sessions"] = []
 
         repo_identity = _path_key(entry["repo_key"])
         repo = repos.get(repo_identity)
@@ -397,6 +395,15 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
     for repo in repo_list:
         repo["groups"] = _sort_lanes(repo["groups"])
         _disambiguate_labels(repo["groups"])
+        # Drop per-lane session rows only AFTER sorting: _lane_sort_key ranks
+        # non-trunk lanes by most-recent activity, which it derives from the
+        # session rows. Clearing them earlier makes every lane look inactive on
+        # the overview (hydrate=False) path and collapses the sort to
+        # alphabetical. Counts were already captured above, so the payload stays
+        # slim without losing the recency order.
+        if not hydrate:
+            for group in repo["groups"]:
+                group["sessions"] = []
     _disambiguate_labels(repo_list)
     return repo_list
 

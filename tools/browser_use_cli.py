@@ -11,7 +11,8 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils import is_truthy_value
 
@@ -23,6 +24,54 @@ BACKEND_DISABLED = "off"
 # Cloud daemon names become the BU_NAME env var
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
+# Internal marker set by _resolve_backend_cdp on the env dict when the
+# resolved browser is EXCLUSIVE to this named session (per-name provider
+# browser, or a named Browser Use cloud browser). Popped before the
+# subprocess launches — never exported to the CLI.
+_PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
+
+# Preamble prepended to the model's code for named sessions on SHARED
+# browsers (local Chrome / CDP override). The harness daemon attaches to the
+# first existing page at startup, so two fresh named daemons can land on the
+# SAME tab; steering this daemon onto a tab it created keeps concurrent named
+# sessions from clobbering each other before their first new_tab(). Runs
+# once per daemon (marker file keyed by BU_NAME under the harness runtime
+# state), costs one IPC round-trip on later calls.
+_OWN_TAB_PREAMBLE = """\
+# hermes: pin this named session to its own tab (once per daemon process)
+def _hermes_ensure_own_tab():
+    import os as _os, tempfile as _tf
+    _name = _os.environ.get("BU_NAME", "default")
+    try:
+        # Key the marker by the daemon's pid so a daemon restart (which
+        # re-attaches to the first shared page) re-pins automatically,
+        # while agent-driven tab switches mid-session are left alone.
+        from browser_harness import _ipc as _bipc
+        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
+    except Exception:
+        _dpid = "0"
+    _uid = _os.getuid() if hasattr(_os, "getuid") else 0
+    _marker = _os.path.join(
+        _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
+    )
+    if _os.path.exists(_marker):
+        return
+    try:
+        # Force a fresh target: new_tab() would REUSE a blank current tab,
+        # which is exactly the tab a sibling daemon may also hold.
+        _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
+        if _tid:
+            switch_tab(_tid)
+    except Exception:
+        pass  # best-effort: worst case is pre-fix behavior
+    try:
+        open(_marker, "w").close()
+    except OSError:
+        pass
+_hermes_ensure_own_tab()
+del _hermes_ensure_own_tab
+"""
+
 _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
@@ -31,8 +80,14 @@ _STDERR_CAP_CHARS = 4000
 # Filesystem-safe task ids for per-task workspace dirs.
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-# Screenshot paths printed by capture_screenshot() in the exec output
-_IMAGE_PATH_RE = re.compile(r"(/[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
+# Screenshot paths printed by capture_screenshot() in the exec output.
+# Two alternatives: POSIX absolute (/tmp/shot.png) and Windows drive-letter
+# absolute (C:\Users\...\shot.png or C:/Users/.../shot.png). Browser Use on
+# Windows prints native paths — the POSIX-only pattern silently dropped them
+# and screenshot_path / the multimodal attach never fired (#83884).
+_IMAGE_PATH_RE = re.compile(
+    r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE
+)
 
 # http(s) URL literals in exec code checked against browser_navigate's policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
@@ -52,7 +107,19 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
 
-    return _build_browser_env()
+    env = _build_browser_env()
+    # The browser-use CLI runs under its own Python (uv tool / uvx), which
+    # may differ from Hermes's venv Python. PYTHONPATH/PYTHONHOME inherited
+    # from the agent process point at Hermes's venv site-packages, and a
+    # child interpreter honors them ahead of its own site-packages — so the
+    # CLI imports compiled C-extensions (e.g. pydantic_core) built for the
+    # wrong interpreter and crashes on ABI mismatch (#83427, #84841, #86006,
+    # #86104). Strip both — the CLI manages its own environment and never
+    # needs Hermes's import path.
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    return env
 
 
 def _read_browser_cfg() -> dict:
@@ -134,19 +201,182 @@ def is_browser_use_cli_mode() -> bool:
     return _find_cli() is not None
 
 
+_NOTICE_STAMP_NAME = ".browser_use_default_notice"
+_NOTICE_INTERVAL_S = 24 * 3600
+
+
+def default_downgrade_notice() -> Optional[str]:
+    """One-line notice when the default Browser Use backend silently downgraded.
+
+    Returns the notice string when ``browser.backend`` is unset (Browser Use
+    would be the default) but the CLI is not runnable, so the session fell
+    back to the built-in browser tools. Rate-limited to once per 24h via a
+    stamp file so it nudges without nagging. Returns ``None`` otherwise.
+    """
+    try:
+        if get_browser_backend():
+            return None  # explicit choice — nothing downgraded
+        try:
+            from tools.browser_camofox import is_camofox_mode
+
+            if is_camofox_mode():
+                return None
+        except Exception:
+            pass
+        if _find_cli() is not None:
+            return None
+
+        from hermes_constants import get_hermes_home
+
+        stamp = Path(get_hermes_home()) / "cache" / _NOTICE_STAMP_NAME
+        try:
+            if 0 <= time.time() - stamp.stat().st_mtime < _NOTICE_INTERVAL_S:
+                return None
+        except OSError:
+            pass
+        try:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.touch()
+        except OSError:
+            pass
+        return (
+            "Browser Use CLI not found — using the built-in browser tools. "
+            "Run `hermes tools` (Browser Automation → Browser Use) to install it, "
+            "or `browser.backend: off` in config.yaml to silence this."
+        )
+    except Exception as e:  # pragma: no cover — a notice must never break startup
+        logger.debug("browser-use downgrade notice failed: %s", e)
+        return None
+
+
+def _managed_bin_dir() -> Optional[str]:
+    """Hermes' own bin dir ($HERMES_HOME/bin) — where install.sh puts uv/uvx
+    and where install_cli() links the browser-use binary."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return str(Path(get_hermes_home()) / "bin")
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve managed bin dir: %s", e)
+        return None
+
+
+def _user_local_bin_dir() -> Optional[str]:
+    """The standard user-level tool dir (~/.local/bin on POSIX; uv's default
+    tool bin dir on Windows). Desktop/TUI workers may start with a minimal
+    PATH that omits it even when `uv tool install browser-use` put the
+    binary there."""
+    try:
+        if os.name == "nt":
+            base = os.environ.get("APPDATA")
+            if base:
+                return str(Path(base) / "uv" / "bin")
+            return None
+        return str(Path(os.path.expanduser("~")) / ".local" / "bin")
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve user-local bin dir: %s", e)
+        return None
+
+
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run.
 
-    Prefers an installed browser-use binary; falls back to running it
-    through uvx
+    MANAGED-FIRST resolution: Hermes' own ``$HERMES_HOME/bin`` copy — the
+    one every browser backend selection installs and updates via
+    ``install_cli()`` — always wins, so all sessions drive one canonical,
+    Hermes-controlled binary. PATH and the user-level tool dir
+    (~/.local/bin / %APPDATA%\\uv\\bin, where a manual ``uv tool install``
+    links binaries) are fallbacks for setups that never ran our install,
+    and cover Desktop/TUI workers that spawn with a minimal PATH. The uvx
+    zero-install path (same probe order) is the final fallback.
     """
-    direct = shutil.which("browser-use")
-    if direct:
-        return [direct]
-    uvx = shutil.which("uvx")
-    if uvx:
-        return [uvx, "browser-use"]
+    probe_paths = (_managed_bin_dir(), None, _user_local_bin_dir())
+    for probe_path in probe_paths:
+        if probe_path is None or probe_path:
+            direct = shutil.which("browser-use", path=probe_path)
+            if direct:
+                return [direct]
+    for probe_path in probe_paths:
+        if probe_path is None or probe_path:
+            uvx = shutil.which("uvx", path=probe_path)
+            if uvx:
+                return [uvx, "browser-use"]
     return None
+
+
+def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
+    """Install the browser-use CLI persistently via ``uv tool install``.
+
+    Resolution order for uv: Hermes' managed uv (bootstrapped on demand via
+    ``hermes_cli.managed_uv.ensure_uv``) → uv on PATH. The binary is linked
+    into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()``
+    resolves it for every profile without touching the user's PATH.
+
+    Returns ``(ok, message)`` — never raises.
+    """
+    # MANAGED-FIRST: only the managed copy short-circuits the install. A
+    # browser-use found on PATH is a user-level side install — it must NOT
+    # prevent provisioning the canonical Hermes-managed copy, or resolution
+    # stays pinned to a binary we don't control (version drift, no updates
+    # through hermes tools).
+    bin_dir = _managed_bin_dir()
+    if bin_dir:
+        managed = shutil.which("browser-use", path=bin_dir)
+        if managed:
+            return True, f"browser-use CLI already installed ({managed})"
+
+    uv_bin: Optional[str] = None
+    try:
+        from hermes_cli.managed_uv import ensure_uv
+
+        uv_bin = str(ensure_uv() or "") or None
+    except Exception as e:
+        logger.debug("Managed uv bootstrap unavailable: %s", e)
+    if not uv_bin:
+        uv_bin = shutil.which("uv")
+    if not uv_bin:
+        return False, (
+            "uv is not available and could not be bootstrapped. Install uv "
+            "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`."
+        )
+
+    env = dict(os.environ)
+    env["UV_NO_CONFIG"] = "1"
+    if bin_dir:
+        try:
+            Path(bin_dir).mkdir(parents=True, exist_ok=True)
+            env["UV_TOOL_BIN_DIR"] = bin_dir
+        except OSError as e:
+            logger.debug("Could not prepare %s: %s", bin_dir, e)
+
+    try:
+        result = subprocess.run(
+            [uv_bin, "tool", "install", "browser-use"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"`uv tool install browser-use` timed out after {timeout_s}s"
+    except Exception as e:
+        return False, f"Failed to run `uv tool install browser-use`: {e}"
+
+    if result.returncode != 0:
+        tail = "\n".join(
+            (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        )
+        return False, f"`uv tool install browser-use` failed:\n{tail}"
+
+    found = _find_cli()
+    if not found or len(found) != 1:
+        return False, (
+            "install reported success but the browser-use binary is still "
+            "not resolvable — run `uv tool install browser-use` manually"
+        )
+    return True, f"browser-use CLI installed ({found[0]})"
 
 
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
@@ -217,7 +447,9 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
-def _resolve_backend_cdp(env: dict, task_id: Optional[str]) -> Optional[str]:
+def _resolve_backend_cdp(
+    env: dict, task_id: Optional[str], session_name: str = ""
+) -> Optional[str]:
     """Point the harness at the configured browser backend's CDP endpoint.
 
     Resolution order (first hit wins):
@@ -233,6 +465,12 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str]) -> Optional[str]:
        inactivity reaper, and atexit cleanup — instead of duplicating it.
     4. Nothing configured: return None; the harness attaches to local
        Chrome (or Browser Use cloud via BU_AUTOSPAWN for legacy configs).
+
+    ``session_name`` (the tool's ``session`` argument / BU_NAME) keys the
+    provider session cache when set, so every distinct name gets its OWN
+    cloud browser and the same name reuses one — that is what makes named
+    sessions actually concurrent-safe on provider backends instead of all
+    names sharing a single per-task browser.
 
     Returns an error string on provider failure, None on success.
     """
@@ -275,10 +513,17 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str]) -> Optional[str]:
     if provider_key == _BACKEND_KEY and not is_truthy_value(
         _read_browser_cfg().get("use_gateway"), default=False
     ):
+        # Named BU cloud browsers are exclusive to their daemon — no shared
+        # tab to isolate from.
+        env[_PRIVATE_BROWSER_SENTINEL] = "1"
         return None
 
     try:
-        session_info = _get_session_info(task_id or "browser-exec-default")
+        # Named sessions get their OWN provider browser, keyed by name so the
+        # same name reuses one browser across calls and tasks, and different
+        # names never collide. Unnamed calls keep the per-task key.
+        cache_key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+        session_info = _get_session_info(cache_key)
     except Exception as e:
         return (
             f"Cloud browser provider {type(provider).__name__} failed to "
@@ -293,6 +538,11 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str]) -> Optional[str]:
             "the built-in browser tools for this provider."
         )
     env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
+    # A provider browser keyed bu-named-<name> is exclusive to this session —
+    # the own-tab preamble is unnecessary there (it would just leak a blank
+    # tab into a browser nobody else touches).
+    if session_name:
+        env[_PRIVATE_BROWSER_SENTINEL] = "1"
     return None
 
 
@@ -329,13 +579,26 @@ def browser_exec(
                 "dashes, or underscores (e.g. 'r7k2')."
             )
         env["BU_NAME"] = session
-    else:
-        # Route through the configured browser backend (Browserbase,
-        # Firecrawl, Nous gateway, CDP override, …). Explicit BU_NAME cloud
-        # sessions manage their own browser and skip backend resolution.
-        backend_err = _resolve_backend_cdp(env, task_id)
-        if backend_err:
-            return tool_error(backend_err)
+    # Route through the configured browser backend (Browserbase, Firecrawl,
+    # Nous gateway, CDP override, local Chrome, …). Named sessions compose
+    # with the backend: BU_NAME namespaces the harness daemon (its IPC
+    # socket, log, and pid), and on provider backends the name additionally
+    # keys its own cloud browser — so concurrent sessions stop clobbering
+    # each other's daemon (#86894). Browser Use direct-API cloud configs
+    # are the one exception: the CLI manages named cloud browsers natively,
+    # and _resolve_backend_cdp skips provider resolution for them.
+    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
+    if backend_err:
+        return tool_error(backend_err)
+
+    # On a SHARED browser (local Chrome / CDP override) a fresh named daemon
+    # attaches to the first existing page — the same page a sibling daemon
+    # may hold. Pin each named session to a tab it created before running
+    # the model's code. Private per-name browsers (provider-keyed or BU
+    # cloud) skip this: no one to collide with, and the extra tab would leak.
+    private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
+    if session and not private_browser:
+        code = _OWN_TAB_PREAMBLE + code
 
     workspace = _workspace_dir(task_id)
     if workspace:
@@ -434,8 +697,10 @@ _HEADER_BASE = (
     "Batch each sub-procedure (navigate, wait, extract, act) into one call "
     "— do not spend a call per action — but for long extractions prefer "
     "several medium calls that append to workspace files over one giant "
-    "call, so progress survives timeouts. For a named cloud browser, pass "
-    "session=<name> (never BU_NAME env syntax)."
+    "call, so progress survives timeouts. For an isolated concurrent "
+    "browser session (parallel tasks that must not share tabs), pass "
+    "session=<name> (never BU_NAME env syntax) and reuse the same name on "
+    "every related call."
 )
 
 _HEADER_VISION = (
@@ -534,7 +799,7 @@ BROWSER_EXEC_SCHEMA = {
             },
             "session": {
                 "type": "string",
-                "description": "Named cloud browser session (sets BU_NAME). Omit for the local default daemon. Use the same name you passed to start_remote_daemon().",
+                "description": "Named isolated browser session (sets BU_NAME): each name gets its own harness daemon — and on cloud backends its own browser — so concurrent tasks don't clobber each other. Omit for the shared default session. Reuse the same name across calls to keep working in that session (and the name passed to start_remote_daemon(), if used).",
             },
             "timeout_s": {
                 "type": "integer",

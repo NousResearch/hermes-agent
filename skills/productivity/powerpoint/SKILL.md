@@ -41,7 +41,7 @@ and slide rendering — all offline, no PowerPoint installation required.
   gracefully (reports `{"rendered": false, "missing": [...]}`, exit 0)
   when absent — all create/read/edit operations work without them.
 - Check availability via `terminal`:
-  `python3 -c "import pptx; print(pptx.__version__)"` and `which soffice pdftoppm`.
+  `python -c "import pptx; print(pptx.__version__)"` and `which soffice pdftoppm`.
 
 ## How to Run
 
@@ -49,16 +49,16 @@ All scripts live in `scripts/`, take `--help`, print JSON to stdout, and
 exit non-zero on failure. Run them with `terminal`:
 
 ```bash
-python3 scripts/pptx_create.py deck.json out.pptx
-python3 scripts/pptx_read.py deck.pptx --outline      # full JSON outline
-python3 scripts/pptx_read.py deck.pptx --notes        # speaker notes
-python3 scripts/pptx_read.py deck.pptx --images ./img # export pictures
-python3 scripts/pptx_edit.py deck.pptx --replace-text "Old Corp" "New Corp"
-python3 scripts/pptx_edit.py deck.pptx --chart-data update.json
-python3 scripts/pptx_edit.py deck.pptx --duplicate-slide 2
-python3 scripts/pptx_edit.py deck.pptx --remove-slide 3 --move-slide 2 0
-python3 scripts/pptx_from_template.py brand.pptx out.pptx --values vals.json
-python3 scripts/pptx_render.py deck.pptx --outdir ./render  # slide PNGs
+python scripts/pptx_create.py deck.json out.pptx
+python scripts/pptx_read.py deck.pptx --outline      # full JSON outline
+python scripts/pptx_read.py deck.pptx --notes        # speaker notes
+python scripts/pptx_read.py deck.pptx --images ./img # export pictures
+python scripts/pptx_edit.py deck.pptx --replace-text "Old Corp" "New Corp"
+python scripts/pptx_edit.py deck.pptx --chart-data update.json
+python scripts/pptx_edit.py deck.pptx --duplicate-slide 2
+python scripts/pptx_edit.py deck.pptx --remove-slide 3 --move-slide 2 0
+python scripts/pptx_from_template.py brand.pptx out.pptx --values vals.json
+python scripts/pptx_render.py deck.pptx --outdir ./render  # slide PNGs
 ```
 
 Author JSON specs with `write_file`; inspect script output and generated
@@ -217,4 +217,4 @@ say so rather than approximating.
    shapes, truncated text, and color problems the outline cannot. If the
    render tools are missing, the script says so; rely on the outline.
 4. The bundled test suite is the full contract:
-   `python3 -m pytest tests/ -q` (requires python-pptx + pytest).
+   `python -m pytest tests/ -q` (requires python-pptx + pytest).

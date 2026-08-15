@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 
-import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -8,7 +8,6 @@ import {
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
-import { setCronJobs } from '@/store/cron'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -38,6 +37,8 @@ import {
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
+import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
+
 // The recents list is local-only: cron rows have their own section, kanban
 // dispatcher workers are read on the board, and each messaging platform
 // (telegram, discord, …) is fetched separately into its own self-managed
@@ -48,6 +49,22 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSA
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
+
+// Drop rows the user just deleted/archived: ANY list fetch (full refresh,
+// "Load more" paging, a per-platform messaging page, the cron slice) can race
+// an in-flight delete RPC, and the backend page still carries the doomed row
+// until the DELETE commits — so it flashed back into the sidebar (#50928).
+// Honoring the optimistic tombstone at every ingestion point keeps the removal
+// stable; the tombstone self-clears once projects.tree confirms the delete,
+// and a failed delete untombstones immediately, so nothing is filtered on the
+// non-destructive paths.
+function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
+  const tombstones = $removedSessionIds.get()
+
+  return tombstones.size
+    ? sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
+    : sessions
+}
 
 // Rows a session refresh must preserve even if the aggregator omits them:
 // in-flight first turns (message_count 0), pinned rows aged off the page, the
@@ -97,7 +114,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      const rows = dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source)))
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -119,7 +136,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       source: platform
     })
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    const incoming = dropTombstoned(result.sessions.filter(s => normalizeSessionSource(s.source) === platform))
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -139,9 +156,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
-
-      setCronJobs(jobs)
+      await refreshCronJobsStore(profileScope === ALL_PROFILES ? 'all' : profileScope)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
@@ -194,13 +209,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // in-flight mutation and the backend page still carries the doomed row.
         // Honoring the optimistic tombstone keeps the removal from flashing back
         // (the tombstone self-clears once projects.tree confirms the delete).
-        const tombstones = $removedSessionIds.get()
-
-        const incoming = tombstones.size
-          ? recents.sessions.filter(
-              s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
-            )
-          : recents.sessions
+        const incoming = dropTombstoned(recents.sessions)
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array
@@ -245,7 +254,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Messaging sections: drop any non-messaging source the broad exclude
         // didn't catch (custom sources stay in local recents), then split per
         // platform in the UI.
-        const messagingRows = result.messaging.sessions.filter(s => isMessagingSource(s.source))
+        const messagingRows = dropTombstoned(result.messaging.sessions.filter(s => isMessagingSource(s.source)))
 
         setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
         // Hit the cap → at least one platform may have more on disk than loaded.

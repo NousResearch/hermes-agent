@@ -395,6 +395,15 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Anthropic",
         auth_type="api_key",
         inference_base_url="https://api.anthropic.com",
+        # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key, despite auth_type="api_key"
+        # and its place in this tuple (#82154). `claude setup-token` yields an
+        # `sk-ant-oat01…` OAuth token: sent as `x-api-key` it 401s, and sent as a
+        # bare Bearer it 429s. It is listed here because this tuple doubles as the
+        # credential-DISCOVERY list (agent/credential_pool.py builds its env scan
+        # from it), so removing it would stop Hermes finding a setup-token
+        # credential at all. The adapter routes such a value down the OAuth path
+        # on the strength of its prefix, not on this entry. Only ANTHROPIC_API_KEY
+        # and ANTHROPIC_TOKEN are usable as literal API keys.
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
         base_url_env_var="ANTHROPIC_BASE_URL",
     ),
@@ -1094,34 +1103,52 @@ def _load_global_auth_store() -> Dict[str, Any]:
     Returns an empty dict when no global fallback exists (classic mode,
     or the global auth.json is absent). Never raises on missing file.
 
-    Seat belt: under pytest, refuses to read the real user's
-    ``~/.hermes/auth.json`` even when HERMES_HOME is set to a profile
-    path. The hermetic conftest does not redirect ``HOME``, so
-    ``get_default_hermes_root()`` for a profile-shaped HERMES_HOME can
-    still resolve to the real user's home on a dev machine. That would
-    leak real credentials into tests. This guard uses the unmodified
-    ``HOME`` env var (what ``os.path.expanduser('~')`` would resolve to),
-    not ``Path.home()``, because ``Path.home`` is sometimes monkeypatched
-    by fixtures that want to relocate the global root to a tmp path.
+    Memoised keyed on the global auth file's path + mtime (same pattern as
+    ``_nous_auth_status_cache``): read_credential_pool() -> load_pool() runs
+    this once per provider row in the /model picker, and the path resolution
+    (``_global_auth_file_path()`` -> ``get_default_hermes_root()``) + JSON
+    parse cost ~105us+ per call even when nothing changed. The global
+    store only changes when the user authenticates at global scope (writes
+    always go through _save_auth_store, which touches the file), so the mtime
+    key keeps the memo freshness-correct. Callers must treat the returned
+    store as read-only (all current callers do — .get / dict() / list()
+    copies only).
     """
+    global _global_auth_store_cache
     global_path = _global_auth_file_path()
     if global_path is None or not global_path.exists():
+        _global_auth_store_cache = None
         return {}
+    try:
+        resolved_path = str(global_path.resolve(strict=False))
+        mtime_ns = global_path.stat().st_mtime_ns
+        cache_key: Optional[Tuple[str, int]] = (resolved_path, mtime_ns)
+    except Exception:
+        cache_key = None
+    if cache_key is not None and _global_auth_store_cache is not None:
+        cached_path, cached_mtime, cached_store = _global_auth_store_cache
+        if cached_path == cache_key[0] and cached_mtime == cache_key[1]:
+            return cached_store
     if os.environ.get("PYTEST_CURRENT_TEST"):
         real_home_env = os.environ.get("HOME", "")
         if real_home_env:
             real_root = Path(real_home_env) / ".hermes" / "auth.json"
             try:
                 if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    _global_auth_store_cache = None
                     return {}
             except Exception:
                 pass
     try:
-        return _load_auth_store(global_path)
+        store = _load_auth_store(global_path)
     except Exception:
         # A malformed global store must not break profile reads. The
         # profile's own auth store is still authoritative.
+        _global_auth_store_cache = None
         return {}
+    if cache_key is not None:
+        _global_auth_store_cache = (cache_key[0], cache_key[1], store)
+    return store
 
 
 def _auth_lock_path() -> Path:
@@ -1753,11 +1780,29 @@ def write_credential_pool(
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
-    """Mark a credential source as suppressed so it won't be re-seeded."""
+    """Mark a credential source as suppressed so it won't be re-seeded.
+
+    Older auth stores may represent a provider's suppressed sources as a
+    mapping.  Treat its keys as source names and migrate the value to the
+    canonical list form before appending the requested source.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        suppressed = auth_store.setdefault("suppressed_sources", {})
-        provider_list = suppressed.setdefault(provider_id, [])
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            suppressed = {}
+            auth_store["suppressed_sources"] = suppressed
+
+        raw_sources = suppressed.get(provider_id)
+        if isinstance(raw_sources, list):
+            provider_list = raw_sources
+        elif isinstance(raw_sources, dict):
+            provider_list = [str(name) for name in raw_sources]
+            suppressed[provider_id] = provider_list
+        else:
+            provider_list = []
+            suppressed[provider_id] = provider_list
+
         if source not in provider_list:
             provider_list.append(source)
         _save_auth_store(auth_store)
@@ -1783,8 +1828,15 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
         suppressed = auth_store.get("suppressed_sources")
         if not isinstance(suppressed, dict):
             return False
-        provider_list = suppressed.get(provider_id)
-        if not isinstance(provider_list, list) or source not in provider_list:
+        raw_sources = suppressed.get(provider_id)
+        if isinstance(raw_sources, dict):
+            provider_list = [str(name) for name in raw_sources]
+            suppressed[provider_id] = provider_list
+        elif isinstance(raw_sources, list):
+            provider_list = raw_sources
+        else:
+            return False
+        if source not in provider_list:
             return False
         provider_list.remove(source)
         if not provider_list:
@@ -6647,6 +6699,11 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
 _nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
+# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store).
+# Same invalidation contract as _nous_auth_status_cache — the global auth
+# file changes only when a global-scope auth write touches it.
+_global_auth_store_cache: Optional[Tuple[str, int, Dict[str, Any]]] = None
+
 
 def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
     auth_file = _auth_file_path()
@@ -7436,31 +7493,41 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _confirm_expensive_model_selection(
+def _confirm_selection_guards(
     model_id: str,
     *,
     provider: str = "",
     base_url: str = "",
     api_key: str = "",
+    include_kinds: Optional[List[str]] = None,
 ) -> bool:
-    """Prompt before saving a model whose known pricing exceeds guardrails."""
-    try:
-        from hermes_cli.model_cost_guard import expensive_model_warning
+    """Prompt before saving a model that trips any selection guard.
 
-        warning = expensive_model_warning(
+    Runs the unified guard registry (cost + data-policy + future guards) via
+    :mod:`hermes_cli.model_selection_guards` and shows one [y/N] confirm with
+    every warning that fired. Returns True to proceed, False to cancel.
+    """
+    try:
+        from hermes_cli.model_selection_guards import (
+            combined_message,
+            selection_warnings,
+        )
+
+        warnings = selection_warnings(
             model_id,
             provider=provider,
             base_url=base_url,
             api_key=api_key,
+            include_kinds=include_kinds,
         )
     except Exception:
-        warning = None
-    if warning is None:
+        warnings = []
+    if not warnings:
         return True
 
     print()
     print("=" * 72)
-    print(warning.message)
+    print(combined_message(warnings))
     print("=" * 72)
     try:
         response = input("Switch anyway? [y/N]: ").strip().lower()
@@ -7502,11 +7569,17 @@ def _prompt_model_selection(
     def _confirmed_selection(mid: str) -> Optional[str]:
         if not mid:
             return None
-        if confirm_provider and not _confirm_expensive_model_selection(
+        # Unified guard registry (hermes_cli.model_selection_guards): the cost
+        # guard only runs when a provider is known (pricing lookups need one);
+        # id-keyed guards like the data-policy guard always run — they must
+        # fire even via a custom endpoint or gateway.
+        _kinds = None if confirm_provider else ["data_policy"]
+        if not _confirm_selection_guards(
             mid,
             provider=confirm_provider,
             base_url=confirm_base_url,
             api_key=confirm_api_key,
+            include_kinds=_kinds,
         ):
             return None
         return mid

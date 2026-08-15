@@ -6,7 +6,7 @@ import { publishSessionState, setSessionTileDelegate } from '@/store/session-sta
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
-import { withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
+import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
@@ -85,11 +85,23 @@ export function useSessionTileDelegate({
         await executeSlashCommand(rawCommand, { sessionId })
       },
       interruptSession: async runtimeId => {
+        // Same cooldown as the primary chat's Stop (#83855): the gateway may
+        // still be winding down after this interrupt, so a quick edit/resend
+        // on the tile must go interrupt-first even though busy already reads
+        // false. Mark the runtime id (and any recovered id) before the RPC so
+        // the window covers the whole wind-down.
+        markSessionRecentlyInterrupted(runtimeId)
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionIdForRuntime(runtimeId),
           liveId => requestGateway('session.interrupt', { session_id: liveId }),
-          { requestGateway, onRecovered: rebindTileRuntime(runtimeId) }
+          {
+            requestGateway,
+            onRecovered: recoveredId => {
+              markSessionRecentlyInterrupted(recoveredId)
+              rebindTileRuntime(runtimeId)(recoveredId)
+            }
+          }
         )
       },
       resumeTile: async storedSessionId => {

@@ -814,6 +814,97 @@ def test_repeated_openviking_health_probes_never_send_identity_headers(monkeypat
     ]
 
 
+def test_cloud_health_retries_with_api_key_after_anonymous_auth_error(monkeypatch):
+    """Hosted OpenViking may require auth on GET /health (#78410)."""
+    calls = []
+    client = _VikingClient(
+        "https://api.vikingdb.cn-beijing.volces.com/openviking",
+        api_key="account.user.0123456789abcdef0123456789abcdef",
+        agent="hermes",
+    )
+    modern = {"status": "ok", "healthy": True, "version": "0.3.0"}
+
+    def fake_get(url, **kwargs):
+        headers = kwargs["headers"]
+        calls.append(dict(headers))
+        if "Authorization" not in headers:
+            return SimpleNamespace(
+                status_code=401,
+                text='{"error":{"code":"AuthenticationError","message":"The API key in the request is missing or invalid."}}',
+                json=lambda: {
+                    "error": {
+                        "code": "AuthenticationError",
+                        "message": "The API key in the request is missing or invalid.",
+                    }
+                },
+            )
+        return SimpleNamespace(status_code=200, text="", json=lambda: modern)
+
+    monkeypatch.setattr(client._httpx, "get", fake_get)
+
+    payload = client.health_payload()
+    assert payload == modern
+    assert client.health() is True
+    assert calls[0] == {"Accept": "application/json"}
+    assert "Authorization" in calls[1]
+    assert calls[1]["Authorization"].startswith("Bearer account.user.")
+    assert "X-API-Key" in calls[1]
+    # No tenant headers on health.
+    assert "X-OpenViking-Account" not in calls[1]
+    assert "X-OpenViking-User" not in calls[1]
+
+
+def test_cloud_health_does_not_send_key_without_api_key(monkeypatch):
+    client = _VikingClient(
+        "https://api.vikingdb.cn-beijing.volces.com/openviking",
+        api_key="",
+        agent="hermes",
+    )
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs["headers"])
+        return SimpleNamespace(
+            status_code=401,
+            text="AuthenticationError",
+            json=lambda: {
+                "error": {
+                    "code": "AuthenticationError",
+                    "message": "The API key in the request is missing or invalid.",
+                }
+            },
+        )
+
+    monkeypatch.setattr(client._httpx, "get", fake_get)
+
+    with pytest.raises(openviking_module._OpenVikingHTTPError):
+        client.health_payload()
+    assert calls == [{"Accept": "application/json"}]
+
+
+def test_health_non_auth_errors_do_not_retry_with_credentials(monkeypatch):
+    client = _VikingClient(
+        "https://openviking.example",
+        api_key="secret-key",
+        agent="hermes",
+    )
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs["headers"])
+        return SimpleNamespace(
+            status_code=503,
+            text="unavailable",
+            json=lambda: {"error": {"code": "UNAVAILABLE", "message": "down"}},
+        )
+
+    monkeypatch.setattr(client._httpx, "get", fake_get)
+
+    with pytest.raises(openviking_module._OpenVikingHTTPError):
+        client.health_payload()
+    assert calls == [{"Accept": "application/json"}]
+
+
 def test_modern_openviking_identity_does_not_probe_openapi():
     client = MagicMock()
     client.health_payload.return_value = {

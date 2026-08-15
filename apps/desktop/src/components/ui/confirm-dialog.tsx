@@ -28,6 +28,10 @@ interface ConfirmDialogProps {
   destructive?: boolean
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
+  /** Focus control for dialogs with no input. Pass `preventCloseButtonAutoFocus`
+   *  so opening doesn't land focus on the close/cancel button (which would pop
+   *  its tooltip with no pointer near it). */
+  onOpenAutoFocus?: (event: Event) => void
 }
 
 // Shared confirmation dialog: Enter confirms (from anywhere in the dialog),
@@ -44,7 +48,8 @@ export function ConfirmDialog({
   doneLabel,
   cancelLabel,
   destructive = false,
-  dismissOnConfirm = false
+  dismissOnConfirm = false,
+  onOpenAutoFocus
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
@@ -104,6 +109,7 @@ export function ConfirmDialog({
             void run()
           }
         }}
+        onOpenAutoFocus={onOpenAutoFocus}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>

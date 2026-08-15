@@ -174,6 +174,85 @@ def test_write_json(capture):
     assert json.loads(buf.getvalue()) == {"test": True}
 
 
+def test_live_session_payload_replays_pending_approval(server, monkeypatch):
+    """A reattached client receives the approval that was emitted while detached."""
+    from tools import approval
+
+    session = {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    first = {
+        "choices": ["once", "deny"],
+        "command": "rm -rf /tmp/example",
+        "description": "recursive delete",
+    }
+    second = {"command": "rm -rf /tmp/later", "description": "later"}
+    saved_queue = approval._gateway_queues.pop("stored-session", None)
+    approval._gateway_queues["stored-session"] = [
+        approval._ApprovalEntry(first),
+        approval._ApprovalEntry(second),
+    ]
+    monkeypatch.setattr(server, "_approval_request_payload", lambda data: dict(data or {}))
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+    finally:
+        approval._gateway_queues.pop("stored-session", None)
+        if saved_queue is not None:
+            approval._gateway_queues["stored-session"] = saved_queue
+
+    assert payload["pending_approval"] is not first
+    replayed = payload["pending_approval"]
+    # request_id is injected by _ApprovalEntry so reconnecting clients can
+    # correlate their approval.respond with the exact queued request.
+    assert replayed.pop("request_id")
+    assert replayed == first
+
+
+def test_live_session_payload_replays_pending_clarify(server):
+    """A reattached client also receives a clarify question emitted while detached."""
+    session = {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    clarify_payload = {
+        "choices": ["staging", "production"],
+        "question": "Which deployment target?",
+        "request_id": "rid-clarify",
+    }
+    with server._prompt_lock:
+        server._pending["rid-clarify"] = ("runtime-session", threading.Event())
+        server._pending_prompt_payloads["rid-clarify"] = (
+            "clarify.request",
+            dict(clarify_payload),
+        )
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+        other = server._live_session_payload("other-session", session)
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-clarify", None)
+            server._pending_prompt_payloads.pop("rid-clarify", None)
+
+    assert payload["pending_clarify"] == clarify_payload
+    # Snapshot, not a live reference into the registry.
+    assert payload["pending_clarify"] is not clarify_payload
+    # Scoped to the owning runtime session only.
+    assert "pending_clarify" not in other
+
+
 def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
     """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
     `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
@@ -272,6 +351,66 @@ def test_late_prompt_response_is_idempotent(server, method, value_key):
     )
 
     assert response["result"] == {"status": "expired"}
+
+
+def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    pending = [{"request_id": "req-1", "command": "danger"}]
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: pending if key == "agent-1" else [])
+
+    response = server.handle_request(
+        {"id": "r1", "method": "approval.pending", "params": {"session_id": "ui-1"}}
+    )
+
+    assert response["result"] == {"approvals": pending}
+
+
+def test_approval_received_acknowledges_exact_request(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "ack_gateway_approval",
+        lambda key, request_id: calls.append((key, request_id)) or True,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r2",
+            "method": "approval.received",
+            "params": {"session_id": "ui-1", "request_id": "req-1"},
+        }
+    )
+
+    assert response["result"] == {"acknowledged": True}
+    assert calls == [("agent-1", "req-1")]
+
+
+def test_approval_response_correlates_request_id(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r3",
+            "method": "approval.respond",
+            "params": {"session_id": "ui-1", "request_id": "req-1", "choice": "once"},
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [("agent-1", "once", {"resolve_all": False, "request_id": "req-1"})]
 
 
 def test_clear_pending(server):
@@ -658,6 +797,28 @@ def test_completion_handlers_are_pool_routed(completion_method, server):
     assert completion_method in server._LONG_HANDLERS
 
 
+@pytest.mark.parametrize(
+    "voice_or_wake_method",
+    ["voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+)
+def test_voice_and_wake_handlers_are_pool_routed(voice_or_wake_method, server):
+    """Voice and wake RPCs must run on the pool, never the WS reader thread.
+
+    Regression: voice.toggle (status) triggers check_voice_requirements() →
+    STT provider auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
+    subprocess, up to a 300s timeout). Inline on the WS reader loop it blocked
+    prompt.submit / session.list frames queued behind it — the desktop showed
+    sent messages that never reached the agent. Same bug class as #21123 /
+    #50005: anything that can stall for seconds must stay off the reader thread.
+
+    wake.start and wake.status share the same STT lazy-install path via
+    check_wake_word_requirements() → _stt_ready() → _get_provider(), and
+    wake.start additionally calls lazy_deps.ensure() for wake-word engine deps.
+    The desktop polls wake.status on every gateway-ready.
+    """
+    assert voice_or_wake_method in server._LONG_HANDLERS
+
+
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     """Real config + skin files: activating a skin (as `hermes config set` does)
     makes the per-tool reconcile broadcast skin.changed with the resolved palette.
@@ -739,4 +900,3 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
-

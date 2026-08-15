@@ -13,11 +13,18 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  branchGroupForUser,
+  type ChatMessage,
+  chatMessageText,
+  completeOpenTimelineParts,
+  textPart
+} from '@/lib/chat-messages'
 
 import {
   appendText,
   isSessionBusyError,
+  isVisibleUserMessage,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
   withSessionBusyRetry,
@@ -27,6 +34,61 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
+ * Post-rewrite durable ids of the surviving visible user turns, in visible-user
+ * ordinal order — the gateway's `survivor_user_row_ids` on a truncating
+ * `prompt.submit`. A rewind's `replace_messages` re-inserts the kept prefix as
+ * NEW SQLite rows, so every pre-rewind `ChatMessage.rowId` on a surviving
+ * bubble is stale the moment the rewind lands; targeting one on the next
+ * rewind/edit/regenerate gets a fail-closed 4018 from the gateway. `null`
+ * means that turn has no durable id (drop the cached one, don't keep a stale
+ * one). Absent entirely = the submit didn't truncate a durable session (or an
+ * older gateway) — leave state untouched.
+ */
+export type SurvivorUserRowIds = readonly (null | number)[]
+
+interface PromptSubmitResult {
+  status?: string
+  survivor_user_row_ids?: unknown
+}
+
+export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): SurvivorUserRowIds | undefined {
+  const raw = result?.survivor_user_row_ids
+
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+
+  return raw.map(entry => (typeof entry === 'number' && Number.isInteger(entry) ? entry : null))
+}
+
+/**
+ * Rebind the surviving visible user turns to their authoritative post-rewind
+ * row ids (positional, same visible-user filter `visibleUserOrdinal` uses —
+ * the exact parity truncate ordinals already rely on). Turns past the end of
+ * the survivor list — the resubmitted turn itself, whose durable id doesn't
+ * exist yet — and `null` entries get their cached rowId cleared instead: a
+ * stale id now addresses an archived row and would be refused with 4018.
+ */
+export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: SurvivorUserRowIds): ChatMessage[] {
+  let ordinal = 0
+
+  return messages.map(message => {
+    if (!isVisibleUserMessage(message)) {
+      return message
+    }
+
+    const next = ordinal < survivorRowIds.length ? survivorRowIds[ordinal] : null
+    ordinal += 1
+
+    if (typeof next === 'number') {
+      return message.rowId === next ? message : { ...message, rowId: next }
+    }
+
+    return message.rowId === undefined ? message : { ...message, rowId: undefined }
+  })
+}
+
+/**
  * Build `prompt.submit` truncation params. `confirm_truncate` states that this
  * submit really is a rewind/edit/regenerate: the gateway drops history only for
  * a submit that says so, so a leftover ordinal riding along on an ordinary send
@@ -34,39 +96,59 @@ type RequestGateway = <T = unknown>(method: string, params?: Record<string, unkn
  * transcript (restore/regenerate the first user turn), which the gateway gates
  * behind `confirm_empty_truncate` on top of that.
  */
-export function truncateSubmitParams(truncateOrdinal: number | undefined): Record<string, unknown> {
-  if (truncateOrdinal === undefined) {
+export function truncateSubmitParams(
+  truncateOrdinal: number | undefined,
+  truncateMessageId?: string,
+  truncateRowId?: number
+): Record<string, unknown> {
+  const hasOrdinal = typeof truncateOrdinal === 'number' && Number.isInteger(truncateOrdinal) && truncateOrdinal >= 0
+  const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId)
+
+  // Renderer ids are ephemeral (`${timestamp}-${index}-${role}` from
+  // chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+  // history never carries them — only durable `row_id` / platform message_id.
+  const isSyntheticId =
+    typeof truncateMessageId === 'string' &&
+    (truncateMessageId.startsWith('user-') ||
+      truncateMessageId.startsWith('assistant-') ||
+      truncateMessageId.includes('-synthetic-') ||
+      /^\d+-\d+-(user|assistant|tools)\b/.test(truncateMessageId))
+
+  const hasMessageId = typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticId
+
+  if (!hasOrdinal && !hasMessageId && !hasRowId) {
     return {}
   }
 
   return {
     confirm_truncate: true,
-    truncate_before_user_ordinal: truncateOrdinal,
+    ...(hasOrdinal ? { truncate_before_user_ordinal: truncateOrdinal } : {}),
+    ...(hasMessageId ? { truncate_before_message_id: truncateMessageId } : {}),
+    ...(hasRowId ? { truncate_before_row_id: truncateRowId } : {}),
     ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
   }
 }
 
 /**
  * Rewind a turn: `prompt.submit` with an optional `truncate_before_user_ordinal`
- * (drops that user turn + everything after). Idle rewinds submit directly
- * (interrupting an idle agent can leave a stale interrupt flag that cancels the
- * fresh turn); live/stuck turns interrupt first, and a raced "session busy"
- * response interrupts + retries through the shared busy gate.
+ * / `truncate_before_message_id` / `truncate_before_row_id` (drops that user turn + everything after).
+ * Idle rewinds submit directly; live/stuck turns interrupt first, and a raced
+ * "session busy" response interrupts + retries through the shared busy gate.
  *
- * A rewind runs right after `cancelRun`, and interrupting can drop the
- * gateway's in-memory session — so the follow-up submit hits a dead runtime id
- * and used to surface a bare "session not found" ("Restore checkpoint" failing
- * after a stop). Pass `recovery` so a stale id re-registers and retries like
- * every other session-scoped RPC.
+ * Resolves with the gateway's post-rewrite survivor row ids (see
+ * `SurvivorUserRowIds`) so the caller can rebind surviving bubbles, or
+ * undefined when the submit didn't truncate a durable transcript.
  */
 export async function runRewindSubmit(
   requestGateway: RequestGateway,
   sessionId: string,
   text: string,
   truncateOrdinal: number | undefined,
+  truncateMessageId: string | undefined,
   interruptFirst: boolean,
-  recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void }
-): Promise<void> {
+  recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
+  truncateRowId?: number
+): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
   let liveSessionId = sessionId
@@ -80,26 +162,33 @@ export async function runRewindSubmit(
   }
 
   const submitFor = (targetId: string) =>
-    requestGateway(
+    requestGateway<PromptSubmitResult>(
       'prompt.submit',
       {
         session_id: targetId,
         text,
-        ...truncateSubmitParams(truncateOrdinal)
+        ...truncateSubmitParams(truncateOrdinal, truncateMessageId, truncateRowId)
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )
 
   const submit = async () => {
-    const { sessionId: usedId } = await withSessionNotFoundResume(liveSessionId, recovery?.storedSessionId, submitFor, {
-      requestGateway,
-      onRecovered: recoveredId => {
-        liveSessionId = recoveredId
-        recovery?.onSessionRecovered?.(recoveredId)
+    const { result, sessionId: usedId } = await withSessionNotFoundResume(
+      liveSessionId,
+      recovery?.storedSessionId,
+      submitFor,
+      {
+        requestGateway,
+        onRecovered: recoveredId => {
+          liveSessionId = recoveredId
+          recovery?.onSessionRecovered?.(recoveredId)
+        }
       }
-    })
+    )
 
     liveSessionId = usedId
+
+    return survivorRowIdsFrom(result)
   }
 
   if (interruptFirst) {
@@ -107,22 +196,76 @@ export async function runRewindSubmit(
   }
 
   try {
-    await submit()
+    return await submit()
   } catch (err) {
     if (!isSessionBusyError(err)) {
       throw err
     }
 
     await interrupt()
-    await withSessionBusyRetry(submit)
+
+    return await withSessionBusyRetry(submit)
   }
 }
 
 /** Cancel/stop finalize: drop empty pending/stream placeholders, un-pend the rest. */
-export function finalizeInterruptedMessages(messages: ChatMessage[], streamId?: null | string): ChatMessage[] {
+export function finalizeInterruptedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
   return messages
-    .filter(message => !((message.pending || message.id === streamId) && !chatMessageText(message).trim()))
-    .map(message => (message.pending || message.id === streamId ? { ...message, pending: false } : message))
+    .filter(
+      message =>
+        !(
+          (message.pending || message.id === streamId) &&
+          message.parts.length === 0 &&
+          !chatMessageText(message).trim()
+        )
+    )
+    .map(message =>
+      message.pending || message.id === streamId
+        ? {
+            ...message,
+            completedAt: occurredAt,
+            parts: completeOpenTimelineParts(message.parts, occurredAt),
+            pending: false
+          }
+        : message
+    )
+}
+
+/**
+ * Arrival-ordered mid-turn user insert (#73793, #83151).
+ *
+ * A message typed while a turn streams must land AFTER every assistant row the
+ * user had already watched arrive — never spliced above it. Seal the live
+ * stream bubble in place (marked interim so the terminal completion settles
+ * onto it or follows it instead of duplicating), append the new user bubble at
+ * the live tail, and clear `streamId` so the turn's next delta seeds a fresh
+ * assistant bubble BELOW the correction rather than mutating the sealed one
+ * above it. Also retires the old insert-before-the-active-reply contract whose
+ * `lastAssistantIndex` fallback could splice the bubble mid-thread when the
+ * stream id was missing or stale (#83151).
+ */
+export function appendMidTurnUserMessage<
+  State extends { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+>(state: State, message: ChatMessage): State {
+  const liveId = state.streamId
+  const sealed = finalizeInterruptedMessages(state.messages, liveId)
+  const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
+
+  const messages = [
+    ...(sealedLiveKept ? sealed.map(row => (row.id === liveId ? { ...row, interim: true } : row)) : sealed),
+    message
+  ]
+
+  return {
+    ...state,
+    messages,
+    streamId: null,
+    interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +276,8 @@ export interface ReloadPlan {
   branchGroupId: string
   text: string
   truncateOrdinal: number
+  truncateMessageId?: string
+  truncateRowId?: number
   userIndex: number
 }
 
@@ -164,6 +309,8 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
     text,
     truncateOrdinal: visibleUserOrdinal(messages, userIndex),
+    truncateMessageId: userMessage.id,
+    truncateRowId: userMessage.rowId,
     userIndex
   }
 }
@@ -202,6 +349,8 @@ export interface RestorePlan {
   sourceIndex: number
   text: string
   truncateOrdinal: number
+  truncateMessageId?: string
+  truncateRowId?: number
 }
 
 /** Resolve the user turn to rewind to; throws with a user-facing reason. */
@@ -231,7 +380,7 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
       ? visibleUserOrdinal(messages, sourceIndex)
       : target.userOrdinal
 
-  return { sourceIndex, text, truncateOrdinal }
+  return { sourceIndex, text, truncateOrdinal, truncateMessageId: source.id, truncateRowId: source.rowId }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +393,8 @@ export interface EditPlan {
   sourceIndex: number
   text: string
   truncateOrdinal: number | undefined
+  truncateMessageId?: string
+  truncateRowId?: number
 }
 
 /** Resolve the edited user turn, or null when nothing changed / invalid. */
@@ -272,7 +423,9 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     isFailedTurn,
     sourceIndex,
     text,
-    truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex)
+    truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
+    truncateMessageId: isFailedTurn ? undefined : source.id,
+    truncateRowId: isFailedTurn ? undefined : source.rowId
   }
 }
 

@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -90,23 +91,33 @@ def test_verify_on_stop_auto_on_for_interactive_surfaces(clear_verify_env, sourc
 
 def test_verify_on_stop_default_path_through_load_config(tmp_path, clear_verify_env):
     # E2E: the sole production caller passes no config, so verify_on_stop_enabled
-    # resolves through load_config() + DEFAULT_CONFIG. The default is now the
-    # surface-aware "auto" sentinel. This is the path the unit-level tests above
-    # cannot exercise.
+    # resolves through load_config() + DEFAULT_CONFIG. The default is now False
+    # (opt-in): fresh installs must not fire the nudge on any surface. This is
+    # the path the unit-level tests above cannot exercise.
     clear_verify_env.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     from hermes_cli.config import load_config
 
     merged = load_config()
-    assert merged["agent"]["verify_on_stop"] == "auto"
+    assert merged["agent"]["verify_on_stop"] is False
 
-    # Interactive surface resolves ON through the real loader.
+    # Interactive surface resolves OFF through the real loader (opt-in default).
     clear_verify_env.setenv("HERMES_SESSION_SOURCE", "cli")
-    assert verify_on_stop_enabled() is True
+    assert verify_on_stop_enabled() is False
 
-    # A messaging platform resolves OFF.
+    # A messaging platform also resolves OFF.
     clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
     assert verify_on_stop_enabled() is False
+
+
+def test_verify_on_stop_missing_value_defaults_off(clear_verify_env):
+    # A missing/unrecognized config value falls back OFF on every surface,
+    # matching the opt-in DEFAULT_CONFIG default — only an explicit "auto"
+    # opts into the legacy surface-aware behavior.
+    clear_verify_env.setenv("HERMES_SESSION_SOURCE", "cli")
+    assert verify_on_stop_enabled({"agent": {}}) is False
+    assert verify_on_stop_enabled({"agent": {"verify_on_stop": "bogus"}}) is False
+    assert verify_on_stop_enabled({}) is False
 
 
 
@@ -144,6 +155,10 @@ def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
 
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Symlinks require elevated privileges on Windows",
+)
 def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     project = tmp_path / "project"

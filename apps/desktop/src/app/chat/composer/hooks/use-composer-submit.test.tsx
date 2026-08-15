@@ -4,6 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { $gateway } from '@/store/gateway'
+import {
+  clearAllPrompts,
+  hasBlockingPromptRequest,
+  setApprovalRequest,
+  setSecretRequest,
+  setSudoRequest
+} from '@/store/prompts'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -192,7 +199,13 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
   const parkClarify = (sessionId: string) => {
     $clarifyRequests.set({
-      [sessionId]: { requestId: `req-${sessionId}`, question: 'which one?', choices: ['a', 'b'], sessionId }
+      [sessionId]: {
+        requestId: `req-${sessionId}`,
+        question: 'which one?',
+        choices: ['a', 'b'],
+        multiSelect: false,
+        sessionId
+      }
     })
     $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }
@@ -261,5 +274,100 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
     expect(gatewayRequest).not.toHaveBeenCalled()
     expect($clarifyRequests.get()['other-session']).toBeDefined()
+  })
+})
+
+describe('useComposerSubmit with a blocking prompt parked on the session', () => {
+  // Typing cannot answer approval/sudo/secret prompts, so the busy submit must
+  // route text to the QUEUE — a steer would sit undelivered behind the blocked
+  // tool batch, and interrupting to force it through resolves the prompt empty
+  // and ends the turn as "Operation interrupted." with the message lost.
+  afterEach(() => {
+    cleanup()
+    clearAllPrompts()
+    vi.restoreAllMocks()
+  })
+
+  it('queues a busy text follow-up instead of steering while an approval is pending', () => {
+    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous', sessionId: 'runtime-session' })
+
+    const { hook, onCancel, onSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'and also fix the padding'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('queues while a sudo prompt is pending', () => {
+    setSudoRequest({ requestId: 'sudo-1', sessionId: 'runtime-session' })
+
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'next thing' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+  })
+
+  it('queues while a secret prompt is pending', () => {
+    setSecretRequest({ envVar: 'API_KEY', prompt: 'key?', requestId: 'sec-1', sessionId: 'runtime-session' })
+
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'next thing' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+  })
+
+  it('still runs slash commands inline', async () => {
+    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous', sessionId: 'runtime-session' })
+
+    const { hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: '/status' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', { composerScope: 'stored-session' }))
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+  })
+
+  it("ignores another session's blocking prompt and still steers", async () => {
+    setApprovalRequest({ command: 'ls', description: 'other', sessionId: 'other-session' })
+
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'change course' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('leaves the prompt pending — queueing must not resolve or dismiss it', () => {
+    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous', sessionId: 'runtime-session' })
+
+    const { hook } = renderSubmitHook({ busy: true, text: 'follow-up' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    // The approval card is still the turn's owner; only its own buttons answer it.
+    expect(hasBlockingPromptRequest('runtime-session')).toBe(true)
   })
 })

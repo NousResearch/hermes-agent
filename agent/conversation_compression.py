@@ -71,7 +71,10 @@ from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
 )
-from agent.model_metadata import estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
+)
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 
 logger = logging.getLogger(__name__)
@@ -1209,27 +1212,39 @@ def _adopt_live_compression_child(
     session_db: Any,
     parent_session_id: str,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Move a stale compression contender onto the unique durable child.
+    """Move a stale compression contender onto the live continuation tip.
 
     Resolve and load first, then mutate the live agent. This ordering keeps the
     stale contender fail-closed when lineage is ambiguous or the compacted
     handoff cannot be read.
+
+    Resolution uses the canonical transitive walk ``get_compression_tip`` so a
+    lineage with >=2 compression hops (root -> mid -> tip) recovers to the live
+    tip — the depth-1 ``find_live_compression_child`` lookup this used to call
+    finds no live *direct* child in that shape and skipped recovery (#82001).
+    The tip walk returns the input id when no continuation exists, and a
+    resolved tip is adopted only while its row is still live — both cases fail
+    closed exactly as before.
     """
-    finder = getattr(type(session_db), "find_live_compression_child", None)
+    resolver = getattr(type(session_db), "get_compression_tip", None)
+    row_getter = getattr(type(session_db), "get_session", None)
     loader = getattr(type(session_db), "get_messages_as_conversation", None)
-    if not callable(finder) or not callable(loader):
+    if not callable(resolver) or not callable(row_getter) or not callable(loader):
         return None
-    child = finder(session_db, parent_session_id)
-    if not child or not child.get("id"):
+    tip = resolver(session_db, parent_session_id)
+    if not tip or str(tip) == str(parent_session_id):
         return None
-    child_session_id = str(child["id"])
+    child_session_id = str(tip)
+    child = row_getter(session_db, child_session_id)
+    if not isinstance(child, dict) or child.get("ended_at") is not None:
+        return None
     recovered = loader(session_db, child_session_id)
     if not isinstance(recovered, list) or not recovered:
         return None
-    # Revalidate after loading: the child may have rotated or a competing
+    # Revalidate after loading: the tip may have rotated or a competing
     # continuation may have appeared between the two DB reads.
-    confirmed = finder(session_db, parent_session_id)
-    if not confirmed or str(confirmed.get("id") or "") != child_session_id:
+    confirmed = resolver(session_db, parent_session_id)
+    if not confirmed or str(confirmed) != child_session_id:
         return None
 
     agent.session_id = child_session_id
@@ -1988,6 +2003,56 @@ def _strip_stale_todo_snapshot(content: Any) -> Any:
     return content
 
 
+# Retention-parity notice (#84718): compaction re-injects the todo list
+# verbatim while skill instructions are pruned to [SKILL_PRUNED: ...] markers,
+# so the imperative crosses the boundary without the policy that governed it.
+# When BOTH happen at the same boundary, couple them: the re-injected snapshot
+# carries an explicit instruction to reload the pruned skills BEFORE acting on
+# any preserved task. Deterministic (derived only from the compressed
+# transcript), bounded (marker cap shared with the summary re-injection), and
+# stripped together with the snapshot at the next boundary because it lives
+# after TODO_INJECTION_HEADER inside the same block.
+_PRUNED_SKILL_RELOAD_NOTICE_HEADER = (
+    "[Skills pruned during compression — reload before acting on these tasks]"
+)
+
+
+def _pruned_skill_reload_notice(compressed: list) -> str:
+    """Reload instruction for skills whose bodies were pruned, or ``""``.
+
+    Scans the post-compression transcript for the canonical
+    ``[SKILL_PRUNED: ...]`` markers (summary ``## Pruned Skills`` section,
+    pruned tool rows surviving in the protected tail) and renders one bounded
+    notice naming each skill with its exact ``skill_view`` reload call.
+    First-seen order, deduplicated, capped at ``_MAX_PRUNED_SKILL_MARKERS``.
+    """
+    from agent.context_compressor import (
+        _MAX_PRUNED_SKILL_MARKERS,
+        _extract_pruned_skill_names,
+    )
+
+    names: list = []
+    for message in compressed:
+        if not isinstance(message, dict):
+            continue
+        for name in _extract_pruned_skill_names(_message_text(message)):
+            if name not in names:
+                names.append(name)
+    del names[_MAX_PRUNED_SKILL_MARKERS:]
+    if not names:
+        return ""
+    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
+    return (
+        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
+        "The task list above crossed the compression boundary verbatim, but "
+        "the skill instructions that governed it were pruned. Before "
+        f"executing any preserved task that depends on these skills, reload "
+        f"them first: {calls}. After reloading, re-check that each pending "
+        "task is still justified — findings recorded before the boundary may "
+        "have invalidated it."
+    )
+
+
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     """Fold the human anchor into an existing user-role scaffolding turn.
 
@@ -2074,10 +2139,15 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
                 _fresh_compaction_message_copy(message),
             )
             return
-    compressed.append({
-        "role": "user",
-        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
-    })
+    from agent.message_metadata import append_message
+
+    append_message(
+        compressed,
+        {
+            "role": "user",
+            "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+        },
+    )
 
 
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = (
@@ -2092,6 +2162,20 @@ def _notify_context_engine_compression_complete(
     old_session_id: str,
 ) -> bool:
     """Notify the active context engine after a durable compression commit."""
+    # Relay session-span segmentation (opt-in, gateway.telemetry.
+    # session_segments.on_compaction): flag the session so its telemetry
+    # scope rotates at the next turn boundary. Observer semantics — a
+    # failure here must never undo or delay the committed compression.
+    try:
+        from agent import relay_runtime
+
+        relay_runtime.SESSION_COORDINATOR.notify_session_compacted(
+            profile_key=relay_runtime.current_profile_key(),
+            session_id=new_session_id,
+            old_session_id=old_session_id,
+        )
+    except Exception:
+        logger.debug("relay segment rotation notification failed", exc_info=True)
     callback = getattr(agent.context_compressor, "on_session_start", None)
     if not callable(callback):
         return False
@@ -3156,6 +3240,16 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
+            # Retention parity (#84718): the snapshot below re-injects the
+            # imperative verbatim. If this same boundary pruned skill bodies
+            # to [SKILL_PRUNED: ...] markers, the policy that governed those
+            # tasks is gone — couple a reload instruction to the snapshot so
+            # the imperative never crosses the boundary alone. Appended after
+            # TODO_INJECTION_HEADER, so the stale-snapshot strip removes both
+            # together at the next boundary.
+            _reload_notice = _pruned_skill_reload_notice(compressed)
+            if _reload_notice:
+                todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
             # Fold the snapshot into a trailing REAL user message so
             # compression never introduces a synthetic user/user pair. Any
             # snapshot merged at an earlier boundary is stripped first so
@@ -3253,6 +3347,51 @@ def compress_context(
                 # conversation's pre-compaction turns are about to be summarized
                 # away regardless of whether the id rotates).
                 agent.commit_memory_session(messages)
+
+                # Anti-growth guard at the COMMIT SITE: never persist a
+                # compression that makes the transcript larger (observed:
+                # 379K -> 687K when the generated summary plus retained
+                # reasoning exceeded what it replaced). Compare like-for-like
+                # (both rough estimates of the same message shape) so an
+                # "actual vs estimate" measurement mismatch cannot produce a
+                # false verdict. The gateway has a rotation-path-only guard
+                # (#83339), but in-place compaction commits inside this method
+                # via archive_and_compact — before the gateway can inspect the
+                # result — so the guard must live here to protect both paths.
+                # On growth, treat the attempt as a no-op: the original
+                # transcript stays untouched and durable.
+                _rough_in = estimate_messages_tokens_rough(messages)
+                _rough_out = estimate_messages_tokens_rough(compressed)
+                if _rough_out > _rough_in:
+                    logger.warning(
+                        "Compression refused: compressed transcript would be "
+                        "larger than the original (session=%s, ~%s -> ~%s "
+                        "tokens); keeping the original transcript unchanged",
+                        agent.session_id or "none",
+                        f"{_rough_in:,}",
+                        f"{_rough_out:,}",
+                    )
+                    try:
+                        agent._emit_warning(
+                            "⚠️ Compression refused: the generated summary "
+                            "would have GROWN the conversation instead of "
+                            "shrinking it. No messages were dropped — "
+                            "conversation continues unchanged."
+                        )
+                    except Exception:
+                        pass
+                    _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                    if not _existing_sp:
+                        _existing_sp = agent._build_system_prompt(system_message)
+                    _emit_compression_attempt_telemetry(
+                        agent,
+                        started_at=_attempt_started_at,
+                        commit_status="aborted",
+                        split_status="aborted",
+                        failure_class="would_grow",
+                    )
+                    _release_lock()
+                    return messages, _existing_sp
 
                 if in_place:
                     # ── In-place compaction: keep the same session_id ──────────
@@ -3390,6 +3529,14 @@ def compress_context(
                         migrate_heartbeat_to_session(old_session_id, agent.session_id)
                     except Exception as _hb_err:
                         logger.debug("Could not migrate heartbeat on compression: %s", _hb_err)
+                    # Same boundary hazard for a persistent /loop — carry it
+                    # onto the continuation session so the recurring wakeups
+                    # survive compression.
+                    try:
+                        from hermes_cli.loops import migrate_loop_to_session
+                        migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")
+                    except Exception as _loop_err:
+                        logger.debug("Could not migrate loop on compression: %s", _loop_err)
                     # Carry the title across the compression boundary unchanged.
                     #
                     # This used to renumber ("Fix X" → "Fix X #2") on every

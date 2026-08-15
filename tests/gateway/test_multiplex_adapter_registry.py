@@ -127,6 +127,9 @@ class _SecondaryRecoveryAdapter:
     def set_authorization_check(self, handler):
         self.authorization_check = handler
 
+    def set_platform_event_handler(self, handler):
+        self.platform_event_handler = handler
+
 
 def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)
@@ -406,7 +409,7 @@ class TestSecondaryProfileConfigHandling:
             GatewayRunner._adapter_listener_claim(photon, primary): "default"
         }
 
-        async def _connect(adapter, platform):
+        async def _connect(adapter, platform, **_kw):
             adapter.connected = True
             return True
 
@@ -465,7 +468,7 @@ class TestSecondaryProfileConfigHandling:
         adapters = iter((failed, later))
         claimed = {}
 
-        async def _connect(adapter, platform):
+        async def _connect(adapter, platform, **_kw):
             return adapter.should_connect
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)

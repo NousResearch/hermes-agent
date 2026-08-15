@@ -169,6 +169,8 @@ gateway:
       status_default:      "状态变化"
       status_joiner:       "，"
       message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
+      handoff:             "结果：{summary}"
+      guidance:            "这是自动任务状态通知，不是再次分解任务的请求。创建后续任务前请先检查当前看板；不要重复创建已存在的任务或任务图。"
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未配置人格设定"

@@ -1139,6 +1139,11 @@ class CLICommandsMixin:
         # --resume.
         self._restore_session_yolo(session_meta)
 
+        # Restore the target session's model/provider so a mid-chat /resume
+        # doesn't silently revert to the config default. Same contract as a
+        # startup --resume (_preload_resumed_session / _init_agent path).
+        self._restore_session_model(session_meta)
+
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
 
@@ -2801,6 +2806,39 @@ class CLICommandsMixin:
             self._pending_input.put(state.goal)
         except Exception:
             pass
+
+    def _handle_loop_command(self, cmd: str) -> None:
+        """Dispatch /loop — recurring in-session wakeups (Claude Code parity).
+
+        Forms:
+          /loop [interval] <prompt> [--times N] [--until <cond>]   start a loop
+          /loop status | pause | resume | stop                     controls
+        """
+        from cli import _DIM, _RST, _cprint
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        mgr = self._get_loop_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Loops unavailable (no active session).{_RST}")
+            return
+
+        from hermes_cli.loops import dispatch_loop_command
+
+        result = dispatch_loop_command(mgr, arg)
+        for line in (result.get("output") or "").splitlines():
+            _cprint(f"  {line}")
+        if result.get("created"):
+            try:
+                from hermes_cli.loops import goal_blocks_loop_tick
+
+                if goal_blocks_loop_tick(mgr.session_id):
+                    _cprint(
+                        f"  {_DIM}Note: an active /goal is driving this session — "
+                        f"loop wakeups defer until the goal finishes, pauses, or parks.{_RST}"
+                    )
+            except Exception:
+                pass
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.

@@ -18,6 +18,7 @@ import pytest
 import agent.redact as redact_module
 from hermes_cli._scan_venv_blockers import (
     _is_pausable_gateway,
+    _probe_fail_json,
     _redact_sensitive_cmdline,
     main,
 )
@@ -162,6 +163,43 @@ def _run_main_with_detector(monkeypatch, capsys, matches):
         main()
     out = capsys.readouterr().out
     return excinfo.value.code, json.loads(out)
+
+
+def test_probe_fail_json_is_unambiguous_failure() -> None:
+    """A failed probe must not look like a clear scan (#83149).
+
+    Humans and naive callers used to read ``blocked: false`` as "no holders"
+    when psutil was missing after a gutted venv. The document must mark
+    ``probe_failed`` and keep ``ok`` false.
+    """
+    data = json.loads(_probe_fail_json("psutil is not available: No module named 'psutil'"))
+    assert data["ok"] is False
+    assert data["probe_failed"] is True
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert "psutil" in data["error"]
+
+
+def test_main_psutil_missing_is_probe_failure_not_clear(monkeypatch, capsys):
+    """Missing psutil exits non-zero with probe_failed JSON — never a clear scan."""
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *args, **kwargs):
+        if name == "psutil" or name.startswith("psutil."):
+            raise ImportError("No module named 'psutil'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psutil)
+    monkeypatch.delitem(sys.modules, "psutil", raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 1
+    data = json.loads(captured.out)
+    assert data["ok"] is False
+    assert data["probe_failed"] is True
+    assert "psutil" in captured.err.lower()
 
 
 def test_main_exempts_gateway_chain_but_keeps_other_holders(monkeypatch, capsys):

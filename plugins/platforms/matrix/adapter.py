@@ -3765,13 +3765,20 @@ class MatrixAdapter(BasePlatformAdapter):
         self._cache_event_text(target, sender, body.strip())
 
     async def _on_redaction(self, evt: Any) -> None:
-        """Drop redacted events from the seen-event cache.
+        """Blank redacted events in the seen-event cache.
 
         Redacted content must not resurface as reply or thread context.
+        An empty sentinel is written rather than popping the entry:
+        popping would make every later reference to the redacted event
+        re-fetch it from the homeserver, and the fetch would keep
+        yielding nothing.
         """
         redacts = str(getattr(evt, "redacts", "") or "")
-        if redacts:
-            self._event_text_cache.pop(redacts, None)
+        if not redacts:
+            return
+        prior = self._event_text_cache.get(redacts)
+        sender = prior.sender if prior is not None else ""
+        self._store_event_context(redacts, _MatrixEventContext(sender=sender, text=""))
 
     async def _decrypt_fetched_event(
         self, evt: Any, room_id: str, event_id: str
@@ -3832,6 +3839,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
         cached = self._cached_event_text(event_id)
         if cached is not None:
+            # An empty sentinel records a fetch (or redaction) that yielded
+            # nothing usable; do not fetch again.
+            if not cached.text and not cached.media_path:
+                return None
             return cached
 
         if not self._client:
@@ -3852,8 +3863,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if not sender and isinstance(evt, dict):
             sender = str(evt.get("sender", "") or "")
         body = self._event_body(evt).strip()
-        # A fetched parent may itself be a legacy reply; keep only its own text.
-        body, _, _ = _strip_reply_fallback(body)
+        # A fetched parent may itself be a legacy reply; keep only its own
+        # text. The stripper preserves a fallback-only body (right for an
+        # inbound message, which must not vanish), but here it means the
+        # parent has no text of its own: surfacing its embedded quote would
+        # misattribute someone else's words to this sender.
+        clean, quoted, _ = _strip_reply_fallback(body)
+        body = "" if (quoted is not None and clean == body) else clean
         body = body.strip()
 
         content = _matrix_content_dict(evt)
@@ -3862,12 +3878,16 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image":
             entry = await self._resolve_quoted_image(content, event_id, body, sender)
         else:
-            text = _label_matrix_body(msgtype, body)
-            if not text:
-                return None
-            entry = _MatrixEventContext(sender=sender, text=text)
+            # An empty text becomes a deliberate negative-cache sentinel: the
+            # fetch succeeded but yielded nothing usable (bodyless, redacted,
+            # or fallback-only), so it must not be repeated per reference.
+            entry = _MatrixEventContext(
+                sender=sender, text=_label_matrix_body(msgtype, body)
+            )
 
         self._store_event_context(event_id, entry)
+        if not entry.text and not entry.media_path:
+            return None
         return entry
 
     async def _resolve_quoted_image(

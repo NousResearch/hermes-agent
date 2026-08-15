@@ -325,6 +325,42 @@ class TestResolveEventContext:
         assert self.adapter._cached_event_text("$e0") is None
         assert self.adapter._cached_event_text("$e599") == _MatrixEventContext("@a:ex.org", "m599")
 
+    @pytest.mark.asyncio
+    async def test_bodyless_fetch_is_negatively_cached(self):
+        """A fetch that yields nothing usable (e.g. a redacted event) must
+        not be repeated for every message that references the event."""
+        evt = MagicMock()
+        evt.type = "m.room.message"
+        evt.sender = "@alice:ex.org"
+        evt.content = {}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = AsyncMock(return_value=evt)
+
+        first = await self.adapter._resolve_event_context("!room:ex.org", "$gone")
+        second = await self.adapter._resolve_event_context("!room:ex.org", "$gone")
+
+        assert first is None
+        assert second is None
+        self.adapter._client.get_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fallback_only_body_is_negatively_cached(self):
+        """A chained reply whose body is purely quoted fallback has no text
+        of its own to surface, and is not re-fetched either."""
+        evt = MagicMock()
+        evt.type = "m.room.message"
+        evt.sender = "@alice:ex.org"
+        evt.content = {"msgtype": "m.text", "body": "> <@bob:ex.org> old\n"}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = AsyncMock(return_value=evt)
+
+        first = await self.adapter._resolve_event_context("!room:ex.org", "$q")
+        second = await self.adapter._resolve_event_context("!room:ex.org", "$q")
+
+        assert first is None
+        assert second is None
+        self.adapter._client.get_event.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Quoted media: a replied-to image reaches the agent as pixels, not a name
@@ -1083,16 +1119,37 @@ class TestCacheMaintenance:
         )
 
     @pytest.mark.asyncio
-    async def test_redaction_evicts_cached_text(self):
+    async def test_redaction_suppresses_cached_text(self):
+        """Redacted content must not resurface as reply or thread context."""
         evt = MagicMock()
         evt.redacts = "$orig"
 
         await self.adapter._on_redaction(evt)
 
-        assert self.adapter._cached_event_text("$orig") is None
+        resolved = await self.adapter._resolve_event_context(
+            "!room:ex.org", "$orig"
+        )
+        assert resolved is None
 
     @pytest.mark.asyncio
-    async def test_redaction_of_unknown_event_is_noop(self):
+    async def test_redacted_root_is_negatively_cached(self):
+        """Popping the entry would reintroduce the refetch storm: every
+        later message in the thread would fetch the redacted root again."""
+        evt = MagicMock()
+        evt.redacts = "$orig"
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = AsyncMock()
+
+        await self.adapter._on_redaction(evt)
+        resolved = await self.adapter._resolve_event_context(
+            "!room:ex.org", "$orig"
+        )
+
+        assert resolved is None
+        self.adapter._client.get_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_redaction_of_unknown_event_leaves_others_alone(self):
         evt = MagicMock()
         evt.redacts = "$never-seen"
 

@@ -4865,7 +4865,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from hermes_cli.runtime_provider import _get_named_custom_provider
 
                 _named_custom = _get_named_custom_provider(provider)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve --provider %s default model; "
+                    "keeping global model.default (%s)",
+                    provider,
+                    exc,
+                )
                 _named_custom = None
             _provider_default = str((_named_custom or {}).get("model") or "").strip()
             if _provider_default:

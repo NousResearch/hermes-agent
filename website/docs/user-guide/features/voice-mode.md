@@ -480,6 +480,12 @@ stt:
 # Text-to-Speech
 tts:
   provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
+  # The `text_to_speech` tool accepts an optional per-call `instructions`
+  # argument (tone, emotion, pacing, such as "whisper" or "excited") that each
+  # provider renders natively where supported: OpenAI voice design, Gemini
+  # prompt direction, xAI speech tags, ElevenLabs v3 audio tags, MiniMax
+  # emotions. Set a default here or per provider; the tool argument wins.
+  instructions: ""
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -489,11 +495,7 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
-    # The `text_to_speech` tool accepts an optional per-call `instructions`
-    # argument (tone, emotion, pacing, accent, whispering) that is forwarded
-    # to `gpt-4o-mini-tts` and to OpenAI-compatible voice-design servers
-    # (e.g. Qwen3-TTS-VoiceDesign via oMLX). See OpenAI's voice-design guide:
-    # https://platform.openai.com/docs/guides/text-to-speech
+    # instructions: ""             # per-provider default; overrides tts.instructions
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -552,11 +554,19 @@ Provider priority (automatic fallback): **local** > **groq** > **openai**
 
 NeuTTS uses the `tts.neutts` config block above.
 
-For `openai`, the `text_to_speech` tool accepts an optional `instructions`
-argument that unlocks `gpt-4o-mini-tts`'s voice-design capability (tone,
-emotion, pacing, accent, whispering). The same field also routes to
-OpenAI-compatible voice-design servers mounted via `tts.openai.base_url`
-(e.g. Qwen3-TTS-VoiceDesign via oMLX).
+The `text_to_speech` tool accepts an optional `instructions` argument (tone,
+emotion, pacing, accent, such as "whisper", "excited", or "calm and slow") that
+every provider with a native style channel honours: OpenAI renders it through
+`gpt-4o-mini-tts`'s voice design (and OpenAI-compatible voice-design servers
+mounted via `tts.openai.base_url`, e.g. Qwen3-TTS-VoiceDesign via oMLX),
+Gemini follows it as prompt direction, xAI as speech tags, ElevenLabs v3
+models as audio tags, and MiniMax as emotions. Backends without a style
+channel ignore it. Configure a default with `tts.instructions` or
+`tts.<provider>.instructions`; see the
+[TTS feature docs][tts-style] for the full
+rendering table.
+
+[tts-style]: ./tts.md#style-instructions
 
 ---
 

@@ -50,6 +50,7 @@ Convert text to speech with eleven providers:
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
+  instructions: ""              # Default style guidance ("whisper", "excited"); see Style instructions below
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
@@ -123,6 +124,25 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### Style instructions
+
+The `text_to_speech` tool accepts a freeform `instructions` argument ("whisper", "excited", "calm and slow") that shapes delivery. Set a global default with `tts.instructions`, or a provider default with `tts.<provider>.instructions`. Command providers use `tts.providers.<name>.instructions`. The model can override the default per call. The per-call argument wins over config, and an explicit empty string suppresses a configured default for that call. Values are sanitised (brackets stripped, whitespace collapsed) and capped at 200 characters.
+
+Each provider renders the value in its own native way:
+
+| Provider | Rendering |
+|----------|-----------|
+| OpenAI / DeepInfra | `instructions` API field (`gpt-4o-mini-tts` voice design; also OpenAI-compatible voice-design servers) |
+| Gemini | `STYLE DIRECTION` section in the composed prompt, which provides performance direction that is not spoken |
+| xAI | A value naming a documented wrapping speech tag (`whisper`, `soft`, `loud`, `slow`, `fast`, ...) wraps each chunk as `<tag>...</tag>`; any other value steers the `auto_speech_tags` auxiliary rewrite as style direction (and is ignored when that rewrite is off) |
+| ElevenLabs | `[instructions] ` audio-tag prefix per chunk on v3 models (`eleven_v3` family) only; earlier models would speak the tag, so they ignore it |
+| MiniMax | `voice_setting.emotion` when the value names one of `happy`, `sad`, `angry`, `fearful`, `disgusted`, `surprised`, `calm`, `neutral`; anything else is ignored |
+| Command providers | `{instructions}` template placeholder |
+| Plugin providers | `instructions=...` keyword via `synthesize(**extra)` |
+| Edge, Mistral, NeuTTS, KittenTTS, Piper | Ignored because these engines have no style input |
+
+Providers that honour the request report `instructions_applied: true` in the tool result. Inline renderings (the xAI wrap and ElevenLabs prefix) are applied to every chunk, and their length is budgeted into the chunking cap so long-form splitting keeps each rendered chunk within the provider request limit.
 
 ### Gemini Persona Prompts
 
@@ -372,6 +392,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
 | `{speed}`        | Resolved speed multiplier (provider or global)       |
+| `{instructions}` | Resolved style instructions, empty when unset        |
 
 Use `{{` and `}}` for literal braces.
 
@@ -464,6 +485,8 @@ def register(ctx):
 ```
 
 Enable it (`hermes plugins enable my-tts`), point `tts.provider` at it (`tts.provider: my-tts` in `config.yaml`), and the `text_to_speech` tool will route through your plugin.
+
+When the user or model supplies style instructions, the resolved value arrives as an `instructions` keyword in `**extra`. Your provider may ignore it if the engine has no equivalent.
 
 #### Optional hooks
 

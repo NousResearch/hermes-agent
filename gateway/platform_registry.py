@@ -581,8 +581,22 @@ class PlatformRegistry:
         return [e for e in self.all_entries() if e.source == "plugin"]
 
     def registered_names(self) -> set[str]:
-        """Return concrete and deferred platform names without loading adapters."""
-        return self._entries.keys() | self._deferred.keys()
+        """Return concrete and deferred platform names without loading adapters.
+
+        Mirrors ``is_registered()``'s scope semantics: names registered under
+        the current profile scope AND process-global names both count. Plugin
+        platforms register deferred loaders under a profile scope, so reading
+        only the global maps would miss every plugin platform.
+        """
+        with self._lock:
+            scope = self.current_scope_key()
+            entries, deferred = self._scope_maps(scope)
+            return (
+                entries.keys()
+                | deferred.keys()
+                | self._entries.keys()
+                | self._deferred.keys()
+            )
 
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered --

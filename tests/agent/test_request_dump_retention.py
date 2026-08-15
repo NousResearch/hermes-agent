@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -276,3 +277,32 @@ def test_local_pruner_returns_successful_delete_count(tmp_path):
         paths[-1].name,
         paths[-2].name,
     }
+
+
+def test_concurrent_writers_keep_each_protected_dump(agent, hermes_home, monkeypatch):
+    """Concurrent real writers must not prune one another's protected file."""
+    _write_config(hermes_home, 1)
+    errors = []
+
+    def write(target, session_id):
+        try:
+            _dump(target, session_id, session_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    # Separate agents are required because session_id is mutable on the writer.
+    import copy
+
+    second = copy.copy(agent)
+    threads = [
+        threading.Thread(target=write, args=(agent, "one")),
+        threading.Thread(target=write, args=(second, "two")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(_real_dumps(agent.logs_dir)) == 1

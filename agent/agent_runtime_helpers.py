@@ -25,9 +25,11 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -45,6 +47,36 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 logger = logging.getLogger(__name__)
 
 _REQUEST_DUMP_DEFAULT_KEEP = 20
+_REQUEST_DUMP_LOCK = threading.RLock()
+
+
+@contextmanager
+def _request_dump_write_lock(directory: Path):
+    """Serialize dump publication and pruning within and across processes."""
+    with _REQUEST_DUMP_LOCK:
+        lock_fd = None
+        try:
+            lock_fd = os.open(
+                directory / ".request_dump_retention.lock",
+                os.O_CREAT | os.O_RDWR,
+                0o600,
+            )
+            try:
+                import fcntl
+
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                pass
+            yield
+        finally:
+            if lock_fd is not None:
+                try:
+                    import fcntl
+
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except (ImportError, OSError):
+                    pass
+                os.close(lock_fd)
 
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
@@ -1984,13 +2016,6 @@ def dump_api_request_debug(
 
             dump_payload["error"] = error_info
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        # Sanitize the session ID into a traversal-free path segment — it can
-        # originate from untrusted input (X-Hermes-Session-Id header), and an
-        # unsanitized "../"-shaped ID would write the dump outside logs_dir.
-        safe_sid = _ra()._safe_session_filename_component(agent.session_id)
-        dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{timestamp}.json"
-
         # Redact secrets before persisting/printing. This dump captures the
         # full request body (system prompt, tool defs, context-embedded
         # values), and this path fires unconditionally on API errors — so it
@@ -1998,19 +2023,28 @@ def dump_api_request_debug(
         # Run the serialized dump through the same scrubber used for logs/tool
         # output, then hand the resulting payload back to the shared atomic
         # JSON writer so request dumps keep the same write semantics as before.
-        from agent.redact_structured import redact_structured
+        from agent.redact import redact_sensitive_text
+        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
+        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
 
-        _redacted_payload = redact_structured(dump_payload)
-        atomic_json_write(dump_file, _redacted_payload, default=str)
-
-        try:
-            _prune_request_dumps(
-                agent.logs_dir,
-                _request_dump_keep(),
-                protect=dump_file,
-            )
-        except Exception as prune_error:
-            logger.debug("Request dump retention skipped: %s", prune_error)
+        # Keep publication and pruning in one critical section. Without this,
+        # two writers can each protect their own dump, then delete the other
+        # writer's protected file when keep=1.
+        with _request_dump_write_lock(agent.logs_dir):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            # Sanitize the session ID into a traversal-free path segment — it
+            # can originate from untrusted input (X-Hermes-Session-Id header).
+            safe_sid = _ra()._safe_session_filename_component(agent.session_id)
+            dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{timestamp}.json"
+            atomic_json_write(dump_file, _redacted_payload, default=str)
+            try:
+                _prune_request_dumps(
+                    agent.logs_dir,
+                    _request_dump_keep(),
+                    protect=dump_file,
+                )
+            except Exception as prune_error:
+                logger.debug("Request dump retention skipped: %s", prune_error)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
@@ -3224,7 +3258,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
-                    detail=next_args.get("detail", "adaptive"),
                     db=session_db,
                     current_session_id=agent.session_id,
                 ),

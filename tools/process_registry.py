@@ -393,6 +393,11 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
+    # Session-db id of the conversation that spawned this process. Lets the
+    # gateway's completion pre-flight (_classify_completion_target) drop
+    # notifications whose spawning session was closed at an explicit user
+    # boundary (/new), instead of injecting them into the chat's NEW session.
+    parent_session_id: str = ""
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
@@ -621,7 +626,7 @@ class ProcessRegistry:
         if not self._global_watch_admit(now):
             return
 
-        self.completion_queue.put({
+        notification = {
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
@@ -635,7 +640,9 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
             "message_id": session.watcher_message_id,
-        })
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
@@ -1563,7 +1570,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            notification = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -1576,7 +1583,9 @@ class ProcessRegistry:
                 # a consumer-observed completion timestamp, this does not vary
                 # based on which watcher notices exit first.
                 "started_at": session.started_at,
-            })
+            }
+            _redact_process_result(notification)
+            self.completion_queue.put(notification)
 
     # ----- Query Methods -----
 
@@ -2517,6 +2526,7 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
+                            "parent_session_id": s.parent_session_id,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
@@ -2613,6 +2623,7 @@ class ProcessRegistry:
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
+                parent_session_id=entry.get("parent_session_id", ""),
                 notify_on_complete=entry.get("notify_on_complete", False),
                 watch_patterns=entry.get("watch_patterns", []),
             )
@@ -2634,6 +2645,7 @@ class ProcessRegistry:
                     "thread_id": session.watcher_thread_id,
                     "message_id": session.watcher_message_id,
                     "notify_on_complete": session.notify_on_complete,
+                    "parent_session_id": session.parent_session_id,
                 })
 
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
@@ -2683,6 +2695,7 @@ def _format_async_delegation(evt: dict) -> str:
     error = evt.get("error")
     api_calls = evt.get("api_calls", 0)
     duration = evt.get("duration_seconds", "?")
+    truncated = evt.get("truncated") or evt.get("exit_reason") == "max_iterations"
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
 
@@ -2723,7 +2736,8 @@ def _format_async_delegation(evt: dict) -> str:
             r_summary = r.get("summary")
             r_error = r.get("error")
             r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
-            icon = "✓" if r_status in ("completed", "success") else "✗"
+            r_truncated = r.get("truncated") or r.get("exit_reason") == "max_iterations"
+            icon = "⚠" if r_truncated else ("✓" if r_status in ("completed", "success") else "✗")
             lines.append("")
             header = f"--- {icon} TASK {idx + 1}/{n}"
             if r_goal:
@@ -2733,9 +2747,17 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            if r_truncated:
+                header += ", TRUNCATED: hit max_iterations — work may be incomplete"
             header += ") ---"
             lines.append(header)
             if r_status in ("completed", "success") and r_summary:
+                if r_truncated:
+                    lines.append(
+                        "[TRUNCATED — subagent hit its iteration cap; the "
+                        "summary below may be incomplete. Verify before relying "
+                        "on it, or re-dispatch the unfinished part.]"
+                    )
                 lines.append(r_summary)
             elif r_summary:
                 if r_error:
@@ -2775,9 +2797,16 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
-    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    _trunc = " [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s{_trunc}")
     lines.append("--- RESULT ---")
     if status in ("completed", "success") and summary:
+        if truncated:
+            lines.append(
+                "[TRUNCATED — subagent hit its iteration cap; the summary below "
+                "may be incomplete. Verify before relying on it, or re-dispatch "
+                "the unfinished part.]"
+            )
         lines.append(summary)
     elif status == "interrupted":
         lines.append(
@@ -2810,6 +2839,12 @@ def format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    # Overflow events carry their human-readable summary in `message` —
+    # without this case they fall through to the completion formatter and
+    # surface as a phantom "process exited (exit code ?)" notification.
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":

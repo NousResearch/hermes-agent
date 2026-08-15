@@ -246,6 +246,12 @@ data: {
 `'top' | 'bottom' | 'left' | 'right' | 'center'`. Declare a `width`/`height` so
 the pane doesn't claim half the zone.
 
+Closing the only pane contributed by a plugin disables that plugin, which can
+be re-enabled from **Settings → Plugins**. When a plugin contributes multiple
+panes, closing one dismisses only that pane and leaves the plugin's other panes,
+commands, and middleware active. **Reset layout** restores dismissed contributed
+panes.
+
 ### Pages and sidebar nav
 
 A route mounts a full page in the workspace pane, like any built-in view. Pair it

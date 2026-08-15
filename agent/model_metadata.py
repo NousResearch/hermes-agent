@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +49,37 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _resolve_requests_verify() -> bool | str:
-    """Resolve SSL verify setting for `requests` calls from env vars.
+def _resolve_requests_verify(base_url: str = "") -> bool | str:
+    """Resolve SSL verify setting for `requests` calls.
 
-    The `requests` library only honours REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE
-    by default. Hermes also honours HERMES_CA_BUNDLE (its own convention)
-    and SSL_CERT_FILE (used by the stdlib `ssl` module and by httpx), so
-    that a single env var can cover both `requests` and `httpx` callsites
-    inside the same process.
+    Priority (mirrors ``agent.ssl_verify.resolve_httpx_verify`` so the
+    ``requests``-based ``/models`` probes agree with the httpx chat client):
 
-    Returns either a filesystem path to a CA bundle, or True to defer to
-    the requests default (certifi).
+    1. Per-provider ``ssl_verify: false`` for ``base_url`` — disable verification.
+    2. Per-provider ``ssl_ca_cert`` for ``base_url`` — an explicit CA bundle.
+       Without this, a custom endpoint whose chain only verifies against the
+       provider's configured bundle (not the process ``SSL_CERT_FILE``) logs a
+       spurious CERTIFICATE_VERIFY_FAILED on every probe even though the chat
+       path succeeds (per-provider ``ssl_ca_cert`` was reaching only httpx).
+    3. Env vars ``HERMES_CA_BUNDLE`` / ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE``
+       (a single var covers both ``requests`` and ``httpx`` in-process).
+    4. ``True`` — defer to the requests default (certifi).
+
+    ``base_url`` is optional so existing callers (OpenRouter, etc.) keep the
+    env-only behavior unchanged; only probes that pass a base_url pick up the
+    per-provider override.
     """
+    if base_url:
+        try:
+            from hermes_cli.config import get_custom_provider_tls_settings
+            tls = get_custom_provider_tls_settings(base_url)
+            if tls.get("ssl_verify") is False:
+                return False
+            ca = tls.get("ssl_ca_cert")
+            if isinstance(ca, str) and ca and os.path.isfile(ca):
+                return ca
+        except Exception:
+            pass  # fall through to env vars — never break a probe on config lookup
     for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
@@ -1261,7 +1281,7 @@ def fetch_endpoint_model_metadata(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
                     timeout=(5, 10),
-                    verify=_resolve_requests_verify(),
+                    verify=_resolve_requests_verify(normalized),
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -1324,7 +1344,7 @@ def fetch_endpoint_model_metadata(
                 url,
                 headers=headers,
                 timeout=(5, 10),
-                verify=_resolve_requests_verify(),
+                verify=_resolve_requests_verify(normalized),
                 stream=True,
             )
             if response.status_code in (401, 403):
@@ -1364,7 +1384,7 @@ def fetch_endpoint_model_metadata(
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = request_candidate.rstrip("/").replace("/v1", "")
-                    _verify = _resolve_requests_verify()
+                    _verify = _resolve_requests_verify(normalized)
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)
@@ -2284,7 +2304,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "anthropic-version": "2023-06-01",
         }
         _ensure_requests()
-        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(base_url))
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -2577,6 +2597,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0b. model_overrides config (per-provider+model context_window override)
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs,
        LM Studio, and Codex OAuth bypass the cache here so their provider
@@ -2638,7 +2659,23 @@ def get_model_context_length(
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
         # Fall through to the generic default if aggregator resolution failed.
 
-    # 0b. custom_providers per-model override — check before any probe.
+    # 0b. model_overrides config — EXPLICIT per-provider+model context_window
+    # override only (fill-gap _default entries are applied later, inside
+    # lookup_models_dev_context at step 5f, once the catalog has actually
+    # missed — so a _default can never preempt custom_providers or live
+    # probes). This is the supported self-unblock path for models with
+    # wrong context in models.dev (#84482) and for custom/local models
+    # (#8731). Config-read only; never blocks on the network.
+    if provider and model:
+        try:
+            from agent.models_dev import _override_context_window
+            mo_ctx = _override_context_window(provider, model)
+            if mo_ctx is not None and mo_ctx > 0:
+                return mo_ctx
+        except Exception:
+            pass  # fall through to other resolution paths
+
+    # 0c. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
     # See #15779.
@@ -3314,7 +3351,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     )
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details"):
+        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             continue
         if k == "api_content":
             # Always popped before the request is built; only counted when it

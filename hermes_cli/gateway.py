@@ -1525,6 +1525,54 @@ def kill_gateway_processes(
     return killed
 
 
+_REAPER_SUPERVISOR_WALK_LIMIT = 12
+
+
+def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
+    """True when ``pid`` is a gateway process owned by the Windows Task Scheduler.
+
+    Windows-only backstop for the orphan reaper: ``_get_service_pids()`` is
+    empty on Windows (no systemd/launchd query), so a Scheduled-Task gateway
+    whose ``gateway.pid`` record is missing or stale is invisible to both the
+    service-PID and recorded-PID exclusions — yet it is alive and supervised.
+    Scheduled Tasks run under the services tree, so a candidate whose parent
+    chain reaches ``services.exe`` is spared even with no pidfile (#83683,
+    #86098).
+
+    This check is deliberately NOT applied on POSIX: there, every process has
+    PID 1 (launchd / init / systemd) in its ancestry — and a genuine orphan is
+    *reparented directly to PID 1* — so supervisor-name ancestry carries zero
+    signal and would spare every orphan the reaper exists to kill (#51325,
+    #75936). POSIX supervised gateways are already covered pidfile-
+    independently by the ``_get_service_pids()`` exclusion.
+
+    Known limitation (fail-open): if the Task-launched bootstrap parent has
+    already exited, Windows does not reparent the gateway, the chain breaks
+    before ``services.exe``, and the gateway is treated as an orphan. Any
+    error (process gone, psutil unavailable) is likewise treated as "not
+    owned" so a genuine orphan is still reaped.
+    """
+    if not is_windows():
+        return False
+    try:
+        import psutil  # type: ignore
+
+        parent = psutil.Process(pid).parent()
+        for _ in range(_REAPER_SUPERVISOR_WALK_LIMIT):
+            if parent is None:
+                break
+            try:
+                name = (parent.name() or "").lower()
+            except Exception:
+                name = ""
+            if name == "services.exe":
+                return True
+            parent = parent.parent()
+    except Exception:
+        pass
+    return False
+
+
 def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see.
 
@@ -1555,10 +1603,54 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     own = {os.getpid()}
     if extra_exclude:
         own |= extra_exclude
+    # Service-managed gateways are not orphans — never reap them.  This
+    # covers macOS launchd (supports_systemd_services() is False there, so
+    # without this the launchd gateway looks like an unsupervised orphan and
+    # gets SIGTERM'd, causing launchd to restart it — or leaving it down
+    # under KeepAlive.SuccessfulExit=false) and any systemd unit reachable
+    # from a host that got past the gate above (#83683, #85344).
+    try:
+        own |= _get_service_pids()
+    except Exception:
+        pass
+    # On Windows there is no systemd/launchd service query at all
+    # (_get_service_pids() returns an empty set), so a gateway supervised by
+    # a Scheduled Task / Startup VBS looks like an unsupervised orphan to the
+    # process scan (#86098).  The same holds on every platform for a healthy
+    # gateway launched standalone (no service registration) whose PID the
+    # runtime record can see (#83683).  Exempt the recorded healthy gateway
+    # PID and its parent chain: a recorded, liveness-verified gateway is by
+    # definition not an orphan "the pidfile/runtime record can't see", and
+    # the Scheduled-Task bootstrap's argv (``gateway run``) matches the
+    # gateway scan — killing that bootstrap takes the detached gateway it
+    # spawned down with it.
+    try:
+        from gateway.status import get_running_pid
+
+        recorded = get_running_pid()
+        if recorded and recorded > 0:
+            own.add(recorded)
+            try:
+                import psutil  # type: ignore
+
+                parent = psutil.Process(recorded).parent()
+                while parent is not None:
+                    own.add(parent.pid)
+                    parent = parent.parent()
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
-        # for the current profile when no systemd supervisor is present.
-        orphans = [p for p in find_gateway_pids(exclude_pids=own) if p and p > 0]
+        # for the current profile when no systemd supervisor is present.  On
+        # Windows, additionally drop any candidate the Task Scheduler owns —
+        # the pidfile-less gap neither exclusion above can see (#83683, #86098).
+        orphans = [
+            p
+            for p in find_gateway_pids(exclude_pids=own)
+            if p and p > 0 and not _reaper_candidate_is_supervisor_owned(p)
+        ]
     except Exception:
         return False
     if not orphans:
@@ -4110,14 +4202,28 @@ def _gateway_run_command() -> list[str]:
     return cmd
 
 
+def _timestamped_stderr_gateway_command(error_log: Path) -> list[str]:
+    """Wrap gateway run so raw stderr lines are timestamped before file write."""
+    return [
+        get_python_path(),
+        "-m",
+        "hermes_cli.stderr_timestamp",
+        "--error-log",
+        str(error_log),
+        "--",
+        *_gateway_run_command(),
+    ]
+
+
 def _spawn_detached_gateway() -> bool:
     """Launch the gateway as a detached background process (launchd fallback).
 
     Used when launchctl can no longer bootstrap/kickstart the gateway on
     macOS 26+ (issue #23387). Mirrors the `nohup hermes gateway run --replace`
-    workaround but keeps it CLI-managed: stdout/stderr go to the profile's
-    gateway logs and the PID is tracked via the gateway.pid file that
-    `run_gateway` writes, so stop/status/restart keep working.
+    workaround but keeps it CLI-managed: stdout goes to gateway.log, stderr is
+    timestamped into gateway.error.log, and the PID is tracked via the
+    gateway.pid file that `run_gateway` writes, so stop/status/restart keep
+    working.
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
@@ -4127,16 +4233,15 @@ def _spawn_detached_gateway() -> bool:
     err_path = log_dir / "gateway.error.log"
     try:
         out = open(out_path, "ab")
-        err = open(err_path, "ab")
     except OSError:
         return False
     try:
-        with out, err:
+        with out:
             subprocess.Popen(
-                _gateway_run_command(),
+                _timestamped_stderr_gateway_command(err_path),
                 stdin=subprocess.DEVNULL,
                 stdout=out,
-                stderr=err,
+                stderr=subprocess.DEVNULL,
                 **windows_detach_popen_kwargs(),
             )
     except OSError:
@@ -4172,7 +4277,6 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 
 def generate_launchd_plist() -> str:
-    python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
@@ -4181,7 +4285,6 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -4199,22 +4302,15 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
+    err_path = log_dir / "gateway.error.log"
+
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # The stderr wrapper preserves launchd's restart semantics while adding
+    # timestamps to raw stderr lines before they land in gateway.error.log.
     prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
+        f"<string>{part}</string>"
+        for part in _timestamped_stderr_gateway_command(err_path)
     ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
-        ]
-    )
     prog_args_xml = "\n        ".join(prog_args)
 
     # Persist the configured RLIMIT_NOFILE floor into the service definition

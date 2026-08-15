@@ -3179,6 +3179,15 @@ def terminal_tool(
                             proc_session.watcher_user_name = _gw_user_name
                             proc_session.watcher_thread_id = _gw_thread_id
                             proc_session.watcher_message_id = _gw_message_id
+                            # Stamp the spawning conversation's session-db id
+                            # so the gateway's completion pre-flight
+                            # (_classify_completion_target) can drop the
+                            # notification when the user closes this session
+                            # (/new) before the process finishes, instead of
+                            # injecting it into the chat's NEW session.
+                            proc_session.parent_session_id = _gse(
+                                "HERMES_SESSION_ID", ""
+                            )
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -3217,6 +3226,7 @@ def terminal_tool(
                             "thread_id": proc_session.watcher_thread_id,
                             "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
+                            "parent_session_id": proc_session.parent_session_id,
                         })
 
                 # Set watch patterns for output monitoring
@@ -3311,7 +3321,14 @@ def terminal_tool(
             # (docstring: "Working directory for this command"). Recording it
             # would hijack the session's durable cwd for every later command
             # that doesn't pass ``workdir``. Skip the dual-write in that case.
-            if not workdir:
+            #
+            # AND only when the command actually reported its cwd. The marker
+            # is printed after the command returns, so an interrupted / killed
+            # / timed-out command emits none and env.cwd still holds whatever
+            # the last command to FINISH left there — on a shared env, that is
+            # another session's directory. Recording it silently re-homes this
+            # session into a directory the user never opened.
+            if not workdir and (result or {}).get("cwd_observed"):
                 record_session_cwd(session_key, getattr(env, "cwd", None))
 
             # Extract output
@@ -3418,8 +3435,13 @@ def terminal_tool(
             # defensive 'cd X && ' prefix because the model can't see cwd
             # state; echoing it on change removes the guesswork (pattern
             # borrowed from crush's <cwd> injection).
+            #
+            # Gated on the same observation flag as the record above: without
+            # it, an interrupted command echoes the shared env's leftover cwd
+            # and tells the model it moved to a directory another session
+            # opened.
             try:
-                post_cwd = getattr(env, "cwd", None)
+                post_cwd = getattr(env, "cwd", None) if (result or {}).get("cwd_observed") else None
                 if post_cwd and command_cwd and os.path.realpath(str(post_cwd)) != os.path.realpath(str(command_cwd)):
                     result_dict["cwd"] = str(post_cwd)
             except Exception:

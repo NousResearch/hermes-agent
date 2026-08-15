@@ -662,7 +662,7 @@ export function ApiKeyForm({
           autoFocus
           className="font-mono"
           onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
           placeholder={
             currentRedacted ??
             (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
@@ -675,7 +675,7 @@ export function ApiKeyForm({
             autoComplete="off"
             className="font-mono"
             onChange={e => setLocalKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void submit()}
+            onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}

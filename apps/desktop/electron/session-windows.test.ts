@@ -203,6 +203,22 @@ test('chatWindowWebPreferences leaves background throttling to the runtime strea
   assert.equal('backgroundThrottling' in prefs, false)
 })
 
+test('chat renderer navigation stays passive while explicit window actions may focus', () => {
+  const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
+
+  // In-page/SPA navigation can happen while a transcript keeps streaming. It
+  // must not use Electron's default navigation focus path to activate Hermes.
+  assert.equal(prefs.focusOnNavigation, false)
+
+  // Re-opening a session is an explicit user action and must still raise the
+  // existing window; the passive navigation guard does not disable that path.
+  const registry = createSessionWindowRegistry()
+  const win = makeFakeWindow()
+  registry.openOrFocus('s1', () => win)
+  registry.openOrFocus('s1', () => win)
+  assert.equal(win.calls.focus, 1)
+})
+
 test('chatWindowWebPreferences passes the preload path through and keeps the hardened defaults', () => {
   const prefs = chatWindowWebPreferences('/some/preload.cjs')
 

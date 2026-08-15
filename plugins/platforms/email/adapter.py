@@ -112,6 +112,28 @@ MAX_MESSAGE_LENGTH = 50_000
 SMTP_CONNECT_TIMEOUT = 30
 
 
+def _close_imap(imap: "imaplib.IMAP4") -> None:
+    """Best-effort teardown that guarantees the underlying socket is closed.
+
+    ``IMAP4.logout()`` only guards against ``OSError`` internally: a broken
+    connection makes ``_simple_command('LOGOUT')`` raise ``IMAP4.abort``
+    (which is *not* an ``OSError``), so ``logout()`` propagates before its
+    own ``shutdown()`` call and the TCP socket stays open. On macOS, where
+    the default soft fd limit is 256 and pollers may run through a local
+    proxy, these abandoned sockets accumulate one per failed poll until the
+    gateway hits ``[Errno 24] Too many open files`` (#79889). Always chase a
+    failed ``logout()`` with ``shutdown()``, which closes the socket
+    unconditionally.
+    """
+    try:
+        imap.logout()
+    except Exception:
+        try:
+            imap.shutdown()
+        except Exception:
+            pass
+
+
 def _create_ipv4_connection(
     host: str,
     port: int,
@@ -680,37 +702,46 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            imap.select("INBOX")
-            snapshot = self._seen_uids_snapshot.get(self._address)
-            if is_reconnect and snapshot is not None:
-                # Reconnect within the same process: restore the previous
-                # adapter's seen-UID baseline instead of re-marking the whole
-                # mailbox. Mail that arrived during the outage stays UNSEEN
-                # relative to the baseline and is dispatched by the next poll
-                # instead of being silently skipped.
-                self._seen_uids = set(snapshot)
-                self._trim_seen_uids()
-                imap.logout()
-                logger.info(
-                    "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
-                    "messages received during the outage will be processed.",
-                    len(self._seen_uids),
-                )
-            else:
-                # First connect (or no snapshot): mark all existing messages as
-                # seen so we only process new ones.
-                status, data = imap.uid("search", None, "ALL")
-                if status == "OK" and data and data[0]:
-                    for uid in data[0].split():
-                        self._seen_uids.add(uid)
-                # Keep only the most recent UIDs to prevent unbounded growth
-                self._trim_seen_uids()
-                imap.logout()
-                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            # Test IMAP connection. The handle is closed in ``finally`` —
+            # before this, a failure in login/select/search left the TCP
+            # socket open with no owner, leaking one fd per connect attempt.
+            # Under the gateway's reconnect watcher (fresh adapter instance
+            # per retry) against an unreachable/proxied host this grew
+            # monotonically until fd exhaustion on macOS's 256 soft limit
+            # (#79889).
+            imap = None
+            try:
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                imap.select("INBOX")
+                snapshot = self._seen_uids_snapshot.get(self._address)
+                if is_reconnect and snapshot is not None:
+                    # Reconnect within the same process: restore the previous
+                    # adapter's seen-UID baseline instead of re-marking the whole
+                    # mailbox. Mail that arrived during the outage stays UNSEEN
+                    # relative to the baseline and is dispatched by the next poll
+                    # instead of being silently skipped.
+                    self._seen_uids = set(snapshot)
+                    self._trim_seen_uids()
+                    logger.info(
+                        "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
+                        "messages received during the outage will be processed.",
+                        len(self._seen_uids),
+                    )
+                else:
+                    # First connect (or no snapshot): mark all existing messages as
+                    # seen so we only process new ones.
+                    status, data = imap.uid("search", None, "ALL")
+                    if status == "OK" and data and data[0]:
+                        for uid in data[0].split():
+                            self._seen_uids.add(uid)
+                    # Keep only the most recent UIDs to prevent unbounded growth
+                    self._trim_seen_uids()
+                    logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            finally:
+                if imap is not None:
+                    _close_imap(imap)
             self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
@@ -820,6 +851,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        imap: Optional[imaplib.IMAP4] = None
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
@@ -884,10 +916,9 @@ class EmailAdapter(BasePlatformAdapter):
                     if parsed is not None:
                         results.append(parsed)
             finally:
-                try:
-                    imap.logout()
-                except Exception:
-                    pass
+                # _close_imap guarantees the socket dies even when logout()
+                # raises IMAP4.abort on a broken connection (#79889).
+                _close_imap(imap)
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
             self._last_fetch_failed = True

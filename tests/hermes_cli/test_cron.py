@@ -234,3 +234,126 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+class TestCronRunBackgroundDispatch:
+    """`hermes cron run` must not report 'failed' when the run was dispatched
+    to the background delegation worker.
+
+    The CLI process inherits the gateway/desktop session env, so a manual run
+    can be dispatched to the daemon instead of executing inline. Such
+    responses carry execution_mode='background' / delegation_id and the job
+    keeps running after the CLI exits — a terminal success/failure verdict
+    would be a lie (#83340). The CLI must report the background dispatch
+    instead, and leave synchronous runs unchanged.
+    """
+
+    def _run_cmd(self, capsys):
+        rc = cron_command(Namespace(cron_command="run", job_id="job-1"))
+        return rc, capsys.readouterr().out
+
+    def test_background_dispatch_with_delegation_id_does_not_report_failed(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "execution_mode": "background",
+                    "delegation_id": "del-abc123",
+                    # No execution_success — the inline verdict must not apply.
+                    "executed": True,
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Running in background (delegation del-abc123)." in out
+        assert "failed" not in out.lower()
+        assert "Ran now" not in out
+
+    def test_background_dispatch_without_delegation_id(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "execution_mode": "background",
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Running in background." in out
+        assert "failed" not in out.lower()
+
+    def test_sync_run_success_unchanged(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "executed": True,
+                    "execution_success": True,
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Ran now: succeeded." in out
+
+    def test_sync_run_failure_still_reported(self, monkeypatch, capsys):
+        # A genuine synchronous failure must keep reporting 'failed' — only
+        # background-dispatched runs are exempt from the terminal verdict.
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "executed": True,
+                    "execution_success": False,
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Ran now: failed." in out
+
+    def test_delegation_id_alone_counts_as_background(self, monkeypatch, capsys):
+        # Some dispatchers may not set execution_mode but always return the
+        # delegation_id — either marker alone must suppress the verdict.
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {"id": "job-1", "name": "Watchdog", "delegation_id": "del-xyz"},
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Running in background (delegation del-xyz)." in out
+        assert "failed" not in out.lower()

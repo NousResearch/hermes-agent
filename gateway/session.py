@@ -2895,6 +2895,12 @@ class SessionStore:
         Values must be small and JSON-serializable — they are written into
         the routing index (state.db gateway_routing table + the legacy
         sessions.json mirror) so they survive gateway restarts.
+
+        Metadata writes are internal bookkeeping and deliberately do NOT
+        advance ``updated_at``: it is the user-activity clock that drives
+        idle/daily reset policy and the restart-resume freshness gate
+        (#85709), and a background write must not make an idle session look
+        fresh.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2902,7 +2908,6 @@ class SessionStore:
             if entry is None:
                 return False
             entry.metadata[key] = value
-            entry.updated_at = _now()
             self._save()
             return True
 
@@ -3349,7 +3354,10 @@ class SessionStore:
                 target_session_id,
             ):
                 return None
-            entry.updated_at = _now()
+            # Compression repoint is store bookkeeping, not user activity —
+            # leave ``updated_at`` alone so a background compression on an
+            # idle session cannot make it look fresh to reset policy or the
+            # restart-resume freshness gate (#85709).
             self._save()
             return entry
 
@@ -3559,8 +3567,18 @@ class SessionStore:
                 from hermes_state import CompressionSessionClosedError
 
                 if isinstance(exc, CompressionSessionClosedError):
-                    child = self._db.find_live_compression_child(session_id)
-                    child_id = str(child["id"]) if child and child.get("id") else ""
+                    # Resolve the full continuation chain via the canonical
+                    # transitive API — a depth-1 live-child lookup misses
+                    # lineages with >=2 compression hops (root -> mid -> tip).
+                    # ``get_compression_tip`` returns the input id when no
+                    # continuation exists; adopt only a different, still-live
+                    # tip, otherwise fail closed as before.
+                    child_id = ""
+                    tip = self._db.get_compression_tip(session_id)
+                    if tip and tip != session_id:
+                        tip_row = self._db.get_session(tip)
+                        if tip_row is not None and tip_row.get("ended_at") is None:
+                            child_id = str(tip)
                     if child_id:
                         try:
                             self._append_transcript_message(child_id, msg)
@@ -3707,6 +3725,11 @@ class SessionStore:
             # any gateway-side persistence path or the next turn's
             # replay diverges at this row.
             api_content=extract_api_content_sidecar(message),
+            # Presentation typing (e.g. "internal_notification" for
+            # self-injected async-delegation/background notification turns,
+            # #82888). DB-only; stripped from provider-bound payloads.
+            display_kind=message.get("display_kind"),
+            display_metadata=message.get("display_metadata"),
         )
 
     # Maximum in-memory pending messages per session before dropping the
@@ -3793,6 +3816,7 @@ class SessionStore:
         session_id: str,
         messages: List[Dict[str, Any]],
         active_only: bool = False,
+        reject_active_turn_lease: bool = False,
     ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
@@ -3813,12 +3837,21 @@ class SessionStore:
         change on top of a failed write — e.g. /compress repointing the live
         session onto a fresh session_id — must check it so they can surface an
         error instead of silently dropping the conversation.
+
+        ``reject_active_turn_lease`` is for user-initiated rewrites that do not
+        own the cross-process turn lease. It leaves internal rewrite policy
+        unchanged for existing callers unless they opt in explicitly.
         """
         if not self._db:
             return True
         self._clear_dirty_transcript(session_id)
         try:
-            self._db.replace_messages(session_id, messages, active_only=active_only)
+            self._db.replace_messages(
+                session_id,
+                messages,
+                active_only=active_only,
+                reject_active_turn_lease=reject_active_turn_lease,
+            )
             return True
         except Exception as e:
             logger.debug("Failed to rewrite transcript in DB: %s", e)

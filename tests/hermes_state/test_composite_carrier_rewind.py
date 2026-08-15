@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent.context_compressor import (
@@ -14,6 +16,7 @@ from hermes_state import (
     CompressionSessionClosedError,
     SessionCompressionInProgressError,
     SessionDB,
+    SessionTurnLeaseLostError,
 )
 
 
@@ -218,6 +221,71 @@ def test_rewind_guard_rejects_foreign_live_compression_without_any_change(db):
 
     assert _row_state(db, sid) == before_rows
     assert _session_counts(db, sid) == before_counts
+
+
+def test_rewind_guard_rejects_foreign_turn_lease_without_any_change(db):
+    sid = "leased-rewind"
+    db.create_session(sid, source="tui")
+    target_id = db.append_message(sid, "user", _carrier())
+    expected_active_ids = _active_ids(db, sid)
+    holder = f"pid={os.getpid()}:turn=active"
+    assert db.try_acquire_session_turn_lease(sid, holder, ttl_seconds=60)
+    before_rows = _row_state(db, sid)
+    before_counts = _session_counts(db, sid)
+
+    with pytest.raises(SessionTurnLeaseLostError, match="active turn lease"):
+        db.rewind_to_message(
+            sid,
+            target_id,
+            preserve_compaction_handoff=True,
+            expected_active_ids=expected_active_ids,
+            expected_target_content="REAL ASK",
+        )
+
+    assert _row_state(db, sid) == before_rows
+    assert _session_counts(db, sid) == before_counts
+
+    db.release_session_turn_lease(sid, holder)
+    result = db.rewind_to_message(
+        sid,
+        target_id,
+        preserve_compaction_handoff=True,
+        expected_active_ids=expected_active_ids,
+        expected_target_content="REAL ASK",
+    )
+    assert result["rewound_count"] == 1
+
+
+def test_guarded_replace_rejects_foreign_turn_lease_without_any_change(db):
+    sid = "leased-replace"
+    db.create_session(sid, source="tui")
+    db.append_message(sid, "user", "old ask")
+    holder = f"pid={os.getpid()}:turn=active"
+    assert db.try_acquire_session_turn_lease(sid, holder, ttl_seconds=60)
+    before_rows = _row_state(db, sid)
+    before_counts = _session_counts(db, sid)
+
+    with pytest.raises(SessionTurnLeaseLostError, match="active turn lease"):
+        db.replace_messages(
+            sid,
+            [{"role": "user", "content": "replacement"}],
+            active_only=True,
+            archive_dropped=True,
+            reject_active_turn_lease=True,
+        )
+
+    assert _row_state(db, sid) == before_rows
+    assert _session_counts(db, sid) == before_counts
+
+    db.release_session_turn_lease(sid, holder)
+    db.replace_messages(
+        sid,
+        [{"role": "user", "content": "replacement"}],
+        active_only=True,
+        archive_dropped=True,
+        reject_active_turn_lease=True,
+    )
+    assert [m[2] for m in _row_state(db, sid) if m[3] == 1] == ["replacement"]
 
 
 def test_rewind_guard_rejects_compression_ended_parent_without_any_change(db):

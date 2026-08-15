@@ -58,7 +58,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
   // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
-  // $unreadFinishedSessionIds is separate, so wipe it explicitly.
+  // $unreadFinishedSessionIds is separate, so wipe it explicitly. Only the
+  // transient paint layer is wiped: the persisted markers/watermarks in
+  // session-unread.ts are keyed by durable session id and repaint the rows
+  // that are still unread once the next gateway's lists load — so a profile
+  // round-trip doesn't swallow green dots.
   clearAllSessionStates()
   resetLiveRuntimeTracking()
   resetLiveSync()

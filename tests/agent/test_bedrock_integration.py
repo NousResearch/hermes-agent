@@ -437,3 +437,39 @@ class TestAuxiliaryClientBedrockResolution:
         # got-final-object downgrade path handles the rest.
         assert resp is sentinel
         assert mock_converse.call_count == 1
+
+    def test_bedrock_shim_uncapped_when_caller_omits_max_tokens(self, monkeypatch):
+        """No caller max_tokens → the shim passes None through and the wire
+        request carries no inferenceConfig.maxTokens, so Bedrock uses the
+        model's maximum allowed output (#10809 on the Bedrock wire).
+
+        Guards against the shim's old hardcoded ``else 4096`` fallback, which
+        kept aux vision descriptions capped after the vision call sites
+        dropped their own caps."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+
+        client = BedrockAuxiliaryClient("us-east-1", "openai.gpt-oss-20b-1:0")
+        boto3_client = MagicMock()
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=boto3_client), \
+             patch("agent.bedrock_adapter.normalize_converse_response"):
+            # Aux vision-style call: no max_tokens key at all.
+            client.chat.completions.create(
+                model="openai.gpt-oss-20b-1:0",
+                messages=[{"role": "user", "content": "describe"}],
+                temperature=0.1,
+            )
+            wire_kwargs = boto3_client.converse.call_args.kwargs
+            assert "maxTokens" not in wire_kwargs.get("inferenceConfig", {})
+
+            # An explicit caller cap still lands on the wire unchanged.
+            client.chat.completions.create(
+                model="openai.gpt-oss-20b-1:0",
+                messages=[{"role": "user", "content": "describe"}],
+                max_tokens=1234,
+            )
+            wire_kwargs = boto3_client.converse.call_args.kwargs
+            assert wire_kwargs["inferenceConfig"]["maxTokens"] == 1234

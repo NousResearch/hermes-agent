@@ -7,12 +7,17 @@
  * a favicon service for it would leak that hostname off-box.
  */
 import {
+  SiAirtable,
+  SiAsana,
   SiAtlassian,
   SiDatadog,
   SiFigma,
   SiGithub,
   SiGitlab,
+  SiHuggingface,
+  SiIntercom,
   SiLinear,
+  SiNetlify,
   SiNotion,
   SiPaypal,
   SiPostgresql,
@@ -21,6 +26,7 @@ import {
   SiStripe,
   SiSupabase,
   SiVercel,
+  SiWebflow,
   SiZapier
 } from '@icons-pack/react-simple-icons'
 import type { ComponentType, SVGProps } from 'react'
@@ -35,12 +41,18 @@ export interface McpBrand {
 }
 
 export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
+  airtable: { Icon: SiAirtable, color: '#18BFFF' },
+  asana: { Icon: SiAsana, color: '#F06A6A' },
   atlassian: { Icon: SiAtlassian, color: '#0052CC' },
   datadog: { Icon: SiDatadog, color: '#632CA6' },
   figma: { Icon: SiFigma, color: '#F24E1E' },
   github: { Icon: SiGithub, color: '#181717', monochrome: true },
   gitlab: { Icon: SiGitlab, color: '#FC6D26' },
+  hugging_face: { Icon: SiHuggingface, color: '#FFD21E' },
+  huggingface: { Icon: SiHuggingface, color: '#FFD21E' },
+  intercom: { Icon: SiIntercom, color: '#6AFDEF' },
   linear: { Icon: SiLinear, color: '#5E6AD2' },
+  netlify: { Icon: SiNetlify, color: '#00C7B7' },
   notion: { Icon: SiNotion, color: '#000000', monochrome: true },
   paypal: { Icon: SiPaypal, color: '#003087' },
   postgres: { Icon: SiPostgresql, color: '#4169E1' },
@@ -50,6 +62,7 @@ export const MCP_BRAND_ICONS: Record<string, McpBrand> = {
   stripe: { Icon: SiStripe, color: '#635BFF' },
   supabase: { Icon: SiSupabase, color: '#3FCF8E' },
   vercel: { Icon: SiVercel, color: '#000000', monochrome: true },
+  webflow: { Icon: SiWebflow, color: '#146EF5' },
   zapier: { Icon: SiZapier, color: '#FF4A00' }
 }
 

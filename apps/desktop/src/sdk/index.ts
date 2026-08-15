@@ -24,7 +24,7 @@ import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
-import { $gateway } from '@/store/gateway'
+import { $gateway, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
@@ -96,6 +96,23 @@ export const host = {
    *  unified all-profiles view instead of narrowing it to the target
    *  profile's sessions — a cross-profile open from a plugin surface is a
    *  navigation, not a scope choice; pass false to also scope the sidebar. */
+  /** Pre-dial a profile's gateway socket in the background — pool-only, no
+   *  activation, no navigation, no scope change (openGatewayForProfile; it
+   *  already no-ops for shared-remote routes and the primary). Roster UIs
+   *  call this after mount so the FIRST click on an agent doesn't pay the
+   *  whole backend spawn + socket dial latency. Fire-and-forget: failures
+   *  are swallowed — the click path re-runs its own ensure and surfaces
+   *  errors properly. */
+  warmProfile: (profile: string): void => {
+    const name = (profile ?? '').trim()
+
+    if (!name || name === $activeGatewayProfile.get()) {
+      return
+    }
+
+    void openGatewayForProfile(name).catch(() => undefined)
+  },
+
   openSession: async (
     storedSessionId: string,
     options: { intent?: OpenSessionIntent; keepAllProfilesScope?: boolean; profile?: null | string } = {}
@@ -284,6 +301,7 @@ export { triggerHaptic as haptic } from '@/lib/haptics'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+export { formatModifierToken } from '@/lib/keybinds/combo'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors) + its translucent tag fill — so plugin-rendered identities read
  *  the same hue as everywhere else. */

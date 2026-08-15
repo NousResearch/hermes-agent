@@ -90,6 +90,9 @@ export interface ConfigDisplayConfig {
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
+  /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
+   *  honors on its user/assistant labels (#41531). */
+  timestamps?: boolean
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens
@@ -119,8 +122,14 @@ export interface ConfigVoiceConfig {
   submit_mode?: unknown
 }
 
+export interface ConfigApprovalsConfig {
+  // Raw config value: only the explicit boolean false disables the safety gate.
+  destructive_slash_confirm?: unknown
+}
+
 export interface ConfigFullResponse {
   config?: {
+    approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig
     voice?: ConfigVoiceConfig
     paste_collapse_threshold?: number
@@ -739,4 +748,5 @@ export type GatewayEvent =
       session_id?: string
       type: 'message.complete'
     }
+  | { payload?: { usage?: Usage }; session_id?: string; type: 'session.usage' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }

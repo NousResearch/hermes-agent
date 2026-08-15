@@ -242,6 +242,10 @@ async def test_gateway_retry_stops_when_transcript_rewrite_fails():
     assert session_entry.last_prompt_tokens == 123
     gw._handle_message.assert_not_awaited()
     facade.rewrite_transcript.assert_awaited_once()
+    assert (
+        facade.rewrite_transcript.await_args.kwargs["reject_active_turn_lease"]
+        is True
+    )
 
 
 def test_gateway_undo_prefills_live_carrier_text_and_keeps_scaffold(

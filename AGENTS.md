@@ -1224,9 +1224,10 @@ detects process completion and triggers a new agent turn. Control verbosity of b
 messages with `display.background_process_notifications`
 in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
-- `all` — running-output updates + final message (default)
-- `result` — only the final completion message
-- `error` — only the final message when exit code != 0
+- `concise` — one-line status message on completion; failures append a short output tail (default)
+- `all` — running-output updates + final raw-output message
+- `result` — only the final raw-output completion message
+- `error` — only the final raw-output message when exit code != 0
 - `off` — no watcher messages at all
 
 ---

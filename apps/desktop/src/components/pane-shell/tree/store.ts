@@ -172,9 +172,11 @@ function frontPaneInGroup(paneId: string) {
  *  - a registered closer (core panes whose visibility an app store owns:
  *    review/terminal/preview/sessions) closes through that store, so the
  *    titlebar/statusbar toggles stay truthful;
- *  - everything else (plugin panes, unbound core panes) is DISMISSED: removed
- *    from the tree and remembered so adoption doesn't re-add it. Reveal
- *    intent (a preview target, ⌘G) or a layout reset un-dismisses.
+ *  - unbound core panes and panes from multi-pane plugins are DISMISSED:
+ *    removed from the tree and remembered so adoption doesn't re-add them.
+ *    Reveal intent (a preview target, ⌘G) or a layout reset un-dismisses;
+ *  - closing the sole pane from a plugin disables that plugin, preserving the
+ *    discoverable Settings → Plugins recovery path for single-pane plugins.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
 
@@ -762,14 +764,24 @@ export function closeTreePane(paneId: string) {
     return
   }
 
-  // A plugin's pane: Close = DISABLE the plugin — the same switch as
-  // Settings → Plugins, so recovery is discoverable and symmetric. The
-  // contribution unregisters but the pane id STAYS in the tree, so
-  // re-enabling restores it exactly where it was. (Dismissal + removal
-  // would strand the pane with no way back short of a layout reset.)
-  const source = registry.getArea('panes').find(c => c.id === paneId)?.source
+  const panes = registry.getArea('panes')
+  const source = panes.find(c => c.id === paneId)?.source
 
   if (source?.startsWith('plugin:')) {
+    // A plugin may own several independent panes. Closing one of them must not
+    // unload every contribution from that plugin (for example, closing Bot
+    // Mode's Cronjobs pane must leave its Bots roster and composer middleware
+    // alive). Dismiss just that pane; Layout reset remains the explicit way to
+    // restore dismissed contributed panes.
+    if (panes.filter(c => c.source === source).length > 1) {
+      dismissTreePane(paneId)
+
+      return
+    }
+
+    // A single-pane plugin keeps the existing symmetric behavior: Close uses
+    // the same switch as Settings → Plugins. Its contribution unregisters but
+    // the pane id stays in the tree, so re-enabling restores its exact place.
     const pluginId = source.slice('plugin:'.length)
     void setPluginEnabled(pluginId, false)
     notify({
@@ -1110,15 +1122,6 @@ function adoptContributedPanes(): void {
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
-
-  // Plugin panes are never dismissed anymore (Close disables the plugin
-  // instead) — drop stale entries so panes stranded by the old behavior
-  // re-adopt on their own.
-  for (const pane of panes) {
-    if (pane.source?.startsWith('plugin:') && $dismissedPanes.get().has(pane.id)) {
-      setDismissed(pane.id, false)
-    }
-  }
 
   const dismissed = $dismissedPanes.get()
 

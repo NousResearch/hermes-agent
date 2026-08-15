@@ -280,6 +280,11 @@ def _get_langfuse() -> Optional[Langfuse]:
             return _LANGFUSE_CLIENT
 
         if Langfuse is None:
+            logger.warning(
+                "Langfuse plugin is enabled but the langfuse SDK is unavailable; "
+                "tracing is disabled. Run `hermes tools` and configure Langfuse "
+                "Observability to reinstall it."
+            )
             _LANGFUSE_CLIENT = _INIT_FAILED
             return None
 

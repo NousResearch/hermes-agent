@@ -59,8 +59,8 @@ export type ChatActions = Pick<
  * the latest closure.
  */
 export interface WiringActions extends SidebarActions, ChatActions {
-  /** The live gateway instance (held in a controller ref). Surfaces recapture
-   *  it by subscribing to `$gatewayState`, so no gateway prop needs threading. */
+  /** Imperative access to the live gateway for controller-owned callbacks.
+   *  Rendered surfaces subscribe to the active `$gateway` atom directly. */
   getGateway: () => ComponentProps<typeof ChatView>['gateway']
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void

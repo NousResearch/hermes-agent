@@ -1937,7 +1937,8 @@ class GatewaySlashCommandsMixin:
                                     event.source
                                 )
                                 await _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
+                                    _sess_entry.session_id, result.new_model,
+                                    provider=result.target_provider,
                                 )
                             except Exception as exc:
                                 logger.debug(
@@ -2247,7 +2248,8 @@ class GatewaySlashCommandsMixin:
                     if getattr(_sess_entry, "was_auto_reset", False):
                         _sess_entry.was_auto_reset = False
                     await _sess_db.update_session_model(
-                        _sess_entry.session_id, result.new_model
+                        _sess_entry.session_id, result.new_model,
+                        provider=result.target_provider,
                     )
                 except Exception as exc:
                     logger.debug(
@@ -2433,18 +2435,19 @@ class GatewaySlashCommandsMixin:
 
             return "\n".join(lines)
 
-        # Expensive-model confirmation gate (typed /model <name> path).
+        # Selection-guard confirmation gate (typed /model <name> path).
         # The pickers (Telegram/Discord inline keyboards, TUI, dashboard)
         # already confirm via their own UI affordances; this covers the
         # direct text command, which previously bypassed the guard.
-        # expensive_model_warning() may hit models.dev or a /models endpoint
-        # on a cache miss, so run it off the event loop.
+        # Runs the unified registry (cost + data-policy + future guards).
+        # Pricing lookups may hit models.dev or a /models endpoint on a
+        # cache miss, so run it off the event loop.
         _cost_warning = None
         try:
-            from hermes_cli.model_cost_guard import expensive_model_warning
+            from hermes_cli.model_selection_guards import combined_selection_warning
 
             _cost_warning = await asyncio.to_thread(
-                expensive_model_warning,
+                combined_selection_warning,
                 result.new_model,
                 provider=result.target_provider,
                 base_url=result.base_url or current_base_url or "",
@@ -2461,7 +2464,7 @@ class GatewaySlashCommandsMixin:
                         f"({current_model or 'unknown'})."
                     )
                 # "once" and "always" both proceed — there is no persistent
-                # opt-out for the cost guard (each expensive switch should be
+                # opt-out for selection guards (each guarded switch should be
                 # an explicit decision).
                 return await _finish_switch()
 
@@ -2469,9 +2472,9 @@ class GatewaySlashCommandsMixin:
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
-                title="Expensive Model Warning",
+                title=_cost_warning.title,
                 message=(
-                    f"⚠️ **Expensive Model Warning**\n\n{_cost_warning.message}\n\n"
+                    f"⚠️ **{_cost_warning.title}**\n\n{_cost_warning.message}\n\n"
                     f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),
@@ -2651,7 +2654,10 @@ class GatewaySlashCommandsMixin:
             # preserves that archive; a separate existence probe could fail
             # open or race with the write.
             if not await self.async_session_store.rewrite_transcript(
-                session_entry.session_id, truncated, active_only=True
+                session_entry.session_id,
+                truncated,
+                active_only=True,
+                reject_active_turn_lease=True,
             ):
                 return "Retry failed; transcript was not changed."
         # Reset stored token count — transcript was truncated
@@ -3007,6 +3013,76 @@ class GatewaySlashCommandsMixin:
             return f"/subgoal: {exc}"
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
+
+    async def _get_loop_manager_for_event(self, event: "MessageEvent"):
+        """Return a LoopManager bound to the session for this gateway event.
+
+        Returns ``(manager, session_entry)`` or ``(None, None)`` when the
+        loops module or session can't be loaded. Mirrors
+        ``_get_goal_manager_for_event``.
+        """
+        try:
+            from hermes_cli.loops import LoopManager
+        except Exception as exc:
+            logger.debug("loop manager unavailable: %s", exc)
+            return None, None
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(event.source)
+        except Exception:
+            return None, None
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid:
+            return None, None
+        return LoopManager(session_id=sid), session_entry
+
+    async def _handle_loop_command(self, event: "MessageEvent") -> str:
+        """Handle /loop for gateway platforms — recurring in-session wakeups.
+
+        Mirrors the CLI handler via the shared ``dispatch_loop_command``.
+        New loops capture the event's routing (platform/chat/thread) so the
+        gateway's idle loop-wakeup watcher can inject ticks back into this
+        chat even after a restart.
+        """
+        try:
+            from hermes_cli.loops import dispatch_loop_command, goal_blocks_loop_tick
+        except Exception as exc:
+            logger.debug("loops module unavailable: %s", exc)
+            return "Loops unavailable."
+
+        mgr, _session_entry = await self._get_loop_manager_for_event(event)
+        if mgr is None:
+            return "Loops unavailable (no active session)."
+
+        route: dict = {}
+        try:
+            src = event.source
+            if src is not None:
+                platform = getattr(src, "platform", "")
+                route = {
+                    "platform": platform.value if hasattr(platform, "value") else str(platform or ""),
+                    "chat_id": str(getattr(src, "chat_id", "") or ""),
+                    "chat_type": str(getattr(src, "chat_type", "") or ""),
+                    "thread_id": str(getattr(src, "thread_id", "") or ""),
+                    "user_id": str(getattr(src, "user_id", "") or ""),
+                    "user_name": str(getattr(src, "user_name", "") or ""),
+                }
+                route = {k: v for k, v in route.items() if v}
+        except Exception:
+            route = {}
+
+        args = (event.get_command_args() or "").strip()
+        result = dispatch_loop_command(mgr, args, route=route)
+        output = result.get("output") or ""
+        if result.get("created"):
+            try:
+                if goal_blocks_loop_tick(mgr.session_id):
+                    output += (
+                        "\nNote: an active /goal is driving this session — loop "
+                        "wakeups defer until the goal finishes, pauses, or parks."
+                    )
+            except Exception:
+                pass
+        return output
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting
@@ -4487,6 +4563,84 @@ class GatewaySlashCommandsMixin:
 
         return await self._telegram_topic_root_status_message(source)
 
+    async def _handle_save_command(self, event: MessageEvent) -> str:
+        """Handle /save — export the current session and send it as a document.
+
+        Usage: ``/save [json|md|html] [filename] [redact]``
+        """
+        from hermes_cli.session_export import (
+            SAVE_USAGE,
+            default_save_filename,
+            normalize_save_format,
+            render_session_for_save,
+        )
+
+        parts = event.get_command_args().split()
+        if not parts:
+            return SAVE_USAGE
+        redact = False
+        if parts[-1].lower() in ("redact", "--redact"):
+            redact = True
+            parts = parts[:-1]
+            if not parts:
+                return SAVE_USAGE
+
+        try:
+            fmt = normalize_save_format(parts[0])
+        except ValueError as e:
+            return f"{e}\n\n{SAVE_USAGE}"
+
+        source = event.source
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+
+        if not self._session_db:
+            return "Session database not available."
+        filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
+        # The filename is echoed to the platform only — never trust path
+        # separators from chat input.
+        filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
+
+        # self._session_db is an AsyncSessionDB — every forwarded call is
+        # offloaded to a thread and must be awaited.
+        export_data = await self._session_db.export_session(session_id)
+        if not export_data:
+            return f"No stored messages found for this session ({session_id})."
+
+        if redact:
+            from hermes_cli.session_export_md import redact_session_data
+
+            export_data = redact_session_data(export_data)
+
+        import tempfile
+
+        temp_dir = tempfile.mkdtemp(prefix="hermes_save_")
+        temp_path = os.path.join(temp_dir, filename)
+        try:
+            content = render_session_for_save(export_data, fmt)
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            adapter = self.get_adapter(source.platform)
+            if adapter:
+                await adapter.send_document(
+                    chat_id=source.chat_id,
+                    file_path=temp_path,
+                    caption=f"Session export: {filename}",
+                    file_name=filename,
+                )
+                return "Export complete."
+            return "Platform adapter not found to send the document."
+        except Exception as e:
+            logger.warning("Session /save failed: %s", e)
+            return f"Error exporting session: {e}"
+        finally:
+            try:
+                os.remove(temp_path)
+                os.rmdir(temp_dir)
+            except Exception:
+                pass
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
@@ -5272,11 +5426,13 @@ class GatewaySlashCommandsMixin:
 
             def _run_insights():
                 db = SessionDB()
-                engine = InsightsEngine(db)
-                report = engine.generate(days=days, source=source)
-                result = engine.format_gateway(report)
-                db.close()
-                return result
+                try:
+                    engine = InsightsEngine(db)
+                    report = engine.generate(days=days, source=source)
+                    result = engine.format_gateway(report)
+                    return result
+                finally:
+                    db.close()
 
             return await loop.run_in_executor(None, _run_insights)
         except Exception as e:

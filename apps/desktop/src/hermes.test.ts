@@ -22,7 +22,8 @@ import {
   resetSidebarBatchCapability,
   setApiRequestProfile,
   speakText,
-  transcribeAudio
+  transcribeAudio,
+  triggerCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -310,6 +311,21 @@ describe('Hermes REST helpers', () => {
     }
   })
 
+  it('waits for synchronous cron triggers as a long-running operation', async () => {
+    api.mockResolvedValue({ id: 'job-1' })
+
+    await triggerCronJob('job-1')
+
+    const request = api.mock.calls[0]?.[0]
+    expect(request).toEqual(
+      expect.objectContaining({
+        path: '/api/cron/jobs/job-1/trigger',
+        method: 'POST'
+      })
+    )
+    expect(request.timeoutMs).toBeGreaterThanOrEqual(60 * 60 * 1000)
+  })
+
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {
     api.mockResolvedValue({})
     api.mockClear()
@@ -366,11 +382,11 @@ describe('Hermes REST helpers', () => {
 
     expect(result.messages).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
     expect(api).toHaveBeenNthCalledWith(1, {
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest',
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest&include_compacted=true',
       profile: 'xiaoxuxu'
     })
     expect(api).toHaveBeenNthCalledWith(2, {
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=2&order=oldest',
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=2&order=oldest&include_compacted=true',
       profile: 'xiaoxuxu'
     })
   })

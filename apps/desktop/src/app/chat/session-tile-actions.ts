@@ -34,6 +34,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
+  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -48,7 +49,11 @@ import {
   truncateSubmitParams
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
-import { type SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
+import {
+  markSessionRecentlyInterrupted,
+  shouldInterruptBeforeRewind,
+  type SubmitTextOptions
+} from '../session/hooks/use-prompt-actions/utils'
 import { upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
@@ -107,6 +112,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   runtimeIdRef.current = runtimeId
   const storedIdRef = useRef(storedSessionId)
   storedIdRef.current = storedSessionId
+  // A tile IS its session (see the comment on the useSubmitPrompt call below)
+  // A tile owns one stable stored/runtime pair, so seed the shared ownership
+  // cache explicitly rather than relying on the primary route cache.
+  const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
+  runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -190,7 +200,20 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           })
 
           if (options.updateComposerAttachments ?? true) {
-            scope.attachments.update(next)
+            if (attachment.occurrenceId) {
+              // Merge staging into the latest state for this exact tile-chip
+              // occurrence. A preview may complete while upload is pending,
+              // and remove + same-path reattach must not receive stale staging.
+              scope.attachments.updateIfCurrent(attachment, {
+                attachedSessionId: next.attachedSessionId,
+                label: next.label,
+                path: next.path,
+                refText: next.refText,
+                uploadState: next.uploadState
+              })
+            } else {
+              scope.attachments.update(next)
+            }
           }
 
           synced.push(next)
@@ -219,6 +242,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
+    runtimeIdByStoredSessionIdRef,
     // Tile ids are always bound before this hook mounts, so routed recovery is
     // unreachable here; keep the shared submit contract explicit.
     resumeStoredSession: () => undefined,
@@ -226,7 +250,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     syncAttachmentsForSubmit,
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
     scope: {
-      clearAttachments: scope.attachments.clear,
+      removeAttachments: attachments => scope.attachments.removeOccurrences(attachments),
       readAttachments: () => scope.attachments.$attachments.get(),
       // Busy/messages flow through updateSession -> the tile's state slice;
       // the primary view atoms must never see a tile turn.
@@ -257,6 +281,9 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
+
+    // Frontend busy clears immediately; gateway wind-down can lag (#83855).
+    markSessionRecentlyInterrupted(sessionId)
 
     update(state => ({
       ...state,
@@ -297,27 +324,20 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
-      // Match the primary composer: insert the correction before the active
-      // reply before awaiting the redirect RPC, whose completion can race us.
-      mutate(state => {
-        const message = {
+      // Match the primary composer: record the correction in arrival order —
+      // sealed already-streamed output above, correction below, post-redirect
+      // deltas below that — before awaiting the redirect RPC, whose completion
+      // can race us. The old insert-before-the-active-reply splice put the
+      // bubble above output the user had already read (#73793), and its
+      // last-assistant fallback could land it mid-thread when the stream id
+      // was missing or stale (#83151).
+      mutate(state =>
+        appendMidTurnUserMessage(state, {
           id: messageId,
           role: 'user' as const,
           parts: [textPart(text)]
-        }
-
-        const streamIndex = state.streamId ? state.messages.findIndex(candidate => candidate.id === state.streamId) : -1
-
-        const lastAssistantIndex = state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-        const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
-
-        const messages =
-          insertionIndex >= 0
-            ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
-            : [...state.messages, message]
-
-        return { ...state, messages }
-      })
+        })
+      )
 
       const discardOptimisticMessage = () =>
         mutate(state => ({
@@ -456,13 +476,22 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
 
-      const wasBusy = readState()?.busy ?? false
+      const interruptFirst = shouldInterruptBeforeRewind({
+        busy: readState()?.busy ?? false,
+        sessionId
+      })
 
       update(state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
         applySurvivorRowIds(
-          await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId
+          )
         )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
@@ -487,13 +516,22 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
 
-      const wasBusy = readState()?.busy ?? false
+      const interruptFirst = shouldInterruptBeforeRewind({
+        busy: readState()?.busy ?? false,
+        sessionId
+      })
 
       update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
       try {
         applySurvivorRowIds(
-          await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            interruptFirst,
+            plan.truncateMessageId,
+            plan.truncateRowId
+          )
         )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))

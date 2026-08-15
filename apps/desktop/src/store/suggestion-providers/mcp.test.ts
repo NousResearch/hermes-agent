@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { MCP_DIRECTORY } from '@/lib/mcp-directory'
+
 import { matchSuggestions } from './mcp'
 
 const INDEX = [
@@ -74,5 +76,28 @@ describe('matchSuggestions', () => {
     expect(matchSuggestions('logs at https://user@myorg.sentry.io:443/issues', index)).toEqual([
       { keyword: 'sentry.io', server: 'sentry' }
     ])
+  })
+
+  it('a keyword still under the caret does not fire yet', () => {
+    // The debounce elapses mid-thought; the word is only intent once
+    // something follows it.
+    expect(matchSuggestions('can you check linear', INDEX)).toEqual([])
+    expect(matchSuggestions('can you check linear ', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
+    expect(matchSuggestions('can you check linear?', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
+  })
+
+  it('a pasted URL fires even as the last thing in the draft', () => {
+    // Pasting is a deliberate act — the completed-word guard is keyword-only.
+    const index = [{ hosts: ['linear.app'], keywords: ['linear'], server: 'linear' }]
+
+    expect(matchSuggestions('look at https://linear.app/team/issue/ABC-1', index)).toEqual([
+      { keyword: 'linear.app', server: 'linear' }
+    ])
+  })
+
+  it('does not offer GitHub through the generic OAuth registration path', () => {
+    const index = MCP_DIRECTORY.map(entry => ({ hosts: entry.hosts, keywords: entry.keywords, server: entry.name }))
+
+    expect(matchSuggestions('connect github', index)).toEqual([])
   })
 })

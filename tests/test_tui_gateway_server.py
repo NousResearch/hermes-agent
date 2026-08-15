@@ -56,6 +56,41 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reap_leaked_notification_pollers():
+    """Stop and join notification pollers leaked by each test.
+
+    session.init/create paths start a per-session poller daemon thread. A
+    poller left running by one test steals-and-requeues events off the
+    PROCESS-GLOBAL process_registry.completion_queue while a later test is
+    asserting on it — the root cause of the flaky
+    test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_threading
+    (two CI hits on unrelated PRs, Aug 2026). Set every registered poller's
+    stop event (the loop wakes at least every 0.5s), then join with ONE
+    small shared budget — never per-thread — so teardown stays O(seconds)
+    for the whole file even when many tests leaked pollers.
+    """
+    yield
+    pollers = [
+        (stop, thread)
+        for stop, thread in list(server._notification_pollers)
+        if thread.is_alive()
+    ]
+    for stop, _thread in pollers:
+        stop.set()
+    deadline = time.time() + 3.0
+    for _stop, thread in pollers:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
+    server._notification_pollers[:] = [
+        (stop, thread)
+        for stop, thread in server._notification_pollers
+        if thread.is_alive()
+    ]
+
+
 def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -367,6 +402,13 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
 
 
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
+    # _session_info embeds get_update_result(), whose value flips whenever the
+    # background update-check thread happens to finish. This test compares two
+    # snapshots taken at different times, so pin the value to keep it
+    # deterministic regardless of how long the preceding tests ran.
+    import hermes_cli.banner as _banner
+
+    monkeypatch.setattr(_banner, "get_update_result", lambda timeout=0.5: None)
     session = _session(
         agent=None,
         agent_ready=threading.Event(),
@@ -660,6 +702,7 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
 ):
     """Agent construction must start MCP discovery under the selected profile."""
     import threading
+    import uuid
 
     from hermes_constants import get_hermes_home
 
@@ -685,19 +728,26 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    # CI runs this huge file serially under load; a prior session's _build can
+    # still be finishing (session.info emit) when the next test starts, so a
+    # 2s Event wait flakes. Unique sid + longer bound; still fail closed.
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
 
     ready = threading.Event()
-    sid = "test-sid"
+    sid = f"test-sid-{uuid.uuid4().hex[:8]}"
     session = {
         "agent_ready": ready,
-        "session_key": "test-key",
+        "session_key": f"test-key-{uuid.uuid4().hex[:8]}",
         "profile_home": str(profile_home),
     }
 
     server._sessions[sid] = session
     try:
         server._start_agent_build(sid, session)
-        assert built.wait(timeout=2)
+        assert built.wait(timeout=15), "agent build thread never called _make_agent"
+        assert ready.wait(timeout=5), "agent_ready never set after build"
     finally:
         server._sessions.pop(sid, None)
 
@@ -712,6 +762,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     .env (#67605 item 2).
     """
     import threading
+    import uuid
 
     from agent.secret_scope import current_secret_scope
 
@@ -740,19 +791,25 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    # Same CI flake class as the MCP profile-home test: bound wait + less work
+    # on the build thread (no poller / late MCP refresh / session.info emit).
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
 
     ready = threading.Event()
-    sid = "test-secret-sid"
+    sid = f"test-secret-sid-{uuid.uuid4().hex[:8]}"
     session = {
         "agent_ready": ready,
-        "session_key": "test-secret-key",
+        "session_key": f"test-secret-key-{uuid.uuid4().hex[:8]}",
         "profile_home": str(profile_home),
     }
 
     server._sessions[sid] = session
     try:
         server._start_agent_build(sid, session)
-        assert built.wait(timeout=2)
+        assert built.wait(timeout=15), "agent build thread never called _make_agent"
+        assert ready.wait(timeout=5), "agent_ready never set after build"
     finally:
         server._sessions.pop(sid, None)
 
@@ -994,6 +1051,312 @@ def test_write_json_drops_detached_ws_frames(monkeypatch):
         assert out.parts == []
     finally:
         server._sessions.pop("detached-sid", None)
+
+
+def test_usage_ticker_emits_wrapped_usage_payload(monkeypatch):
+    # The live ticker must nest the snapshot under a "usage" key, matching the
+    # message.complete / session.info payloads the desktop & TUI handlers read
+    # as payload.usage. Emitting the bare _get_usage() dict (payload.input/total
+    # …) silently drops every live tick on the client side.
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    snapshot = {"input": 1200, "total": 1280}
+    monkeypatch.setattr(server, "_get_usage", lambda agent: dict(snapshot))
+
+    stop, thread = server._start_usage_ticker("sess-1", object(), interval=0.01)
+    # The dedup baseline is sampled synchronously inside _start_usage_ticker,
+    # so this mutation is guaranteed to read as the first counter movement.
+    snapshot["total"] = 2400
+    try:
+        deadline = time.time() + 1.0
+        while not events and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+
+    assert events, "ticker never emitted"
+    event_type, sid, payload = events[0]
+    assert event_type == "session.usage"
+    assert sid == "sess-1"
+    assert payload == {"usage": {"input": 1200, "total": 2400}}
+
+
+def test_usage_ticker_skips_unchanged_snapshots(monkeypatch):
+    # A single long API call leaves the token counters frozen for many
+    # intervals; the ticker must emit nothing at all (the client already has
+    # the turn-start values from the previous message.complete / session.info).
+    # Only a changed snapshot emits.
+    events: list[dict] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append(payload)
+    )
+    snapshot = {"input": 1200, "total": 1280}
+    monkeypatch.setattr(server, "_get_usage", lambda agent: dict(snapshot))
+
+    stop, thread = server._start_usage_ticker("sess-1", object(), interval=0.01)
+    try:
+        # ~15 ticks with counters frozen at the turn-start baseline: zero frames.
+        time.sleep(0.15)
+        assert events == []
+
+        # Counters move → the next tick emits the new snapshot.
+        snapshot["total"] = 2400
+        deadline = time.time() + 1.0
+        while not events and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+
+    assert events == [{"usage": {"input": 1200, "total": 2400}}]
+
+
+def test_usage_ticker_baseline_sampled_before_thread_start(monkeypatch):
+    """The dedup baseline must be sampled synchronously in _start_usage_ticker,
+    not inside the ticker thread: a late-scheduled thread would otherwise seed
+    itself with counters the turn's first API call already bumped, absorbing
+    that first growth so it never emits."""
+    events: list[dict] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append(payload)
+    )
+    snapshot = {"input": 1200, "total": 1280}
+    monkeypatch.setattr(server, "_get_usage", lambda agent: dict(snapshot))
+
+    class _SlowStartThread(threading.Thread):
+        def start(self):
+            # Deterministic stand-in for a scheduler delay: the turn's first
+            # API call bumps the counters before the ticker thread ever runs.
+            snapshot["total"] = 2400
+            super().start()
+
+    monkeypatch.setattr(server, "_RealThread", _SlowStartThread)
+
+    stop, thread = server._start_usage_ticker("sess-1", object(), interval=0.01)
+    try:
+        deadline = time.time() + 1.0
+        while not events and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+
+    # An in-thread seed would have read 2400 as the baseline and stayed
+    # silent; the synchronous seed (1280) sees it as the first growth.
+    assert events == [{"usage": {"input": 1200, "total": 2400}}]
+
+
+def test_usage_ticker_stop_join_prevents_late_ticks(monkeypatch):
+    """The stop sequence (set + join) must guarantee no session.usage after it
+    returns: a tick captured mid-turn but emitted after message.complete would
+    roll the client's final usage back to a stale snapshot (clients merge
+    payload.usage unconditionally)."""
+    events: list[str] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append(event_type)
+    )
+
+    in_snapshot = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0}
+
+    def _blocking_get_usage(agent):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"total": 0}  # dedup seed
+        # First real tick: hold it mid-snapshot so the stop lands while the
+        # iteration is already past the stop.wait() gate.
+        in_snapshot.set()
+        release.wait(2.0)
+        return {"total": 999}
+
+    monkeypatch.setattr(server, "_get_usage", _blocking_get_usage)
+
+    stop, thread = server._start_usage_ticker("sess-1", object(), interval=0.01)
+    assert in_snapshot.wait(2.0), "ticker never reached a snapshot"
+
+    # Turn ends while the tick is mid-snapshot: run the exact stop sequence
+    # _run_prompt_submit uses, then emit message.complete.
+    stop.set()
+    release.set()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive(), "ticker thread survived the stop sequence"
+    server._emit("message.complete", "sess-1", {})
+
+    # The in-flight tick was dropped (stop re-checked before emit), so nothing
+    # can land after — let alone overwrite — the final usage.
+    assert "session.usage" not in events
+    assert events[-1] == "message.complete"
+
+
+def test_run_prompt_submit_never_ticks_after_message_complete(monkeypatch):
+    """End-to-end ordering through _run_prompt_submit: live session.usage ticks
+    happen strictly before message.complete, never after it."""
+    events: list[str] = []
+    tick_seen = threading.Event()
+
+    def _record_emit(event_type, sid, payload=None):
+        events.append(event_type)
+        if event_type == "session.usage":
+            tick_seen.set()
+
+    monkeypatch.setattr(server, "_emit", _record_emit)
+
+    counter = {"n": 0}
+
+    def _moving_usage(agent):
+        counter["n"] += 1
+        return {"total": counter["n"]}  # moves every sample → every tick emits
+
+    monkeypatch.setattr(server, "_get_usage", _moving_usage)
+    real_ticker = server._start_usage_ticker
+    monkeypatch.setattr(
+        server,
+        "_start_usage_ticker",
+        lambda sid, agent, interval=1.0: real_ticker(sid, agent, interval=0.01),
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class _Agent:
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            persist_user_message=None,
+        ):
+            # Hold the turn open until at least one live tick has fired.
+            assert tick_seen.wait(5.0), "no live tick during the turn"
+            return {"final_response": "done", "messages": [], "completed": True}
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "session.usage" in events
+    assert "message.complete" in events
+    last_tick = max(i for i, e in enumerate(events) if e == "session.usage")
+    assert last_tick < events.index("message.complete")
+
+
+def test_usage_ticker_unbounded_join_waits_out_blocked_emit(monkeypatch):
+    """A tick stalled inside _emit (a transport write can block up to
+    _WS_WRITE_TIMEOUT_S = 10s on a stalled event loop) must be waited out by
+    the stop sequence, not abandoned: stop.set() + an unbounded join may only
+    return after the in-flight emit has fully flushed, so nothing can land
+    after message.complete."""
+    order: list[str] = []
+    in_emit = threading.Event()
+    release = threading.Event()
+
+    def _stalled_emit(event_type, sid, payload):
+        in_emit.set()
+        release.wait(10.0)  # the stalled transport write
+        order.append(event_type)
+
+    monkeypatch.setattr(server, "_emit", _stalled_emit)
+
+    counter = {"n": 0}
+
+    def _moving_usage(agent):
+        counter["n"] += 1
+        return {"total": counter["n"]}  # moves every sample → a tick emits
+
+    monkeypatch.setattr(server, "_get_usage", _moving_usage)
+
+    stop, thread = server._start_usage_ticker("sess-1", object(), interval=0.01)
+    assert in_emit.wait(2.0), "no tick got in flight"
+
+    # Run the exact stop sequence _run_prompt_submit uses, on a side thread so
+    # the test can observe whether it returns while the emit is still stuck.
+    stopped = threading.Event()
+
+    def _stop_sequence():
+        stop.set()
+        thread.join()
+        stopped.set()
+
+    stopper = threading.Thread(target=_stop_sequence, daemon=True)
+    stopper.start()
+
+    # While the tick is stalled in the transport write, the stop sequence must
+    # NOT complete — a timed join returning here is exactly the bug: the
+    # caller would proceed to message.complete with the tick still pending.
+    assert not stopped.wait(0.2), "stop sequence returned with the tick still in flight"
+
+    release.set()
+    assert stopped.wait(2.0), "stop sequence never completed after the emit flushed"
+    stopper.join(timeout=2.0)
+
+    # The flushed tick strictly precedes anything the caller emits afterwards.
+    order.append("message.complete")
+    assert order == ["session.usage", "message.complete"]
+
+
+def test_run_prompt_submit_joins_ticker_without_timeout(monkeypatch):
+    """_run_prompt_submit must join the ticker with NO timeout. A timed join
+    can expire while a tick sits in a stalled transport write (up to
+    _WS_WRITE_TIMEOUT_S = 10s) and abandon it to land after message.complete;
+    the wait is bounded by that same write anyway — message.complete's own
+    emit would stall on the same transport."""
+    joins: list = []
+    real_ticker = server._start_usage_ticker
+
+    class _JoinSpy:
+        def __init__(self, thread):
+            self._thread = thread
+
+        def join(self, timeout=None):
+            joins.append(timeout)
+            return self._thread.join(timeout)
+
+        def __getattr__(self, name):
+            return getattr(self._thread, name)
+
+    def _spying_ticker(sid, agent, interval=1.0):
+        stop, thread = real_ticker(sid, agent, interval=interval)
+        return stop, _JoinSpy(thread)
+
+    monkeypatch.setattr(server, "_start_usage_ticker", _spying_ticker)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda event_type, sid, payload=None: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {"final_response": "done", "messages": [], "completed": True}
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert joins == [None], f"expected one unbounded join, got {joins}"
 
 
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
@@ -2805,6 +3168,65 @@ def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_p
     ]
 
 
+def test_live_session_payload_reads_profile_db_not_launch_db(monkeypatch, tmp_path):
+    """Warm/live reuse for a non-launch profile session must open that
+    profile's state.db, not the process launch DB.
+
+    App-global remote mode stores verification candidates in the resumed
+    profile's DB. ``_live_session_payload`` previously hard-coded
+    ``_get_db()`` (launch), so the display projection missed those rows and
+    fell back to collapsed in-memory model history — while eager
+    ``session.resume`` against the same profile still showed them.
+    """
+    from hermes_state import SessionDB
+
+    launch_home = tmp_path / "launch"
+    profile_home = tmp_path / "profile"
+    launch_home.mkdir()
+    profile_home.mkdir()
+
+    launch_db = SessionDB(db_path=launch_home / "state.db")
+    profile_db = SessionDB(db_path=profile_home / "state.db")
+    profile_db.create_session("s-profile", source="tui")
+    profile_db.append_message("s-profile", role="user", content="do the thing")
+    profile_db.append_message(
+        "s-profile",
+        role="assistant",
+        content="long substantive answer",
+        finish_reason="verification_required",
+    )
+    profile_db.append_message(
+        "s-profile",
+        role="assistant",
+        content="terse verified reply",
+        finish_reason="stop",
+    )
+    model_history, display_history = profile_db.get_resume_conversations("s-profile")
+    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert any("long substantive" in (m.get("content") or "") for m in display_history)
+
+    session = {
+        "session_key": "s-profile",
+        "profile_home": str(profile_home),
+        "agent": None,
+        "history": list(model_history),
+        "display_history_prefix": [],
+        "history_lock": threading.Lock(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "running": False,
+    }
+    # Launch DB has no row for this session — the pre-fix path would miss
+    # candidates and fall back to collapsed in-memory history.
+    monkeypatch.setattr(server, "_get_db", lambda: launch_db)
+
+    payload = server._live_session_payload("live1", session, touch=False)
+    texts = [m.get("text") for m in payload.get("messages") or []]
+
+    assert "long substantive answer" in texts
+    assert texts == [m.get("text") for m in server._history_to_messages(display_history)]
+
+
 def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch, tmp_path):
     """The delegated-child watch-window cold resume (lazy=True) must serve the
     verbatim display projection so a persisted verification candidate is not
@@ -3125,10 +3547,11 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
 
 def test_stored_session_runtime_overrides_skips_bare_billing_provider():
-    """A bare billing bucket ("custom"/"auto"/"openrouter") must not be restored as the
-    provider identity on resume. A custom endpoint that never used `/model` persists only
+    """A bare billing bucket ("custom"/"auto") must not be restored as the provider
+    identity on resume. A custom endpoint that never used `/model` persists only
     `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
-    configured" (agent_init treats it as non-routable). A real provider, or an explicit
+    configured" (agent_init treats it as non-routable). ``"openrouter"`` is NOT a bare bucket
+    — it is a fully routable provider; see #57588. A real provider, or an explicit
     `model_config.provider`, is still restored.
     """
     # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
@@ -3136,7 +3559,7 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert "provider_override" not in ov
     assert ov["model_override"]["provider"] is None
 
-    for bare in ("auto", "openrouter", "custom"):
+    for bare in ("auto", "custom"):
         ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
         assert "provider_override" not in ov
 
@@ -3163,6 +3586,33 @@ def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
 
     assert "service_tier_override" in overrides
     assert overrides["service_tier_override"] == ""
+
+
+def test_openrouter_session_resume_restores_provider():
+    """OpenRouter is a fully routable provider — sessions that used OpenRouter must
+    restore the "openrouter" provider override on resume, not fall through to whatever
+    the current global model is.  (#57588)
+    """
+    # OpenRouter session with no explicit model_config.provider (the common case
+    # for sessions that never used /model): billing_provider="openrouter" should
+    # be restored as the provider override.
+    ov = server._stored_session_runtime_overrides(
+        {"model": "anthropic/claude-opus-4.8", "billing_provider": "openrouter"}
+    )
+    assert ov["provider_override"] == "openrouter"
+    assert ov["model_override"]["provider"] == "openrouter"
+    assert ov["model_override"]["model"] == "anthropic/claude-opus-4.8"
+
+    # When an explicit model_config.provider exists, it takes precedence over
+    # billing_provider (this path was already correct).
+    ov = server._stored_session_runtime_overrides(
+        {
+            "model": "anthropic/claude-opus-4.8",
+            "billing_provider": "openrouter",
+            "model_config": {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+        }
+    )
+    assert ov["provider_override"] == "openrouter"
 
 
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
@@ -4370,7 +4820,14 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4507,7 +4964,14 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4565,7 +5029,14 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4601,6 +5072,63 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
         assert replaced[0][1] == history[:2]
     finally:
         server._sessions.pop("msg-id-trunc-sid", None)
+
+
+def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkeypatch):
+    """#81904: a NULL session_key must not FK-fail the truncation persist.
+
+    CLI-origin sessions resumed in the Desktop have no session_key; the
+    truncation path used to call replace_messages(None, ...), whose reinsert
+    violated the messages.session_id FK ("FOREIGN KEY constraint failed" →
+    "Restore failed"). The persist must key off the session id instead —
+    for CLI-origin rows the durable sessions.id IS the requested sid.
+    """
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
+            replaced.append((key, list(messages)))
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply 1"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "reply 2"},
+    ]
+    server._sessions["null-key-trunc-sid"] = _session(
+        history=list(history), session_key=None
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "null-key-trunc-sid",
+                    "text": "new turn",
+                    "truncate_before_user_ordinal": 1,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("result") is not None
+        assert len(replaced) == 1
+        # Keyed by the session id, never None (the FK-violating value).
+        assert replaced[0][0] == "null-key-trunc-sid"
+        assert replaced[0][1] == history[:2]
+    finally:
+        server._sessions.pop("null-key-trunc-sid", None)
 
 
 def test_prompt_submit_refuses_ordinal_and_message_id_mismatch(monkeypatch):
@@ -4640,12 +5168,72 @@ def test_prompt_submit_refuses_ordinal_and_message_id_mismatch(monkeypatch):
         server._sessions.pop("mismatch-trunc-sid", None)
 
 
+def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch):
+    """A durable session must not trust an ordinal without a row-id target."""
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
+            replaced.append((key, list(messages)))
+
+    history = [
+        {"_row_id": 101, "role": "user", "content": "first"},
+        {"_row_id": 102, "role": "assistant", "content": "reply 1"},
+        {"_row_id": 103, "role": "user", "content": "second"},
+        {"_row_id": 104, "role": "assistant", "content": "reply 2"},
+    ]
+    server._sessions["ordinal-only-durable-sid"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "ordinal-only-durable-sid",
+                    "text": "retry",
+                    "truncate_before_user_ordinal": 1,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 4004
+        assert "truncate_before_row_id" in resp["error"]["message"]
+        assert server._sessions["ordinal-only-durable-sid"]["history"] == history
+        assert server._sessions["ordinal-only-durable-sid"]["running"] is False
+        assert replaced == []
+    finally:
+        server._sessions.pop("ordinal-only-durable-sid", None)
+
+
 def test_prompt_submit_truncates_by_row_id(monkeypatch):
     """#82959: prompt.submit with truncate_before_row_id must cut at the target row id."""
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4690,7 +5278,14 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4844,7 +5439,14 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4931,7 +5533,14 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -6280,6 +6889,76 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
     assert emitted and emitted[0][0:2] == ("session.info", "sid")
     assert emitted[0][2]["approval_mode"] == "manual"
+
+
+def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch):
+    """display.pet.enabled: "false" (quoted) must report enabled=False.
+
+    The old check was bool(value) — bool('false') is True, so a hand-edited
+    quoted YAML value kept the petdex mascot enabled against the operator's
+    explicit intent.
+    """
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"pet": {"enabled": "false"}}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "pet.gallery", "params": {}}
+    )
+    assert response["result"]["enabled"] is False
+
+
+def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
+    """pet.info with a matching knownRevision must not resend the sheet bytes.
+
+    The spritesheet payload is multi-MB; resending it on every backstop
+    refresh stalls the WS write loop (#54730). A caller passing the revision
+    it already holds gets metadata plus spritesheetUnchanged instead.
+    """
+
+    class _FakePet:
+        slug = "codex"
+        display_name = "Codex"
+        exists = True
+        spritesheet = None
+
+    payload = {
+        "slug": "codex",
+        "displayName": "Codex",
+        "mime": "image/png",
+        "spritesheetBase64": "A" * 1024,
+        "spritesheetRevision": "123:456",
+        "frameW": 192,
+        "frameH": 208,
+        "scale": 0.33,
+    }
+
+    monkeypatch.setattr(server, "_pet_active_selection", lambda: (True, _FakePet(), 0.33))
+    monkeypatch.setattr(server, "_pet_sprite_payload", lambda pet, *, scale: dict(payload))
+
+    # Matching revision: bytes elided, unchanged marker set.
+    resp = server.handle_request(
+        {"id": "1", "method": "pet.info", "params": {"knownRevision": "123:456"}}
+    )
+    assert resp["result"]["enabled"] is True
+    assert "spritesheetBase64" not in resp["result"]
+    assert resp["result"]["spritesheetUnchanged"] is True
+    assert resp["result"]["spritesheetRevision"] == "123:456"
+
+    # Stale revision: full payload still flows.
+    resp = server.handle_request(
+        {"id": "2", "method": "pet.info", "params": {"knownRevision": "999:999"}}
+    )
+    assert resp["result"]["spritesheetBase64"] == "A" * 1024
+    assert "spritesheetUnchanged" not in resp["result"]
+
+    # No revision (legacy callers): full payload.
+    resp = server.handle_request({"id": "3", "method": "pet.info", "params": {}})
+    assert resp["result"]["spritesheetBase64"] == "A" * 1024
 
 
 def test_desktop_contract_includes_approval_mode_rpc():
@@ -9406,6 +10085,89 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
     assert before is None or session["last_active"] >= before
 
 
+def test_session_redirect_rpc_drops_queued_duplicate_of_inflight_user():
+    """#84417: Desktop ``session.redirect`` must purge stale self-duplicates.
+
+    Production path: renderer steers via ``session.redirect`` (not
+    ``prompt.submit``). A self-copy of the live original user text already in
+    the server queue must not survive a successful redirect — otherwise
+    post-turn ``_drain_queued_prompt`` restarts prompt P after Q is handled.
+    Unrelated next-turn envelopes stay.
+    """
+    original = "deepseek released a new flash model — I changed all settings to flash"
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: True,
+    )
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {
+        "user": original,
+        "assistant": "partial",
+        "streaming": True,
+        "error": "",
+    }
+    session["queued_prompt"] = {"text": original, "transport": "ws-1"}
+    session["queued_prompts"] = [
+        {"text": original, "transport": "ws-1"},
+        {"text": "unrelated later task", "transport": "ws-1"},
+    ]
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {
+                    "session_id": "sid",
+                    "text": "what about the pricing instead?",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "redirected"
+    assert session["inflight_turn"]["user"] == original
+    assert session["inflight_turn"]["corrections"] == [
+        "what about the pricing instead?"
+    ]
+    # Self-duplicates of the live original are gone; legitimate follow-up kept.
+    assert session.get("queued_prompt") == {
+        "text": "unrelated later task",
+        "transport": "ws-1",
+    }
+    assert not session.get("queued_prompts")
+
+
+def test_session_redirect_build_window_scrubs_stale_p_when_queuing_q():
+    """#84417: build-window queue of Q must not leave P ahead of Q."""
+    original = "live original P"
+    session = _session(running=True)
+    session["agent"] = None  # async agent build window
+    session["inflight_turn"] = {
+        "user": original,
+        "assistant": "",
+        "streaming": True,
+        "error": "",
+    }
+    session["queued_prompt"] = {"text": original, "transport": "ws-1"}
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "correction Q"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {"status": "queued", "text": "correction Q"}
+    assert session["queued_prompt"]["text"] == "correction Q"
+    assert not session.get("queued_prompts")
+
+
 def test_session_redirect_records_correction_without_erasing_prompt():
     """A redirect must not overwrite the turn's original user text.
 
@@ -9424,6 +10186,47 @@ def test_session_redirect_records_correction_without_erasing_prompt():
 
     assert snapshot["user"] == "remove the session counts"
     assert snapshot["corrections"] == ["hurry up", "and the worktree ones"]
+
+
+def test_inflight_snapshot_carries_arrival_order_offsets():
+    """Each correction records how much assistant text had already streamed.
+
+    Resuming clients rebuild ARRIVAL order from these boundaries: the
+    correction bubble lands after the output the user had already seen and
+    before the output it redirected (#73793), instead of above the whole
+    reply.
+    """
+    session = {}
+    server._start_inflight_turn(session, "remove the session counts")
+    server._append_inflight_delta(session, "Moving.")
+    server._record_inflight_correction(session, "hurry up")
+    server._append_inflight_delta(session, "Still.")
+    server._record_inflight_correction(session, "and the worktree ones")
+    server._append_inflight_delta(session, "Done soon.")
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+
+    assert snapshot["corrections"] == ["hurry up", "and the worktree ones"]
+    assert snapshot["correction_offsets"] == [len("Moving."), len("Moving.Still.")]
+
+
+def test_inflight_snapshot_omits_offsets_when_not_fully_recorded():
+    """A pre-upgrade in-memory turn may carry corrections without offsets.
+
+    The parallel list is only sent when every correction has one, so clients
+    can trust the pairing and older snapshots degrade to the no-offset path.
+    """
+    session = {}
+    server._start_inflight_turn(session, "prompt")
+    turn = session["inflight_turn"]
+    turn["corrections"] = ["legacy correction"]
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+
+    assert snapshot["corrections"] == ["legacy correction"]
+    assert "correction_offsets" not in snapshot
 
 
 def test_inflight_snapshot_omits_corrections_when_none_recorded():
@@ -9810,6 +10613,95 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
             server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_merges_on_personality_pivot_marker(monkeypatch):
+    """A personality pivot injected mid-turn must merge like a model switch.
+
+    `/personality` applies immediately — there is no deferred queue for it the
+    way `pending_model_switch` defers a mid-turn model change — so choosing a
+    personality while a turn is running bumps `history_version` from the RPC
+    thread. The mid-turn reconciliation only recognized the model-switch
+    marker, so the pivot read as a genuine desync and the finished turn was
+    dropped from session history: the user saw the reply and it was never
+    stored (#82756).
+    """
+    session_ref: dict[str, dict | None] = {"s": None}
+
+    class _PivotAgent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+        ):
+            # Real injection point, mid-turn, exactly as the personality RPC
+            # would reach it from the other thread.
+            server._apply_personality_to_session(
+                "sid", session_ref["s"], "Answer tersely.", "terse"
+            )
+            return {
+                "final_response": "agent reply",
+                "messages": list(conversation_history)
+                + [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "agent reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(
+        agent=_PivotAgent(),
+        history=[{"role": "user", "content": "hello"}],
+    )
+    session_ref["s"] = server._sessions["sid"]
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        final_history = server._sessions["sid"]["history"]
+
+        assistant_msgs = [
+            e
+            for e in final_history
+            if isinstance(e, dict)
+            and e.get("role") == "assistant"
+            and e.get("content") == "agent reply"
+        ]
+        assert len(assistant_msgs) == 1, (
+            "the personality pivot discarded the finished turn instead of "
+            f"merging it (got {len(assistant_msgs)} assistant replies)"
+        )
+
+        pivots = [
+            e
+            for e in final_history
+            if isinstance(e, dict) and e.get("display_kind") == "personality_switch"
+        ]
+        assert len(pivots) == 1, f"expected exactly 1 pivot, got {len(pivots)}"
+
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        _, _, payload = complete_calls[0]
+        assert "warning" not in payload, "merge path should not surface a warning"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
     """prompt.submit must sanitize corrupted user text before run_conversation."""
     captured: dict[str, str] = {}
@@ -9992,7 +10884,14 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -10049,7 +10948,14 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     server._sessions["trunc-fail-sid"] = sess
 
     class _FailDb:
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
@@ -10141,7 +11047,14 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -12434,6 +13347,130 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
+
+
+def test_session_branch_uses_persisted_display_history_after_compaction(monkeypatch, tmp_path):
+    """A live branch must copy the complete visible transcript, not the compacted model tail."""
+    profile_home = tmp_path / "profiles" / "mlperf"
+    profile_home.mkdir(parents=True)
+    seen: dict = {"msgs": []}
+
+    display_history = [
+        {"role": "user", "content": "first question", "timestamp": 1.0},
+        {"role": "assistant", "content": "first answer", "timestamp": 2.0},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "content": "tool output", "tool_call_id": "call-1"},
+        {"role": "user", "content": "second question", "timestamp": 3.0},
+        {"role": "assistant", "content": "second answer", "timestamp": 4.0},
+    ]
+
+    class LaunchDB:
+        def get_session_title(self, _key):
+            return "launch"
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            seen.setdefault("inits", 0)
+            seen["inits"] += 1
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def get_resume_conversations(self, key):
+            assert key == "parent-key"
+            # The model projection has already been compacted to a summary + tail;
+            # the display projection still contains every visible turn.
+            return (
+                [{"role": "assistant", "content": "compact summary"}],
+                display_history,
+            )
+
+        def create_session(self, _new_key, **_kwargs):
+            return None
+
+        def append_message(self, **kwargs):
+            seen["msgs"].append(kwargs)
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            for message in messages:
+                seen["msgs"].append(dict(message, session_id=session_id))
+            return list(range(1, len(messages) + 1))
+
+        def set_session_title(self, _key, _title):
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeAgent:
+        model = "test-model"
+        session_id = None
+
+    parent = {
+        "session_key": "parent-key",
+        # This is the model-fed projection after compaction: the old turns are
+        # absent here even though the display projection above retains them.
+        "history": [
+            {"role": "assistant", "content": "compact summary"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+        ],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "cols": 80,
+        "profile_home": str(profile_home),
+        "source": "tui",
+        "agent": FakeAgent(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "cwd": str(tmp_path),
+    }
+    server._sessions["parent"] = parent
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: FakeAgent())
+    monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: {})
+    monkeypatch.setattr(server, "_clear_session_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_session_cwd", lambda _session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args, **kwargs: None)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.branch",
+                "params": {"session_id": "parent", "count": 4},
+            }
+        )
+
+        assert "result" in response, response
+        assert [message["content"] for message in seen["msgs"]] == [
+            "first question",
+            "first answer",
+            "second question",
+            "second answer",
+        ]
+        assert [message["text"] for message in response["result"]["messages"]] == [
+            "first question",
+            "first answer",
+            "second question",
+            "second answer",
+        ]
+    finally:
+        for key in list(server._sessions):
+            server._sessions.pop(key, None)
 
 
 def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
@@ -17283,7 +18320,14 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             self.replaced.append((session_id, list(messages)))
 
     session = _session(
@@ -17391,10 +18435,16 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
 
     class _StubDb:
         def replace_messages(
-            self, session_id, messages, active_only=False, archive_dropped=False
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
         ):
             captured["active_only"] = active_only
             captured["archive_dropped"] = archive_dropped
+            captured["reject_active_turn_lease"] = reject_active_turn_lease
 
     server._sessions["archive-trunc-sid"] = _session(
         agent=_Agent(),
@@ -17433,6 +18483,7 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         )
         # #80216: still must not touch rows archived by an earlier compaction.
         assert captured.get("active_only") is True
+        assert captured.get("reject_active_turn_lease") is True
     finally:
         server._sessions.pop("archive-trunc-sid", None)
 
@@ -17454,7 +18505,14 @@ def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     history = [
@@ -17498,7 +18556,14 @@ def test_prompt_submit_unmatched_message_id_refuses_even_with_ordinal(monkeypatc
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
     # Production-shaped history: no renderer "id" keys on user dicts.
@@ -17556,7 +18621,14 @@ def test_prompt_submit_row_id_resolves_via_db_when_memory_lacks_stamps(monkeypat
     ]
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
         def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
@@ -17882,7 +18954,14 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
     ]
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
             replaced.append((key, list(messages)))
 
         def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
@@ -18099,3 +19178,143 @@ def test_prompt_submit_unconfirmed_truncation_refuses_before_target_resolution(
         assert len(sess["history"]) == 4
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_path):
+    """Issue #50233: _persist_live_session_system_prompt must re-bind
+    HERMES_HOME to the session's profile before rebuilding the system
+    prompt.  Without this, a /model switch rebuilds the prompt with the
+    root profile's SOUL.md and skills instead of the session's profile.
+    """
+    profile_home = tmp_path / "profile-work"
+    profile_home.mkdir()
+    (profile_home / "SOUL.md").write_text(
+        "# Work persona\nYou are a work agent.", encoding="utf-8"
+    )
+
+    built_homes = []
+
+    class FakeAgent:
+        model = "test-model"
+        provider = "test"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            built_homes.append(str(home))
+            soul = (
+                (home / "SOUL.md").read_text(encoding="utf-8")
+                if (home / "SOUL.md").exists()
+                else ""
+            )
+            return f"System prompt from {home}\n{soul}"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            pass
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "test-key",
+        "profile_home": str(profile_home),
+    }
+
+    server._persist_live_session_system_prompt(session)
+
+    # The system prompt must have been built while the override pointed
+    # to the profile home, not the root ~/.hermes.
+    assert len(built_homes) == 1, f"expected 1 build, got {built_homes}"
+    assert str(profile_home) in built_homes[0], (
+        f"system prompt built with wrong home: {built_homes[0]}"
+    )
+    assert "Work persona" in agent._cached_system_prompt
+
+    # The override must have been reset after the call.
+    from hermes_constants import get_hermes_home_override
+    assert get_hermes_home_override() is None
+
+
+def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch):
+    """Sessions without a profile_home must not set/clear any override —
+    the function should behave identically to before the fix."""
+    class FakeAgent:
+        model = "test"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            return "plain prompt"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            pass
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "test-key",
+        "profile_home": None,
+    }
+
+    # Should not raise, should still build and cache.
+    server._persist_live_session_system_prompt(session)
+    assert agent._cached_system_prompt == "plain prompt"
+
+
+def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_path):
+    """reset_hermes_home_override() restores the previous ContextVar state,
+    not just the unset case: when a caller already holds an override, the
+    persist call must scope to the session's profile and then hand the
+    caller's override back, rather than clearing it to None."""
+    from hermes_constants import get_hermes_home_override
+
+    outer_home = tmp_path / "profile-outer"
+    outer_home.mkdir()
+    inner_home = tmp_path / "profile-inner"
+    inner_home.mkdir()
+    (inner_home / "SOUL.md").write_text(
+        "# Inner persona\nYou are the inner agent.", encoding="utf-8"
+    )
+
+    built_homes = []
+
+    class FakeAgent:
+        model = "test-model"
+        provider = "test"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            from hermes_constants import get_hermes_home
+            built_homes.append(str(get_hermes_home()))
+            return "inner prompt"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            pass
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "test-key",
+        "profile_home": str(inner_home),
+    }
+
+    outer_token = set_hermes_home_override(outer_home)
+    try:
+        server._persist_live_session_system_prompt(session)
+
+        # The prompt was built under the session's profile, not the outer one.
+        assert built_homes == [str(inner_home)]
+        # The caller's pre-existing override survived, instead of being reset
+        # to None.
+        assert get_hermes_home_override() == str(outer_home)
+    finally:
+        reset_hermes_home_override(outer_token)
+    assert get_hermes_home_override() is None

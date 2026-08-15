@@ -322,9 +322,19 @@ def _get_model_config() -> Dict[str, Any]:
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
-        default = (cfg.get("default") or "").strip()
+        # Handle model.default being a dict {provider: ..., model: ...} rather than a string
+        _default = cfg.get("default")
+        if isinstance(_default, dict):
+            from hermes_cli.config import split_model_config_default
+            cfg_model, cfg_provider = split_model_config_default(_default)
+            cfg_provider = cfg_provider or str(model_cfg.get("provider") or "")
+            cfg["default"] = cfg_model
+            if cfg_provider and not cfg.get("provider"):
+                cfg["provider"] = cfg_provider
+            _default = cfg_model
+        default = (str(_default or "")).strip()
         base_url = (cfg.get("base_url") or "").strip()
-        is_local = "localhost" in base_url or "127.0.0.1" in base_url
+        is_local = base_url_hostname(base_url) in ("localhost", "127.0.0.1")
         is_fallback = not default
         if is_local and is_fallback and base_url:
             detected = _auto_detect_local_model(base_url)
@@ -397,9 +407,17 @@ _VALID_API_MODES = {
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
+    """Validate an api_mode value from config. Returns None if invalid.
+
+    Legacy/alias spellings (``openai``, ``anthropic``, ``responses``, …) are
+    canonicalized via the shared alias map before validation, so configs
+    written against older releases keep selecting the transport they named
+    instead of silently falling through to hostname-based detection.
+    """
     if isinstance(raw, str):
-        normalized = raw.strip().lower()
+        from hermes_cli.config import _canonical_api_mode
+
+        normalized = _canonical_api_mode(raw).lower()
         if normalized in _VALID_API_MODES:
             return normalized
     return None
@@ -1717,7 +1735,7 @@ def resolve_runtime_provider(
     # return provider="custom" with chat_completions api_mode and no valid key).
     # Instead, use the Azure key directly with anthropic_messages api_mode.
     _eff_base = (explicit_base_url or "").strip()
-    if requested_provider == "anthropic" and "azure.com" in _eff_base:
+    if requested_provider == "anthropic" and base_url_host_matches(_eff_base, "azure.com"):
         _azure_key = (
             (explicit_api_key or "").strip()
             or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
@@ -2057,8 +2075,8 @@ def resolve_runtime_provider(
         # would find the Claude Code OAuth token first (priority 3) and return
         # that instead, causing 401s. Detect Azure endpoints and use the env
         # key directly to bypass the OAuth priority chain.
-        _is_azure_endpoint = "azure.com" in base_url.lower() or (
-            cfg_base_url and "azure.com" in cfg_base_url.lower()
+        _is_azure_endpoint = base_url_host_matches(base_url, "azure.com") or (
+            cfg_base_url and base_url_host_matches(cfg_base_url, "azure.com")
         )
         if _is_azure_endpoint:
             # Honor user-specified env var hints on the model config before

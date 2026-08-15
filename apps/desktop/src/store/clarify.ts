@@ -7,6 +7,7 @@ export interface ClarifyRequest {
   requestId: string
   question: string
   choices: string[] | null
+  multiSelect: boolean
   sessionId: string | null
 }
 

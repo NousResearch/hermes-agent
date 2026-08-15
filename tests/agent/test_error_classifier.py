@@ -4,6 +4,7 @@ import pytest
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
+    PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     _extract_status_code,
     _extract_error_body,
@@ -231,6 +232,38 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_requires_available_credits_is_billing(self):
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "Model 'openai/gpt-5.5-pro' requires available credits. "
+                    "Your account balance is too low to use paid models — "
+                    "add credits at https://portal.nousresearch.com or pick a free model."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_wrapped_402_uses_nested_body_message(self):
+        inner = MockAPIError(
+            "inner",
+            status_code=402,
+            body={"error": {"message": "Usage limit reached, try again in 5 minutes"}},
+        )
+        outer = Exception("outer")
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer)
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.message == "Usage limit reached, try again in 5 minutes"
 
     # ── Rate limit ──
 
@@ -340,6 +373,43 @@ class TestClassifyApiError:
 
 
 
+    def test_non_json_stream_validation_error_is_non_retryable(self):
+        e = MockAPIError(
+            "Provider stream returned non-JSON SSE data",
+            body={
+                "error": {
+                    "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                    "message": (
+                        "request validation failed: unsupported reasoning_effort"
+                    ),
+                }
+            },
+        )
+
+        result = classify_api_error(e)
+
+        assert result.status_code is None
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_non_json_stream_unknown_error_remains_retryable(self):
+        e = MockAPIError(
+            "Provider stream returned non-JSON SSE data",
+            body={
+                "error": {
+                    "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                    "message": "upstream sent opaque plain-text stream data",
+                }
+            },
+        )
+
+        result = classify_api_error(e)
+
+        assert result.status_code is None
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
 
     # ── 5xx that are actually context overflow ──
     # Some local inference servers (llama.cpp / llama-server, and vLLM/Ollama
@@ -742,7 +812,13 @@ class TestAdversarialEdgeCases:
         """Anthropic returns 400 with 'out of extra usage' when the user's
         extra-usage allowance is depleted. Must classify as billing so the
         fallback chain engages (with credential rotation) instead of the
-        generic format_error path, which never rotates. (#11736, #13170)"""
+        generic format_error path, which never rotates. (#11736, #13170)
+
+        #82154: the identical body is ALSO returned when Anthropic's content
+        filter rejects part of the request on a subscription OAuth token, so
+        the billing verdict must be marked unverified — downstream surfaces
+        hedge instead of asserting exhaustion, and the credential pool skips
+        the one-hour billing bench."""
         e = MockAPIError(
             "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
             status_code=400,
@@ -756,6 +832,33 @@ class TestAdversarialEdgeCases:
         assert result.should_fallback is True
         assert result.retryable is False
         assert result.should_rotate_credential is True
+        assert result.billing_unverified is True
+        assert result.error_context.get("possible_content_filter") is True
+
+    def test_400_unambiguous_billing_body_is_not_marked_unverified(self):
+        """A 400 whose billing evidence is NOT the ambiguous 'out of extra
+        usage' body keeps a confirmed verdict (#82154)."""
+        e = MockAPIError(
+            "Your credit balance is too low to access the Anthropic API.",
+            status_code=400,
+            body={"error": {
+                "type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the Anthropic API.",
+            }},
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.billing_unverified is False
+
+    def test_statusless_extra_usage_is_marked_unverified(self):
+        """Adapters can strip the HTTP status from the Anthropic 400; the
+        message-only path must carry the same ambiguity marking (#82154)."""
+        e = Exception(
+            "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.billing_unverified is True
 
     def test_200_with_error_body(self):
         """200 status with error in body — should be unknown, not crash."""
@@ -1126,6 +1229,5 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
-
 
 

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,41 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
-def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
+def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float, ssl_context=None):
     """Open catalog requests without forwarding headers across origins."""
-    return open_credentialed_url(req, timeout=timeout)
+    return open_credentialed_url(req, timeout=timeout, ssl_context=ssl_context)
+
+
+def _custom_provider_ssl_context(base_url: str):
+    """Build an ``ssl.SSLContext`` from a custom provider's TLS settings.
+
+    Mirrors the httpx/requests TLS resolution so the urllib ``/models``
+    discovery probe honors a provider's ``ssl_ca_cert`` / ``ssl_verify``
+    instead of falling back to the process-wide ``SSL_CERT_FILE`` / certifi
+    bundle. Returns None when no per-provider TLS override applies, so the
+    caller keeps urllib's default policy for public/unconfigured endpoints.
+    """
+    if not base_url:
+        return None
+    try:
+        from hermes_cli.config import get_custom_provider_tls_settings
+
+        tls = get_custom_provider_tls_settings(base_url)
+        if not tls:
+            return None
+        import ssl
+
+        if tls.get("ssl_verify") is False:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        ca = tls.get("ssl_ca_cert")
+        if isinstance(ca, str) and ca and os.path.isfile(ca):
+            return ssl.create_default_context(cafile=ca)
+    except Exception:
+        return None  # never break discovery on a TLS-config lookup
+    return None
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -72,6 +105,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("x-ai/grok-4.6",                          ""),
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
+    ("deepseek/deepseek-v4-pro-0813",          "dated snapshot of v4-pro"),
     ("deepseek/deepseek-v4-flash",             ""),
     ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
     # Qwen
@@ -154,8 +188,8 @@ def _codex_curated_models() -> list[str]:
 # (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
-    "grok-build-0.1",
     "grok-4.6",
+    "grok-build-0.1",
     "grok-4.5",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
@@ -171,7 +205,7 @@ _XAI_CURATED_EXTRAS: list[str] = [
 ]
 
 
-_XAI_TOP_MODEL = "grok-build-0.1"
+_XAI_TOP_MODEL = "grok-4.6"
 
 
 def _xai_promote_top(ids: list[str]) -> list[str]:
@@ -193,16 +227,15 @@ def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
     return out
 
 
+def _xai_finalize_catalog(ids: list[str]) -> list[str]:
+    return _xai_promote_top(_xai_merge_curated_extras(ids))
+
+
 def _xai_curated_models() -> list[str]:
-    """Derive the xAI-direct curated list from models.dev disk cache.
+    """Offline curated floor for xAI / xAI OAuth pickers.
 
-    Reads $HERMES_HOME/models_dev_cache.json directly (no network) so this
-    runs at import time without blocking. Falls back to ``_XAI_STATIC_FALLBACK``
-    when the cache is empty or unreadable. Hermes refreshes the cache from
-    https://models.dev/api.json on normal use, so this list self-heals as
-    xAI renames models.
-
-    Mirrors ``_codex_curated_models()``'s role for openai-codex.
+    Reads $HERMES_HOME/models_dev_cache.json directly (no network). Falls
+    back to ``_XAI_STATIC_FALLBACK`` when the cache is empty or unreadable.
     """
     try:
         from agent.models_dev import _load_disk_cache
@@ -212,12 +245,12 @@ def _xai_curated_models() -> list[str]:
         if isinstance(models, dict) and models:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
-                return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))
+                return _xai_finalize_catalog(sorted(ids))
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
         pass
-    return _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
+    return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -246,6 +279,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "x-ai/grok-4.6",
         # DeepSeek
         "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-pro-0813",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
         # Qwen
@@ -3005,6 +3039,8 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "xai",
+    "xai-oauth",
 })
 
 
@@ -3116,8 +3152,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
-    if normalized == "xai-oauth":
-        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3335,7 +3369,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+        merged = _merge_with_models_dev(normalized, curated_static)
+        if normalized in {"xai", "xai-oauth"}:
+            return _xai_finalize_catalog(merged)
+        return merged
     return curated_static
 
 
@@ -3526,6 +3563,9 @@ def _load_provider_models_cache() -> dict:
         return {}
 
 
+_cache_write_lock = threading.Lock()
+
+
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
     try:
@@ -3533,6 +3573,31 @@ def _save_provider_models_cache(data: dict) -> None:
         path = _provider_models_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
+    except Exception:
+        pass
+
+
+def update_provider_cache_entry(provider: str, models: list[str]) -> None:
+    """Thread-safe single-entry update of the provider-models disk cache.
+
+    Used by parallel prefetch workers so concurrent fetches don't clobber
+    each other's writes via read-modify-write races on the shared JSON file.
+    Each worker loads the latest cache state under the lock, writes its own
+    entry, and saves — best-effort, silent on any error.
+    """
+    try:
+        normalized = normalize_provider(provider) or (provider or "")
+        if not normalized or not models:
+            return
+        fp = _credential_fingerprint(normalized)
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            cache[normalized] = {
+                "fp": fp,
+                "at": time.time(),
+                "models": list(models),
+            }
+            _save_provider_models_cache(cache)
     except Exception:
         pass
 
@@ -4626,12 +4691,19 @@ def probe_api_models(
 
         headers.update(normalize_extra_headers(request_headers))
 
+    _ssl_context = _custom_provider_ssl_context(normalized)
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
+        # Only thread ssl_context when a per-provider TLS override actually
+        # applies. Public/unconfigured endpoints keep the original 2-arg call,
+        # so nothing changes for them (and existing call-seam mocks stay valid).
+        _open_kwargs: dict[str, Any] = {"timeout": timeout}
+        if _ssl_context is not None:
+            _open_kwargs["ssl_context"] = _ssl_context
         try:
-            with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            with _urlopen_model_catalog_request(req, **_open_kwargs) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
@@ -5214,7 +5286,7 @@ def validate_requested_model(
     """
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
-    if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
+    if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
     requested_for_lookup = requested
     if normalized == "copilot":

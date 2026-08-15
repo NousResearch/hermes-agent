@@ -2,7 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
+import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
@@ -60,9 +60,7 @@ import {
   planRestore,
   rebindSurvivorRowIds,
   runRewindSubmit,
-  survivorRowIdsFrom,
-  type SurvivorUserRowIds,
-  truncateSubmitParams
+  type SurvivorUserRowIds
 } from './rewind'
 import { useSlashCommand } from './slash'
 import { useSubmitPrompt } from './submit'
@@ -826,6 +824,37 @@ export function usePromptActions({
     [updateSessionState]
   )
 
+  const submitRewindPrompt = useCallback(
+    (
+      sessionId: string,
+      text: string,
+      truncateOrdinal: number | undefined,
+      truncateMessageId: string | undefined,
+      interruptFirst: boolean,
+      truncateRowId?: number,
+      sourceText?: string
+    ) =>
+      runRewindSubmit(
+        requestGateway,
+        sessionId,
+        text,
+        truncateOrdinal,
+        truncateMessageId,
+        interruptFirst,
+        {
+          storedSessionId: selectedStoredSessionIdRef.current,
+          onSessionRecovered: recoveredId => {
+            activeSessionIdRef.current = recoveredId
+            setActiveSessionId(recoveredId)
+          }
+        },
+        truncateRowId,
+        sourceText
+      ),
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
+  )
+
+
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
       // Ref, not the closure-captured prop — a truncating resubmit aimed at a
@@ -846,17 +875,17 @@ export function usePromptActions({
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
-        const result = await requestGateway<{ survivor_user_row_ids?: unknown }>(
-          'prompt.submit',
-          {
-            session_id: sessionId,
-            text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal, plan.truncateMessageId, plan.truncateRowId)
-          },
-          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+        const survivorRowIds = await submitRewindPrompt(
+          sessionId,
+          plan.text,
+          plan.truncateOrdinal,
+          plan.truncateMessageId,
+          false,
+          plan.truncateRowId,
+          plan.sourceText
         )
 
-        applySurvivorRowIds(sessionId, survivorRowIdsFrom(result))
+        applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
         updateSessionState(sessionId, state => ({
           ...state,
@@ -866,7 +895,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, updateSessionState]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
@@ -878,34 +907,6 @@ export function usePromptActions({
   // interrupting an idle agent can leave a stale interrupt flag that cancels the
   // fresh turn. Live/stuck turns interrupt first, and a raced "session busy"
   // response interrupts + retries through the shared busy gate.
-  const submitRewindPrompt = useCallback(
-    (
-      sessionId: string,
-      text: string,
-      truncateOrdinal: number | undefined,
-      truncateMessageId: string | undefined,
-      interruptFirst: boolean,
-      truncateRowId?: number
-    ) =>
-      runRewindSubmit(
-        requestGateway,
-        sessionId,
-        text,
-        truncateOrdinal,
-        truncateMessageId,
-        interruptFirst,
-        {
-          storedSessionId: selectedStoredSessionIdRef.current,
-          onSessionRecovered: recoveredId => {
-            activeSessionIdRef.current = recoveredId
-            setActiveSessionId(recoveredId)
-          }
-        },
-        truncateRowId
-      ),
-    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
-  )
-
   const restoreToMessage = useCallback(
     async (messageId: string, target?: RestoreMessageTarget) => {
       // Ref, not the closure-captured prop — a rewind is destructive, so a
@@ -946,7 +947,8 @@ export function usePromptActions({
           plan.truncateOrdinal,
           plan.truncateMessageId,
           interruptFirst,
-          plan.truncateRowId
+          plan.truncateRowId,
+          plan.sourceText
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1009,7 +1011,8 @@ export function usePromptActions({
           plan.truncateOrdinal,
           plan.truncateMessageId,
           interruptFirst,
-          plan.truncateRowId
+          plan.truncateRowId,
+          plan.sourceText
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)

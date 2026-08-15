@@ -5,7 +5,12 @@ import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import {
   appendMidTurnUserMessage,
   finalizeInterruptedMessages,
+  planEdit,
+  planReload,
+  planRestore,
   rebindSurvivorRowIds,
+  resolveDurableRowId,
+  runRewindSubmit,
   survivorRowIdsFrom,
   truncateSubmitParams
 } from './rewind'
@@ -259,5 +264,205 @@ describe('finalizeInterruptedMessages', () => {
     expect(message.parts).toHaveLength(1)
     expect(message.parts[0].completedAt).toBe(11.25)
     expect(message.completedAt).toBe(11.25)
+
+  })
+})
+
+describe('failed-turn-aware ordinal space', () => {
+  const user = (id: string, rowId?: number): ChatMessage => ({
+    id,
+    role: 'user',
+    parts: [textPart(`text ${id}`)],
+    ...(rowId !== undefined ? { rowId } : {})
+  })
+
+  const assistant = (id: string, rowId?: number): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: [textPart(`reply ${id}`)],
+    ...(rowId !== undefined ? { rowId } : {})
+  })
+
+  const failedAssistant = (id: string): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: [textPart(`err ${id}`)],
+    error: 'provider down'
+  })
+
+  it('planEdit/planReload skip failed turns when counting ordinals (#41275)', () => {
+    // u0 failed (never persisted), u1/u2 succeeded. Backend counts u1 before
+    // u2, so editing u2 must aim at ordinal 1, not 2.
+    const messages: ChatMessage[] = [
+      user('u0', undefined),
+      failedAssistant('a0'),
+      user('u1', 11),
+      assistant('a1', 12),
+      user('u2', 13),
+      assistant('a2', 14)
+    ]
+
+    const reload = planReload(messages, 'a2')
+
+    expect(reload?.truncateOrdinal).toBe(1)
+    expect(reload?.truncateRowId).toBe(13)
+  })
+
+  it('planEdit still flags failed turns via the shared helper', () => {
+    const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', undefined), failedAssistant('a1')]
+
+    const plan = planEdit(messages, {
+      role: 'user',
+      sourceId: 'u1',
+      parentId: null,
+      content: [{ type: 'text', text: 'better text' }]
+    } as never)
+
+    expect(plan?.isFailedTurn).toBe(true)
+    expect(plan?.truncateOrdinal).toBeUndefined()
+    expect(plan?.sourceText).toBe('text u1')
+  })
+
+  it('planReload degrades a failed turn to a plain resubmit (#86623)', () => {
+    const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', undefined), failedAssistant('a1')]
+
+    const reload = planReload(messages, 'a1')
+
+    expect(reload?.text).toBe('text u1')
+    expect(reload?.truncateOrdinal).toBeUndefined()
+    expect(reload?.truncateRowId).toBeUndefined()
+    expect(reload?.truncateMessageId).toBeUndefined()
+  })
+
+  it('planRestore degrades a failed turn to a plain resubmit', () => {
+    const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', undefined), failedAssistant('a1')]
+
+    const plan = planRestore(messages, 'u1')
+
+    expect(plan.truncateOrdinal).toBeUndefined()
+    expect(plan.truncateRowId).toBeUndefined()
+    expect(plan.truncateMessageId).toBeUndefined()
+  })
+
+  it('rebindSurvivorRowIds skips failed turns — they hold no survivor slot', () => {
+    const messages: ChatMessage[] = [user('u0', 1), failedAssistant('a0'), user('u1', 3), assistant('a1', 4)]
+    const rebound = rebindSurvivorRowIds(messages, [9])
+
+    // u0 failed: untouched. u1 is survivor ordinal 0.
+    expect(rebound[0].rowId).toBe(1)
+    expect(rebound[2].rowId).toBe(9)
+  })
+})
+
+describe('resolveDurableRowId', () => {
+  const gatewayWith = (messages: unknown[]) => {
+    const request = (async (method: string) => {
+      expect(method).toBe('session.history')
+
+      return { messages }
+    }) as <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+
+    return request
+  }
+
+  it('resolves a unique content match to its durable row id', async () => {
+    const request = gatewayWith([
+      { role: 'user', text: 'first prompt', row_id: 11 },
+      { role: 'assistant', text: 'reply', row_id: 12 },
+      { role: 'user', text: 'typo prompt', row_id: 13 }
+    ])
+
+    expect(await resolveDurableRowId(request, 'sid', 'typo prompt', 1)).toBe(13)
+  })
+
+  it('ignores synthetic user-role injections (display_kind rows)', async () => {
+    const request = gatewayWith([
+      { role: 'user', text: 'real prompt', row_id: 11 },
+      { role: 'user', text: 'real prompt', row_id: 12, display_kind: 'auto_continue' }
+    ])
+
+    expect(await resolveDurableRowId(request, 'sid', 'real prompt', 0)).toBe(11)
+  })
+
+  it('refuses ambiguous matches unless the target is provably the newest turn', async () => {
+    const request = gatewayWith([
+      { role: 'user', text: 'same text', row_id: 11 },
+      { role: 'user', text: 'same text', row_id: 13 }
+    ])
+
+    // Ambiguous + target not the latest -> undefined (plain resubmit).
+    expect(await resolveDurableRowId(request, 'sid', 'same text', 0)).toBeUndefined()
+    // Ambiguous + target IS the latest persisted turn -> last match wins.
+    expect(await resolveDurableRowId(request, 'sid', 'same text', 1)).toBe(13)
+  })
+
+  it('returns undefined on gateway failure or empty text', async () => {
+    const failing = (async () => {
+      throw new Error('boom')
+    }) as <T>(method: string) => Promise<T>
+
+    expect(await resolveDurableRowId(failing, 'sid', 'text', 0)).toBeUndefined()
+    expect(await resolveDurableRowId(gatewayWith([]), 'sid', '   ', 0)).toBeUndefined()
+  })
+})
+
+describe('runRewindSubmit durable-address discipline (#87059)', () => {
+  interface Call {
+    method: string
+    params?: Record<string, unknown>
+  }
+
+  const historyMessages = [
+    { role: 'user', text: 'first prompt', row_id: 11 },
+    { role: 'assistant', text: 'ok', row_id: 12 },
+    { role: 'user', text: 'typo prompt', row_id: 13 }
+  ]
+
+  const makeGateway = (calls: Call[]) =>
+    (async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.history') {
+        return { messages: historyMessages }
+      }
+
+      return { status: 'streaming' }
+    }) as <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+
+  it('resolves a missing rowId by content before submitting, and drops the client ordinal', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 5, undefined, false, undefined, undefined, 'typo prompt')
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.confirm_truncate).toBe(true)
+  })
+
+  it('degrades to a plain resubmit when the row id cannot be resolved', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 5, undefined, false, undefined, undefined, 'unknown text')
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.truncate_before_row_id).toBeUndefined()
+    expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
+    expect(submit?.params?.confirm_truncate).toBeUndefined()
+  })
+
+  it('leaves a bound durable rowId untouched (no extra history call)', async () => {
+    const calls: Call[] = []
+
+    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 1, undefined, false, undefined, 13, 'typo prompt')
+
+    expect(calls.some(call => call.method === 'session.history')).toBe(false)
+
+    const submit = calls.find(call => call.method === 'prompt.submit')
+
+    expect(submit?.params?.truncate_before_row_id).toBe(13)
+    expect(submit?.params?.truncate_before_user_ordinal).toBe(1)
   })
 })

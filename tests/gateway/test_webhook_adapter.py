@@ -279,6 +279,33 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(req, body, secret) is True
 
+    @pytest.mark.parametrize(
+        "malformed_flag",
+        ("false", "true", 1, 0, {"enabled": True}),
+    )
+    def test_v1_signature_rejected_for_non_boolean_allow_legacy_v1(
+        self, malformed_flag
+    ):
+        """Only the boolean True opts in. Truthy strings, numbers, and
+        objects must not re-enable replayable body-only HMAC."""
+        adapter = _make_adapter(
+            routes={
+                "legacy-route": {
+                    "prompt": "test",
+                    "allow_legacy_v1": malformed_flag,
+                }
+            },
+            secret="generic-secret",
+        )
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        sig = _generic_signature(body, secret)
+        req = _mock_request(
+            headers={"X-Webhook-Signature": sig},
+            match_info={"route_name": "legacy-route"},
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
     def test_v1_signature_wrong_secret_rejected_even_with_allow_legacy_v1(self):
         """Even with ``allow_legacy_v1: true``, a wrong signature is rejected."""
         adapter = _make_adapter(

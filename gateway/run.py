@@ -2012,22 +2012,22 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
 
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
-    """Scope config/skills/memory AND credentials to a profile for one turn.
+    """Scope profile state, credentials, and instruction discovery for one turn.
 
-    Combines the two seams the multiplexer needs:
+    Combines the three seams the multiplexer needs:
       1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
-         skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
-         it propagates into the agent worker thread via ``copy_context()``.
+         skills, memory, SOUL, sessions) to the profile's home.
       2. ``set_secret_scope`` — installs the profile's ``.env`` secrets as the
-         authoritative credential source, so ``get_secret`` reads this profile's
-         keys and never the process-global ``os.environ`` (which in a
-         multiplexer may hold another profile's values).
+         authoritative credential source.
+      3. ``set_context_file_cwd`` — discovers AGENTS.md and related instruction
+         files from the routed profile home without changing the shared
+         execution cwd used by tools and subprocesses.
 
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
-    ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
-    from inheriting cross-profile secrets.
+    All three are context-local and propagate into the agent worker thread via
+    ``copy_context()``. Only the multiplexed inbound path enters this scope, so
+    single-profile gateways are unchanged. Loading the profile's ``.env`` here
+    does not mutate ``os.environ``; subprocesses cannot inherit another
+    profile's credentials.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import (
@@ -2035,16 +2035,22 @@ def _profile_runtime_scope(profile_home: "Path"):
         set_secret_scope,
         reset_secret_scope,
     )
+    from agent.runtime_cwd import (
+        reset_context_file_cwd,
+        set_context_file_cwd,
+    )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
 
     home_token = set_hermes_home_override(str(profile_home))
     hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    context_cwd_token = set_context_file_cwd(str(profile_home))
     try:
         yield
     finally:
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
+        reset_context_file_cwd(context_cwd_token)
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":

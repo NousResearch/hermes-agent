@@ -67,7 +67,6 @@ class TestSessionCwdOverride:
         finally:
             rt._SESSION_CWD.reset(token)
 
-
     def test_clear_session_cwd_restores_terminal_cwd(self, monkeypatch, tmp_path):
         other = tmp_path / "other"
         other.mkdir()
@@ -78,4 +77,47 @@ class TestSessionCwdOverride:
             assert resolve_agent_cwd() == tmp_path
         finally:
             rt._SESSION_CWD.reset(token)
+
+
+class TestContextScopeSurvivesMissingDir:
+    """A pinned context scope must not silently degrade into the execution cwd.
+
+    Returning None here does NOT mean "no context files": build_context_files_prompt
+    treats None as "fall back to os.getcwd()", which in multiplex is the shared gateway
+    launch directory — exactly the cross-profile leak the scope exists to prevent. A
+    missing profile directory must therefore stay authoritative (discovery simply finds
+    nothing there) and say so loudly.
+    """
+
+    def test_missing_context_dir_stays_authoritative(self, monkeypatch, tmp_path, caplog):
+        import logging
+        import sys
+
+        # Set and read through ONE module object. Other suites in this directory
+        # reload sibling modules, and a duplicated agent.runtime_cwd would carry
+        # its own ContextVars — the setter would then write a scope the resolver
+        # cannot see, and this test would pass alone and fail in the full run.
+        mod = sys.modules["agent.runtime_cwd"]
+
+        launch_dir = tmp_path / "gateway-launch"
+        launch_dir.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(launch_dir))
+        missing = tmp_path / "profiles" / "never-created"
+
+        token = mod.set_context_file_cwd(str(missing))
+        try:
+            assert mod.is_context_file_cwd_scoped(), (
+                "scope did not take effect; module identity split "
+                f"(rt is sys.modules entry: {mod is rt})"
+            )
+            with caplog.at_level(logging.ERROR, logger="agent.runtime_cwd"):
+                resolved = mod.resolve_context_cwd()
+        finally:
+            mod.reset_context_file_cwd(token)
+
+        assert resolved == missing, "must not fall back to the shared execution cwd"
+        assert resolved != launch_dir
+        assert any("does not exist" in r.getMessage() for r in caplog.records)
+
+
 

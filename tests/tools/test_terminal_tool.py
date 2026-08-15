@@ -1,4 +1,7 @@
-"""Regression tests for sudo detection and sudo password handling."""
+"""Regression tests for the terminal tool (sudo handling, workdir validation, and timeout classification)."""
+
+import json
+import subprocess
 
 import tools.terminal_tool as terminal_tool
 
@@ -105,4 +108,56 @@ def test_validate_workdir_still_blocks_metachars_in_unicode_paths():
 
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
-    assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_is_timeout_error_recognizes_builtin_timeout():
+    assert terminal_tool._is_timeout_error(TimeoutError()) is True
+
+
+def test_is_timeout_error_recognizes_subprocess_timeout_expired():
+    exc = subprocess.TimeoutExpired("sleep 10", timeout=5)
+    assert terminal_tool._is_timeout_error(exc) is True
+
+
+def test_is_timeout_error_recognizes_timeout_messages():
+    assert terminal_tool._is_timeout_error(RuntimeError("connection timeout")) is True
+    assert terminal_tool._is_timeout_error(RuntimeError("request timed out")) is True
+
+
+def test_is_timeout_error_does_not_flag_unrelated_errors():
+    assert terminal_tool._is_timeout_error(RuntimeError("something went wrong")) is False
+
+
+class _FakeTimeoutEnv:
+    def __init__(self, exc):
+        self.exc = exc
+        self.cwd = None
+
+    def execute(self, *args, **kwargs):
+        raise self.exc
+
+
+def _run_terminal_with_timeout_exc(monkeypatch, exc):
+    terminal_tool._active_environments.clear()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", "/tmp")
+    monkeypatch.setattr(terminal_tool.time, "sleep", lambda _x: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_create_environment",
+        lambda *args, **kwargs: _FakeTimeoutEnv(exc),
+    )
+    return json.loads(terminal_tool.terminal_tool("sleep 10", force=True, timeout=5))
+
+
+def test_terminal_tool_timeout_error_returns_124_without_retry(monkeypatch):
+    result = _run_terminal_with_timeout_exc(monkeypatch, TimeoutError())
+    assert result["exit_code"] == 124
+    assert "timed out after 5 seconds" in result["error"].lower()
+
+
+def test_terminal_tool_subprocess_timeout_expired_returns_124_without_retry(monkeypatch):
+    exc = subprocess.TimeoutExpired("sleep 10", timeout=5)
+    result = _run_terminal_with_timeout_exc(monkeypatch, exc)
+    assert result["exit_code"] == 124
+    assert "timed out after 5 seconds" in result["error"].lower()

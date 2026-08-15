@@ -2082,59 +2082,72 @@ class TestThresholdTokensCap:
 
 
 class TestTruncateToolCallArgsJson:
-    """Regression tests for #11762.
+    """Historical large tool arguments are non-replayable and auditable.
 
-    The previous implementation produced invalid JSON by slicing
-    ``function.arguments`` mid-string, which caused non-retryable 400s from
-    strict providers (observed on MiniMax) and stuck long sessions in a
-    re-send loop. The helper here must always emit parseable JSON whose
-    shape matches the original — shrunken, not corrupted.
+    Compression must never turn an executed command, patch, or write into a
+    plausible shortened operation that a later model can copy and execute.
     """
 
     def _helper(self):
         from agent.context_compressor import _truncate_tool_call_args_json
         return _truncate_tool_call_args_json
 
-    def test_shrunken_args_remain_valid_json(self):
+    def test_large_args_become_non_replayable_provenance(self):
+        import hashlib
         import json as _json
+
         shrink = self._helper()
         original = _json.dumps({
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
             "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
         })
-        assert len(original) > 500
         shrunk = shrink(original)
-        parsed = _json.loads(shrunk)  # must not raise
-        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        parsed = _json.loads(shrunk)
+
+        assert set(parsed) == {"__hermes_incomplete_tool_arguments__"}
+        provenance = parsed["__hermes_incomplete_tool_arguments__"]
+        assert provenance["arguments_omitted"] is True
+        assert provenance["replayable"] is False
+        assert provenance["original_chars"] == len(original)
+        assert provenance["sha256"] == hashlib.sha256(original.encode()).hexdigest()
+        assert "path" not in parsed
+        assert "content" not in parsed
+        assert "...[truncated]" not in shrunk
         assert len(shrunk) < len(original)
 
-
-
-
-    def test_non_string_leaves_preserved(self):
+    def test_operation_shapes_are_never_partially_preserved(self):
         import json as _json
+
         shrink = self._helper()
-        payload = _json.dumps({
-            "retries": 3,
-            "enabled": True,
-            "timeout": None,
-            "items": [1, 2, 3],
-            "note": "z" * 500,
-        })
-        parsed = _json.loads(shrink(payload))
-        assert parsed["retries"] == 3
-        assert parsed["enabled"] is True
-        assert parsed["timeout"] is None
-        assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        payloads = [
+            {"command": "python3 -c " + "x" * 800},
+            {"mode": "replace", "path": "/tmp/a", "old_string": "a" * 600, "new_string": "b" * 600},
+            {"path": "/tmp/a", "content": "literal ...[truncated] marker\n" + "z" * 800},
+            {"code": "print('start')\n" + "pass\n" * 300},
+        ]
+        for payload in payloads:
+            parsed = _json.loads(shrink(_json.dumps(payload)))
+            assert set(parsed) == {"__hermes_incomplete_tool_arguments__"}
+            assert parsed["__hermes_incomplete_tool_arguments__"]["replayable"] is False
 
-
-
-    def test_pass3_emits_valid_json_for_downstream_provider(self):
-        """End-to-end: Pass 3 must never produce the exact failure payload
-        that caused the 400 loop (unterminated string, missing brace)."""
+    def test_short_legitimate_marker_content_is_preserved(self):
         import json as _json
+
+        original = _json.dumps({"content": "Documentation containing ...[truncated] literally."})
+        assert self._helper()(original) == original
+
+    def test_invalid_non_json_arguments_are_preserved(self):
+        original = "provider-specific non-json arguments"
+        assert self._helper()(original) == original
+
+    def test_helper_exposes_no_ignored_truncation_parameter(self):
+        import inspect
+
+        assert list(inspect.signature(self._helper()).parameters) == ["args"]
+
+    def test_pass3_emits_valid_non_replayable_json(self):
+        import json as _json
+
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test/model",
@@ -2148,7 +2161,6 @@ class TestTruncateToolCallArgsJson:
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
             "content": huge_content,
         })
-        assert len(args_payload) > 500  # triggers the Pass-3 shrink
         messages = [
             {"role": "user", "content": "please write two files"},
             {"role": "assistant", "content": None, "tool_calls": [
@@ -2162,10 +2174,9 @@ class TestTruncateToolCallArgsJson:
         ]
         result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
         shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
-        # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
-        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert set(parsed) == {"__hermes_incomplete_tool_arguments__"}
+        assert parsed["__hermes_incomplete_tool_arguments__"]["replayable"] is False
 
 
 class TestLazyContextResolution:

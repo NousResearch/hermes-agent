@@ -447,7 +447,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       try {
         applySurvivorRowIds(
-          await submitRewind(plan.text, plan.truncateOrdinal, false, plan.truncateMessageId, plan.truncateRowId, plan.sourceText)
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            false,
+            plan.truncateMessageId,
+            plan.truncateRowId,
+            plan.sourceText
+          )
         )
       } catch (err) {
         update(current => ({ ...current, busy: false, awaitingResponse: false }))

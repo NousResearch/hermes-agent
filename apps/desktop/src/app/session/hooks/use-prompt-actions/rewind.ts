@@ -183,7 +183,10 @@ export async function resolveDurableRowId(
 
   const durableUsers = messages.filter(
     message =>
-      message.role === 'user' && !message.display_kind && typeof message.row_id === 'number' && Number.isInteger(message.row_id)
+      message.role === 'user' &&
+      !message.display_kind &&
+      typeof message.row_id === 'number' &&
+      Number.isInteger(message.row_id)
   )
 
   const matches = durableUsers.filter(message => (message.text ?? '').trim() === wanted)

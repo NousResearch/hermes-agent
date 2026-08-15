@@ -264,7 +264,6 @@ describe('finalizeInterruptedMessages', () => {
     expect(message.parts).toHaveLength(1)
     expect(message.parts[0].completedAt).toBe(11.25)
     expect(message.completedAt).toBe(11.25)
-
   })
 })
 
@@ -432,7 +431,17 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
   it('resolves a missing rowId by content before submitting, and drops the client ordinal', async () => {
     const calls: Call[] = []
 
-    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 5, undefined, false, undefined, undefined, 'typo prompt')
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      5,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      'typo prompt'
+    )
 
     const submit = calls.find(call => call.method === 'prompt.submit')
 
@@ -444,7 +453,17 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
   it('degrades to a plain resubmit when the row id cannot be resolved', async () => {
     const calls: Call[] = []
 
-    await runRewindSubmit(makeGateway(calls), 'sid', 'fixed prompt', 5, undefined, false, undefined, undefined, 'unknown text')
+    await runRewindSubmit(
+      makeGateway(calls),
+      'sid',
+      'fixed prompt',
+      5,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      'unknown text'
+    )
 
     const submit = calls.find(call => call.method === 'prompt.submit')
 

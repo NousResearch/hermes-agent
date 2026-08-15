@@ -854,7 +854,6 @@ export function usePromptActions({
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
-
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
       // Ref, not the closure-captured prop — a truncating resubmit aimed at a

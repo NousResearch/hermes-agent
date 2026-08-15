@@ -180,16 +180,18 @@ describe('session.info settles a turn that produced no assistant payload', () =>
   it('keeps waiting when running=false lands before the turn ever started', async () => {
     await mountStream()
 
-    // submit arms busy/awaitingResponse optimistically; this heartbeat is the
-    // pre-start report, not a finished turn, so the spinner must stay up and
-    // the send guard must stay closed.
+    // submit arms busy/awaitingResponse optimistically — and seeds the visible
+    // turn clock (turnStartedAt) at Enter — so this heartbeat is the pre-start
+    // report, not a finished turn: the spinner must stay up and the send guard
+    // must stay closed. turnLive (backend-confirmed) is the discriminator.
     act(() => {
       sessionStates!.set(ACTIVE_SID, {
         ...createClientSessionState(),
         awaitingResponse: true,
         busy: true,
         sawAssistantPayload: false,
-        turnStartedAt: null
+        turnStartedAt: Date.now(),
+        turnLive: false
       })
     })
 

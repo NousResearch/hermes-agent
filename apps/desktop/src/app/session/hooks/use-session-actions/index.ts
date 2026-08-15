@@ -920,6 +920,9 @@ export function useSessionActions({
                   messages: activatedMessages,
                   busy: running,
                   awaitingResponse: running,
+                  // Resumed onto an already-running turn — that IS backend
+                  // proof the turn is live (no message.start will replay).
+                  turnLive: state.turnLive || running,
                   needsInput: pendingApproval || pendingClarify || state.needsInput,
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
@@ -1200,6 +1203,8 @@ export function useSessionActions({
             messages: messagesForView,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
+            // Backend reported this turn running at resume time — live proof.
+            turnLive: state.turnLive || resumedRunning,
             needsInput: pendingApproval || pendingClarify || state.needsInput,
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
             ...(inFlightRecovery.applied

@@ -602,6 +602,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 return {
                   ...state,
                   busy,
+                  // running=true from the backend is turn-live proof, same as
+                  // message.start (e.g. resuming an already-running session
+                  // that never replays its start event).
+                  turnLive: true,
                   turnStartedAt: state.turnStartedAt ?? Date.now()
                 }
               }
@@ -611,11 +615,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               // heartbeat that lands in the gap before the turn spins up is a
               // pre-start report, not a finished turn — settling on it would
               // drop the spinner and re-open the send guard mid-flight.
-              // turnStartedAt is stamped only once the backend reports the turn
+              // turnLive is stamped only once the backend reports the turn
               // live (message.start, the running=true edge, or a resumed
-              // in-flight turn) and is cleared by every settle, so a null value
+              // in-flight turn) and is cleared by every settle, so false
               // here is exactly "no turn has been reported running yet".
-              if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnStartedAt) {
+              // (turnStartedAt can't discriminate — it is optimistically
+              // seeded at submit so the visible timer starts at Enter.)
+              if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive) {
                 return state
               }
 
@@ -646,7 +652,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 messages: finalizeInterruptedMessages(state.messages, state.streamId, occurredAt),
                 pendingBranchGroup: null,
                 streamId: null,
-                turnStartedAt: null
+                turnStartedAt: null,
+                turnLive: false
               }
             },
             payload?.stored_session_id || undefined
@@ -756,6 +763,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             sawAssistantPayload: false,
             interrupted: false,
             interimBoundaryPending: false,
+            // Backend accepted the turn — the no-payload settle gate below may
+            // now treat a running=false heartbeat as a real turn end.
+            turnLive: true,
             // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
             // here would hide the submit→accept round trip from the timer.
             // Backend-originated turns (queue drain elsewhere, goal follow-up)

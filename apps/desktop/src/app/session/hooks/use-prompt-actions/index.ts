@@ -678,7 +678,8 @@ export function usePromptActions({
         pendingBranchGroup: null,
         needsInput: false,
         interrupted: true,
-        turnStartedAt: null
+        turnStartedAt: null,
+        turnLive: false
       }
     })
 

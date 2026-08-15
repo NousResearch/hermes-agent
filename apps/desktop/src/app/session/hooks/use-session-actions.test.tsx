@@ -1072,6 +1072,7 @@ describe('resumeSession failure recovery', () => {
             storedSessionId: 'stored-1',
             streamId: null,
             turnStartedAt: null,
+            turnLive: false,
             usage: null,
             yolo: false
           }

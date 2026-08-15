@@ -55,6 +55,19 @@ def _get_flush_dir():
         except FileExistsError:
             if not flush_dir.is_dir():
                 raise
+        if os.name == "posix":
+            try:
+                fd = os.open(flush_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    inherited = os.fstat(fd).st_mode & 0o7000
+                    os.fchmod(fd, inherited | 0o770)
+                finally:
+                    os.close(fd)
+            except OSError as exc:
+                # A legacy directory may belong to the other managed UID.
+                # Keep the recovery path best-effort; payload writes below
+                # still report their own failure and never get discarded here.
+                logger.debug("Could not upgrade managed pending-message directory: %s", exc)
         return flush_dir
 
     flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

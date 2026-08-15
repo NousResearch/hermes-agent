@@ -225,6 +225,22 @@ def test_managed_flush_preserves_group_access_without_chmod(tmp_path, monkeypatc
     assert payload["data"]["text"] == "managed message"
 
 
+def test_managed_legacy_directory_is_upgraded_best_effort(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("POSIX permission-bit semantics required")
+    import gateway.shutdown_flush as shutdown_flush
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    os.chmod(tmp_path, 0o2770)
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir(mode=0o700)
+    os.chmod(flush_dir, 0o700)
+    result = shutdown_flush._get_flush_dir()
+    assert result == flush_dir
+    assert stat.S_IMODE(flush_dir.stat().st_mode) & 0o070 == 0o070
+
+
 def test_unmanaged_flush_survives_permission_reconciliation_failure(
     tmp_path, monkeypatch
 ):

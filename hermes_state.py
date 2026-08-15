@@ -4036,16 +4036,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reference is the only remaining root and the interpreter is
         shutting down.  During normal interpreter teardown the order of
         module cleanup is undefined, so we guard every attribute access.
+
+        Delegates to ``close()`` so the read pool, token writer, and atexit
+        hook are all cleaned up — not just the writer connection.
         """
-        try:
-            conn = self.__dict__.get("_conn")
-        except Exception:
+        if self.__dict__.get("_conn") is None:
             return
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #

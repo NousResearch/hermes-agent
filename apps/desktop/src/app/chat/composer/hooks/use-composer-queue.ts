@@ -2,9 +2,10 @@ import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment, expandComposerQuotes, removeComposerQuotesFromDraft } from '@/store/composer'
+import { type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -138,10 +139,6 @@ export function useComposerQueue({
       text: expandComposerQuotes(rawText)
     })
 
-    if (saved) {
-      removeComposerQuotesFromDraft(rawText)
-    }
-
     const next = queuedPrompts[target]
 
     if (next) {
@@ -174,10 +171,6 @@ export function useComposerQueue({
 
       const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
 
-      if (saved) {
-        removeComposerQuotesFromDraft(rawText)
-      }
-
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')
@@ -202,7 +195,6 @@ export function useComposerQueue({
       return false
     }
 
-    removeComposerQuotesFromDraft(rawText)
     clearDraft()
     scope.attachments.clear()
     triggerHaptic('selection')

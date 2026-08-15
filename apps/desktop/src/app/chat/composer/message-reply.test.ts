@@ -1,17 +1,45 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { $composerQuotes, clearComposerQuotes, expandComposerQuotes } from '@/store/composer'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 
 import { insertMessageReply, quoteMessageForReply } from './message-reply'
 
-afterEach(() => clearComposerQuotes?.())
-
 describe('message reply composer insertion', () => {
-  it('keeps a compact quote chip in the draft and expands it at submit time', () => {
-    const inserts: Array<{ options: { mode: 'block'; target: 'main' }; text: string }> = []
+  it('routes a reply to the composer scope that owns the message', () => {
+    const inserts: Array<{ options: { mode: 'block'; target: string }; text: string }> = []
 
-    const inserted = insertMessageReply('First line\n\nSecond line', (text, options) => {
-      inserts.push({ options, text })
+    expect(
+      insertMessageReply('Tile answer', {
+        insert: (text, options) => inserts.push({ options, text }),
+        target: 'tile:session-123'
+      })
+    ).toBe(true)
+
+    expect(inserts).toEqual([
+      {
+        options: expect.objectContaining({ mode: 'block', target: 'tile:session-123' }),
+        text: expect.any(String)
+      }
+    ])
+  })
+
+  it('can route a native selection to the active composer', () => {
+    const targets: string[] = []
+
+    insertMessageReply('selected text', {
+      insert: (_text, options) => targets.push(options.target),
+      target: 'active'
+    })
+
+    expect(targets).toEqual(['active'])
+  })
+
+  it('keeps a compact quote chip in the draft and expands it at submit time', () => {
+    const inserts: Array<{ options: { mode: 'block'; target: string }; text: string }> = []
+
+    const inserted = insertMessageReply('First line\n\nSecond line', {
+      insert: (text, options) => inserts.push({ options, text }),
+      target: 'main'
     })
 
     expect(inserted).toBe(true)
@@ -36,8 +64,8 @@ describe('message reply composer insertion', () => {
     const sharedPrefix = 'x'.repeat(80)
     const insert = (text: string) => void inserts.push(text)
 
-    insertMessageReply(`${sharedPrefix} first`, insert)
-    insertMessageReply(`${sharedPrefix} second`, insert)
+    insertMessageReply(`${sharedPrefix} first`, { insert })
+    insertMessageReply(`${sharedPrefix} second`, { insert })
 
     expect(inserts).toHaveLength(2)
     expect(inserts[0]).toMatch(/^@quote:/)
@@ -47,20 +75,27 @@ describe('message reply composer insertion', () => {
     expect(expandComposerQuotes(inserts[1]!)).toContain('second')
   })
 
-  it('allocates a distinct key when the same message is quoted into two live drafts', () => {
+  it('keeps each live draft self-contained when the same message is quoted twice', () => {
     const inserts: string[] = []
     const insert = (text: string) => void inserts.push(text)
 
-    insertMessageReply('same message', insert)
-    insertMessageReply('same message', insert)
+    insertMessageReply('same message', { insert })
+    insertMessageReply('same message', { insert })
 
-    // A successful send removes its consumed body. Sharing a key would make
-    // the still-open quote in another mounted composer lose its referent.
-    expect(inserts[0]).not.toBe(inserts[1])
+    expect(expandComposerQuotes(inserts[0]!)).toBe('> same message')
+    expect(expandComposerQuotes(inserts[1]!)).toBe('> same message')
   })
 
   it('leaves an unresolved prototype-shaped label visible instead of throwing', () => {
     expect(expandComposerQuotes('@quote:`constructor` still visible')).toBe('@quote:`constructor` still visible')
+  })
+
+  it.each(['Done?', 'Yes!', 'Fine.'])('expands a quoted label ending in punctuation: %s', label => {
+    const inserts: string[] = []
+
+    insertMessageReply(label, { insert: text => void inserts.push(text) })
+
+    expect(expandComposerQuotes(inserts[0]! + ' Reply')).toBe('> ' + label + '\n\nReply')
   })
 
   it('ignores an empty message', () => {
@@ -68,11 +103,12 @@ describe('message reply composer insertion', () => {
 
     expect(quoteMessageForReply('  \n  ')).toBe('')
     expect(
-      insertMessageReply('  \n  ', () => {
-        inserted = true
+      insertMessageReply('  \n  ', {
+        insert: () => {
+          inserted = true
+        }
       })
     ).toBe(false)
     expect(inserted).toBe(false)
-    expect($composerQuotes?.get?.() ?? {}).toEqual({})
   })
 })

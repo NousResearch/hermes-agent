@@ -13575,7 +13575,11 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   log: rememberLog,
   preloadPath: PRELOAD_PATH,
   rendererIndex: resolveRendererIndex,
-  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
+  wireWindow: window =>
+    wireCommonWindowHandlers(window, {
+      ...zoomWiringForWindowKind('wakeIndicator'),
+      composerEnabled: false
+    })
 })
 
 // The pet overlay: a single transparent, frameless, always-on-top window that

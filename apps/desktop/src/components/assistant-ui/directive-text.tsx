@@ -7,6 +7,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import type { I18nContextValue } from '@/i18n'
+import { composerQuoteLabel } from '@/lib/composer-quote'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -302,7 +303,7 @@ export function refChipLabel(type: string, id: string): string {
   }
 
   if (type === 'quote') {
-    return id || 'quote'
+    return composerQuoteLabel(id) || 'quote'
   }
 
   if (type === 'session') {

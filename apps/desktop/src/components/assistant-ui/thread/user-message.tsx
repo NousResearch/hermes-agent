@@ -2,6 +2,7 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { insertMessageReply } from '@/app/chat/composer/message-reply'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
@@ -9,11 +10,12 @@ import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timel
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
+import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { StopFilled } from '@/lib/icons'
+import { MessageReplyIcon, StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -267,6 +269,7 @@ export const UserMessage: FC<{
 }> = ({ onCancel, onRequestRestoreConfirm }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const { target } = useComposerScope()
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -407,7 +410,7 @@ export const UserMessage: FC<{
   const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody
 
   const reply = () => {
-    if (insertMessageReply(messageText)) {
+    if (insertMessageReply(messageText, { target })) {
       triggerHaptic('selection')
     }
   }
@@ -537,9 +540,8 @@ export const UserMessage: FC<{
                 )}
                 {!readOnly && hasBody && (
                   <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
-                    <button
-                      aria-label={copy.reply}
-                      className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                    <TooltipIconButton
+                      className="pointer-events-auto"
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
@@ -549,11 +551,10 @@ export const UserMessage: FC<{
                         event.preventDefault()
                         event.stopPropagation()
                       }}
-                      title={copy.reply}
-                      type="button"
+                      tooltip={copy.reply}
                     >
-                      <Codicon name="reply" size="0.75rem" />
-                    </button>
+                      <MessageReplyIcon />
+                    </TooltipIconButton>
                     {showStop ? (
                       <button
                         aria-label={copy.stop}

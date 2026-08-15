@@ -5,14 +5,18 @@
 // AssistantMessage's action bar hide the button entirely when no handler is
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
 
 import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
+
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
+import { expandComposerQuotes } from '@/lib/composer-quote'
 
 import { Thread } from '.'
 
@@ -70,8 +74,10 @@ function assistantMessage(): ThreadMessage {
 
 function Harness({
   assistant = assistantMessage(),
+  target = 'main',
   onBranchInNewChat
 }: {
+  target?: string
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
 }) {
@@ -82,9 +88,11 @@ function Harness({
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread onBranchInNewChat={onBranchInNewChat} />
-    </AssistantRuntimeProvider>
+    <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread onBranchInNewChat={onBranchInNewChat} />
+      </AssistantRuntimeProvider>
+    </ComposerScopeProvider>
   )
 }
 
@@ -142,5 +150,33 @@ describe('message timeline timestamps', () => {
     )
 
     expect(stamps.filter(stamp => stamp === formatTimelineRange(startedAt, completedAt))).toHaveLength(1)
+  })
+})
+
+describe('message Reply composer routing', () => {
+  it('routes both message Reply actions to the composer that owns the thread', async () => {
+    const inserts: Array<{ mode: string; target: string; text: string }> = []
+    const unsubscribe = onComposerInsertRequest(detail => inserts.push(detail))
+
+    render(<Harness target="tile:stored-42" />)
+
+    const replyButtons = await screen.findAllByRole('button', { name: 'Reply' })
+
+    expect(replyButtons).toHaveLength(2)
+    for (const button of replyButtons) {
+      expect(button.getAttribute('data-size')).toBe('icon-xs')
+      expect(button.getAttribute('title')).toBeNull()
+      expect(button.querySelector('svg')).not.toBeNull()
+    }
+    fireEvent.click(replyButtons[0]!)
+    fireEvent.click(replyButtons[1]!)
+
+    await waitFor(() => expect(inserts).toHaveLength(2))
+    expect(inserts.map(({ mode, target, text }) => ({ mode, target, text: expandComposerQuotes(text) }))).toEqual([
+      { mode: 'block', target: 'tile:stored-42', text: '> question one' },
+      { mode: 'block', target: 'tile:stored-42', text: '> done' }
+    ])
+
+    unsubscribe()
   })
 })

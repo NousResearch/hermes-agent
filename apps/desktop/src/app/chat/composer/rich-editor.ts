@@ -16,6 +16,7 @@ import {
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
 import { composerReferenceRe, referenceKind } from '@/components/assistant-ui/reference-kinds'
+import { composerQuoteLabel } from '@/lib/composer-quote'
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
@@ -120,10 +121,10 @@ export function quoteRefValue(value: string) {
 export function refChipHtml(kind: string, rawValue: string, displayLabel?: string) {
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
-
   const label = displayLabel || refChipLabel(kind, id)
+  const title = kind === 'quote' ? label : id
 
-  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
+  return `<span contenteditable="false" title="${escapeHtml(title)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -132,7 +133,7 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const chip = document.createElement('span')
 
   chip.contentEditable = 'false'
-  chip.title = id
+  chip.title = kind === 'quote' ? displayLabel || refChipLabel(kind, id) : id
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
@@ -177,10 +178,15 @@ function appendTextWithBreaks(target: DocumentFragment | HTMLElement, text: stri
 function chipSpans(text: string, options: SlashCommandScanOptions) {
   REF_RE.lastIndex = 0
 
-  const refs = Array.from(text.matchAll(REF_RE)).map(match => {
+  const refs = Array.from(text.matchAll(REF_RE)).flatMap(match => {
     const start = match.index ?? 0
+    const kind = match[1] || 'file'
 
-    return { end: start + match[0].length, node: () => refChipElement(match[1] || 'file', match[2] || ''), start }
+    if (kind === 'quote' && !composerQuoteLabel(match[2] || '')) {
+      return []
+    }
+
+    return [{ end: start + match[0].length, node: () => refChipElement(kind, match[2] || ''), start }]
   })
 
   const commands = slashCommandMatches(text, options).map(match => ({
@@ -534,8 +540,14 @@ export function composerHtml(text: string) {
 
   for (const match of text.matchAll(REF_RE)) {
     const index = match.index ?? 0
+    const kind = match[1] || 'file'
+
+    if (kind === 'quote' && !composerQuoteLabel(match[2] || '')) {
+      continue
+    }
+
     html += escapeHtml(text.slice(cursor, index)).replace(/\n/g, '<br>')
-    html += refChipHtml(match[1] || 'file', match[2] || '')
+    html += refChipHtml(kind, match[2] || '')
     cursor = index + match[0].length
   }
 

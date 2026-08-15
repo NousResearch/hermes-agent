@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
+import { encodeComposerQuote } from '@/lib/composer-quote'
+
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
   composerPlainText,
+  deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
@@ -43,12 +46,42 @@ describe('renderComposerContents', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
 
-    renderComposerContents(editor, '@quote:`First line of the earlier reply`My response')
+    const payload = encodeComposerQuote({ body: '> First line of the earlier reply', label: 'Earlier reply?' })
+    const raw = `@quote:\`${payload}\`My response`
+
+    renderComposerContents(editor, raw)
 
     const chip = editor.querySelector('[data-ref-kind="quote"]')
 
-    expect(chip?.getAttribute('data-ref-text')).toBe('@quote:`First line of the earlier reply`')
-    expect(composerPlainText(editor)).toBe('@quote:`First line of the earlier reply`My response')
+    expect(chip?.textContent).toContain('Earlier reply?')
+    expect(chip?.getAttribute('title')).toBe('Earlier reply?')
+    expect(composerPlainText(editor)).toBe(raw)
+  })
+
+  it('leaves malformed or legacy quote refs as editable text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const raw = '@quote:`old label` response'
+
+    renderComposerContents(editor, raw)
+
+    expect(editor.querySelector('[data-ref-kind="quote"]')).toBeNull()
+    expect(composerPlainText(editor)).toBe(raw)
+  })
+
+  it('deletes a self-contained quote body with its atomic chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const raw = `@quote:\`${encodeComposerQuote({ body: '> Delete me?', label: 'Delete me?' })}\``
+
+    renderComposerContents(editor, raw)
+    document.body.append(editor)
+    caretIn(editor)
+
+    expect(deleteChipBeforeCaret(editor)).toBe(true)
+    expect(composerPlainText(editor)).toBe('')
+
+    editor.remove()
   })
 
   it('hydrates a committed leading slash command back to its pill', () => {

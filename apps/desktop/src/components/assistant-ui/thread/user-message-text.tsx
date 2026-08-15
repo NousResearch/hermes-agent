@@ -43,7 +43,7 @@ interface InlineTextSegment {
 type TopSegment = FenceSegment | InlineSegment | QuoteSegment
 type InlineNode = InlineCodeSegment | InlineTextSegment
 
-const FENCE_RE = /```([^\n`]*)\n([\s\S]*?)```/g
+const FENCE_RE = /^[ \t]{0,3}```([^\n`]*)\n([\s\S]*?)^[ \t]{0,3}```[^\S\n]*(?=\n|$)/gm
 
 // Greedy backtick run length so ``code with `backticks` inside`` works.
 const INLINE_CODE_RE = /(`+)([^`\n][\s\S]*?)\1/g
@@ -97,7 +97,7 @@ function splitFences(text: string): TopSegment[] {
   return segments
 }
 
-/** Group runs of prefixed lines after fenced blocks have been carved out. */
+/** Group runs of prefixed lines, then parse their unquoted contents. */
 function splitQuotes(text: string): TopSegment[] {
   if (!text.includes('>')) {
     return text ? [{ kind: 'inline', text }] : []
@@ -171,26 +171,18 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
     <div className={cn('block', className)} data-slot="aui_user-message-text">
       {top.map((segment, segmentIndex) => {
         if (segment.kind === 'fence') {
-          return (
-            <pre
-              className="my-1.5 max-w-full overflow-x-auto rounded-md border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,currentColor_5%,transparent)] px-2.5 py-2 font-mono text-[0.86em] leading-snug"
-              data-slot="aui_user-fence"
-              key={`fence-${segmentIndex}`}
-            >
-              <code className="block whitespace-pre">{segment.code}</code>
-            </pre>
-          )
+          return <FenceView key={`fence-${segmentIndex}`} segment={segment} />
         }
 
         if (segment.kind === 'quote') {
           return (
             <blockquote
-              className="my-1.5 border-l-2 border-(--ui-stroke-tertiary) pl-2.5 italic text-muted-foreground/85"
+              className="my-1.5 border-s-2 border-(--ui-stroke-tertiary) ps-2.5 italic text-muted-foreground/85"
               data-slot="aui_user-quote"
               dir="auto"
               key={`quote-${segmentIndex}`}
             >
-              <InlineSegmentView text={segment.text} />
+              <UserMessageText text={segment.text} />
             </blockquote>
           )
         }
@@ -205,6 +197,16 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
   )
 }
 
+const FenceView: FC<{ segment: FenceSegment }> = ({ segment }) => (
+  <pre
+    className="my-1.5 max-w-full overflow-x-auto rounded-md border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,currentColor_5%,transparent)] px-2.5 py-2 font-mono text-[0.86em] leading-snug not-italic"
+    data-slot="aui_user-fence"
+    dir="ltr"
+  >
+    <code className="block whitespace-pre">{segment.code}</code>
+  </pre>
+)
+
 const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
   const nodes = useMemo(() => splitInlineCode(text), [text])
 
@@ -217,6 +219,7 @@ const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
           <code
             className="mx-px rounded bg-[color-mix(in_srgb,currentColor_8%,transparent)] px-1 py-px font-mono text-[0.92em]"
             data-slot="aui_user-inline-code"
+            dir="ltr"
             key={`code-${nodeIndex}`}
           >
             {node.code}

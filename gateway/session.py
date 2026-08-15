@@ -3480,17 +3480,21 @@ class SessionStore:
             entry = self._entries.get(session_key)
             return getattr(entry, "session_id", None) if entry else None
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Serialize transcript draining across queue migration boundaries."""
-        if not self._db or skip_db:
-            return
+    def _get_transcript_drain_lock(self):
+        """Return the lock that serializes pending-queue drain boundaries."""
         drain_lock = getattr(self, "_transcript_drain_lock", None)
         if drain_lock is None:
             # Compatibility for old in-memory/test instances created via
             # object.__new__ before this field existed.
             drain_lock = threading.RLock()
             self._transcript_drain_lock = drain_lock
-        with drain_lock:
+        return drain_lock
+
+    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+        """Serialize transcript draining across queue migration boundaries."""
+        if not self._db or skip_db:
+            return
+        with self._get_transcript_drain_lock():
             reroutes = getattr(self, "_transcript_reroutes", None)
             if reroutes is None:
                 reroutes = {}
@@ -3844,18 +3848,19 @@ class SessionStore:
         """
         if not self._db:
             return True
-        self._clear_dirty_transcript(session_id)
-        try:
-            self._db.replace_messages(
-                session_id,
-                messages,
-                active_only=active_only,
-                reject_active_turn_lease=reject_active_turn_lease,
-            )
+        with self._get_transcript_drain_lock():
+            try:
+                self._db.replace_messages(
+                    session_id,
+                    messages,
+                    active_only=active_only,
+                    reject_active_turn_lease=reject_active_turn_lease,
+                )
+            except Exception as e:
+                logger.debug("Failed to rewrite transcript in DB: %s", e)
+                return False
+            self._clear_dirty_transcript(session_id)
             return True
-        except Exception as e:
-            logger.debug("Failed to rewrite transcript in DB: %s", e)
-            return False
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
@@ -3930,82 +3935,83 @@ class SessionStore:
         """
         if not self._db:
             return None
-        self._clear_dirty_transcript(session_id)
-        if n < 1:
-            n = 1
-        from agent.context_compressor import (
-            retryable_user_text,
-            split_user_originated_turn,
-            user_originated_turn_view,
-        )
+        with self._get_transcript_drain_lock():
+            if n < 1:
+                n = 1
+            from agent.context_compressor import (
+                retryable_user_text,
+                split_user_originated_turn,
+                user_originated_turn_view,
+            )
 
-        try:
-            durable = self._db.get_messages_as_conversation(
-                session_id,
-                include_row_ids=True,
-            )
-            expected_active_ids = [
-                int(message["_row_id"])
-                for message in durable
-                if isinstance(message.get("_row_id"), int)
-            ]
-            user_indices = [
-                index
-                for index, message in enumerate(durable)
-                if user_originated_turn_view(message) is not None
-            ]
-            if not user_indices:
-                return None
-            turns_undone = min(n, len(user_indices))
-            target = durable[user_indices[-turns_undone]]
-            target_id = target.get("_row_id")
-            if not isinstance(target_id, int):
-                return None
-            handoff, target_view = split_user_originated_turn(target)
-            if target_view is None:
-                return None
-            if require_retryable_composite:
-                if handoff is None:
-                    return None
-                target_text = retryable_user_text(target_view.get("content"))
-        except Exception as e:
-            logger.debug("rewind_session: failed to resolve canonical target: %s", e)
-            return None
-        try:
-            result = self._db.rewind_to_message(
-                session_id,
-                target_id,
-                preserve_compaction_handoff=handoff is not None,
-                expected_active_ids=expected_active_ids,
-                expected_target_content=target_view.get("content"),
-            )
-        except ValueError as e:
-            logger.debug("rewind_session: %s", e)
-            return None
-        except Exception as e:
-            logger.debug("rewind_session: rewind_to_message failed: %s", e)
-            return None
-        # ``target_view`` is the canonical live projection of the physical DB
-        # row. For a composite carrier, the raw target contains the historical
-        # summary wrapper and must never be echoed back as the editable prompt.
-        if not require_retryable_composite:
-            content = target_view.get("content") or ""
-            if isinstance(content, list):
-                parts = [
-                    p.get("text", "")
-                    for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
+            try:
+                durable = self._db.get_messages_as_conversation(
+                    session_id,
+                    include_row_ids=True,
+                )
+                expected_active_ids = [
+                    int(message["_row_id"])
+                    for message in durable
+                    if isinstance(message.get("_row_id"), int)
                 ]
-                target_text = "\n".join(t for t in parts if t)
-            elif isinstance(content, str):
-                target_text = content
-            else:
-                target_text = ""
-        return {
-            "rewound_count": result.get("rewound_count", 0),
-            "turns_undone": turns_undone,
-            "target_text": target_text,
-        }
+                user_indices = [
+                    index
+                    for index, message in enumerate(durable)
+                    if user_originated_turn_view(message) is not None
+                ]
+                if not user_indices:
+                    return None
+                turns_undone = min(n, len(user_indices))
+                target = durable[user_indices[-turns_undone]]
+                target_id = target.get("_row_id")
+                if not isinstance(target_id, int):
+                    return None
+                handoff, target_view = split_user_originated_turn(target)
+                if target_view is None:
+                    return None
+                if require_retryable_composite:
+                    if handoff is None:
+                        return None
+                    target_text = retryable_user_text(target_view.get("content"))
+            except Exception as e:
+                logger.debug("rewind_session: failed to resolve canonical target: %s", e)
+                return None
+            try:
+                result = self._db.rewind_to_message(
+                    session_id,
+                    target_id,
+                    preserve_compaction_handoff=handoff is not None,
+                    expected_active_ids=expected_active_ids,
+                    expected_target_content=target_view.get("content"),
+                )
+            except ValueError as e:
+                logger.debug("rewind_session: %s", e)
+                return None
+            except Exception as e:
+                logger.debug("rewind_session: rewind_to_message failed: %s", e)
+                return None
+            self._clear_dirty_transcript(session_id)
+            # ``target_view`` is the canonical live projection of the physical DB
+            # row. For a composite carrier, the raw target contains the historical
+            # summary wrapper and must never be echoed back as the editable prompt.
+            if not require_retryable_composite:
+                content = target_view.get("content") or ""
+                if isinstance(content, list):
+                    parts = [
+                        p.get("text", "")
+                        for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ]
+                    target_text = "\n".join(t for t in parts if t)
+                elif isinstance(content, str):
+                    target_text = content
+                else:
+                    target_text = ""
+            return {
+                "rewound_count": result.get("rewound_count", 0),
+                "turns_undone": turns_undone,
+                "target_text": target_text,
+            }
 
 
 def build_session_context(

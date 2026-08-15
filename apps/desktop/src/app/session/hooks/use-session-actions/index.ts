@@ -2940,12 +2940,6 @@ export function useSessionActions({
         return false
       }
 
-      const startingActiveSessionId = activeSessionIdRef.current
-      const messages = $messages.get()
-      const storedSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
-      const startingCwd = $currentCwd.get().trim()
-
       // Message-level branches still need the local message id to choose their
       // prefix. Whole-chat branches send only the parent identity below; the
       // backend reads the durable display projection without materializing it in

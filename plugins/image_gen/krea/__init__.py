@@ -342,6 +342,36 @@ def _enhance_image(
     return _extract_result_url(job)
 
 
+def _resolve_style_refs(refs: List[Any]) -> List[Any]:
+    """Resolve Krea style references into a payload-ready list.
+
+    Krea fetches ``image_style_references`` server-side, so a bare local file
+    path can't be used as-is. String refs (URLs, ``data:`` URIs, local paths)
+    go through the sanctioned resolver (:mod:`tools.image_source`), which
+    validates them (credential-read denylist, sandbox confinement, magic-byte
+    sniff) and inlines local files as a ``data:`` URI.
+
+    Each entry must be an object (``{"url", "strength"}``); a bare string
+    yields a 422 "Expected object, received string". Resolved strings are
+    wrapped at the default strength, and Krea's richer objects pass through
+    verbatim for backward compatibility.
+    """
+    from tools.image_source import resolve_source_to_url_sync
+
+    resolved: List[Any] = []
+    for ref in refs:
+        if isinstance(ref, str):
+            resolved.append(
+                {
+                    "url": resolve_source_to_url_sync(ref),
+                    "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH,
+                }
+            )
+        else:
+            resolved.append(ref)
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -536,19 +566,18 @@ class KreaImageGenProvider(ImageGenProvider):
 
         if style_refs:
             # Reference-guided generation (image-to-image style transfer).
-            # Krea requires each entry to be an object ({"url", "strength"}),
-            # NOT a bare URL string — a string yields a 422 "Expected object,
-            # received string". Convert URL strings to the object form and pass
-            # already-object refs through verbatim (clamped to 10 above).
-            normalized_refs: List[Any] = []
-            for ref in style_refs:
-                if isinstance(ref, str):
-                    normalized_refs.append(
-                        {"url": ref, "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH}
-                    )
-                else:
-                    normalized_refs.append(ref)
-            payload["image_style_references"] = normalized_refs
+            # Krea caps at 10 refs per request (already clamped above).
+            try:
+                payload["image_style_references"] = _resolve_style_refs(style_refs)
+            except Exception as exc:
+                return error_response(
+                    error=f"Could not load source image for editing: {exc}",
+                    error_type="io_error",
+                    provider="krea",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
 
         moodboards = kwargs.get("moodboards")
         if isinstance(moodboards, list) and moodboards:

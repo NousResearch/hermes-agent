@@ -18,6 +18,19 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Registry-scoped backend resolution: dial (connectionId, profile). An
+      // empty/local connectionId delegates to the legacy getConnection path.
+      getConnectionFor?: (payload: {
+        connectionId?: null | string
+        profile?: null | string
+      }) => Promise<HermesConnection>
+      // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
+      getGatewayWsUrlFor?: (payload: {
+        connectionId?: null | string
+        profile?: null | string
+      }) => Promise<GatewayWsUrlResult>
+      // Union agent roster across every registered connection.
+      getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -117,6 +130,20 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      // v2 multi-connection registry: named agent sources, all persisted
+      // together (local + any number of remote/cloud/ssh instances).
+      connections: {
+        list: () => Promise<DesktopConnectionsRegistry>
+        save: (
+          payload: DesktopRegistryConnectionInput
+        ) => Promise<{ ok: boolean; connection: DesktopRegistryConnection; registry: DesktopConnectionsRegistry }>
+        remove: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        setPrimary: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        test: (id: string) => Promise<DesktopConnectionTestResult>
+        // Fan out `hermes update` to every eligible registered connection;
+        // cloud entries are skipped (platform-managed), each row independent.
+        updateAll?: () => Promise<{ ok: boolean; results: DesktopConnectionUpdateResult[] }>
+      }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
@@ -171,6 +198,11 @@ declare global {
       }) => Promise<null | string>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
+      saveGatewayFile?: (payload: { path: string; profile?: null | string; suggestedName?: string }) => Promise<{
+        canceled?: boolean
+        path?: string
+        saved: boolean
+      }>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
@@ -187,6 +219,7 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void
+      setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>
@@ -361,6 +394,10 @@ declare global {
       findInPage: (query: string, options?: { forward?: boolean; findNext?: boolean }) => Promise<{ count: number }>
       stopFindInPage: () => Promise<void>
       onFoundInPage: (callback: (result: { activeMatchOrdinal: number; count: number }) => void) => () => void
+      // Main-process `before-input-event` forwards Ctrl/Cmd+F here so the
+      // renderer can still open the FindBar when the OS compositor has
+      // already grabbed the chord (#81727, e.g. Pop!_OS / GNOME).
+      onOpenFindBarRequested: (callback: () => void) => () => void
     }
   }
 }
@@ -543,10 +580,16 @@ export interface HermesConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
+  // The registry connection this descriptor was resolved through (absent on
+  // legacy v1/primary paths). Set by getConnectionFor.
+  connectionId?: string
   // True only when `profile` is a request scope on the shared primary backend.
   // A pooled backend also carries `profile`, so presence alone cannot identify
   // the shared-primary routing case.
   sharedPrimary?: boolean
+  // True when `profile` is a request scope on a SHARED registry remote/cloud
+  // backend (one host, many profiles) — the registry analogue of sharedPrimary.
+  sharedRemote?: boolean
   windowButtonPosition: { x: number; y: number } | null
 }
 
@@ -655,6 +698,92 @@ export interface DesktopConnectionTestResult {
   remoteHermesPath?: string
   remoteHermesVersion?: string
   remotePlatform?: string
+}
+
+// ── v2 multi-connection registry (named agent sources) ─────────────────────
+
+export type DesktopConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh'
+
+// A registered agent source as the renderer sees it: token bytes never cross
+// the IPC boundary (preview + set flag instead, like DesktopConnectionConfig).
+export interface DesktopRegistryConnection {
+  id: string
+  kind: DesktopConnectionKind
+  // Required, registry-unique device name ("Homelab", "Work laptop").
+  label: string
+  url?: string
+  authMode?: 'oauth' | 'token'
+  org?: string
+  host?: string
+  user?: string
+  port?: number
+  keyPath?: string
+  remoteHermesPath?: string
+  remoteProfile?: string
+  tokenSet: boolean
+  tokenPreview: null | string
+}
+
+export interface DesktopConnectionsRegistry {
+  version: number
+  // id of the connection that owns the window/primary backend.
+  primary: string
+  // Whether OS-keychain-backed encryption (Electron safeStorage) is available;
+  // false drives the plain-text token opt-in on keyring-less Linux.
+  secureTokenStorage: boolean
+  connections: DesktopRegistryConnection[]
+}
+
+export interface DesktopRegistryConnectionInput {
+  // Present for edits; omitted on create (the main process mints the id).
+  id?: string
+  kind: DesktopConnectionKind
+  label: string
+  url?: string
+  authMode?: 'oauth' | 'token'
+  // Plaintext token to store (encrypted at rest); omit to keep the saved one.
+  token?: string
+  allowPlainTextToken?: boolean
+  org?: string
+  host?: string
+  user?: string
+  port?: null | number
+  keyPath?: string
+  remoteHermesPath?: string
+  remoteProfile?: string
+}
+
+// One agent in the union roster: a profile on a registered source, with the
+// pre-computed @name-device handle for duplicate profile names.
+export interface DesktopRosterAgent {
+  connectionId: string
+  connectionKind: DesktopConnectionKind
+  connectionLabel: string
+  profile: string
+  handle: string
+}
+
+export interface DesktopAgentRoster {
+  agents: DesktopRosterAgent[]
+  sources: {
+    connectionId: string
+    label: string
+    kind: DesktopConnectionKind
+    reachable: boolean
+    error?: string
+  }[]
+}
+
+// Per-connection result row from the update fan-out.
+export interface DesktopConnectionUpdateResult {
+  connectionId: string
+  label: string
+  kind: DesktopConnectionKind
+  ok: boolean
+  skipped?: boolean
+  reason?: string
+  detail?: string
+  error?: string
 }
 
 export interface DesktopSshResolveResult {

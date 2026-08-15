@@ -158,10 +158,37 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
     )
     delivered = []
 
-    def _timeout(*_args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="slow.py", timeout=kwargs["timeout"])
+    # The script runner uses Popen + a polling loop (cancel/timeout aware),
+    # so simulate a process that never finishes: communicate() always times
+    # out and the script deadline is shrunk to keep the test fast.
+    class _NeverFinishes:
+        returncode = None
+        pid = 0
+        stdout = None
+        stderr = None
 
-    monkeypatch.setattr(scheduler.subprocess, "run", _timeout)
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="slow.py", timeout=timeout)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="slow.py", timeout=timeout)
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", _NeverFinishes)
+    monkeypatch.setattr(scheduler, "_get_script_timeout", lambda: 1)
+    monkeypatch.setattr(
+        scheduler,
+        "_terminate_cron_script_process",
+        lambda proc: setattr(proc, "returncode", -15),
+    )
     monkeypatch.setattr(
         scheduler,
         "_deliver_result",

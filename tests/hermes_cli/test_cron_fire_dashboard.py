@@ -9,8 +9,9 @@ hosted agents don't expose). It must:
     the JWT verifier runs,
   - reject a bad/missing NAS-JWT with 401 (the JWT is the real gate),
   - 400 on missing job_id,
-  - on a valid token, resolve the job's profile and run fire_due in the
-    background, returning 202.
+  - on a valid token, FORWARD the fire to the gateway api_server (which owns
+    cron execution and the live delivery adapters) and pass its response
+    through — 503 when the gateway is unreachable so NAS retries.
 """
 
 import pytest

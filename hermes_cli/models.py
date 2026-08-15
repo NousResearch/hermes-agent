@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -3562,6 +3563,9 @@ def _load_provider_models_cache() -> dict:
         return {}
 
 
+_cache_write_lock = threading.Lock()
+
+
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
     try:
@@ -3569,6 +3573,31 @@ def _save_provider_models_cache(data: dict) -> None:
         path = _provider_models_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
+    except Exception:
+        pass
+
+
+def update_provider_cache_entry(provider: str, models: list[str]) -> None:
+    """Thread-safe single-entry update of the provider-models disk cache.
+
+    Used by parallel prefetch workers so concurrent fetches don't clobber
+    each other's writes via read-modify-write races on the shared JSON file.
+    Each worker loads the latest cache state under the lock, writes its own
+    entry, and saves — best-effort, silent on any error.
+    """
+    try:
+        normalized = normalize_provider(provider) or (provider or "")
+        if not normalized or not models:
+            return
+        fp = _credential_fingerprint(normalized)
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            cache[normalized] = {
+                "fp": fp,
+                "at": time.time(),
+                "models": list(models),
+            }
+            _save_provider_models_cache(cache)
     except Exception:
         pass
 
@@ -5257,7 +5286,7 @@ def validate_requested_model(
     """
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
-    if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
+    if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
     requested_for_lookup = requested
     if normalized == "copilot":

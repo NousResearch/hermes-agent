@@ -1891,13 +1891,8 @@ def _send_compute_host_control(
     )
 
 
-def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Emit an ``approval.request`` event to the TUI client with the command
-    redacted. The approval payload is built from the RAW command string, so a
-    credential-shaped value Tirith flagged would otherwise be echoed verbatim
-    to the TUI client (#48456 — third egress transport alongside the chat
-    platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
-    seam so all approval transports redact consistently."""
+def _approval_request_payload(data: dict | None) -> dict:
+    """Build the client-safe representation of a pending approval."""
     payload = dict(data or {})
     if "choices" not in payload:
         if payload.get("smart_denied"):
@@ -1910,6 +1905,49 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         from gateway.run import _redact_approval_command
 
         payload["command"] = _redact_approval_command(payload.get("command"))
+    return payload
+
+
+def _pending_clarify_request_payload(sid: str) -> dict | None:
+    """Read the clarify prompt still blocking a session, if there is one.
+
+    Clarify prompts share `_block()`'s pending registry, so a reconnecting
+    client whose transport was detached when `clarify.request` was emitted
+    would otherwise never see the question — the agent thread stays parked on
+    the Event until timeout. Same replay contract as `pending_approval`: a
+    read-only snapshot, the registry stays authoritative and `clarify.respond`
+    with the embedded request_id resolves it.
+    """
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid != sid:
+                continue
+            event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
+            if event == "clarify.request":
+                return dict(prompt_payload)
+    return None
+
+
+def _pending_approval_request_payload(session_key: str) -> dict | None:
+    """Read the oldest unresolved approval in a session, if there is one."""
+    try:
+        from tools.approval import get_pending_gateway_approval
+
+        approval = get_pending_gateway_approval(session_key)
+    except Exception:
+        logger.debug("failed to read pending approval for %s", session_key, exc_info=True)
+        return None
+    return _approval_request_payload(approval) if approval else None
+
+
+def _emit_approval_request(sid: str, data: dict | None) -> None:
+    """Emit an ``approval.request`` event to the TUI client with the command
+    redacted. The approval payload is built from the RAW command string, so a
+    credential-shaped value Tirith flagged would otherwise be echoed verbatim
+    to the TUI client (#48456 — third egress transport alongside the chat
+    platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
+    seam so all approval transports redact consistently."""
+    payload = _approval_request_payload(data)
     _emit("approval.request", sid, payload)
 
 
@@ -2685,13 +2723,7 @@ def _display_session_cwd(session: dict | None) -> str:
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
         session["cwd"] = healed
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    db.update_session_cwd(session.get("session_key", ""), healed)
-        except Exception:
-            logger.debug("failed to persist healed session cwd", exc_info=True)
-        _persist_session_git_meta(session, healed)
+        _persist_session_cwd_and_schedule_git_meta(session, healed)
 
     return healed
 
@@ -2774,14 +2806,7 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     session["cwd_from_settle"] = True
     _register_session_cwd(session)
 
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist settled session cwd", exc_info=True)
-
-    _persist_session_git_meta(session, resolved)
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
     return True
 
 
@@ -2938,6 +2963,14 @@ def _ensure_session_db_row(session: dict) -> None:
             # means the launch/default profile (matches run_agent's convention).
             profile_name=Path(profile_home).name if profile_home else None,
         )
+        # A session can be born hidden (session.create hidden=true, or a
+        # session.set_hidden that arrived before the row existed): apply the
+        # deferred intent now that the row exists, mirroring pending_title.
+        if session.get("pending_hidden"):
+            try:
+                db.set_session_hidden(key, True)
+            except Exception:
+                logger.debug("failed to apply pending hidden flag", exc_info=True)
     except Exception as exc:
         # Disk-full is not a soft failure: if we swallow it here, prompt.submit
         # returns {"status":"streaming"} and the user's message vanishes with
@@ -3046,7 +3079,7 @@ def _session_db(session: dict):
                 db.close()
 
 
-def _persist_session_git_meta(session: dict, cwd: str) -> None:
+def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 
     Branch and root come from ``git`` subprocess probes; running them inline on
@@ -3060,7 +3093,13 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
     probe never delays gateway shutdown.
     """
     session_key = session.get("session_key", "")
-    if not session_key or not cwd:
+    if (
+        not session_key
+        or not cwd
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
         return
     # Snapshot the routing fields now; the live session dict may be gone by the
     # time the thread runs. `_session_db` reopens the profile-correct db inside.
@@ -3074,11 +3113,50 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
                 return
             with _session_db(db_session) as db:
                 if db is not None:
-                    db.update_session_cwd(session_key, cwd, branch, root)
+                    db.publish_session_git_metadata(
+                        session_key,
+                        cwd,
+                        generation,
+                        branch,
+                        root,
+                    )
         except Exception:
             logger.debug("failed to persist session git metadata", exc_info=True)
 
     threading.Thread(target=_run, name="git-meta", daemon=True).start()
+
+
+def _persist_session_cwd_and_schedule_git_meta(
+    session: dict,
+    cwd: str,
+    *,
+    db=None,
+) -> int | None:
+    """Claim a DB-backed probe generation, then start Git enrichment."""
+    try:
+        if db is not None:
+            generation = db.update_session_cwd(
+                session.get("session_key", ""), cwd
+            )
+        else:
+            with _session_db(session) as owner_db:
+                if owner_db is None:
+                    return None
+                generation = owner_db.update_session_cwd(
+                    session.get("session_key", ""), cwd
+                )
+    except Exception:
+        logger.debug("failed to persist session cwd", exc_info=True)
+        return None
+
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
+        return None
+    _persist_session_git_meta(session, cwd, generation)
+    return generation
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
@@ -3096,14 +3174,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # the terminal wandering must not move the workspace again.
     session["cwd_from_settle"] = False
     _register_session_cwd(session)
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist session cwd", exc_info=True)
-    # Branch/repo-root probes are git subprocesses — capture them off the hot path.
-    _persist_session_git_meta(session, resolved)
+    # The synchronous DB write claims ordering authority; Git subprocesses stay
+    # off the hot path and may publish only for that exact generation.
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -3516,7 +3589,7 @@ def _pet_sig() -> tuple:
     hatch flow rebuilds a sheet, or the scale changes."""
     display = _load_cfg().get("display") or {}
     pet_cfg = display.get("pet") if isinstance(display.get("pet"), dict) else {}
-    if not pet_cfg or not pet_cfg.get("enabled"):
+    if not pet_cfg or not is_truthy_value(pet_cfg.get("enabled"), default=False):
         return ("off",)
     try:
         enabled, pet, scale = _pet_active_selection()
@@ -4088,6 +4161,20 @@ def _is_model_switch_marker(entry: Any) -> bool:
         return False
     content = entry.get("content")
     return isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+
+
+def _is_pivot_marker(entry: Any) -> bool:
+    """Whether a history entry is a marker the gateway splices in mid-turn.
+
+    Model switches and personality changes both inject a ``role=user`` pivot
+    into the live history from the RPC thread while a turn may be running, so
+    either one can be the sole reason turn-start and current history differ.
+    Only the model-switch marker is self-replacing, which is why the dedup in
+    :func:`_append_model_switch_marker` stays narrower than this.
+    """
+    if _is_model_switch_marker(entry):
+        return True
+    return isinstance(entry, dict) and entry.get("display_kind") == "personality_switch"
 
 
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
@@ -5120,6 +5207,16 @@ def _sync_session_key_after_compress(
         # don't keep targeting the ended row.
         session["session_key"] = new_session_id
 
+    # #84417 (belt): invalidate any in-flight ``_drain_queued_prompt`` claim
+    # that captured generation under the pre-rotation session_key. A raced
+    # drain must not dispatch on the continuation with a stale claim; the
+    # claimed envelope is restored to the queue (see ``_drain_queued_prompt``)
+    # so legitimate follow-ups still survive. Complements self-duplicate
+    # scrubbing on redirect.
+    session["_queued_prompt_generation"] = int(
+        session.get("_queued_prompt_generation", 0)
+    ) + 1
+
     if clear_pending_title:
         session["pending_title"] = None
     if restart_slash_worker:
@@ -6067,14 +6164,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     session["cwd_from_settle"] = False
     _register_session_cwd(session)
 
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist project workspace cwd", exc_info=True)
-
-    _persist_session_git_meta(session, resolved)
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
 
     try:
         agent = session.get("agent")
@@ -6879,9 +6969,9 @@ def _init_session(
                 try:
                     _cwd = _sessions[sid]["cwd"]
                     if hasattr(db, "update_session_cwd"):
-                        db.update_session_cwd(key, _cwd)
-                    # git branch/root probes run off the hot path (see _set_session_cwd).
-                    _persist_session_git_meta(_sessions[sid], _cwd)
+                        _persist_session_cwd_and_schedule_git_meta(
+                            _sessions[sid], _cwd, db=db
+                        )
                 except Exception:
                     logger.debug(
                         "failed to persist resumed session cwd", exc_info=True
@@ -7335,6 +7425,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        # Persisted authoring time (Unix seconds) for display.timestamps
+        # renderers (#41531). Display-only: never fed back into model context.
+        ts = m.get("timestamp")
+        if isinstance(ts, (int, float)) and ts > 0:
+            msg["timestamp"] = float(ts)
         # Durable row identity, stamped by _rows_to_conversation. The renderer's
         # own message ids are ephemeral (timestamp+index derived, and a
         # different shape for live vs rehydrated vs optimistic rows), so
@@ -7468,6 +7563,13 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
     corrections = list(turn.get("corrections") or [])
     corrections.append(correction)
     turn["corrections"] = corrections
+    # Arrival-order boundary: how much assistant text had already streamed
+    # when this correction was accepted. Resuming clients use it to place the
+    # correction bubble AFTER the output the user had already seen and BEFORE
+    # the output it redirected (#73793) instead of above the whole reply.
+    offsets = list(turn.get("correction_offsets") or [])
+    offsets.append(len(str(turn.get("assistant") or "")))
+    turn["correction_offsets"] = offsets
     turn["updated_at"] = time.time()
     session["inflight_turn"] = turn
 
@@ -7675,6 +7777,20 @@ def _enqueue_prompt(
     sent it even if the session transport is rebound meanwhile.
     """
     image_paths = list(image_paths or [])
+    # #84417: scrub any live-turn self-duplicates first so the consecutive-text
+    # merge below cannot glue "{original}\\n\\n{later}" and re-fire original
+    # on drain after a later correction settles.
+    _drop_queued_duplicates_of_inflight_user(session)
+    # Never queue a text-only self-copy of the live inflight user prompt. The
+    # live turn already owns that text; draining it after settle would restart
+    # the same user turn as a fresh agent invocation.
+    if not image_paths and isinstance(text, str):
+        turn = session.get("inflight_turn")
+        original = (
+            str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
+        )
+        if original and text.strip() == original:
+            return
     queued = {"text": text, "transport": transport}
     if image_paths:
         queued["image_paths"] = image_paths
@@ -7694,6 +7810,82 @@ def _enqueue_prompt(
         session.setdefault("queued_prompts", []).append(queued)
         return
     session["queued_prompt"] = queued
+
+
+def _sanitize_queued_entry_vs_inflight_user(
+    entry: Any, original: str
+) -> dict | None:
+    """Drop or rewrite a queue envelope that re-carries the live user text.
+
+    Returns ``None`` to drop the envelope, or a (possibly rewritten) dict to
+    keep. Text-only self-duplicates of ``original`` are dropped. A merged
+    slot ``"{original}\\n\\n{later}"`` (from ``_enqueue_prompt``'s consecutive
+    text merge) is rewritten to just ``later`` so a later correction is not
+    lost and the original is not re-fired (#84417). Image-bearing envelopes
+    are left alone — their chronology/ownership is load-bearing.
+    """
+    if not original or not isinstance(entry, dict):
+        return entry if isinstance(entry, dict) else None
+    if entry.get("image_paths"):
+        return entry
+    text = entry.get("text")
+    if not isinstance(text, str):
+        return entry
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped == original:
+        return None
+    # Lossless text-merge glued the live original onto a later follow-up.
+    for sep in ("\n\n", "\n"):
+        prefix = original + sep
+        if text.startswith(prefix):
+            rest = text[len(prefix) :].strip()
+            if not rest or rest == original:
+                return None
+            cleaned = dict(entry)
+            cleaned["text"] = rest
+            return cleaned
+    return entry
+
+
+def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
+    """Remove server-queue copies of the live turn's original user text.
+
+    A mid-turn ``prompt.submit`` of the same text can land in
+    ``queued_prompt`` when redirect is not yet available (model not active,
+    build window, tool boundary). If the user then corrects the turn with a
+    different prompt via redirect, that stale self-duplicate must not
+    ``_drain_queued_prompt`` after the redirected turn completes — otherwise
+    the original prompt restarts as a fresh agent turn (#84417).
+
+    Unrelated follow-ups (different text, image-bearing envelopes) stay.
+    Merged ``original + later`` slots are rewritten to ``later`` only.
+    """
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return
+    original = str(turn.get("user") or "").strip()
+    if not original:
+        return
+
+    head = session.get("queued_prompt")
+    rest = list(session.get("queued_prompts") or [])
+    kept: list[dict] = []
+    for entry in ([head] if head else []) + rest:
+        cleaned = _sanitize_queued_entry_vs_inflight_user(entry, original)
+        if cleaned is not None:
+            kept.append(cleaned)
+
+    if not kept:
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        return
+    session["queued_prompt"] = kept[0]
+    if len(kept) > 1:
+        session["queued_prompts"] = kept[1:]
+    else:
+        session.pop("queued_prompts", None)
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -7774,6 +7966,8 @@ def _handle_busy_submit(
         try:
             if agent.steer(plain_text):
                 with session["history_lock"]:
+                    _record_inflight_correction(session, plain_text)
+                    _drop_queued_duplicates_of_inflight_user(session)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
@@ -7793,6 +7987,9 @@ def _handle_busy_submit(
             if agent.redirect(plain_text):
                 with session["history_lock"]:
                     _record_inflight_correction(session, plain_text)
+                    # #84417: do not re-fire the live turn's original user text
+                    # from a stale server-queue self-duplicate after settle.
+                    _drop_queued_duplicates_of_inflight_user(session)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "redirected"})
         except Exception:
@@ -7810,7 +8007,16 @@ def _handle_busy_submit(
 
     # Attachments need a separate model invocation. Queue them without
     # cancelling the active turn so the user gets both results in order.
-    if mode != "queue" and not image_paths:
+    #
+    # #86134: ``steer`` mode must NEVER escalate to a hard interrupt. A burst
+    # of user messages while the agent is busy can land as a mix of accepted
+    # steers (stashed in ``AIAgent._pending_steer``) and fall-through queue
+    # envelopes (payload not steerable, ``steer()`` rejected/raised). A hard
+    # interrupt here kills the live turn AND ``AIAgent.interrupt()`` drops
+    # the pending steer buffer — silently destroying the earlier messages of
+    # the burst. Steer-mode fall-throughs keep queue semantics: preserved
+    # FIFO in ``queued_prompt``/``queued_prompts`` and drained on turn end.
+    if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
@@ -7837,6 +8043,21 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
+            # Generation cancelled the claim (Stop, compress re-anchor, …).
+            # Do not dispatch — but put the claimed envelope back so a
+            # legitimate follow-up is not silently dropped. Order: claimed
+            # head first, then whatever advanced into the slot while we held
+            # the claim (#84417 belt accuracy).
+            rest: list = []
+            advanced = session.get("queued_prompt")
+            if advanced:
+                rest.append(advanced)
+            rest.extend(session.get("queued_prompts") or [])
+            session["queued_prompt"] = queued
+            if rest:
+                session["queued_prompts"] = rest
+            else:
+                session.pop("queued_prompts", None)
             session["running"] = False
             return True
     dispatch_failed = False
@@ -7914,11 +8135,23 @@ def _inflight_snapshot(session: dict) -> dict | None:
         "streaming": streaming,
         "user": user,
     }
-    corrections = [c for c in (turn.get("corrections") or []) if str(c).strip()]
-    if corrections:
+    raw_corrections = turn.get("corrections") or []
+    raw_offsets = turn.get("correction_offsets") or []
+    correction_pairs = [
+        (str(c), raw_offsets[i] if i < len(raw_offsets) else None)
+        for i, c in enumerate(raw_corrections)
+        if str(c).strip()
+    ]
+    if correction_pairs:
         # Mid-turn redirects. Carried alongside the original prompt (not over
         # it) so resume can rebuild every user bubble the turn produced.
-        snapshot["corrections"] = [str(c) for c in corrections]
+        snapshot["corrections"] = [c for c, _ in correction_pairs]
+        # Assistant-text lengths at each correction boundary (parallel list).
+        # Only sent when every correction has one, so clients can trust the
+        # pairing; older in-memory turns without offsets omit the field and
+        # clients fall back to placing corrections after the assistant dump.
+        if all(isinstance(offset, int) and offset >= 0 for _, offset in correction_pairs):
+            snapshot["correction_offsets"] = [int(offset) for _, offset in correction_pairs]  # type: ignore[arg-type]
     if error:
         # Retained failed turn (see _fail_inflight_turn): carry the error
         # semantics so a resuming client can rebuild the failed-turn bubble
@@ -8322,13 +8555,18 @@ def _live_session_payload(
         queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
     # Prefer the persisted display lineage (candidate-inclusive) so this payload
-    # matches the eager session.resume + REST transcript; the DB has its own
-    # lock, so read it outside the session history lock.
-    history = (
-        in_memory_history
-        if omit_messages
-        else _live_visible_history(session, _get_db(), in_memory_history)
-    )
+    # matches the eager session.resume + REST transcript. Use the session's
+    # profile-aware DB (not launch ``_get_db()``): app-global remote profile
+    # sessions store candidates in ``profile_home``/state.db, and reading the
+    # launch DB here falls back to collapsed in-memory history and drops them.
+    # The DB has its own lock, so read it outside the session history lock.
+    # ``omit_messages`` skips the DB read entirely (callers only need counts /
+    # status); keep that fast path from main.
+    if omit_messages:
+        history = in_memory_history
+    else:
+        with _session_db(session) as db:
+            history = _live_visible_history(session, db, in_memory_history)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
@@ -8344,6 +8582,10 @@ def _live_session_payload(
         payload["inflight"] = inflight
     if queued:
         payload["queued"] = queued
+    if approval := _pending_approval_request_payload(str(session.get("session_key") or "")):
+        payload["pending_approval"] = approval
+    if clarify := _pending_clarify_request_payload(sid):
+        payload["pending_clarify"] = clarify
     return payload
 
 
@@ -8520,7 +8762,7 @@ def _pet_active_selection():
     except Exception:
         pet_cfg = {}
 
-    enabled = bool(pet_cfg.get("enabled"))
+    enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
     configured_slug = str(pet_cfg.get("slug", "") or "")
     pet = store.resolve_active_pet(configured_slug) if enabled else None
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
@@ -9967,6 +10209,70 @@ def _plan_goal_compression_recovery(
     )
 
 
+# Captured at import time. Several _run_prompt_submit tests monkeypatch
+# threading.Thread with a stub that runs the target synchronously to keep the
+# turn deterministic. This ticker's loop only exits once the caller sets `stop`
+# *after* run_conversation returns, so running it inline would spin forever.
+# It's a non-critical, fire-and-forget background poller, so it always uses a
+# real daemon thread regardless of any such patch.
+_RealThread = threading.Thread
+
+
+def _start_usage_ticker(
+    sid: str, agent, interval: float = 1.0
+) -> tuple[threading.Event, threading.Thread]:
+    """Push live usage snapshots while a turn runs.
+
+    The desktop/TUI status-bar context-window figure is otherwise refreshed
+    only at ``message.complete``, so it stays frozen for the whole (often
+    multi-minute, multi-tool) turn. On the standard chat-completions path the
+    agent's token counters grow after every internal API call, so this daemon
+    emits a lightweight ``session.usage`` event every ``interval`` seconds and
+    the bar tracks context growth live. (The codex app-server runtime folds
+    usage into the counters only at turn end — codex_runtime.
+    _record_codex_app_server_usage — so it gets no mid-turn ticks; its final
+    value still lands via ``message.complete``.)
+
+    The caller must set the returned Event AND join the returned thread
+    before emitting ``message.complete``: a tick that survived past it would
+    roll the client's final usage back to a stale mid-turn snapshot.
+    """
+    stop = threading.Event()
+
+    # Sample the dedup baseline BEFORE the thread starts: the client already
+    # has the turn-start values from the previous message.complete /
+    # session.info. Seeding here (not in the thread) guarantees the baseline
+    # predates the turn's first API call — a late-scheduled thread would
+    # otherwise absorb that first counter growth and never emit it.
+    try:
+        baseline: dict | None = _get_usage(agent)
+    except Exception:
+        baseline = None
+
+    def _loop() -> None:
+        last = baseline
+        while not stop.wait(interval):
+            try:
+                usage = _get_usage(agent)
+                if usage == last:
+                    # Counters frozen (e.g. one long API call in flight) —
+                    # skip the redundant frame so idle ticks don't re-render
+                    # the client status bar every second.
+                    continue
+                last = usage
+                if stop.is_set():
+                    # Turn ended while snapshotting — drop the tick;
+                    # message.complete carries the authoritative usage.
+                    break
+                _emit("session.usage", sid, {"usage": usage})
+            except Exception:
+                pass
+
+    thread = _RealThread(target=_loop, daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def _run_prompt_submit(
     rid,
     sid: str,
@@ -10001,6 +10307,25 @@ def _run_prompt_submit(
                 agent.clear_interrupt()
             except Exception:
                 pass
+    # Desktop/TUI observability (#86647): this is the ONE INFO record proving
+    # a Desktop/TUI prompt was accepted by THIS process, and it ties together
+    # every id a rotation-mute trace needs — the UI session id, the gateway
+    # session_key, and the agent's live session_id (which compression rotates
+    # independently of the other two). Before this line a Desktop request left
+    # no trace in agent.log at all ("0 platform=desktop" — see #86647), so a
+    # muted window was structurally indistinguishable from a request that
+    # never arrived. No prompt content is logged.
+    _turn_started_monotonic = time.monotonic()
+    logger.info(
+        "tui prompt accepted: ui_session=%s session_key=%s agent_session_id=%s "
+        "kind=%s chars=%s images=%d",
+        sid,
+        session.get("session_key") or "",
+        getattr(agent, "session_id", "") or "",
+        display_kind or "user",
+        len(text) if isinstance(text, str) else "-",
+        len(images),
+    )
     _emit("message.start", sid)
 
     def run():
@@ -10284,7 +10609,21 @@ def _run_prompt_submit(
             agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
                 "session.title", sid, {"session_id": _k, "title": t}
             )
-            result = agent.run_conversation(run_message, **run_kwargs)
+            _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+            try:
+                result = agent.run_conversation(run_message, **run_kwargs)
+            finally:
+                # Stop AND join before anything below emits: an in-flight tick
+                # surviving past message.complete would roll the client's final
+                # usage back to a stale mid-turn snapshot. The join is
+                # deliberately unbounded — once stop is set it only ever waits
+                # out one in-flight _get_usage/_emit, and the worst case there
+                # (a stalled transport write, up to _WS_WRITE_TIMEOUT_S) would
+                # stall the message.complete emit below just the same. A
+                # timed-out join would abandon the tick to land after
+                # message.complete.
+                _usage_stop.set()
+                _usage_thread.join()
             if display_kind and isinstance(text, str):
                 db = getattr(agent, "_session_db", None)
                 current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
@@ -10359,10 +10698,15 @@ def _run_prompt_submit(
                             session["history_version"] = history_version + 1
                         else:
                             # History mutated externally during the turn.
-                            # Check if the only mutation was a model-switch
-                            # marker inserted mid-turn (#76870).  If so the
-                            # agent output is still valid — merge it into the
-                            # current history that now contains the marker.
+                            # Check if the only mutation was a pivot marker
+                            # the gateway itself inserted mid-turn (#76870).
+                            # If so the agent output is still valid — merge it
+                            # into the current history that now contains the
+                            # marker. A personality change counts here too:
+                            # unlike a model switch it has no pending queue, so
+                            # `/personality` during a running turn lands
+                            # immediately and used to read as a genuine desync,
+                            # dropping the finished turn (#82756).
                             #
                             # _append_model_switch_marker strips prior markers
                             # in-place then appends a new one, so the delta
@@ -10370,19 +10714,19 @@ def _run_prompt_submit(
                             # content, not indices.
                             current_history = list(session["history"])
                             history_no_markers = [
-                                e for e in history if not _is_model_switch_marker(e)
+                                e for e in history if not _is_pivot_marker(e)
                             ]
                             current_no_markers = [
-                                e for e in current_history if not _is_model_switch_marker(e)
+                                e for e in current_history if not _is_pivot_marker(e)
                             ]
-                            model_switch_only = (
+                            pivot_only = (
                                 current_no_markers == history_no_markers
                                 and any(
-                                    _is_model_switch_marker(e)
+                                    _is_pivot_marker(e)
                                     for e in current_history
                                 )
                             )
-                            if model_switch_only:
+                            if pivot_only:
                                 # The agent's new messages start after the
                                 # turn-start history.  Guard against
                                 # auto-compression making result["messages"]
@@ -10742,6 +11086,32 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
+            # Closing bookend of the "tui prompt accepted" record above —
+            # fires on every path (success, returned error, exception,
+            # interrupt), so one accepted prompt always produces exactly one
+            # finished record. agent.session_id is re-read here because
+            # compression may have rotated it mid-turn: an accepted/finished
+            # pair whose agent_session_id changed IS a rotation trace
+            # (#86647). A missing finished record means the turn thread died
+            # without reaching this finally.
+            logger.info(
+                "tui turn finished: ui_session=%s session_key=%s "
+                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs",
+                sid,
+                session.get("session_key") or "",
+                getattr(agent, "session_id", "") or "",
+                (
+                    result.get("interrupted")
+                    and "interrupted"
+                    or result.get("error")
+                    and "error"
+                    or "complete"
+                )
+                if isinstance(result, dict)
+                else ("error" if turn_error_retained else "complete"),
+                turn_error_retained,
+                time.monotonic() - _turn_started_monotonic,
+            )
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).
             _retire_turn_marker(session, marker_key)

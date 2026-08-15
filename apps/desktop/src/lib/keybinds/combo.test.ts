@@ -82,6 +82,13 @@ describe('comboFromEvent — ctrl as a distinct modifier on macOS', () => {
     expect(comboFromEvent(keydown({ code: 'Tab', ctrlKey: true }))).toBe('mod+tab')
     expect(comboFromEvent(keydown({ code: 'Tab', ctrlKey: true, shiftKey: true }))).toBe('mod+shift+tab')
   })
+
+  it('recognizes PageUp and PageDown chords', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    expect(comboFromEvent(keydown({ code: 'PageUp', ctrlKey: true }))).toBe('ctrl+pageup')
+    expect(comboFromEvent(keydown({ code: 'PageDown', ctrlKey: true }))).toBe('ctrl+pagedown')
+  })
 })
 
 describe('canonicalizeCombo', () => {
@@ -104,27 +111,84 @@ describe('canonicalizeCombo', () => {
 
 describe('formatCombo — honest Control labels', () => {
   it('renders the Control glyph on macOS', async () => {
-    const { formatCombo } = await loadCombo('MacIntel')
+    const { formatCombo, formatModifierToken } = await loadCombo('MacIntel')
 
     expect(formatCombo('ctrl+tab')).toBe('⌃⇥')
     expect(formatCombo('ctrl+shift+tab')).toBe('⌃⇧⇥')
+    expect(formatCombo('mod+enter')).toBe('⌘↵')
+    expect(formatModifierToken('mod')).toBe('⌘')
   })
 
-  it('renders "Ctrl+…" off macOS (base key keeps its glyph)', async () => {
-    const { formatCombo } = await loadCombo('Win32')
+  it.each(['Linux x86_64', 'Win32'])('renders "Ctrl+…" off macOS on %s (base key keeps its glyph)', async platform => {
+    const { formatCombo, formatModifierToken } = await loadCombo(platform)
 
     expect(formatCombo('ctrl+tab')).toBe('Ctrl+⇥')
     expect(formatCombo('ctrl+shift+tab')).toBe('Ctrl+Shift+⇥')
+    expect(formatCombo('mod+enter')).toBe('Ctrl+↵')
+    expect(formatModifierToken('mod')).toBe('Ctrl')
+  })
+
+  it('renders PageUp and PageDown with compact labels', async () => {
+    const { formatCombo } = await loadCombo('Win32')
+
+    expect(formatCombo('ctrl+pageup')).toBe('Ctrl+PgUp')
+    expect(formatCombo('ctrl+pagedown')).toBe('Ctrl+PgDn')
   })
 })
 
-describe('comboAllowedInInput', () => {
-  it('lets ctrl combos fire while typing (e.g. ⌃Tab from the composer)', async () => {
-    const { comboAllowedInInput } = await loadCombo('MacIntel')
+describe('actionAllowedInInput', () => {
+  it('keeps only explicit text-entry-safe global actions active while typing', async () => {
+    const { actionAllowedInInput } = await loadCombo('MacIntel')
 
-    expect(comboAllowedInInput('ctrl+tab')).toBe(true)
-    expect(comboAllowedInInput('ctrl+shift+tab')).toBe(true)
-    expect(comboAllowedInInput('mod+k')).toBe(true)
-    expect(comboAllowedInInput('shift+x')).toBe(false)
+    expect(actionAllowedInInput('session.next', 'ctrl+tab')).toBe(true)
+    expect(actionAllowedInInput('session.prev', 'ctrl+shift+tab')).toBe(true)
+    expect(actionAllowedInInput('nav.commandPalette', 'mod+k')).toBe(true)
+    expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
+    expect(actionAllowedInInput('nav.skills', 'mod+k')).toBe(false)
+    expect(actionAllowedInInput('view.showTerminal', 'ctrl+`')).toBe(false)
+    expect(actionAllowedInInput('profile.next', 'mod+shift+]')).toBe(false)
+  })
+
+  it('leaves text navigation chords with the focused input even when rebound to an allowed action', async () => {
+    const { actionAllowedInInput } = await loadCombo('Win32')
+
+    expect(actionAllowedInInput('session.next', 'mod+right')).toBe(false)
+    expect(actionAllowedInInput('session.prev', 'mod+left')).toBe(false)
+    expect(actionAllowedInInput('nav.commandPalette', 'mod+pageup')).toBe(false)
+    expect(actionAllowedInInput('view.findInPage', 'mod+end')).toBe(false)
+  })
+})
+
+describe('comboFromEvent — IME composition keydowns never resolve to combos (#84957)', () => {
+  it('returns null while a composition is in progress (isComposing)', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    // Typing 你 with a Chinese IME: the preedit keydowns carry isComposing.
+    // Before the guard, these canonicalized to combos and fired keybinds
+    // (e.g. dispatched `session.new` mid-composition).
+    expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: true, key: 'n' }))).toBeNull()
+    expect(comboFromEvent(keydown({ code: 'Enter', isComposing: true, key: 'Enter' }))).toBeNull()
+    expect(comboFromEvent(keydown({ code: 'Space', isComposing: true, key: ' ' }))).toBeNull()
+  })
+
+  it('returns null for the legacy key="Process" (VK_PROCESSKEY) keydown', async () => {
+    const { comboFromEvent } = await loadCombo('Win32')
+
+    expect(comboFromEvent(keydown({ code: 'KeyW', key: 'Process' }))).toBeNull()
+  })
+
+  it('ignores IME-synthesized modifier-name keys on non-modifier codes', async () => {
+    const { comboFromEvent } = await loadCombo('Win32')
+
+    // Q9 2002-style legacy IMEs synthesize key="Control" with code="KeyW",
+    // which would otherwise canonicalize to a phantom ctrl+w (close tab).
+    expect(comboFromEvent(keydown({ code: 'KeyW', key: 'Control' }))).toBeNull()
+    expect(comboFromEvent(keydown({ code: 'KeyA', key: 'Shift' }))).toBeNull()
+  })
+
+  it('still resolves real combos after composition ends', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: false, key: 'n', metaKey: true }))).toBe('mod+n')
   })
 })

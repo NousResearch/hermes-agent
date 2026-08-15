@@ -1642,6 +1642,22 @@ def _get_session_inactivity_timeout() -> int:
 
 BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
 
+# How often the cleanup thread re-runs the orphan reaper.  The reaper used to
+# run exactly once, before the cleanup loop started, which meant a hermes
+# process that stays up for days could never recover from a leak that appeared
+# *after* boot.  Observed in the wild: five agent-browser daemons accumulated
+# over 10 days in a single 18-day-uptime process, pinning ~5 CPU cores.
+BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
+
+# Hard ceiling for a daemon whose owning hermes process is still alive but
+# which has fallen out of that process's in-memory session tracking.  The
+# owner-alive check alone makes such a daemon immortal: in-memory tracking is
+# lost on any exception path, yet the owner PID stays up, so the reaper skips
+# it forever.  Idle age (see ``_socket_dir_idle_seconds``) is the escape hatch.
+# Deliberately a large multiple of the inactivity timeout so a legitimately
+# busy session is never touched.
+BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
+
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
 
@@ -1872,6 +1888,40 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     return True
 
 
+def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
+    """Seconds since anything in ``socket_dir`` was last written.
+
+    Every browser command writes ``_stdout_<cmd>`` / ``_stderr_<cmd>`` temp
+    files into the session's socket dir, so the newest mtime under that dir is
+    a last-activity marker that — unlike ``_session_last_activity`` — survives
+    hermes restarts and does not depend on in-memory bookkeeping surviving an
+    exception path.
+
+    The directory's own mtime is not sufficient: command names repeat, so
+    rewriting an existing ``_stdout_click`` updates that file's mtime but not
+    the directory's.  Scan the entries too.
+
+    Returns ``None`` when the age cannot be determined, so callers can fail
+    safe (treat unknown age as "too young to reap").
+    """
+    try:
+        latest = os.path.getmtime(socket_dir)
+    except OSError:
+        return None
+
+    try:
+        with os.scandir(socket_dir) as entries:
+            for entry in entries:
+                try:
+                    latest = max(latest, entry.stat().st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        pass  # dir mtime alone is still a usable lower bound
+
+    return max(0.0, time.time() - latest)
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1926,6 +1976,7 @@ def _reap_orphaned_browser_sessions():
 
         # Ownership check: prefer owner_pid file (cross-process safe).
         owner_pid_file = os.path.join(socket_dir, f"{session_name}.owner_pid")
+        owner_pid: Optional[int] = None
         owner_alive: Optional[bool] = None  # None = owner_pid missing/unreadable
         if os.path.isfile(owner_pid_file):
             try:
@@ -1935,11 +1986,34 @@ def _reap_orphaned_browser_sessions():
                 from gateway.status import _pid_exists
                 owner_alive = _pid_exists(owner_pid)
             except (ValueError, OSError):
+                owner_pid = None
                 owner_alive = None  # corrupt file — fall through
 
         if owner_alive is True:
-            # Owner is alive — this session belongs to a live hermes process.
-            continue
+            # Owner is alive.  Normally that means the session belongs to a
+            # live hermes process and must not be touched — but "owner alive"
+            # alone made leaked daemons immortal: if the owner lost its
+            # in-memory tracking (any exception path between spawn and
+            # registration), nothing would ever reap the daemon, and the
+            # daemon-side AGENT_BROWSER_IDLE_TIMEOUT_MS does not fire when the
+            # daemon itself is wedged (e.g. Chrome's framework was swapped out
+            # from under it by an auto-update).
+            #
+            # So: still trust live tracking, but fall back to idle age.
+            if session_name in tracked_names:
+                continue
+
+            idle_s = _socket_dir_idle_seconds(socket_dir)
+            if idle_s is None or idle_s < BROWSER_ORPHAN_GRACE_SECONDS:
+                # Unknown age, or still within the grace window — fail safe.
+                continue
+
+            logger.warning(
+                "Browser session %s has a live owner (PID %s) but is untracked "
+                "and idle for %ds (grace %ds) — treating as leaked and reaping",
+                session_name, owner_pid, int(idle_s),
+                BROWSER_ORPHAN_GRACE_SECONDS)
+            # fall through to the reap path below
 
         if owner_alive is None:
             # No owner_pid file (legacy daemon).  Fall back to in-process
@@ -2003,15 +2077,26 @@ def _browser_cleanup_thread_worker():
 
     Runs every 30 seconds and checks for sessions that haven't been used
     within the BROWSER_SESSION_INACTIVITY_TIMEOUT period.
-    On first run, also reaps orphaned sessions from previous process lifetimes.
+
+    Also reaps orphaned daemons — on startup (sessions left by previous
+    process lifetimes) *and* every BROWSER_ORPHAN_REAP_INTERVAL seconds
+    thereafter.  The periodic pass matters because a leak is not only a
+    across-restart phenomenon: a daemon can fall out of in-memory tracking
+    at any point in a long-lived process, and a startup-only reap can never
+    recover from that.
     """
-    # One-time orphan reap on startup
-    try:
-        _reap_orphaned_browser_sessions()
-    except Exception as e:
-        logger.warning("Orphan reap error: %s", e)
+    reap_every_cycles = max(1, round(BROWSER_ORPHAN_REAP_INTERVAL / 30))
+    cycle = 0
 
     while _cleanup_running:
+        # cycle 0 is the startup reap; then every reap_every_cycles.
+        if cycle % reap_every_cycles == 0:
+            try:
+                _reap_orphaned_browser_sessions()
+            except Exception as e:
+                logger.warning("Orphan reap error: %s", e)
+        cycle += 1
+
         try:
             _cleanup_inactive_browser_sessions()
         except Exception as e:
@@ -4692,7 +4777,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                     ],
                 }
             ],
-            "max_tokens": 2000,
             "temperature": vision_temperature,
             "timeout": vision_timeout,
         }

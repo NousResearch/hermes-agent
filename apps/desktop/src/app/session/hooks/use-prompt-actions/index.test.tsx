@@ -103,7 +103,9 @@ function Harness({
   refreshSessions,
   requestGateway,
   resumeStoredSession,
+  runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefProp,
   seedMessages,
+  seedStreamId,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
@@ -125,7 +127,9 @@ function Harness({
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
+  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   seedMessages?: unknown[]
+  seedStreamId?: null | string
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
@@ -141,13 +145,25 @@ function Harness({
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   }
 
+  const defaultStoredSessionId = storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
+  const defaultRuntimeSessionId = activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
+
+  const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = runtimeIdByStoredSessionIdRefProp ?? {
+    current:
+      defaultStoredSessionId && defaultRuntimeSessionId
+        ? new Map([[defaultStoredSessionId, defaultRuntimeSessionId]])
+        : new Map()
+  }
+
   const localBusyRef = busyRef ?? { current: false }
 
   const stateRef = useRef({
     messages: seedMessages ?? [],
     busy: false,
     awaitingResponse: false,
-    interrupted: true
+    interrupted: true,
+    streamId: seedStreamId ?? null,
+    interimBoundaryPending: false
   } as never)
 
   const actions = usePromptActions({
@@ -164,6 +180,7 @@ function Harness({
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
+    runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
@@ -2176,6 +2193,82 @@ describe('usePromptActions redirectPrompt', () => {
     expect(requestGateway).not.toHaveBeenCalled()
   })
 
+  it('records the correction AFTER the assistant output that predates it (#73793, #83151)', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
+
+    let handle: HarnessHandle | null = null
+    const capturedStates: Record<string, unknown>[] = []
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'long task' }] },
+          {
+            id: 'assistant-stream-1',
+            role: 'assistant',
+            parts: [{ type: 'text', text: 'two screens of already-read output' }],
+            pending: true
+          }
+        ]}
+        seedStreamId="assistant-stream-1"
+      />
+    )
+
+    expect(await handle!.redirectPrompt('urgently')).toBe(true)
+
+    const messages = capturedStates.at(-1)?.messages as { id: string; interim?: boolean; pending?: boolean }[]
+
+    // Arrival order: the correction lands BELOW the streamed output the user
+    // had already read, never spliced above it.
+    expect(messages.map(message => message.id)).toEqual([
+      'user-1',
+      'assistant-stream-1',
+      expect.stringMatching(/^user-/)
+    ])
+    expect(messages[1]).toMatchObject({ pending: false, interim: true })
+    // streamId cleared: the post-redirect deltas seed a fresh bubble below.
+    expect(capturedStates.at(-1)?.streamId).toBeNull()
+  })
+
+  it('appends at the tail — never mid-thread — when the stream id is stale (#83151)', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
+
+    let handle: HarnessHandle | null = null
+    const capturedStates: Record<string, unknown>[] = []
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'old prompt' }] },
+          { id: 'assistant-1', role: 'assistant', parts: [{ type: 'text', text: 'old committed reply' }] },
+          { id: 'user-2', role: 'user', parts: [{ type: 'text', text: 'newer prompt' }] },
+          { id: 'assistant-2', role: 'assistant', parts: [{ type: 'text', text: 'newer committed reply' }] }
+        ]}
+        seedStreamId="assistant-stream-gone"
+      />
+    )
+
+    expect(await handle!.redirectPrompt('mid-turn note')).toBe(true)
+
+    const messages = capturedStates.at(-1)?.messages as { id: string }[]
+
+    // The retired fallback spliced this before 'assistant-2' — halfway up the
+    // chat. It must be the last row.
+    expect(messages.map(message => message.id)).toEqual([
+      'user-1',
+      'assistant-1',
+      'user-2',
+      'assistant-2',
+      expect.stringMatching(/^user-/)
+    ])
+  })
+
   it('accepts a queued redirect during the agent-build window and records the correction', async () => {
     // running=True but the agent is still building: the gateway queues the
     // correction instead of rejecting, so the composer must NOT re-queue it.
@@ -2424,6 +2517,7 @@ describe('usePromptActions restoreToMessage', () => {
 describe('usePromptActions file attachment sync', () => {
   afterEach(() => {
     cleanup()
+    $composerAttachments.set([])
     $connection.set(null)
     $currentCwd.set('')
     vi.restoreAllMocks()
@@ -2580,6 +2674,202 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
+  })
+
+  it('merges image staging into the current occurrence without dropping its thumbnail', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.jpg'
+    const thumbnailUrl = 'data:image/jpeg;base64,dGh1bWJuYWls'
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+
+    $composerAttachments.set([
+      {
+        detail: hostPath,
+        id: 'image:photo.jpg',
+        kind: 'image',
+        label: 'photo.jpg',
+        occurrenceId: 'occurrence-photo',
+        path: hostPath,
+        thumbnailUrl
+      }
+    ])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/root/tmp/photo.jpg' } as never
+      }
+
+      if (method === 'prompt.submit') {
+        throw new Error('submit failed after staging')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('describe this')).toBe(false)
+    expect($composerAttachments.get()[0]).toMatchObject({
+      attachedSessionId: RUNTIME_SESSION_ID,
+      occurrenceId: 'occurrence-photo',
+      path: '/root/tmp/photo.jpg',
+      thumbnailUrl
+    })
+  })
+
+  it('preserves a same-path replacement added while a successful main submit is in flight', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.jpg'
+
+    const original: ComposerAttachment = {
+      detail: hostPath,
+      id: 'image:photo.jpg',
+      kind: 'image',
+      label: 'photo.jpg',
+      occurrenceId: 'occurrence-original',
+      path: hostPath
+    }
+
+    const replacement: ComposerAttachment = {
+      ...original,
+      occurrenceId: 'occurrence-replacement'
+    }
+
+    let resolveAttach!: (value: { attached: boolean; path: string }) => void
+
+    const attachResult = new Promise<{ attached: boolean; path: string }>(resolve => {
+      resolveAttach = resolve
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return (await attachResult) as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = handle!.submitTextRaw('describe this')
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    $composerAttachments.set([replacement])
+    resolveAttach({ attached: true, path: '/root/tmp/photo.jpg' })
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect($composerAttachments.get()).toEqual([replacement])
+  })
+
+  it('preserves a newer same-id URL added while a successful main submit is in flight', async () => {
+    const original: ComposerAttachment = {
+      id: 'url:https://example.com',
+      kind: 'url',
+      label: 'old',
+      refText: '@url:https://example.com'
+    }
+
+    const replacement: ComposerAttachment = {
+      ...original,
+      label: 'new'
+    }
+
+    let resolveSubmit!: (value: Record<string, never>) => void
+
+    const submitResult = new Promise<Record<string, never>>(resolve => {
+      resolveSubmit = resolve
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        return (await submitResult) as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = handle!.submitTextRaw('read this')
+    })
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    )
+    $composerAttachments.set([replacement])
+    resolveSubmit({})
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect($composerAttachments.get()).toEqual([replacement])
+  })
+
+  it('removes a successfully staged legacy file from the main composer', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const original = fileAttachment()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await expect(handle!.submitTextRaw('read this')).resolves.toBe(true)
+    expect($composerAttachments.get()).toEqual([])
   })
 
   it('uploads file bytes when the terminal backend is a container (docker)', async () => {
@@ -3347,6 +3637,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         resumeStoredSession={resumeStoredSession}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([[STORED_SESSION_ID, RECOVERED_SESSION_ID]]) }}
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={STORED_SESSION_ID}
       />
@@ -3378,6 +3669,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         resumeStoredSession={resumeStoredSession}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([[STORED_SESSION_ID, RECOVERED_SESSION_ID]]) }}
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={STORED_SESSION_ID}
       />
@@ -4223,6 +4515,201 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
 
     expect(await submitting).toBe(false)
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+})
+
+describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65328)', () => {
+  const STORED_SESSION_B = 'stored-project-b'
+  const RUNTIME_SESSION_A = 'rt-session-a'
+  const RUNTIME_SESSION_B_RESUMED = 'rt-session-b-resumed'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not submit to runtime A when the cache proves B is bound to a different runtime (forward mismatch)', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[STORED_SESSION_B, 'rt-session-b-known']])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_B_RESUMED } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('ordinary text for the selected project B session')
+
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
+      session_id: STORED_SESSION_B,
+      source: 'desktop'
+    })
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeUndefined()
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
+    ).toBeDefined()
+  })
+
+  it('does not submit to runtime A when the cache proves A belongs to a DIFFERENT stored session (reverse proof, no forward entry for B)', async () => {
+    // The failure mode a one-directional (stored -> runtime) lookup misses:
+    // the cache has no entry for B at all (a forward miss looks like "no
+    // conflict"), but A is definitively known to belong to some OTHER
+    // stored session. A real-world trigger: the user is mid-conversation in
+    // an old session (whose runtime is A, cached under stored-project-old),
+    // then creates a fresh session B — if activeSessionIdRef hasn't been
+    // re-homed to B's own runtime yet by the time submit fires, A must not
+    // be accepted just because B itself was never cached.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-project-old', RUNTIME_SESSION_A]])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_B_RESUMED } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('ordinary text for the freshly created project B session')
+
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
+      session_id: STORED_SESSION_B,
+      source: 'desktop'
+    })
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeUndefined()
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
+    ).toBeDefined()
+  })
+
+  it('still submits directly when the cache positively maps the selected session to the runtime', async () => {
+    // Direct submit is safe only when the cache explicitly proves the selected
+    // stored session owns the active runtime.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[STORED_SESSION_B, RUNTIME_SESSION_A]])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('first message in a genuinely fresh session')
+
+    expect(calls.some(c => c.method === 'session.resume')).toBe(false)
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeDefined()
+  })
+
+  it('resumes the selected session when its ownership cache entry is missing', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = { current: new Map() }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_B_RESUMED } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('message after an ownership-cache miss')
+
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
+      session_id: STORED_SESSION_B,
+      source: 'desktop'
+    })
+    expect(calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)).toBeUndefined()
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
+    ).toBeDefined()
   })
 })
 

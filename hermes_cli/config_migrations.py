@@ -784,6 +784,37 @@ def _migrate_to_36(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_37(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 36 → 37: raise the delegation concurrency default 3 → 10 ──
+    # delegation.max_concurrent_children caps how many children run in parallel
+    # per batch (and concurrent background delegation units). The old default of
+    # 3 needlessly serialized independent fan-outs (e.g. reviewing N PRs at
+    # once). The shipped default is now 10, which stays at/below the high-cost
+    # warning threshold. Configs still pinned at exactly the old default 3 —
+    # almost always the inherited default rather than a deliberate choice — are
+    # lifted to 10 so existing installs get the wider fan-out on update. Any
+    # OTHER explicit value (a deliberate override) is preserved; unset inherits
+    # 10 at read time.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_deleg = config.get("delegation")
+    if isinstance(raw_deleg, dict) and raw_deleg.get("max_concurrent_children") == 3:
+        raw_deleg["max_concurrent_children"] = 10
+        config["delegation"] = raw_deleg
+        _persist_migration(config)
+        results["config_added"].append("delegation.max_concurrent_children=10 (was: 3)")
+        if not quiet:
+            print(
+                "  ✓ Raised delegation.max_concurrent_children from 3 to 10 — "
+                "independent delegated children now fan out wider in parallel. "
+                "Each child consumes API tokens independently; set "
+                "delegation.max_concurrent_children back to 3 to restore the old cap."
+            )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -807,6 +838,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (34, _migrate_to_34),
     (35, _migrate_to_35),
     (36, _migrate_to_36),
+    (37, _migrate_to_37),
 )
 
 

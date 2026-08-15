@@ -2304,6 +2304,26 @@ def repair_db(
         )
 
 
+def _schema_is_present(conn: sqlite3.Connection) -> bool:
+    """Whether an open connection actually sees the kanban schema.
+
+    ``tasks`` is the sentinel: :data:`SCHEMA_SQL` always creates it, and
+    SQLite loses tables all-or-nothing (a file is either the one we
+    initialized or a fresh one created by this very open), so one
+    ``sqlite_master`` lookup on the already-resident page 1 is enough. Cheap
+    by design — it runs on every steady-state :func:`connect`.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' LIMIT 1"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        # Unreadable schema table is not this guard's call — let the full init
+        # path's header/integrity probes classify and quarantine it.
+        return False
+    return row is not None
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -2361,10 +2381,27 @@ def connect(
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
                 conn.execute("PRAGMA cell_size_check=ON")
+                schema_present = _schema_is_present(conn)
         except Exception:
             conn.close()
             raise
-        return conn
+        if schema_present:
+            return conn
+        # The cache says "initialized", the file says otherwise: it was deleted
+        # or replaced under a live process, and the open above silently
+        # recreated an empty DB. Left alone, every query on this path fails
+        # with "no such table: tasks" for the rest of the process's life and
+        # the board just renders empty (#83445). Drop the stale cache entry and
+        # fall through to the full init path, which re-runs the header and
+        # integrity probes and the schema script under the cross-process lock.
+        conn.close()
+        with _INIT_LOCK:
+            _INITIALIZED_PATHS.discard(resolved)
+        _log.warning(
+            "kanban DB %s lost its schema after this process initialized it "
+            "(deleted or replaced externally); re-initializing.",
+            path,
+        )
 
     with _cross_process_init_lock(path):
         # Read-only file/sidecar preflight (port of kilocode#12508) —

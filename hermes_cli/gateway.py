@@ -324,6 +324,113 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
         _time.sleep(0.5)
 
 
+# --- Wedged-gateway detection + bounded escalation (#81642) -----------------
+#
+# A gateway whose asyncio loop is stalled (e.g. an in-loop compression pass,
+# #72707) cannot process SIGTERM/SIGUSR1 shutdown: the drain wait then burns
+# the full drain budget (180s by default), warns "still running after 180.0s
+# — restart may fail", and `hermes update` can deadlock behind it.  The loop
+# publishes a liveness signal precisely for this case: an asyncio task
+# rewrites ``state/gateway.heartbeat`` every 30s (#66892), so a frozen loop
+# stops refreshing the file while a busy-but-alive loop keeps refreshing it.
+#
+# ``probe_gateway_loop_liveness`` reads that signal (a local stat + JSON read,
+# instant — far inside the 10s query tier of the subprocess timeout doc) and
+# classifies the gateway BEFORE any drain wait begins:
+#
+# - ``alive``   — heartbeat is fresh: the loop is dispatching (possibly busy).
+#                 Callers must take the normal graceful-drain path, which
+#                 honours the in-flight cron drain floor (#86684).
+# - ``wedged``  — heartbeat belongs to this PID but has gone stale well past
+#                 several missed beats: the loop is provably dead.  Draining
+#                 is pointless (nothing can run the drain), so callers may
+#                 escalate immediately via ``_escalate_wedged_gateway``.
+# - ``unknown`` — no heartbeat / unreadable / PID mismatch (older gateway,
+#                 still starting up, stale file from a previous process).
+#                 Treated like ``alive``: never escalate on ambiguity.
+#
+# The distinction matters: only a *provably dead* loop may bypass the cron
+# drain floor.  A merely busy gateway still answers the probe (fresh file)
+# and keeps its full drain budget.
+
+GATEWAY_LOOP_ALIVE = "alive"
+GATEWAY_LOOP_WEDGED = "wedged"
+GATEWAY_LOOP_UNKNOWN = "unknown"
+
+# Heartbeat cadence is 30s (gateway.shutdown_watchdog.DEFAULT_HEARTBEAT_INTERVAL_S).
+# Three missed beats is decisive without false-positiving on one slow write.
+DEFAULT_LOOP_LIVENESS_STALE_AFTER_S = 90.0
+
+
+def probe_gateway_loop_liveness(
+    pid: int,
+    *,
+    stale_after: float = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S,
+    home: Path | None = None,
+) -> str:
+    """Classify a gateway PID's event loop as alive / wedged / unknown.
+
+    Reads the loop-liveness heartbeat file the gateway rewrites every 30s
+    while its loop is dispatching.  Never raises; any ambiguity (missing
+    file, unreadable JSON, PID mismatch) returns ``GATEWAY_LOOP_UNKNOWN``
+    so callers default to the safe graceful-drain path.
+    """
+    try:
+        stale_budget = max(float(stale_after), 0.0)
+    except (TypeError, ValueError):
+        stale_budget = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S
+    try:
+        from gateway.shutdown_watchdog import get_loop_heartbeat_path
+
+        path = get_loop_heartbeat_path(home)
+        mtime = path.stat().st_mtime
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        heartbeat_pid = int(payload.get("pid", 0))
+    except Exception:
+        return GATEWAY_LOOP_UNKNOWN
+    if heartbeat_pid <= 0 or int(pid) <= 0 or heartbeat_pid != int(pid):
+        # No heartbeat for THIS process — old gateway version, still starting
+        # up, or a stale file from a previous PID.  Not evidence of a wedge.
+        return GATEWAY_LOOP_UNKNOWN
+    age = time.time() - mtime
+    if age > stale_budget:
+        return GATEWAY_LOOP_WEDGED
+    return GATEWAY_LOOP_ALIVE
+
+
+def _escalate_wedged_gateway(
+    pid: int,
+    *,
+    term_grace: float = 5.0,
+    kill_wait: float = 5.0,
+) -> bool:
+    """Bounded stop for a gateway whose loop is provably dead (#81642).
+
+    SIGTERM first (the process may still have a live signal handler thread
+    even with a dead loop), a short grace, then SIGKILL.  Total worst case is
+    ``term_grace + kill_wait`` (~10s by default) — never the 180s drain
+    budget, which only makes sense when a loop exists to run the drain.
+
+    Callers MUST have classified the gateway as ``GATEWAY_LOOP_WEDGED``
+    before calling this: escalating a merely busy gateway would bypass the
+    in-flight cron drain floor (#86684) and SIGKILL live work.
+
+    Returns True once the PID has left the process table.
+    """
+    try:
+        terminate_pid(pid, force=False)
+    except (ProcessLookupError, PermissionError, OSError):
+        return _wait_for_pid_exit(pid, 1.0)
+    if _wait_for_pid_exit(pid, max(float(term_grace), 0.0)):
+        return True
+    try:
+        terminate_pid(pid, force=True)
+        print(f"⚠ Gateway PID {pid} unresponsive to SIGTERM; sent SIGKILL")
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    return _wait_for_pid_exit(pid, max(float(kill_wait), 0.0))
+
+
 def _get_ancestor_pids() -> set[int]:
     """Return the set of PIDs in the current process's ancestor chain.
 
@@ -1525,6 +1632,54 @@ def kill_gateway_processes(
     return killed
 
 
+_REAPER_SUPERVISOR_WALK_LIMIT = 12
+
+
+def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
+    """True when ``pid`` is a gateway process owned by the Windows Task Scheduler.
+
+    Windows-only backstop for the orphan reaper: ``_get_service_pids()`` is
+    empty on Windows (no systemd/launchd query), so a Scheduled-Task gateway
+    whose ``gateway.pid`` record is missing or stale is invisible to both the
+    service-PID and recorded-PID exclusions — yet it is alive and supervised.
+    Scheduled Tasks run under the services tree, so a candidate whose parent
+    chain reaches ``services.exe`` is spared even with no pidfile (#83683,
+    #86098).
+
+    This check is deliberately NOT applied on POSIX: there, every process has
+    PID 1 (launchd / init / systemd) in its ancestry — and a genuine orphan is
+    *reparented directly to PID 1* — so supervisor-name ancestry carries zero
+    signal and would spare every orphan the reaper exists to kill (#51325,
+    #75936). POSIX supervised gateways are already covered pidfile-
+    independently by the ``_get_service_pids()`` exclusion.
+
+    Known limitation (fail-open): if the Task-launched bootstrap parent has
+    already exited, Windows does not reparent the gateway, the chain breaks
+    before ``services.exe``, and the gateway is treated as an orphan. Any
+    error (process gone, psutil unavailable) is likewise treated as "not
+    owned" so a genuine orphan is still reaped.
+    """
+    if not is_windows():
+        return False
+    try:
+        import psutil  # type: ignore
+
+        parent = psutil.Process(pid).parent()
+        for _ in range(_REAPER_SUPERVISOR_WALK_LIMIT):
+            if parent is None:
+                break
+            try:
+                name = (parent.name() or "").lower()
+            except Exception:
+                name = ""
+            if name == "services.exe":
+                return True
+            parent = parent.parent()
+    except Exception:
+        pass
+    return False
+
+
 def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see.
 
@@ -1555,20 +1710,54 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     own = {os.getpid()}
     if extra_exclude:
         own |= extra_exclude
-    # On macOS, exclude the launchd-managed gateway PID so the orphan reaper
-    # doesn't kill a supervised gateway when Hermes Desktop opens (the serve
-    # process calls this on startup).  supports_systemd_services() returns
-    # False on macOS, so without this the launchd gateway looks like an
-    # unsupervised orphan and gets SIGTERM'd, causing launchd to restart it.
-    if is_macos():
-        try:
-            own |= _get_service_pids()
-        except Exception:
-            pass
+    # Service-managed gateways are not orphans — never reap them.  This
+    # covers macOS launchd (supports_systemd_services() is False there, so
+    # without this the launchd gateway looks like an unsupervised orphan and
+    # gets SIGTERM'd, causing launchd to restart it — or leaving it down
+    # under KeepAlive.SuccessfulExit=false) and any systemd unit reachable
+    # from a host that got past the gate above (#83683, #85344).
+    try:
+        own |= _get_service_pids()
+    except Exception:
+        pass
+    # On Windows there is no systemd/launchd service query at all
+    # (_get_service_pids() returns an empty set), so a gateway supervised by
+    # a Scheduled Task / Startup VBS looks like an unsupervised orphan to the
+    # process scan (#86098).  The same holds on every platform for a healthy
+    # gateway launched standalone (no service registration) whose PID the
+    # runtime record can see (#83683).  Exempt the recorded healthy gateway
+    # PID and its parent chain: a recorded, liveness-verified gateway is by
+    # definition not an orphan "the pidfile/runtime record can't see", and
+    # the Scheduled-Task bootstrap's argv (``gateway run``) matches the
+    # gateway scan — killing that bootstrap takes the detached gateway it
+    # spawned down with it.
+    try:
+        from gateway.status import get_running_pid
+
+        recorded = get_running_pid()
+        if recorded and recorded > 0:
+            own.add(recorded)
+            try:
+                import psutil  # type: ignore
+
+                parent = psutil.Process(recorded).parent()
+                while parent is not None:
+                    own.add(parent.pid)
+                    parent = parent.parent()
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
-        # for the current profile when no systemd supervisor is present.
-        orphans = [p for p in find_gateway_pids(exclude_pids=own) if p and p > 0]
+        # for the current profile when no systemd supervisor is present.  On
+        # Windows, additionally drop any candidate the Task Scheduler owns —
+        # the pidfile-less gap neither exclusion above can see (#83683, #86098).
+        orphans = [
+            p
+            for p in find_gateway_pids(exclude_pids=own)
+            if p and p > 0 and not _reaper_candidate_is_supervisor_owned(p)
+        ]
     except Exception:
         return False
     if not orphans:
@@ -3592,6 +3781,23 @@ def systemd_restart(system: bool = False):
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
+    if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+        # Health probe says the event loop is provably dead (#81642): SIGUSR1
+        # can never drain it, so the graceful wait below would burn the full
+        # budget. Bounded escalation (SIGTERM grace → SIGKILL, ~10s) then let
+        # systemd relaunch the unit. A busy-but-alive gateway (fresh
+        # heartbeat) never takes this path — its in-flight work, including
+        # the #86684 cron drain floor, keeps the full graceful budget.
+        print(
+            f"⚠ Gateway PID {pid} event loop is unresponsive — "
+            "skipping graceful drain and forcing a bounded stop..."
+        )
+        _escalate_wedged_gateway(pid)
+        svc = get_service_name()
+        _run_systemctl(["reset-failed", svc], system=system, check=False, timeout=30)
+        _run_systemctl(["restart", svc], system=system, check=False, timeout=90)
+        _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+        return
     if pid is not None:
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
@@ -4120,14 +4326,28 @@ def _gateway_run_command() -> list[str]:
     return cmd
 
 
+def _timestamped_stderr_gateway_command(error_log: Path) -> list[str]:
+    """Wrap gateway run so raw stderr lines are timestamped before file write."""
+    return [
+        get_python_path(),
+        "-m",
+        "hermes_cli.stderr_timestamp",
+        "--error-log",
+        str(error_log),
+        "--",
+        *_gateway_run_command(),
+    ]
+
+
 def _spawn_detached_gateway() -> bool:
     """Launch the gateway as a detached background process (launchd fallback).
 
     Used when launchctl can no longer bootstrap/kickstart the gateway on
     macOS 26+ (issue #23387). Mirrors the `nohup hermes gateway run --replace`
-    workaround but keeps it CLI-managed: stdout/stderr go to the profile's
-    gateway logs and the PID is tracked via the gateway.pid file that
-    `run_gateway` writes, so stop/status/restart keep working.
+    workaround but keeps it CLI-managed: stdout goes to gateway.log, stderr is
+    timestamped into gateway.error.log, and the PID is tracked via the
+    gateway.pid file that `run_gateway` writes, so stop/status/restart keep
+    working.
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
@@ -4137,16 +4357,15 @@ def _spawn_detached_gateway() -> bool:
     err_path = log_dir / "gateway.error.log"
     try:
         out = open(out_path, "ab")
-        err = open(err_path, "ab")
     except OSError:
         return False
     try:
-        with out, err:
+        with out:
             subprocess.Popen(
-                _gateway_run_command(),
+                _timestamped_stderr_gateway_command(err_path),
                 stdin=subprocess.DEVNULL,
                 stdout=out,
-                stderr=err,
+                stderr=subprocess.DEVNULL,
                 **windows_detach_popen_kwargs(),
             )
     except OSError:
@@ -4182,7 +4401,6 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 
 def generate_launchd_plist() -> str:
-    python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
@@ -4191,7 +4409,6 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -4209,22 +4426,15 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
+    err_path = log_dir / "gateway.error.log"
+
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # The stderr wrapper preserves launchd's restart semantics while adding
+    # timestamps to raw stderr lines before they land in gateway.error.log.
     prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
+        f"<string>{part}</string>"
+        for part in _timestamped_stderr_gateway_command(err_path)
     ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
-        ]
-    )
     prog_args_xml = "\n        ".join(prog_args)
 
     # Persist the configured RLIMIT_NOFILE floor into the service definition
@@ -4740,6 +4950,20 @@ def launchd_restart():
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
             return
+        if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+            # Health probe says the event loop is provably dead (#81642):
+            # the gateway cannot process a graceful shutdown, so waiting the
+            # full drain budget only stalls the restart (and `hermes update`
+            # behind it) for 180s. Bounded escalation instead: SIGTERM grace
+            # → SIGKILL → proceed, ~10s worst case. Never taken for a
+            # busy-but-alive gateway — a fresh heartbeat keeps the drain path
+            # (and the #86684 cron drain floor) fully intact.
+            print(
+                f"⚠ Gateway PID {pid} event loop is unresponsive — "
+                "skipping drain and forcing a bounded stop..."
+            )
+            _escalate_wedged_gateway(pid)
+            pid = None
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway

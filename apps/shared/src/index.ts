@@ -1,4 +1,9 @@
 export {
+  backendScopeKey,
+  backendScopePrefix,
+  LOCAL_CONNECTION_ID
+} from './backend-scope'
+export {
   BILLING_REFUSAL_POLICY,
   type BillingRecovery,
   type BillingRefusalPolicy,
@@ -34,6 +39,11 @@ export {
   type SettlementDeps,
   type SettlementOutcome
 } from './charge-settlement'
+export {
+  createCronTriggerController,
+  type CronTriggerController,
+  type CronTriggerRunResult
+} from './cron-trigger-controller'
 export {
   type ConnectionState,
   type GatewayClientOptions,

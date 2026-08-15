@@ -1437,6 +1437,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_dbs: Dict[str, Any] = {}
+        self._session_db_cache_lock = threading.Lock()
+        self._session_db_cache_closed = False
         # Last-known-good resolved model per session (keyed by gateway_session_key
         # ONLY — never session_id, which rotates/is ephemeral for one-off API
         # server requests; "*" is the process-wide fallback), mirroring
@@ -2182,15 +2185,29 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_state import SessionDB
 
         key = str(home)
-        cache = getattr(self, "_session_dbs", None)
-        if cache is None:
-            cache = {}
-            self._session_dbs = cache
-        db = cache.get(key)
-        if db is None:
-            db = SessionDB(db_path=home / "state.db")
-            cache[key] = db
-        return db
+        with self._session_db_cache_lock:
+            if self._session_db_cache_closed:
+                return None
+            db = self._session_dbs.get(key)
+            if db is None:
+                db = SessionDB(db_path=home / "state.db")
+                self._session_dbs[key] = db
+            return db
+
+    def _close_cached_session_dbs(self) -> None:
+        """Close SessionDB handles owned by this adapter's profile cache."""
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = True
+            cached = list(self._session_dbs.values())
+            self._session_dbs.clear()
+        shared_db = getattr(self, "_session_db", None)
+        for db in cached:
+            if db is shared_db:
+                continue
+            try:
+                db.close()
+            except Exception:
+                logger.debug("Failed to close API-server SessionDB", exc_info=True)
 
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
@@ -2232,15 +2249,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             home = get_hermes_home()
             key = str(home)
-            cache = getattr(self, "_session_dbs", None)
-            if cache is not None and cache.get(key) is not None:
-                return cache[key]
+            with self._session_db_cache_lock:
+                cached = self._session_dbs.get(key)
+            if cached is not None:
+                return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
-                cache = getattr(self, "_session_dbs", None)
-                if cache is not None and cache.get(key) is not None:
-                    return cache[key]
+                with self._session_db_cache_lock:
+                    cached = self._session_dbs.get(key)
+                if cached is not None:
+                    return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
@@ -3289,11 +3308,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived",
+            "_lineage_root_id", "pinned", "archived", "hidden",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores these as 0/1; clients reconcile against a real boolean.
-        for flag in ("pinned", "archived"):
+        for flag in ("pinned", "archived", "hidden"):
             if flag in payload:
                 payload[flag] = bool(payload[flag])
         # Avoid exposing full system prompts/model_config through the client API;
@@ -3515,16 +3534,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # sidebar owns (the "keep" flag exempts a chat from the auto-archive
         # sweep). Rejecting them here was silently 400ing every pin the desktop
         # made, so pins only ever lived in that one app's localStorage.
-        allowed = {"title", "end_reason", "pinned", "archived"}
+        # `unread` is the read-state watermark toggle (same desktop owner).
+        allowed = {"title", "end_reason", "pinned", "archived", "hidden", "unread"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
-        for flag in ("pinned", "archived"):
+        for flag in ("pinned", "archived", "hidden", "unread"):
             if flag in body and not isinstance(body[flag], bool):
                 return web.json_response(_openai_error(f"'{flag}' must be a boolean", code="invalid_session_field"), status=400)
 
         db = await self._ensure_session_db_async()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -3534,6 +3556,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await asyncio.to_thread(db.set_session_pinned, session_id, body["pinned"])
         if "archived" in body:
             await asyncio.to_thread(db.set_session_archived, session_id, body["archived"])
+        if "hidden" in body:
+            await asyncio.to_thread(db.set_session_hidden, session_id, body["hidden"])
+        if "unread" in body:
+            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session
@@ -5918,7 +5944,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
 
-            from cron.scheduler_provider import resolve_cron_scheduler
+            from cron.scheduler_provider import (
+                provider_supports_split_fire,
+                resolve_cron_scheduler,
+            )
             provider = resolve_cron_scheduler()
 
             loop = asyncio.get_running_loop()
@@ -5940,10 +5969,55 @@ class APIServerAdapter(BasePlatformAdapter):
                     runner = None
             adapters = getattr(runner, "adapters", None) or None
 
-            # Fire in the background (202 immediately). fire_due claims via the
-            # store CAS, so a retry while this is in flight is de-duped.
+            if not provider_supports_split_fire(provider):
+                # Legacy single-phase provider: it overrides the documented
+                # ``fire_due`` hook (custom claim/re-arm/telemetry) but
+                # inherits the base ``claim_fire`` — driving it through the
+                # split claim path would silently bypass that override.
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        provider.fire_due,
+                        job_id,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                )
+                reservation["detached"] = True
+                task.add_done_callback(
+                    lambda _task: _release_pending_api_work(self, reservation)
+                )
+                try:
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except (TypeError, AttributeError):
+                    pass
+                return web.json_response(
+                    {"status": "accepted", "job_id": job_id}, status=202
+                )
+
+            # Persist the attempt and exact store owner before acknowledging NAS.
+            # A failure here is retryable and the reservation remains attached.
+            try:
+                claimed_job = await asyncio.to_thread(provider.claim_fire, job_id)
+            except Exception as exc:
+                logger.error("cron fire admission failed for %s: %s", job_id, exc)
+                return web.json_response(
+                    {"error": "cron fire admission failed", "job_id": job_id},
+                    status=503,
+                )
+            if claimed_job is None:
+                return web.json_response(
+                    {"status": "duplicate", "job_id": job_id},
+                    status=200,
+                )
+
             task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=adapters, loop=loop)
+                asyncio.to_thread(
+                    provider.fire_claimed,
+                    claimed_job,
+                    adapters=adapters,
+                    loop=loop,
+                )
             )
             reservation["detached"] = True
             task.add_done_callback(
@@ -7320,6 +7394,9 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
 
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = False
+
         if not self._api_key_passes_startup_guard():
             # A rejected API_SERVER_KEY is a configuration error, not a
             # transient blip — the key will not become valid on its own. A
@@ -7490,13 +7567,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        if self._site:
-            await self._site.stop()
-            self._site = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._app = None
+        try:
+            if self._site:
+                await self._site.stop()
+                self._site = None
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+        finally:
+            self._close_cached_session_dbs()
+            self._app = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

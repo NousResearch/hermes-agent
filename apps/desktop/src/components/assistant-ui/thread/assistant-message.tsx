@@ -18,7 +18,7 @@ import {
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
-import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
+import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
@@ -29,7 +29,6 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
-import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
@@ -222,6 +221,7 @@ export const AssistantMessage: FC<{
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
+      <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
       {hasVisibleText && !isInterim && (
         <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
@@ -262,7 +262,6 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         }
         data-slot="aui_msg-actions"
       >
-        <MessageAge />
         {onBranchInNewChat && (
           <TooltipIconButton
             onClick={() => {
@@ -361,26 +360,6 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
     >
       <Icon className={cn('size-3.5', isPreparing && 'animate-spin')} />
     </TooltipIconButton>
-  )
-}
-
-const MessageAge: FC = () => {
-  const { t } = useI18n()
-  const createdAt = useAuiState(s => s.message.createdAt)
-  const date = createdAt ? new Date(createdAt) : null
-
-  if (!date || Number.isNaN(date.getTime())) {
-    return null
-  }
-
-  // Compact "2h ago" (shared util) with the absolute time on hover.
-  return (
-    <span
-      className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
-      title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
-    >
-      {formatAgo(date.getTime(), t.agents)}
-    </span>
   )
 }
 

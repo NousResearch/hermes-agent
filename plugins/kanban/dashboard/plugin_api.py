@@ -2946,10 +2946,24 @@ async def stream_events(ws: WebSocket):
                 conn.close()
 
         while True:
+            # Race receive() against the poll interval to detect client
+            # disconnect even when no events are being sent. Without this,
+            # a disconnect is only detected via send_json() raising
+            # WebSocketDisconnect, so an idle board leaks zombie poll tasks.
+            try:
+                msg = await asyncio.wait_for(
+                    ws.receive(), timeout=_EVENT_POLL_SECONDS
+                )
+                if msg["type"] == "websocket.disconnect":
+                    return
+                # Any other client message (pong, text) is ignored; we
+                # continue polling.
+            except asyncio.TimeoutError:
+                pass  # no client message — poll the DB
+
             cursor, events = await asyncio.to_thread(_fetch_new, cursor)
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
-            await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:

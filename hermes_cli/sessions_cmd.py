@@ -55,6 +55,72 @@ def _confirm_prompt(prompt: str) -> bool:
         return False
 
 
+#: Default age floor for `hermes sessions prune --never-active`.  Deliberately
+#: generous: the rows are worthless but harmless, and a young never-active row
+#: may simply be a chat that nobody has replied to yet.
+_NEVER_ACTIVE_DEFAULT_DAYS = 30.0
+
+
+def _prune_never_active_keyed(db, args):
+    """`hermes sessions prune --never-active` — drop leaked/dead keyed rows.
+
+    Targets keyed gateway rows that were opened and never used at all.  The
+    population is dominated by escaped test fixtures (#82770), which the
+    hermetic-isolation guard can only stop from being *created* — rows already
+    written to a developer's state.db need a sweep to leave.
+    """
+    from hermes_cli.session_filters import format_epoch, parse_duration_seconds
+
+    older_than = getattr(args, "older_than", None)
+    if older_than is None:
+        days = _NEVER_ACTIVE_DEFAULT_DAYS
+    else:
+        seconds = parse_duration_seconds(str(older_than))
+        if seconds is None:
+            print(
+                f"Error: --older-than '{older_than}' is not a duration. "
+                "Use a bare number of days or a form like '2d' / '1w'."
+            )
+            return
+        days = seconds / 86400.0
+
+    candidates = db.list_never_active_keyed_sessions(older_than_days=days)
+    if not candidates:
+        print(f"No never-active keyed sessions older than {days:g} day(s).")
+        return
+
+    shown = candidates if args.dry_run else candidates[:15]
+    print(
+        f"{len(candidates)} never-active keyed session(s) older than "
+        f"{days:g} day(s) — no messages, tokens, tool calls or title:"
+    )
+    for s in shown:
+        print(
+            f"  {s['id']}  {format_epoch(s.get('started_at')):<17} "
+            f"{(s.get('source') or '-'):<10} {s.get('session_key') or '-'}"
+        )
+    if len(candidates) > len(shown):
+        print(f"  … {len(candidates) - len(shown)} more")
+
+    if args.dry_run:
+        print("Dry run — nothing deleted.")
+        return
+    if not args.yes and not _confirm_prompt(
+        f"Delete {len(candidates)} session(s)? [y/N] "
+    ):
+        print("Aborted.")
+        return
+
+    sessions_dir = get_hermes_home() / "sessions"
+    deleted, routing_deleted = db.prune_never_active_keyed_sessions(
+        older_than_days=days, sessions_dir=sessions_dir
+    )
+    print(
+        f"Deleted {deleted} never-active session(s) and {routing_deleted} "
+        "stale routing entr(ies)."
+    )
+
+
 def cmd_sessions(args, sessions_parser=None):
     import json as _json
 
@@ -93,10 +159,14 @@ def cmd_sessions(args, sessions_parser=None):
             try:
                 from hermes_state import SessionDB
 
-                n = SessionDB()._conn.execute(
-                    "SELECT COUNT(*) FROM sessions"
-                ).fetchone()[0]
-                print(f"✓ Repaired — {n} sessions recovered.")
+                _repair_db = SessionDB()
+                try:
+                    n = _repair_db._conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                    print(f"✓ Repaired — {n} sessions recovered.")
+                finally:
+                    _repair_db.close()
             except Exception:
                 print("✓ Repaired.")
         else:
@@ -801,6 +871,12 @@ def cmd_sessions(args, sessions_parser=None):
             print(f"Deleted session '{resolved_session_id}'.")
         else:
             print(f"Session '{args.session_id}' not found.")
+
+    elif action == "prune" and getattr(args, "never_active", False):
+        # Separate branch on purpose: the shared prune/archive selector is
+        # pinned to `ended_at IS NOT NULL`, so never-closed rows sit outside
+        # it by construction and cannot be expressed as one more filter.
+        _prune_never_active_keyed(db, args)
 
     elif action in ("prune", "archive"):
         from hermes_cli.session_filters import (

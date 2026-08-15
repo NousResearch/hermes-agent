@@ -13,12 +13,17 @@ late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 """
 
 import asyncio  # noqa: F401 — used by handlers
+import copy
+import functools
+import inspect
 import json
 import logging
 import re
 import subprocess  # noqa: F401
 import sys  # noqa: F401
+import threading
 import time  # noqa: F401
+from collections import OrderedDict
 from pathlib import Path  # noqa: F401
 from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
@@ -79,6 +84,138 @@ _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
 
 
+# Bounded cache lifetime for the expensive sidebar scan. Short enough that the
+# UI never shows meaningfully stale data, long enough to coalesce the desktop's
+# reconnect/focus/change poll bursts into one scan.
+_SIDEBAR_CACHE_TTL_SECONDS = 5.0
+_SIDEBAR_CACHE_MAX_ENTRIES = 32
+_SIDEBAR_PROFILE_CACHE_MAX_ENTRIES = 256
+_SIDEBAR_PROFILE_CACHE = OrderedDict()
+_SIDEBAR_PROFILE_CACHE_LOCK = threading.Lock()
+
+
+def _stat_fingerprint(path: Path):
+    """Return identity + mutation metadata without opening the file."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _sidebar_db_fingerprint(db_path: Path):
+    """Track SQLite content changes through the main DB and its WAL."""
+    wal_path = Path(f"{db_path}-wal")
+    return (_stat_fingerprint(db_path), _stat_fingerprint(wal_path))
+
+
+def _sidebar_profile_cache_get(key):
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        value = _SIDEBAR_PROFILE_CACHE.get(key)
+        if value is None:
+            return None
+        _SIDEBAR_PROFILE_CACHE.move_to_end(key)
+        return copy.deepcopy(value)
+
+
+def _sidebar_profile_cache_put(key, value):
+    db_path, fingerprint = key[:2]
+    snapshot = copy.deepcopy(value)
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        # A changed DB/WAL makes all older parameter variants for that profile
+        # obsolete. Remove them eagerly rather than waiting for LRU pressure.
+        stale = [
+            existing
+            for existing in _SIDEBAR_PROFILE_CACHE
+            if existing[0] == db_path and existing[1] != fingerprint
+        ]
+        for existing in stale:
+            _SIDEBAR_PROFILE_CACHE.pop(existing, None)
+        _SIDEBAR_PROFILE_CACHE[key] = snapshot
+        _SIDEBAR_PROFILE_CACHE.move_to_end(key)
+        while len(_SIDEBAR_PROFILE_CACHE) > _SIDEBAR_PROFILE_CACHE_MAX_ENTRIES:
+            _SIDEBAR_PROFILE_CACHE.popitem(last=False)
+
+
+def _sidebar_profile_cache_clear():
+    with _SIDEBAR_PROFILE_CACHE_LOCK:
+        _SIDEBAR_PROFILE_CACHE.clear()
+
+
+def _sidebar_singleflight_cache(func):
+    """Coalesce concurrent sidebar scans and briefly reuse their response.
+
+    Every uncached refresh opens every profile database and runs up to three
+    session queries per profile. Desktop reconnect/focus/change bursts can
+    therefore overlap several identical scans in AnyIO worker threads, which
+    amplifies YAML/SQLite work and starves the uvicorn event loop for the GIL.
+
+    The short TTL bounds UI staleness while the single-flight lock guarantees
+    only one expensive scan runs at a time. Cached values are copied on store
+    and hit so FastAPI serialization or a caller cannot mutate shared state.
+    """
+    signature = inspect.signature(func)
+    cache = OrderedDict()
+    cache_lock = threading.Lock()
+    refresh_lock = threading.Lock()
+    miss = object()
+
+    def _key(args, kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        return tuple(bound.arguments.items())
+
+    def _lookup(key):
+        now = time.monotonic()
+        with cache_lock:
+            item = cache.get(key)
+            if item is None:
+                return miss
+            expires_at, value = item
+            if now >= expires_at:
+                cache.pop(key, None)
+                return miss
+            cache.move_to_end(key)
+            return copy.deepcopy(value)
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        ttl = _SIDEBAR_CACHE_TTL_SECONDS
+        if ttl <= 0:
+            return func(*args, **kwargs)
+
+        key = _key(args, kwargs)
+        cached = _lookup(key)
+        if cached is not miss:
+            return cached
+
+        # A plain Lock is intentional: FastAPI executes this sync handler in
+        # the AnyIO worker pool, so contenders sleep without holding the GIL.
+        with refresh_lock:
+            cached = _lookup(key)
+            if cached is not miss:
+                return cached
+            result = func(*args, **kwargs)
+            try:
+                snapshot = copy.deepcopy(result)
+            except Exception:
+                _log.exception("sidebar response could not be cached")
+                return result
+            with cache_lock:
+                cache[key] = (time.monotonic() + ttl, snapshot)
+                cache.move_to_end(key)
+                while len(cache) > _SIDEBAR_CACHE_MAX_ENTRIES:
+                    cache.popitem(last=False)
+            return result
+
+    def cache_clear():
+        with cache_lock:
+            cache.clear()
+
+    wrapped.cache_clear = cache_clear
+    return wrapped
+
+
 @sessions_router.get("/api/profiles/sessions")
 def get_profiles_sessions(
     # ``le=500`` caps the per-request page size (idea from #39200) — this
@@ -123,8 +260,9 @@ def get_profiles_sessions(
         targets.append((name, home))
     else:
         try:
-            infos = profiles_mod.list_profiles()
-            targets = [(info.name, info.path) for info in infos]
+            # This endpoint only needs name/path. Avoid list_profiles(), which
+            # parses config/meta and probes gateways/skills per profile.
+            targets = profiles_mod.profiles_to_serve(multiplex=True)
         except Exception:
             _log.exception("GET /api/profiles/sessions: list_profiles failed")
             targets = []
@@ -230,6 +368,7 @@ def get_profiles_sessions(
 
 
 @sessions_router.get("/api/profiles/sessions/sidebar")
+@_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all",
     recents_limit: int = 20,
@@ -263,8 +402,9 @@ def get_profiles_sessions_sidebar(
     from hermes_cli import profiles as profiles_mod
 
     try:
-        infos = profiles_mod.list_profiles()
-        targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
+        # Session aggregation only needs name/path; the lightweight enumerator
+        # avoids YAML/meta/gateway/skill probes for all profiles per refresh.
+        targets: List[Tuple[str, Path]] = profiles_mod.profiles_to_serve(multiplex=True)
     except Exception:
         _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
         targets = []
@@ -323,38 +463,61 @@ def get_profiles_sessions_sidebar(
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
-        try:
-            # Read-only with the stale-schema heal — same contract as the
-            # per-slice endpoint above (one-time writable reconcile when the
-            # store predates a schema addition, plain read-only otherwise).
-            db = _open_session_db_at_path(db_path, read_only=True)
-        except Exception as exc:
-            _warn_profile_read_error(name, exc)
-            errors.append({"profile": name, "error": str(exc)})
-            continue
-        try:
-            profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
-            # A full window means more rows remain on disk. That is all the
-            # sidebar's "load more" needs, and unlike an exact COUNT(*) per
-            # profile per refresh it costs nothing beyond the rows already
-            # read. Discount pinned back-fills — they arrive past the LIMIT
-            # and would otherwise fake a full page on a short list.
-            unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
-            recents_truncated[name] = unpinned_count >= recents_cap
-            recents_rows.extend(_tag(profile_rows, name))
-            # Aggregated in SQL rather than over the window above: the window is
-            # a page, and a total that shrank when you scrolled would be worse
-            # than no total at all.
-            profile_totals[name] = db.usage_totals()
-            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
-            messaging_rows.extend(
-                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
-            )
-        except Exception as exc:
-            _warn_profile_read_error(name, exc)
-            errors.append({"profile": name, "error": str(exc)})
-        finally:
-            db.close()
+        fingerprint = _sidebar_db_fingerprint(db_path)
+        profile_cache_key = (
+            str(db_path),
+            fingerprint,
+            recents_cap,
+            tuple(recents_exclude_list),
+            cron_cap,
+            messaging_cap,
+            tuple(messaging_exclude_list),
+        )
+        slices = _sidebar_profile_cache_get(profile_cache_key)
+        if slices is None:
+            try:
+                # Read-only with the stale-schema heal — same contract as the
+                # per-slice endpoint above (one-time writable reconcile when the
+                # store predates a schema addition, plain read-only otherwise).
+                db = _open_session_db_at_path(db_path, read_only=True)
+            except Exception as exc:
+                _warn_profile_read_error(name, exc)
+                errors.append({"profile": name, "error": str(exc)})
+                continue
+            try:
+                slices = {
+                    "recents": _slice(db, exclude=recents_exclude_list, cap=recents_cap),
+                    # Aggregated in SQL rather than over the recents window: the
+                    # window is a page, and a total that shrank when you scrolled
+                    # would be worse than no total at all.
+                    "usage": db.usage_totals(),
+                    "cron": _slice(db, source="cron", cap=cron_cap),
+                    "messaging": _slice(
+                        db,
+                        exclude=messaging_exclude_list,
+                        cap=messaging_cap,
+                    ),
+                }
+                _sidebar_profile_cache_put(profile_cache_key, slices)
+            except Exception as exc:
+                _warn_profile_read_error(name, exc)
+                errors.append({"profile": name, "error": str(exc)})
+                continue
+            finally:
+                db.close()
+
+        profile_rows = slices["recents"]
+        # A full window means more rows remain on disk. That is all the
+        # sidebar's "load more" needs, and unlike an exact COUNT(*) per
+        # profile per refresh it costs nothing beyond the rows already
+        # read. Discount pinned back-fills — they arrive past the LIMIT
+        # and would otherwise fake a full page on a short list.
+        unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
+        recents_truncated[name] = unpinned_count >= recents_cap
+        recents_rows.extend(_tag(profile_rows, name))
+        profile_totals[name] = slices["usage"]
+        cron_rows.extend(_tag(slices["cron"], name))
+        messaging_rows.extend(_tag(slices["messaging"], name))
 
     def _window(rows: List[Dict[str, Any]], cap: int) -> List[Dict[str, Any]]:
         rows.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)

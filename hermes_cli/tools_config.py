@@ -2316,18 +2316,22 @@ def _get_platform_tools(
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
+    # Plugin-provided toolsets are first-class on a platform-toolsets list —
+    # explicit config like ``[hermes-cli, a2a]`` must survive filtering just
+    # like a built-in configurable toolset would. See issue #81163.
+    explicit_known_keys = configurable_keys | plugin_ts_keys
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
     # This avoids the subset-inference bug where composite toolsets like
     # "hermes-cli" (which include all _HERMES_CORE_TOOLS) cause disabled
     # toolsets to re-appear as enabled.
-    has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
+    has_explicit_config = any(ts in explicit_known_keys for ts in toolset_names)
 
     if has_explicit_config:
         enabled_toolsets = {
             ts for ts in toolset_names
-            if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
+            if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)
         }
         # Mixed config: composite toolset alongside configurables (e.g.
         # ``[hermes-cli, spotify]`` after enabling Spotify via ``hermes
@@ -3297,6 +3301,46 @@ def _module_installed(module_name: str) -> bool:
         return importlib.util.find_spec(module_name) is not None
     except Exception:
         return False
+
+
+# Python dependencies installed explicitly through ``hermes tools`` are not
+# part of the managed runtime's locked ``all`` sync. A runtime replacement
+# therefore needs a small, static allowlist that can be snapshotted before the
+# old site-packages disappears and restored afterward. Keep these install
+# arguments in sync with the corresponding ``_run_post_setup`` branches.
+_RESTORABLE_PYTHON_TOOL_DEPENDENCIES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "faster_whisper": ("faster_whisper", ("-U", "faster-whisper")),
+    "kittentts": (
+        "kittentts",
+        (
+            "-U",
+            "https://github.com/KittenML/KittenTTS/releases/download/"
+            "0.8.1/kittentts-0.8.1-py3-none-any.whl",
+            "soundfile",
+        ),
+    ),
+    "piper": ("piper", ("-U", "piper-tts")),
+    "ddgs": ("ddgs", ("-U", "ddgs")),
+    "langfuse": ("langfuse", ("langfuse",)),
+}
+
+
+def active_restorable_python_tool_dependencies() -> list[str]:
+    """Return ``hermes tools`` Python dependencies present in this runtime."""
+    return [
+        name
+        for name, (module_name, _install_args) in (
+            _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.items()
+        )
+        if _module_installed(module_name)
+    ]
+
+
+def restorable_python_tool_dependency(
+    name: str,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return the import probe and pip arguments for an allowlisted tool."""
+    return _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.get(name)
 
 
 def _agent_browser_installed() -> bool:
@@ -5511,6 +5555,27 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
 
 
+def _known_tool_platforms() -> set[str]:
+    """Return built-in plus discovered plugin platform names.
+
+    Plugin platforms are registered at runtime rather than in the static CLI
+    display registry. Tool introspection/configuration must recognize those
+    names too, otherwise an active plugin platform cannot audit its authority.
+    """
+    known = set(PLATFORMS)
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+
+        discover_plugins()  # idempotent
+        known.update(platform_registry.registered_names())
+    except Exception:
+        # Plugin discovery is optional. Preserve the built-in CLI path when a
+        # third-party plugin is malformed or its dependencies are unavailable.
+        pass
+    return known
+
+
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform.
 
@@ -5521,8 +5586,9 @@ def tools_disable_enable_command(args):
     platform = getattr(args, "platform", "cli")
     config = load_config()
 
-    if platform not in PLATFORMS:
-        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(PLATFORMS)}")
+    valid_platforms = _known_tool_platforms()
+    if platform not in valid_platforms:
+        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(sorted(valid_platforms))}")
         return
 
     if action == "list":

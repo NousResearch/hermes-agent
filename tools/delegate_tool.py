@@ -119,7 +119,7 @@ def _get_subagent_approval_callback():
 # "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
-_DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+_DEFAULT_MAX_CONCURRENT_CHILDREN = 10
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -733,7 +733,7 @@ def _normalize_role(r: Optional[str]) -> str:
 
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
-    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
+    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (10).
 
     Users can raise this as high as they want; only the floor (1) is enforced.
 
@@ -1772,51 +1772,100 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
+    # Each child gets a DEDICATED SessionDB connection instead of the parent's
+    # live object. The parent's handle is owned by the parent's lifecycle
+    # (cron run_job's finally block, gateway session end, /new) and can be
+    # closed while a fire-and-forget background child is still flushing on a
+    # daemon thread — every subsequent flush then hits the closed handle and
+    # the child's transcript is silently dropped (#81267). A dedicated handle
+    # can't be closed out from under the child; it is released by the child's
+    # own close() via the owned flag set below. It MUST point at the same
+    # database FILE as the parent's handle: parents can hold non-default
+    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/
+    # state.db) for non-launch profiles), and a bare SessionDB() would write
+    # the child's transcript into the launch profile's db, breaking
+    # parent_session_id lineage and session_search. AsyncSessionDB wrappers
+    # (gateway) forward .db_path via __getattr__, so this works through them.
+    child_session_db = None
+    parent_session_db = getattr(parent_agent, "_session_db", None)
+    if parent_session_db is not None:
+        try:
+            from hermes_state import SessionDB
+
+            _parent_db_path = getattr(parent_session_db, "db_path", None)
+            child_session_db = (
+                SessionDB(db_path=_parent_db_path)
+                if _parent_db_path is not None
+                else SessionDB()
+            )
+        except Exception:
+            logger.debug(
+                "subagent: failed to open dedicated SessionDB; child persistence disabled",
+                exc_info=True,
+            )
+            child_session_db = None
+
     from agent.delegation_context import delegated_child_context
 
     with delegated_child_context():
-        child = AIAgent(
-            base_url=effective_base_url,
-            api_key=effective_api_key,
-            model=effective_model,
-            provider=effective_provider,
-            api_mode=effective_api_mode,
-            acp_command=effective_acp_command,
-            acp_args=effective_acp_args,
-            max_iterations=max_iterations,
+        try:
+            child = AIAgent(
+                base_url=effective_base_url,
+                api_key=effective_api_key,
+                model=effective_model,
+                provider=effective_provider,
+                api_mode=effective_api_mode,
+                acp_command=effective_acp_command,
+                acp_args=effective_acp_args,
+                max_iterations=max_iterations,
 
-            reasoning_config=child_reasoning,
-            prefill_messages=getattr(parent_agent, "prefill_messages", None),
-            fallback_model=parent_fallback,
-            enabled_toolsets=child_toolsets,
-            disabled_toolsets=child_disabled_toolsets,
-            quiet_mode=True,
-            ephemeral_system_prompt=child_prompt,
-            log_prefix=f"[subagent-{task_index}]",
-            platform="subagent",
-            skip_context_files=True,
-            skip_memory=True,
-            clarify_callback=None,
-            thinking_callback=child_thinking_cb,
-            session_db=getattr(parent_agent, "_session_db", None),
-            parent_session_id=getattr(parent_agent, "session_id", None),
-            providers_allowed=child_providers_allowed,
-            providers_ignored=child_providers_ignored,
-            providers_order=child_providers_order,
-            provider_sort=child_provider_sort,
-            provider_require_parameters=child_provider_require_parameters,
-            provider_data_collection=child_provider_data_collection,
-            request_overrides=(
-                dict(override_request_overrides or {})
-                if override_provider
-                else dict(getattr(parent_agent, "request_overrides", {}) or {})
-            ),
-            openrouter_min_coding_score=child_openrouter_min_coding_score,
-            tool_progress_callback=child_progress_cb,
-            iteration_budget=None,  # fresh budget per subagent
-            **child_optional_kwargs,
-        )
+                reasoning_config=child_reasoning,
+                prefill_messages=getattr(parent_agent, "prefill_messages", None),
+                fallback_model=parent_fallback,
+                enabled_toolsets=child_toolsets,
+                disabled_toolsets=child_disabled_toolsets,
+                quiet_mode=True,
+                ephemeral_system_prompt=child_prompt,
+                log_prefix=f"[subagent-{task_index}]",
+                platform="subagent",
+                skip_context_files=True,
+                skip_memory=True,
+                clarify_callback=None,
+                thinking_callback=child_thinking_cb,
+                session_db=child_session_db,
+                parent_session_id=getattr(parent_agent, "session_id", None),
+                providers_allowed=child_providers_allowed,
+                providers_ignored=child_providers_ignored,
+                providers_order=child_providers_order,
+                provider_sort=child_provider_sort,
+                provider_require_parameters=child_provider_require_parameters,
+                provider_data_collection=child_provider_data_collection,
+                request_overrides=(
+                    dict(override_request_overrides or {})
+                    if override_provider
+                    else dict(getattr(parent_agent, "request_overrides", {}) or {})
+                ),
+                openrouter_min_coding_score=child_openrouter_min_coding_score,
+                tool_progress_callback=child_progress_cb,
+                iteration_budget=None,  # fresh budget per subagent
+                **child_optional_kwargs,
+            )
+        except BaseException:
+            # Construction failed: the dedicated handle has no owner and no
+            # child close() will ever run — release it here so the sqlite fds
+            # don't outlive the failed spawn.
+            if child_session_db is not None:
+                try:
+                    child_session_db.close()
+                except Exception:
+                    pass
+            raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Ownership transfer for the dedicated handle: the child's close() must
+    # release it (nothing else holds a reference), and no parent teardown can
+    # close it out from under a background child (#81267).
+    if child_session_db is not None:
+        child._owns_session_db = True
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
@@ -2870,6 +2919,13 @@ def _run_single_child(
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            # Explicit, parent-visible truncation flag. A subagent that
+            # exhausts its per-child iteration budget still returns a summary,
+            # so `status` stays "completed" (see above) — without this the
+            # parent can't tell truncated-but-summarized from cleanly-finished
+            # work except by parsing the summary prose. exit_reason is computed
+            # authoritatively from the child's `completed` flag.
+            "truncated": exit_reason == "max_iterations",
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0

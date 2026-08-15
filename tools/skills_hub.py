@@ -3254,7 +3254,8 @@ class BrowseShSource(SkillSource):
             pass
 
         source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
-        if source_url and "raw.githubusercontent.com" in source_url:
+        from utils import base_url_host_matches
+        if source_url and base_url_host_matches(source_url, "raw.githubusercontent.com"):
             return source_url
         return None
 

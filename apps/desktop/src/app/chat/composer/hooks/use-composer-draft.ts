@@ -2,6 +2,7 @@
 // import — the bus itself is provider-agnostic). The repair provider is
 // event-driven and registers through the gateway stream instead.
 import '@/store/suggestion-providers/cron'
+import '@/store/suggestion-providers/github'
 import '@/store/suggestion-providers/mcp'
 import '@/store/suggestion-providers/skill'
 
@@ -255,7 +256,8 @@ export function useComposerDraft({
     draftRef.current = ''
 
     if (editorRef.current) {
-      editorRef.current.replaceChildren()
+      renderComposerContents(editorRef.current, '')
+      placeCaretEnd(editorRef.current)
     }
   }, [setComposerText])
 

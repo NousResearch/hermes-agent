@@ -95,7 +95,7 @@ describe('turn end without message.complete (session.info running=false)', () =>
 
     expect(tail?.role).toBe('assistant')
     expect(tail?.pending).toBe(false)
-    expect(tail?.parts).toEqual([{ type: 'text', text: 'partial answer' }])
+    expect(tail?.parts).toMatchObject([{ type: 'text', text: 'partial answer' }])
     expect(state?.streamId).toBeNull()
     expect(state?.busy).toBe(false)
   })

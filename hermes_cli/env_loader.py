@@ -637,6 +637,23 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # on its next load_hermes_dotenv() call instead of never.
         return
 
+    # Defer the registry import until we know a secrets source is enabled —
+    # agent.secret_sources.bitwarden eagerly loads cryptography._rust.pyd,
+    # which causes the Windows updater to self-lock before its preflight
+    # (the updater itself maps the .pyd before the dependency sync runs).
+    # A config with no enabled sources costs one dict scan; a config with
+    # enabled sources pays the crypto load exactly once, on demand.
+    # NOTE: only keys that smell like a real secret source trigger the import —
+    # a generic dict entry must not force crypto load on every hermes launch.
+    # We whitelist by *shape* (source dict with enabled flag) rather than
+    # hardcoding names, so plugin/test sources pass through unknown keys.
+    any_enabled = any(
+        isinstance(v, dict) and v.get("enabled") is True
+        for v in cfg.values()
+    )
+    if not any_enabled:
+        return
+
     try:
         from agent.secret_sources.registry import apply_all
     except ImportError:

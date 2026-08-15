@@ -1078,3 +1078,94 @@ def test_platforms_whose_composite_excludes_it_are_left_narrow():
             include_default_mcp_servers=False,
         )
         assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled), platform
+
+
+# Regression for issue #81163 (Layer 2): an explicitly-listed plugin toolset
+# in ``platform_toolsets.<platform>`` must survive the filter, not be dropped
+# because it isn't a built-in CONFIGURABLE_TOOLSETS entry.
+
+
+def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
+    """When a plugin toolset key is explicitly listed under
+    ``platform_toolsets.<platform>`` (alongside a composite like
+    ``hermes-cli``), it MUST be admitted as a configurable key instead of
+    being silently dropped by the has_explicit_config filter.
+
+    Reproduces the second half of #81163: even after the eager register_tools
+    fix lands, ``_get_platform_tools`` was filtering against
+    ``CONFIGURABLE_TOOLSETS`` only, so plugin keys in the explicit list were
+    excluded from ``enabled_toolsets``.
+    """
+    # Force a plugin toolset key to be present without depending on the a2a
+    # plugin being installed on disk. _get_plugin_toolset_keys() calls
+    # discover_plugins(); we patch its source so the test is hermetic.
+    import hermes_cli.plugins as _plugins_mod
+    import hermes_cli.tools_config as _tc_mod
+
+    class _StubMgr:
+        _plugin_tool_names = {"dplat_call"}
+
+        def __getattr__(self, _name):
+            return lambda *_a, **_kw: None
+
+    monkeypatch.setattr(
+        _plugins_mod, "get_plugin_toolsets",
+        lambda: [("dplat_client", "Test", "test toolset")],
+    )
+    monkeypatch.setattr(
+        _tc_mod, "_get_plugin_toolset_keys", lambda: {"dplat_client"},
+    )
+    # Discover_plugins must succeed silently under the stub.
+    monkeypatch.setattr(_plugins_mod, "discover_plugins", lambda: None)
+    # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
+    # ends up calling resolve_toolset() which can fall back to the registry
+    # for plugin-provided names. Patch resolve_toolset for "dplat_client".
+    from toolsets import TOOLSETS as _BASE_TOOLSETS
+    import toolsets as _toolsets_mod
+
+    original_resolve = _toolsets_mod.resolve_toolset
+
+    def _resolve_with_plugin(ts_key, include_registry=True):
+        if ts_key == "dplat_client":
+            return ["dplat_call"]
+        return original_resolve(ts_key, include_registry=include_registry)
+
+    monkeypatch.setattr(_toolsets_mod, "resolve_toolset", _resolve_with_plugin)
+    monkeypatch.setattr(
+        _tc_mod, "resolve_toolset", _resolve_with_plugin,
+        raising=False,
+    )
+
+    # An explicit platform_toolsets list with a plugin key alongside the
+    # standard composite — exactly the "I want hermes-cli AND a2a in my CLI
+    # session" config the issue's user was trying to write.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "dplat_client"]}}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "dplat_client" in enabled, (
+        "plugin toolset 'dplat_client' listed in platform_toolsets.cli was "
+        "dropped by _get_platform_tools — Layer 2 of #81163 not fixed"
+    )
+
+
+def test_explicit_plugin_toolset_admitted_against_real_a2a_plugin(monkeypatch):
+    """End-to-end Layer 2 regression: with the bundled a2a plugin enabled and
+    a real config like ``platform_toolsets.cli: [hermes-cli, a2a]``, ``a2a``
+    must appear in the resolved enabled toolset set. Before the fix, the
+    filter dropped all non-CONFIGURABLE keys (a2a included)."""
+    # Discover real plugins so _get_plugin_toolset_keys() sees the a2a key.
+    # If the worktree lacks bundled plugin manifests, skip — this test
+    # exercises real bundled state and is meaningless without it.
+    from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+    discover_plugins()
+    plugin_ts_keys = {k for k, _, _ in get_plugin_toolsets()}
+    if "a2a" not in plugin_ts_keys:
+        pytest.skip("bundled a2a plugin not discoverable in this worktree")
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "a2a"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "a2a" in enabled, (
+        f"plugin-provided 'a2a' toolset dropped by _get_platform_tools "
+        f"(Layer 2 of #81163); enabled={sorted(enabled)}"
+    )

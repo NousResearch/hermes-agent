@@ -207,6 +207,11 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import {
+  createParentStartMarkerResolver,
+  electronProcessStartMarker,
+  parentWatchdogEnv
+} from './parent-process-identity'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -2986,6 +2991,15 @@ async function processStartMarker(pid) {
   }
 
   if (IS_WINDOWS) {
+    const electronMarker =
+      pid === process.pid
+        ? electronProcessStartMarker(pid, process.pid, process.getCreationTime?.())
+        : null
+
+    if (electronMarker) {
+      return electronMarker
+    }
+
     const ticks = await execText('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
@@ -3127,13 +3141,16 @@ const backendOwnership = createBackendOwnership({
   }
 })
 
-let desktopParentStartMarkerPromise = null
+const desktopParentStartMarker = createParentStartMarkerResolver({
+  load: () => processStartMarker(process.pid),
+  onError: error => {
+    const detail = error instanceof Error ? error.message : String(error)
 
-function desktopParentStartMarker() {
-  desktopParentStartMarkerPromise ??= processStartMarker(process.pid)
-
-  return desktopParentStartMarkerPromise
-}
+    rememberLog(
+      `Could not resolve the Desktop process start marker; starting the backend with PID-only parent tracking: ${detail}`
+    )
+  }
+})
 
 async function claimBackendChild(child, command, profile, nonce) {
   try {
@@ -9517,6 +9534,7 @@ async function spawnPoolBackend(profile, entry) {
 
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
+  const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
   const child = spawn(
     backend.command,
@@ -9536,10 +9554,9 @@ async function spawnPoolBackend(profile, entry) {
         // scheduler tick loop (the gateway isn't running under the app).
         HERMES_DESKTOP: '1',
         // Exact parent identity lets the backend self-exit after an unclean
-        // Desktop death without mistaking a reused PID for its owner.
-        HERMES_PARENT_PID: String(process.pid),
-        HERMES_PARENT_START_MARKER: parentStartMarker,
-        HERMES_PARENT_NONCE: backendNonce,
+        // Desktop death without mistaking a reused PID for its owner. If the
+        // optional marker probe fails, retain legacy PID-only tracking.
+        ...parentIdentityEnv,
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
@@ -9848,6 +9865,7 @@ async function startHermes() {
     const profile = primaryProfileKey()
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
+    const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
     const hermesProcess = spawn(
       backend.command,
@@ -9872,10 +9890,9 @@ async function startHermes() {
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
           // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner.
-          HERMES_PARENT_PID: String(process.pid),
-          HERMES_PARENT_START_MARKER: parentStartMarker,
-          HERMES_PARENT_NONCE: backendNonce,
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
           HERMES_WEB_DIST: webDist,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },

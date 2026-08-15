@@ -220,9 +220,33 @@ def _valid_parent_start_marker(marker: str) -> bool:
     prefix, separator, value = marker.partition(":")
     if not separator or not value or value != value.strip():
         return False
-    if prefix in ("linux", "win"):
+    if prefix in ("linux", "win", "winms"):
         return value.isdigit()
     return prefix == "ps"
+
+
+def _parent_start_markers_match(actual: str, expected: str) -> bool:
+    """Compare parent markers across Desktop protocol generations.
+
+    Older Windows Desktop builds send .NET ticks (``win:``). New builds use
+    Electron's native process creation time in Unix milliseconds (``winms:``)
+    so startup does not need to launch PowerShell. The backend still reads the
+    exact FILETIME and normalizes it only when the expected marker is ``winms``.
+    """
+    if actual == expected:
+        return True
+    if not actual.startswith("win:") or not expected.startswith("winms:"):
+        return False
+
+    try:
+        dotnet_ticks = int(actual.removeprefix("win:"))
+        expected_unix_ms = int(expected.removeprefix("winms:"))
+    except ValueError:
+        return False
+
+    dotnet_ticks_at_unix_epoch = 621_355_968_000_000_000
+    actual_unix_ms = (dotnet_ticks - dotnet_ticks_at_unix_epoch) // 10_000
+    return actual_unix_ms == expected_unix_ms
 
 
 # ---------------------------------------------------------------------------
@@ -18277,7 +18301,9 @@ def _is_serve_orphaned(
     try:
         if expected_start_marker is not None:
             probe = process_start_marker or _process_start_marker
-            return probe(int(desktop_pid)) != expected_start_marker
+            return not _parent_start_markers_match(
+                probe(int(desktop_pid)), expected_start_marker
+            )
 
         if pid_exists is None:
             from gateway.status import _pid_exists

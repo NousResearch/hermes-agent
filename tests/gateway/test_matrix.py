@@ -4149,3 +4149,94 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Event content extraction across the three content shapes
+# ---------------------------------------------------------------------------
+
+class TestMatrixEventContentExtraction:
+    """``content`` arrives as a dict, a typed attrs object, or a dict-like Obj.
+
+    ``get_event``/``get_messages`` return *deserialized* mautrix events whose
+    content is a ``TextMessageEventContent``, not a dict. The previous
+    ``dict(content) if hasattr(content, "items")`` probe silently yielded
+    ``{}`` for those, so every fetched body came back empty.
+    """
+
+    def test_plain_dict_content(self):
+        from plugins.platforms.matrix.adapter import _matrix_content_dict
+
+        event = {"content": {"msgtype": "m.text", "body": "hi"}}
+        assert _matrix_content_dict(event) == {"msgtype": "m.text", "body": "hi"}
+
+    def test_typed_content_via_serialize(self):
+        from plugins.platforms.matrix.adapter import _matrix_content_dict
+
+        class _TypedContent:
+            def serialize(self):
+                return {"msgtype": "m.text", "body": "typed"}
+
+        event = types.SimpleNamespace(content=_TypedContent())
+        assert _matrix_content_dict(event) == {"msgtype": "m.text", "body": "typed"}
+
+    def test_unrecognized_content_yields_empty_dict_not_an_exception(self):
+        from plugins.platforms.matrix.adapter import _matrix_content_dict
+
+        assert _matrix_content_dict(types.SimpleNamespace(content=object())) == {}
+        assert _matrix_content_dict(None) == {}
+
+    def test_serialize_failure_falls_through(self):
+        from plugins.platforms.matrix.adapter import _matrix_content_dict
+
+        class _Broken:
+            def serialize(self):
+                raise RuntimeError("nope")
+
+        assert _matrix_content_dict(types.SimpleNamespace(content=_Broken())) == {}
+
+    def test_real_mautrix_event_body_is_extracted(self):
+        """Pins the contract against the actual SDK, not our idea of it."""
+        pytest.importorskip("mautrix")
+        from mautrix.types import Event
+
+        from plugins.platforms.matrix.adapter import _matrix_content_dict
+
+        event = Event.deserialize(
+            {
+                "type": "m.room.message",
+                "event_id": "$root",
+                "sender": "@alice:example.org",
+                "room_id": "!r:example.org",
+                "origin_server_ts": 1700000000000,
+                "content": {"msgtype": "m.text", "body": "the original post"},
+            }
+        )
+
+        content = _matrix_content_dict(event)
+        assert content.get("body") == "the original post"
+        assert content.get("msgtype") == "m.text"
+
+    def test_fetch_history_reads_bodies_from_typed_events(self):
+        """``fetch_history`` shares the extraction path and was equally
+        blind."""
+        pytest.importorskip("mautrix")
+        from mautrix.types import Event
+
+        adapter = _make_adapter()
+        event = Event.deserialize(
+            {
+                "type": "m.room.message",
+                "event_id": "$e1",
+                "sender": "@alice:example.org",
+                "room_id": "!r:example.org",
+                "origin_server_ts": 1700000000000,
+                "content": {"msgtype": "m.text", "body": "historical message"},
+            }
+        )
+
+        serialized = adapter._serialize_history_event(event)
+
+        assert serialized["body"] == "historical message"
+        assert serialized["sender"] == "@alice:example.org"
+        assert serialized["event_id"] == "$e1"

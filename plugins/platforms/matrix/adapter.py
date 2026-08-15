@@ -417,9 +417,40 @@ class _MatrixReplyContext:
     # Tri-state, mirroring _is_sender_authorized: True/False when an
     # authorization check is registered, None when one isn't.
     author_authorized: Optional[bool] = None
+    # Set only for quoted images: a local path the vision path can open.
+    media_path: Optional[str] = None
+    media_type: Optional[str] = None
 
 
 _EMPTY_REPLY_CONTEXT = _MatrixReplyContext()
+
+
+@dataclass(frozen=True)
+class _MatrixEventContext:
+    """A referenced event resolved to quotable context.
+
+    Cached in the seen-event cache. ``media_path`` is set only for
+    images resolved to a local file the vision path can open. An empty
+    ``text`` with no media is a negative-cache sentinel: the event was
+    fetched and had nothing usable, so it must not be fetched again.
+    """
+
+    sender: str
+    text: str
+    media_path: Optional[str] = None
+    media_type: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _MatrixMediaPayload:
+    """A media event resolved to a local file plus the metadata to describe it."""
+
+    cached_path: Optional[str]
+    http_url: str
+    media_type: str
+    msg_type: Any
+    is_voice: bool
+    is_encrypted: bool
 
 
 _REPLY_FALLBACK_SENDER_RE = re.compile(r"^<(@[^>]+)>\s?")
@@ -818,6 +849,67 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     if guessed_type and guessed_type.startswith("image/"):
         return True
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
+
+
+# Human labels for non-text msgtypes surfaced as reply or thread context. A
+# media event's ``body`` is its filename, so it needs a marker or the agent
+# reads "cat.png" as the quoted person's words.
+_MATRIX_MSGTYPE_LABELS = {
+    "m.image": "image",
+    "m.audio": "audio",
+    "m.video": "video",
+    "m.file": "file",
+    "m.emote": "emote",
+    "m.notice": "notice",
+    "m.location": "location",
+}
+
+
+def _label_matrix_body(msgtype: str, body: str) -> str:
+    """Mark a non-text event's body so a filename doesn't read as words.
+
+    Bare image filenames are suppressed entirely: a name with no file
+    behind it reads as a lead worth chasing, and the agent will burn
+    turns searching the filesystem for it.
+    """
+    label = _MATRIX_MSGTYPE_LABELS.get(msgtype)
+    if label is None:
+        return body
+    if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
+        body = ""
+    return f"[{label}: {body}]" if body else f"[{label}]"
+
+
+def _matrix_content_dict(event: Any) -> dict:
+    """Best-effort extraction of an event's ``content`` as a plain dict.
+
+    Events arrive in three shapes depending on the path: raw dicts (sync
+    callbacks), mautrix attrs-based typed events (``get_event`` /
+    ``get_messages``), and dict-like ``Obj`` wrappers. Returns ``{}``
+    rather than raising when the shape is unrecognized. Use
+    :meth:`MatrixAdapter._event_body` for body text: serialize() prefixes
+    an edit's body with "* ", which must not leak into quoted context.
+    """
+    content = getattr(event, "content", None)
+    if content is None and isinstance(event, dict):
+        content = event.get("content", {})
+    if isinstance(content, dict):
+        return content
+    if content is None:
+        return {}
+    # mautrix typed content (SerializableAttrs) round-trips through serialize().
+    serialize = getattr(content, "serialize", None)
+    if callable(serialize):
+        try:
+            serialized = serialize()
+            if isinstance(serialized, dict):
+                return serialized
+        except Exception:
+            pass
+    try:
+        return dict(content)
+    except Exception:
+        return {}
 
 
 def _matrix_event_timestamp_seconds(event: Any) -> float:
@@ -1354,7 +1446,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # keyed by event id. Resolves reply targets without a server
         # round-trip — and, in encrypted rooms, without needing the megolm
         # session again.
-        self._event_text_cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._event_text_cache: OrderedDict[str, _MatrixEventContext] = OrderedDict()
 
         # Thread participation tracking (for require_mention bypass)
         self._threads = ThreadParticipationTracker("matrix")
@@ -3608,18 +3700,46 @@ class MatrixAdapter(BasePlatformAdapter):
 
         return body, is_dm, chat_type, thread_id, display_name, source
 
-    def _cache_event_text(self, event_id: str, sender: str, body: str) -> None:
+    def _cache_event_text(
+        self,
+        event_id: str,
+        sender: str,
+        body: str,
+        *,
+        media_path: Optional[str] = None,
+        media_type: Optional[str] = None,
+    ) -> None:
         """Remember an event's text for later reply-context resolution."""
         if not event_id or not body:
             return
+        self._store_event_context(
+            event_id,
+            _MatrixEventContext(
+                sender=sender,
+                text=body,
+                media_path=media_path,
+                media_type=media_type,
+            ),
+        )
+
+    def _store_event_context(self, event_id: str, entry: _MatrixEventContext) -> None:
         cache = self._event_text_cache
-        cache[event_id] = (sender, body)
+        cache[event_id] = entry
         cache.move_to_end(event_id)
         while len(cache) > _EVENT_TEXT_CACHE_SIZE:
             cache.popitem(last=False)
 
-    def _cached_event_text(self, event_id: str) -> Optional[tuple[str, str]]:
-        return self._event_text_cache.get(event_id)
+    def _cached_event_text(self, event_id: str) -> Optional[_MatrixEventContext]:
+        entry = self._event_text_cache.get(event_id)
+        if entry is None:
+            return None
+        # A cached media path can be swept by cache cleanup; drop the entry
+        # so the event is re-fetched rather than handing downstream a path
+        # that no longer resolves.
+        if entry.media_path and not Path(entry.media_path).exists():
+            del self._event_text_cache[event_id]
+            return None
+        return entry
 
     def _apply_edit_to_cache(self, sender: str, source_content: dict) -> None:
         """Refresh the cached text of an edited event from ``m.new_content``.
@@ -3686,6 +3806,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # serialize(): the serialized form prefixes an edit's body with
         # "* ", which must not leak into quoted context.
         content = getattr(evt, "content", None)
+        if content is None and isinstance(evt, dict):
+            content = evt.get("content")
         if isinstance(content, dict):
             body = content.get("body", "")
         else:
@@ -3694,13 +3816,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _resolve_event_context(
         self, room_id: str, event_id: str
-    ) -> Optional[tuple[str, str]]:
-        """Resolve the sender and text of an event for reply context.
+    ) -> Optional[_MatrixEventContext]:
+        """Resolve the sender, text and media of an event for reply context.
 
         Checks the seen-event cache first, then fetches the event via
-        ``/rooms/{roomId}/event/{eventId}``, decrypting when needed.
-        Returns ``(sender, body)``, or ``None`` when the event cannot be
-        resolved — callers degrade to an id-only reference.
+        ``/rooms/{roomId}/event/{eventId}``, decrypting when needed. A
+        non-text event is labelled by msgtype so its filename body does
+        not read as the sender's words, and a quoted image is downloaded
+        so the vision path receives the picture rather than its name.
+        Returns ``None`` when the event cannot be resolved; callers
+        degrade to an id-only reference.
         """
         if not event_id:
             return None
@@ -3723,18 +3848,58 @@ class MatrixAdapter(BasePlatformAdapter):
         if evt is None:
             return None
 
+        sender = str(getattr(evt, "sender", "") or "")
+        if not sender and isinstance(evt, dict):
+            sender = str(evt.get("sender", "") or "")
         body = self._event_body(evt).strip()
-        if not body:
-            return None
         # A fetched parent may itself be a legacy reply; keep only its own text.
         body, _, _ = _strip_reply_fallback(body)
         body = body.strip()
-        if not body:
-            return None
 
-        sender = str(getattr(evt, "sender", "") or "")
-        self._cache_event_text(event_id, sender, body)
-        return sender, body
+        content = _matrix_content_dict(evt)
+        msgtype = str(content.get("msgtype", "") or "")
+
+        if msgtype == "m.image":
+            entry = await self._resolve_quoted_image(content, event_id, body, sender)
+        else:
+            text = _label_matrix_body(msgtype, body)
+            if not text:
+                return None
+            entry = _MatrixEventContext(sender=sender, text=text)
+
+        self._store_event_context(event_id, entry)
+        return entry
+
+    async def _resolve_quoted_image(
+        self,
+        content: dict,
+        event_id: str,
+        body: str,
+        sender: str,
+    ) -> _MatrixEventContext:
+        """Download a quoted image so it reaches the agent as a real picture.
+
+        Falls back to a bare ``[image]`` marker when the download fails;
+        the marker deliberately omits the filename because there is no
+        file behind it (see :func:`_label_matrix_body`).
+        """
+        text = _label_matrix_body("m.image", body)
+
+        payload = await self._extract_media_payload(
+            content, event_id, "m.image", body
+        )
+        if payload is None or not payload.cached_path:
+            logger.debug(
+                "Matrix: quoted image %s unavailable; sending marker only", event_id
+            )
+            return _MatrixEventContext(sender=sender, text=text)
+
+        return _MatrixEventContext(
+            sender=sender,
+            text=text,
+            media_path=payload.cached_path,
+            media_type=payload.media_type,
+        )
 
     async def _resolve_reply_context(
         self,
@@ -3776,7 +3941,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if resolved is None:
             return _EMPTY_REPLY_CONTEXT
 
-        sender, text = resolved
+        sender = resolved.sender
         author_name = await self._get_display_name(room_id, sender) if sender else None
         is_own = bool(sender) and sender == self._user_id
 
@@ -3789,11 +3954,13 @@ class MatrixAdapter(BasePlatformAdapter):
             )
 
         return _MatrixReplyContext(
-            text=text,
+            text=resolved.text,
             author_id=sender or None,
             author_name=author_name,
             is_own_message=is_own,
             author_authorized=authorized,
+            media_path=resolved.media_path,
+            media_type=resolved.media_type,
         )
 
     async def fetch_thread_context(
@@ -3845,7 +4012,7 @@ class MatrixAdapter(BasePlatformAdapter):
         entries: list[tuple[str, str]] = []
         root = await self._resolve_event_context(chat_id, thread_id)
         if root is not None:
-            entries.append(root)
+            entries.append((root.sender, root.text))
 
         # The relations endpoint returns newest-first with dir=b.
         for raw in reversed(chunk[:limit]):
@@ -3870,6 +4037,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 if not isinstance(body, str):
                     continue
                 body, _, _ = _strip_reply_fallback(body)
+                # A media body is its filename; labelled it stops reading
+                # as the sender's words.
+                body = _label_matrix_body(
+                    str(content.get("msgtype", "") or ""), body.strip()
+                )
             body = body.strip()
             if not body:
                 continue
@@ -3891,7 +4063,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Decrypt one raw encrypted event from a relations response."""
         cached = self._cached_event_text(event_id)
         if cached is not None:
-            return cached
+            return cached.sender, cached.text
 
         crypto = getattr(self._client, "crypto", None)
         if crypto is None or MatrixEvent is None:
@@ -3970,12 +4142,23 @@ class MatrixAdapter(BasePlatformAdapter):
         if body.startswith("/"):
             msg_type = MessageType.COMMAND
 
+        # A quoted image rides along so the vision path can see it: asking
+        # "what tree is this?" in a reply to a photo needs the photo, not
+        # its filename. Always lists; _enqueue_text_event extends these in
+        # place when merging batched chunks.
+        media_urls = [reply_ctx.media_path] if reply_ctx.media_path else []
+        media_types = (
+            [reply_ctx.media_type or "image/jpeg"] if reply_ctx.media_path else []
+        )
+
         msg_event = MessageEvent(
             text=body,
             message_type=msg_type,
             source=source,
             raw_message=source_content,
             message_id=event_id,
+            media_urls=media_urls,
+            media_types=media_types,
             reply_to_message_id=relation.reply_target,
             reply_to_text=reply_ctx.text,
             reply_to_author_id=reply_ctx.author_id,
@@ -4000,25 +4183,28 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             await self.handle_message(msg_event)
 
-    async def _handle_media_message(
+    async def _extract_media_payload(
         self,
-        room_id: str,
-        sender: str,
+        content: dict,
         event_id: str,
-        event_ts: float,
-        source_content: dict,
-        relates_to: dict,
         msgtype: str,
-    ) -> None:
-        """Process a media message event (image, audio, video, file)."""
-        body = source_content.get("body", "") or ""
-        url = source_content.get("url", "")
+        body: str,
+    ) -> Optional[_MatrixMediaPayload]:
+        """Resolve a media event's content to a local file plus its metadata.
+
+        Returns ``None`` when the event must be rejected outright (non-MXC
+        URL or over ``MATRIX_MAX_MEDIA_BYTES``). Shared by the inbound
+        media handler and by quoted-event resolution, so a replied-to
+        image reaches the vision path the same way a directly-attached
+        one does.
+        """
+        url = content.get("url", "")
         if url and not str(url).startswith("mxc://"):
             logger.warning(
                 "[Matrix] Rejecting inbound media %s with non-MXC URL",
                 event_id,
             )
-            return
+            return None
 
         # Convert mxc:// to HTTP URL for downstream processing.
         http_url = ""
@@ -4026,7 +4212,7 @@ class MatrixAdapter(BasePlatformAdapter):
             http_url = self._mxc_to_http(url)
 
         # Extract MIME type from content info.
-        content_info = source_content.get("info", {})
+        content_info = content.get("info", {})
         if not isinstance(content_info, dict):
             content_info = {}
         event_mimetype = content_info.get("mimetype", "")
@@ -4042,10 +4228,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 event_size_int,
                 self._max_media_bytes,
             )
-            return
+            return None
 
         # For encrypted media, the URL may be in file.url.
-        file_content = source_content.get("file", {})
+        file_content = content.get("file", {})
         if not url and isinstance(file_content, dict):
             url = file_content.get("url", "") or ""
             if url and not str(url).startswith("mxc://"):
@@ -4053,7 +4239,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "[Matrix] Rejecting inbound encrypted media %s with non-MXC URL",
                     event_id,
                 )
-                return
+                return None
             if url and url.startswith("mxc://"):
                 http_url = self._mxc_to_http(url)
 
@@ -4069,7 +4255,7 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_type = MessageType.PHOTO
             media_type = event_mimetype or "image/png"
         elif msgtype == "m.audio":
-            if source_content.get("org.matrix.msc3245.voice") is not None:
+            if content.get("org.matrix.msc3245.voice") is not None:
                 is_voice_message = True
                 msg_type = MessageType.VOICE
             else:
@@ -4169,6 +4355,34 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
 
+        return _MatrixMediaPayload(
+            cached_path=cached_path,
+            http_url=http_url,
+            media_type=media_type,
+            msg_type=msg_type,
+            is_voice=is_voice_message,
+            is_encrypted=is_encrypted_media,
+        )
+
+    async def _handle_media_message(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        event_ts: float,
+        source_content: dict,
+        relates_to: dict,
+        msgtype: str,
+    ) -> None:
+        """Process a media message event (image, audio, video, file)."""
+        body = source_content.get("body", "") or ""
+
+        payload = await self._extract_media_payload(
+            source_content, event_id, msgtype, body
+        )
+        if payload is None:
+            return
+
         relation = _parse_relates_to(relates_to)
 
         ctx = await self._resolve_message_context(
@@ -4199,17 +4413,24 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
-        allow_http_fallback = bool(http_url) and not is_encrypted_media
+        allow_http_fallback = bool(payload.http_url) and not payload.is_encrypted
         media_urls = (
-            [cached_path]
-            if cached_path
-            else ([http_url] if allow_http_fallback else None)
+            [payload.cached_path]
+            if payload.cached_path
+            else ([payload.http_url] if allow_http_fallback else None)
         )
-        media_types = [media_type] if media_urls else None
+        media_types = [payload.media_type] if media_urls else None
+
+        # A quoted image rides along so the vision path can see it.
+        if reply_ctx.media_path:
+            media_urls = (media_urls or []) + [reply_ctx.media_path]
+            media_types = (media_types or []) + [
+                reply_ctx.media_type or "image/jpeg"
+            ]
 
         msg_event = MessageEvent(
             text=body,
-            message_type=msg_type,
+            message_type=payload.msg_type,
             source=source,
             raw_message=source_content,
             message_id=event_id,
@@ -5025,11 +5246,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return []
 
     def _serialize_history_event(self, event: Any) -> dict[str, Any]:
-        content = getattr(event, "content", None)
-        if content is None and isinstance(event, dict):
-            content = event.get("content", {})
-        if not isinstance(content, dict):
-            content = dict(content) if hasattr(content, "items") else {}
+        content = _matrix_content_dict(event)
         return {
             "event_id": str(
                 getattr(event, "event_id", "")

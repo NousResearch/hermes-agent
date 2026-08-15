@@ -8,7 +8,7 @@ It must never raise, must accurately report success/failure via its return
 value, must use a credential-scrubbed and PATH-propagated environment (it
 runs registry-fetched, potentially install-scripted npm code on every
 `hermes update` — not only when a browser tool is actually used), must pass
---ignore-scripts (AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range, not an
+--ignore-scripts (AGENT_BROWSER_NPX_SPEC is a floating ^0.34.0 range, not an
 exact pin), and must kill the whole process tree — not just the top-level
 npx PID — on timeout.
 """

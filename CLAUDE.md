@@ -354,6 +354,12 @@ Auth: `Authorization: Bearer ${MCP_AUTH_TOKEN}` from `.env.secrets`.
 
 **Backoff:** Exponential (5, 10, 15... up to 60 min) between recovery attempts. Max 10 consecutive failures before giving up. Counter resets on healthy check. Prevents restart loops (incident 2026-05-11: 10+ restarts in 4h).
 
+**Capability blind spot (incident 2026-08-12→15):** the bridge watchdog probes the MCP *bridge*, not the backend. The roo-state-manager instance behind sparfenyuk died (GDrive stall) yet kept signing the initialize handshake in ~5 ms while every tool call returned `isError:true` — both bots (Hermes + NanoClaw) lost dashboard access for ~3.5 days (~72 cycles) with processes, ports and freshness all green. The bots **said** it ("bus down 40+ cycles") and nobody read their messages. Fix chain, applied by ai-01 15/08:
+- `roo-extensions/scripts/mcp-watchdog/mcp-chain-watchdog.ps1` (commit `f6580da6`, 2-min tick): probe = real tool call (`roosync_dashboard list`, the GDrive-touching path), repair = full sequence Stop+Start `MCP-Proxy-RSM` + `docker restart myia-mcp-proxy`, 15-min cooldown.
+- Surveillance routine (`.claude/cron-surveillance-prompt.md`): check 6 = bus freshness = last *bot* write on `workspace-cluster-coordination` (operator posts pollute freshness); check 8 = read what the bots say (regex `bus down|undelivered|fallback|write failed|...`); check 7 = never attribute a missing global post to prompt-skip before ruling out the bus.
+
+**Lesson:** verify what the bots can DO and what they SAY, not just that they run.
+
 ### Review activity (watchdog)
 
 **Why:** The pr-review cron (`c8559be3577c`, hourly at :23) can complete with `status=ok` yet post **zero reviews** — a silent failure (model/provider breakdown, gh-auth drift, rate-limit storm). Cron status does not reflect actual review output, so the business signal (reviews posted on GitHub) must be watched directly.

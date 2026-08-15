@@ -11,6 +11,15 @@
     global post (issue jsboige/hermes-agent #3). Prompt-side emphasis reached its
     limit; a prompt cannot close a prompt-skipping defect.
 
+    Post-hoc root cause (2026-08-15, ai-01): the 12→15/08 skips were caused by the
+    roo-state-manager backend instance dying behind sparfenyuk — initialize was still
+    signed in ~5 ms while every tool call returned isError:true, so processes, ports
+    and freshness all stayed green while the dashboard write path was dead (fix:
+    MCP-Proxy-RSM Stop+Start + docker restart myia-mcp-proxy, hardened in
+    roo-extensions mcp-chain-watchdog.ps1 commit f6580da6). A missing post is a GAP
+    regardless of cause: this watchdog flags it, and the operator attributes it by
+    cross-referencing bus state (surveillance routine checks 6/8).
+
     This watchdog is the ai-01-specified "organe" (design validated, 5 points):
       1. separate cron shifted ~15min after each cluster-tour fire; NEVER re-fires
          the tour (verifier, not duplicate);
@@ -185,7 +194,7 @@ function Append-GlobalWarn {
             "",
             "## [WARN] cluster-tour ETAPE 3 non exécutée — tour $TourTs",
             "",
-            "**Watchdog:** le fire `hermes-cluster-tour` ($TourTs UTC) a rapporté `status=ok` mais aucun append `[CLUSTER-HEALTH]` sur ce dashboard global dans les $PostMarginMinutes min suivantes. Silent-skip du post global (issue jsboige/hermes-agent #3). Vérification programmatique post-cron. Le tour n'est PAS re-firé (spec ai-01).",
+            "**Watchdog:** le fire `hermes-cluster-tour` ($TourTs UTC) a rapporté `status=ok` mais aucun append `[CLUSTER-HEALTH]` sur ce dashboard global dans les $PostMarginMinutes min suivantes. Cause possible : échec silencieux du write MCP (bus RooSync down, cf. incident 12→15/08 : instance RSM morte derrière sparfenyuk, handshake OK) OU prompt-skip (issue jsboige/hermes-agent #3). Croiser avec l'état du bus MCP (checks 6/8 de la routine opérateur). Vérification programmatique post-cron. Le tour n'est PAS re-firé (spec ai-01).",
             ""
         ) -join "`n"
         Add-Content -Path $GlobalDashFile -Value $warn -Encoding UTF8

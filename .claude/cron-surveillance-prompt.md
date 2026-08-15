@@ -46,14 +46,22 @@ Identifie : le dernier `[STATUS 12h]`, le dernier Tour `[CLUSTER-HEALTH] T#N` su
    `schtasks /query /tn Hermes-MCP-Watchdog /fo list | findstr /i "Last Result"`
    Attendu : `Result = 0` (ou Ready). Red flag : missed runs accumulés.
 
-6. **Fraîcheur NanoClaw** :
+6. **Fraîcheur NanoClaw + bus RooSync (capabilité)** :
    `roosync_dashboard(action: "read", type: "workspace", workspace: "nanoclaw", section: "status")`
    lastModified : <14h OK, 14-36h WARN, >36h ERROR.
+   **PIÈGE (incident 12→15/08)** : la fraîcheur de workspace-nanoclaw est polluée par les posts opérateur d'ai-01 — elle ne prouve PAS que le bot NanoClaw écrit. Le signal du bus = le dernier write d'un BOT sur `workspace-cluster-coordination`. Pour Hermes : dernier message de `po-2026|hermes-agent` sur cluster-coordination < 2h → write path MCP OK. > 2h pendant que les reviews sont actives → write MCP cassé (bus down) → WARN/ERROR.
 
 7. **Cluster-tour global** :
    Vérifie dans le global dashboard lu en début : le `[CLUSTER-HEALTH] T#N` le plus récent.
    Fraîcheur attendue < 24h (le bot poste via ETAPE 3 inconditionnelle).
-   Si > 36h : le fix ETAPE 3 a pu régresser, flag WATCH.
+   **Attribution AVANT escalade** : un post manquant pendant une panne bus = échec silencieux du write MCP (capability, cf. 12→15/08 : instance RSM morte qui signait encore le handshake), PAS un défaut de prompt (issue #3). Croiser d'abord les checks 6/8. Ne jamais conclure "régression prompt" sans avoir écarté le bus.
+   Si > 36h : escalade critère (d).
+
+8. **Lire ce que disent les bots (contenu)** :
+   Échantillonne les derniers posts de `po-2026|hermes-agent` (cluster-coordination + global) et les messages récents des bots nanoclaw pour des patterns de plainte :
+   `bus down|undelivered|fallback|write failed|no dashboard|sharedPath|MCP.*down|recovery|downgrad`
+   Pattern trouvé = le bot signale une dégradation de capacité → investiguer, escalader.
+   Pourquoi : la panne 12→15/08 était invisible aux process/timestamps (handshake OK, process verts) — SEULS les messages du bot ("bus down 40+ cycles") la signalaient. Vérifier ce que disent les bots, pas seulement qu'ils tournent.
 
 ## Post (OBLIGATOIRE, fin de session)
 
@@ -81,6 +89,7 @@ PushNotification + `roosync_send(to: "myia-ai-01", ...)` si l'une de :
 - (b) reviews bot stoppées > 4h
 - (c) NanoClaw dashboard > 36h
 - (d) cluster-tour global > 36h
+- (e) bus MCP du bot down : dernier write bot sur cluster-coordination > 2h (reviews actives) OU patterns de plainte visibles (check 8) — la capacité MCP est un prérequis à la mission, pas un détail
 
 Sinon : **PAS d'escalade** (PushNotification/roosync_send non justifiés — nominal).
 

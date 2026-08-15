@@ -133,3 +133,29 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_runner_drops_stale_override_after_restart(store_factory, caplog):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "claude-sonnet",
+            "provider": "removed-provider",
+            "base_url": "https://removed.example/v1",
+        },
+    )
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        side_effect=RuntimeError("Provider removed from config"),
+    ):
+        with caplog.at_level("INFO", logger="gateway.run"):
+            runner._rehydrate_session_model_override(session_key)
+
+    # A stale override whose provider can no longer be resolved must be
+    assert runner._session_model_overrides.get(session_key) is None
+    assert "Dropping stale persisted /model override" in caplog.text

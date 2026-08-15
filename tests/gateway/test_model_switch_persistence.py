@@ -120,6 +120,31 @@ class TestApplySessionModelOverride:
         assert model == orig_model
         assert rt == orig_rt
 
+    def test_stale_override_without_api_key_skips_provider(self):
+        """A credential-less override must not poison runtime_kwargs."""
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+
+        runner._session_model_overrides[sk] = {
+            "model": "gpt-5.4-turbo",
+            "provider": "removed-provider",
+            "base_url": "https://removed.example/v1",
+            "api_mode": "chat_completions",
+            # no api_key -> provider cannot be resolved anymore
+        }
+
+        orig_rt = {
+            "provider": "anthropic",
+            "api_key": "ant-key",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+        model, rt = runner._apply_session_model_override(sk, "anthropic/claude-sonnet-4", dict(orig_rt))
+
+        assert model == "gpt-5.4-turbo"
+        # stale provider keys must not clobber the valid runtime kwargs
+        assert rt == orig_rt
+
 
 # ---------------------------------------------------------------------------
 # Tests: _is_intentional_model_switch

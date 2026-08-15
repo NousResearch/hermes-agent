@@ -42,9 +42,27 @@ def _get_flush_dir():
     from hermes_constants import get_hermes_home
 
     flush_dir = get_hermes_home() / "pending_messages"
+    try:
+        from hermes_cli.config import is_managed
+
+        managed = is_managed()
+    except Exception:
+        managed = False
+
+    if managed:
+        flush_dir.mkdir(parents=True, exist_ok=True)
+        return flush_dir
+
     flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
-        os.chmod(flush_dir, 0o700)
+        try:
+            from hermes_cli.config import _secure_dir
+
+            _secure_dir(flush_dir)
+        except Exception as exc:
+            logger.debug(
+                "Could not reconcile pending-message directory mode: %s", exc
+            )
     return flush_dir
 
 

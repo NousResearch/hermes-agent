@@ -2083,7 +2083,6 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     expect(currentPromptRows).toHaveLength(1)
     expect(JSON.stringify(resumedState?.messages)).toContain('partial answer')
->>>>>>> bfb973e25c (fix(desktop): preserve full transcripts for running sessions)
   })
 
   it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {

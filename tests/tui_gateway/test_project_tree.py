@@ -631,3 +631,29 @@ def test_non_git_folder_lane_matches_overlay_scheme():
     assert result["lane_key"] == expected, (
         f"Expected lane_key={expected!r} but got {result['lane_key']!r}"
     )
+
+
+def test_heuristic_lane_ids_for_kanban_and_wt_suffix_are_unchanged():
+    """The branch-style id applies ONLY to the plain-folder fallback.
+
+    Kanban worktrees keep the ::kanban id and `<repo>-wt-<slug>` folders keep
+    the raw-path lane key so existing worktree lanes don't fork.
+    """
+    kanban = pt._place_by_heuristic("/www/app/.worktrees/t_1a2b3c")
+    assert kanban is not None
+    assert kanban["lane_key"] == pt._kanban_lane_id("/www/app")
+    assert kanban["is_kanban"] is True
+
+    wt = pt._place_by_heuristic("/www/app-wt-feature")
+    assert wt is not None
+    assert wt["lane_key"] == "/www/app-wt-feature"
+    assert wt["lane_label"] == "feature"
+    assert wt["is_main"] is False
+
+
+def test_equivalent_windows_spellings_derive_one_lane_key():
+    """Lane identity must collapse separator/trailing-slash variants (#62165)."""
+    a = pt._place_by_heuristic("C:/work/notes")
+    b = pt._place_by_heuristic("C:\\work\\notes\\")
+    assert a is not None and b is not None
+    assert pt._lane_key(a["lane_key"]) == pt._lane_key(b["lane_key"])

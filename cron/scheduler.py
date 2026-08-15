@@ -3797,10 +3797,34 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
             ):
                 return True
         if isinstance(cur, OSError):
-            # errno 8 = EAI_NONAME on macOS ("nodename nor servname provided")
-            err_no = getattr(cur, "errno", None)
-            if err_no in {8, 7, 11, 51, 60, 61, 65}:  # common resolve/conn failures
-                return True
+            # Platform-safe classification (the raw-literal set {8, 7, 11, ...}
+            # from the first revision mixed macOS getaddrinfo constants with
+            # errno values and does not hold on Linux — see PR review).
+            # socket.gaierror carries getaddrinfo codes (EAI_*), plain OSError
+            # carries errno; compare each against its own constant namespace.
+            import errno as _errno
+            import socket as _socket
+
+            if isinstance(cur, _socket.gaierror):
+                _eai_transient = {
+                    getattr(_socket, _n)
+                    for _n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
+                    if hasattr(_socket, _n)
+                }
+                if cur.errno in _eai_transient:
+                    return True
+            else:
+                err_no = getattr(cur, "errno", None)
+                if err_no in {
+                    _errno.ECONNREFUSED,
+                    _errno.ECONNRESET,
+                    _errno.EHOSTUNREACH,
+                    _errno.ENETUNREACH,
+                    _errno.ENETDOWN,
+                    _errno.ETIMEDOUT,
+                    _errno.EAGAIN,
+                }:
+                    return True
             if any(
                 needle in msg
                 for needle in (

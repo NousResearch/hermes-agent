@@ -3926,9 +3926,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _err_type = getattr(chunk, "error_type", None)
                 _err_msg = getattr(chunk, "error_message", None)
                 if _err_type or _err_msg:
-                    raise RuntimeError(
-                        f"Provider in-stream error"
-                        f" ({_err_type or 'unknown'}): {_err_msg or chunk}"
+                    _status = _status_code_from_payload(
+                        {"code": _err_type, "message": _err_msg}
+                    ) or _status_code_from_value(_err_type)
+                    raise ProviderStreamError(
+                        status_code=_status,
+                        body=_provider_error_body(
+                            {
+                                "code": _err_type or "provider_in_stream_error",
+                                "message": str(_err_msg or chunk),
+                            },
+                            _status,
+                        ),
+                        raw_text=f"{_err_type}: {_err_msg}",
                     )
                 continue
 

@@ -5652,6 +5652,49 @@ class TestStreamingApiCall:
         assert "Rate limit exceeded" in str(exc)
         agent.stream_delta_callback.assert_not_called()
 
+    def test_choiceless_error_chunk_raises_provider_stream_error(self, agent):
+        """DeepInfra-style in-stream error: choices=None + error_type/error_message.
+
+        Regression for #65631: the choiceless-chunk skip silently dropped
+        error-bearing chunks, the stream ended empty, and the caller got a
+        misleading EmptyStreamError plus pointless retries of the same bad
+        request. The chunk must instead surface as ProviderStreamError so
+        the classifier sees the real provider error.
+        """
+        err_chunk = SimpleNamespace(
+            model="test/model",
+            choices=None,
+            error_type="400 BadRequestError",
+            error_message="context length exceeded",
+        )
+        agent.client.chat.completions.create.return_value = iter([err_chunk])
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert type(exc).__name__ == "ProviderStreamError"
+        assert getattr(exc, "status_code", None) == 400
+        assert "context length exceeded" in str(exc)
+        agent.stream_delta_callback.assert_not_called()
+
+    def test_choiceless_usage_only_chunk_still_skipped(self, agent):
+        """Usage-only final chunks (choices empty, no error fields) keep flowing."""
+        usage = SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3)
+        chunks = [
+            _make_chunk(content="Hi"),
+            _make_chunk(finish_reason="stop"),
+            SimpleNamespace(model="test/model", choices=[], usage=usage),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.choices[0].message.content == "Hi"
+        assert resp.choices[0].finish_reason == "stop"
+
     def test_named_non_json_sse_error_preserves_provider_message(self, agent):
         """SDK-level plain-text SSE errors retain their actionable message."""
         import httpx

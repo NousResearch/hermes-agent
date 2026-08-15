@@ -2791,6 +2791,8 @@ export interface Translations {
       statusError: string
       statusRecovered: string
       statusDone: string
+      /** Background delegation started, but this transcript is not watching it. */
+      statusDispatched: string
       /** Delegated child produced output that nothing has verified yet. */
       statusUnverified: string
       /** Delegated child ran out of budget or was cut short mid-flight. */

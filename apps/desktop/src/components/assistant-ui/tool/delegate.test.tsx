@@ -66,4 +66,11 @@ describe('delegate card status glyph', () => {
     expect(screen.getByLabelText(copy.statusUnverified)).toBeTruthy()
     expect(screen.queryByLabelText(copy.statusDone)).toBeNull()
   })
+
+  it('labels a background delegation as dispatched, not done', () => {
+    renderCard({ goals: ['Research Cursor'], status: 'dispatched' })
+
+    expect(screen.getByLabelText(copy.statusDispatched)).toBeTruthy()
+    expect(screen.queryByLabelText(copy.statusDone)).toBeNull()
+  })
 })

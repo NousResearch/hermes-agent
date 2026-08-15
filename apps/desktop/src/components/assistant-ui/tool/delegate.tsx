@@ -47,7 +47,7 @@ function statusGlyph(tone: DelegateRowTone, label: string): ReactNode {
     // Parked, not watched: the children outlived the turn that spawned them
     // and nothing in this transcript is streaming their progress. A spinner
     // here would claim a liveness we can't back up.
-    return <span aria-hidden className="size-1.5 rounded-full bg-(--ui-text-tertiary)" />
+    return <span aria-label={label} className="size-1.5 rounded-full bg-(--ui-text-tertiary)" />
   }
 
   // Outstanding, not done. A green check here would read the child's lifecycle
@@ -78,7 +78,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   const statusLabel: Record<DelegateRowTone, string> = {
     failed: copy.statusError,
     live: copy.statusRunning,
-    parked: copy.statusDone,
+    parked: copy.statusDispatched,
     partial: copy.statusPartial,
     unverified: copy.statusUnverified
   }

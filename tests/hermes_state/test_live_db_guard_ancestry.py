@@ -54,11 +54,17 @@ else:
 
 
 def _scrubbed_env(**overrides):
-    """The environment a rebuilt-from-scratch child spawn ends up with."""
+    """The environment a rebuilt-from-scratch child spawn ends up with.
+
+    Also strips ``HERMES_TEST_ISOLATION`` — the conftest-exported marker
+    layer would otherwise arm the guard first and these tests would no
+    longer prove anything about the ancestry fallback they exist to pin.
+    """
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("PYTEST_") and k != "HERMES_HOME"
+        if not k.startswith("PYTEST_")
+        and k not in ("HERMES_HOME", "HERMES_TEST_ISOLATION")
     }
     env.update(overrides)
     return env

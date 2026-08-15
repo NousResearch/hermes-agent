@@ -461,11 +461,24 @@ def _real_platform_state_root() -> Optional[Path]:
         return None
 
 
+#: Env marker exported by the hermetic test conftest at the same moment it
+#: redirects ``HERMES_HOME`` to the per-session tmp isolation root.  Its
+#: value is that isolation root.  Unlike ``PYTEST_*`` (owned by pytest, and
+#: routinely scrubbed by tests that rebuild a child environment), this marker
+#: is OURS: it declares "this process tree is running under Hermes test
+#: isolation", and it inherits into subprocess children by default — so a
+#: child that received the patched ``HERMES_HOME`` also received the marker,
+#: and a child that resolves a production DB while carrying it is, by
+#: definition, an isolation escape (#82770).
+_TEST_ISOLATION_MARKER_ENV = "HERMES_TEST_ISOLATION"
+
+
 def _running_under_pytest() -> bool:
     """True when this process (or a parent test process) is a pytest run."""
     return bool(
         os.environ.get("PYTEST_CURRENT_TEST")
         or os.environ.get("PYTEST_VERSION")
+        or os.environ.get(_TEST_ISOLATION_MARKER_ENV)
     )
 
 

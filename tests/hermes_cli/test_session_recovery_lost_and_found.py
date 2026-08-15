@@ -407,7 +407,7 @@ def _make_synthetic_lost_and_found(
 
         # Junk that must NOT be classified into canonical tables.
         insert(3, 300, ["random", "noise", 42])
-        insert(54, 301, ["not-a-session-id", "cli"] + [None] * 52)
+        insert(55, 301, ["not-a-session-id", "cli"] + [None] * 53)
         insert(23, 302, [None, "sess-x", "not-a-role", "junk"])
     finally:
         conn.close()
@@ -428,7 +428,7 @@ def test_classify_lost_and_found_row_sentinels() -> None:
     )
     assert (
         classify_lost_and_found_row(
-            54, ("20260101_010101_aaa001", "cli") + (None,) * 52
+            55, ("20260101_010101_aaa001", "cli") + (None,) * 53
         )
         == "sessions"
     )
@@ -453,7 +453,7 @@ def test_classify_lost_and_found_row_sentinels() -> None:
     # Junk shapes.
     assert classify_lost_and_found_row(3, ("random", "noise", 42)) is None
     assert (
-        classify_lost_and_found_row(54, ("not-a-session-id", "cli") + (None,) * 52)
+        classify_lost_and_found_row(55, ("not-a-session-id", "cli") + (None,) * 53)
         is None
     )
     assert (

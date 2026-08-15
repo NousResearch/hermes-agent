@@ -1498,10 +1498,13 @@ try {
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
-    if ($res.Code -ne 0 -and $res.Code -ne 2) {
-        # One retry for the update-boundary class (fresh code on disk, stale
-        # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
-        Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
+    . (Join-Path $PSScriptRoot "retry-policy.ps1")
+    if (Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot) {
+        # One retry for update-boundary failures. Most exit-2 safety refusals
+        # remain terminal, but self-lock deferral also uses exit 2 and writes
+        # .update-incomplete after the code swap. A fresh process consumes that
+        # marker before native imports, then resumes the full update pipeline.
+        Write-HandoffLog "first attempt left retryable update state; retrying once in a fresh process"
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"

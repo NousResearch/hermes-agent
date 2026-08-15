@@ -459,6 +459,67 @@ class TestBackendCdpResolution:
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
 
+class TestOwnTabPreamble:
+    """Named sessions on SHARED browsers get the own-tab preamble prepended;
+    private per-name browsers and unnamed sessions do not."""
+
+    def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        if provider:
+            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+            monkeypatch.setattr(
+                bt, "_get_session_info",
+                lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
+            )
+        else:
+            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        # fake CLI echoes stdin back so we can inspect what code was sent
+        cli = _fake_cli(tmp_path, "cat\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        return json.loads(bu_cli.browser_exec("print('payload')", session=session))
+
+    def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, session="r7k2")
+        assert result["success"] is True
+        assert "_hermes_ensure_own_tab" in result["output"]
+        # model code still present, after the preamble
+        assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
+
+    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, session="")
+        assert result["success"] is True
+        assert "_hermes_ensure_own_tab" not in result["output"]
+
+    def test_named_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
+        """Per-name provider browsers are private — preamble would leak a tab."""
+        result = self._run(tmp_path, monkeypatch, session="r7k2", provider=True)
+        assert result["success"] is True
+        assert "_hermes_ensure_own_tab" not in result["output"]
+
+    def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+        monkeypatch.setattr(
+            bt, "_get_session_info",
+            lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
+        )
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
+        assert "sentinel:unset" in result["output"]
+
+    def test_preamble_is_valid_python(self):
+        import ast
+
+        ast.parse(bu_cli._OWN_TAB_PREAMBLE)
+        # and composes with model code
+        ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
+
+
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend
     marker) must enter/leave CLI mode cleanly and highlight correctly."""

@@ -39,10 +39,7 @@ export function reconcileFreshFirst(currentIds: string[], orderIds: string[]): s
   // self-perpetuate through reconcile, and duplicate live ids (e.g. the same
   // repo surfacing under several projects) must not be written back into the
   // saved order — either one paints as duplicate headers (#73314).
-  return mergeFreshByPosition(
-    [...new Set(currentIds)],
-    [...new Set(orderIds.filter(id => current.has(id)))]
-  )
+  return mergeFreshByPosition([...new Set(currentIds)], [...new Set(orderIds.filter(id => current.has(id)))])
 }
 
 export function resolveManualSessionOrderIds(currentIds: string[], orderIds: string[], manual: boolean): string[] {

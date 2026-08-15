@@ -161,7 +161,7 @@ import {
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
-import { buildSessionByAnyId } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
@@ -510,21 +510,18 @@ export function ChatSidebar({
     [visibleSessions, cronSessions, messagingSessions]
   )
 
-  const pinnedSessions = useMemo(() => {
-    const seen = new Set<string>()
-    const out: SessionInfo[] = []
-
-    for (const pinId of pinnedSessionIds) {
-      const session = sessionByAnyId.get(pinId)
-
-      if (session && !seen.has(session.id)) {
-        seen.add(session.id)
-        out.push(session)
-      }
-    }
-
-    return out
-  }, [pinnedSessionIds, sessionByAnyId])
+  // Local pin ids first (hand-picked order), then server-flagged pins the
+  // local set doesn't know about — a backend `pinned=1` row must never be
+  // invisible just because localStorage is cold or was clobbered (#85969).
+  const pinnedSessions = useMemo(
+    () =>
+      resolvePinnedSessions(pinnedSessionIds, sessionByAnyId, [
+        ...visibleSessions,
+        ...cronSessions,
+        ...messagingSessions
+      ]),
+    [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions]
+  )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
   // of each session we resolved one to. A pin is stored on the durable lineage

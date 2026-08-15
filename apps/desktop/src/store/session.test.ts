@@ -276,8 +276,9 @@ describe('mergeSessionPage', () => {
     const previous = [
       session({ id: 'c', last_active: 100 }),
       session({ id: 'b', last_active: 200 }),
-      session({ id: 'a', last_active: 300 }),
+      session({ id: 'a', last_active: 300 })
     ]
+
     // Server returns A (fresh page, order=recent), omits B and C (min_messages=1)
     const incoming = [session({ id: 'a', last_active: 300, message_count: 2 })]
 
@@ -290,19 +291,57 @@ describe('mergeSessionPage', () => {
   it('places a very recent survivor in correct position among incoming sessions', () => {
     // A survivor with last_active between two incoming sessions should be
     // interleaved, not prepended as a block.
-    const previous = [
-      session({ id: 'survivor', last_active: 150 }),
-      session({ id: 'old', last_active: 50 }),
-    ]
-    const incoming = [
-      session({ id: 'newest', last_active: 200 }),
-      session({ id: 'older', last_active: 100 }),
-    ]
+    const previous = [session({ id: 'survivor', last_active: 150 }), session({ id: 'old', last_active: 50 })]
+
+    const incoming = [session({ id: 'newest', last_active: 200 }), session({ id: 'older', last_active: 100 })]
 
     const merged = mergeSessionPage(previous, incoming, ['survivor'])
 
     // survivor (150) should be between newest (200) and older (100)
     expect(merged.map(s => s.id)).toEqual(['newest', 'survivor', 'older'])
+  })
+
+  it('keeps a survivor whose optimistic last_active outranks the whole page on top', () => {
+    // touchSessionActivity stamps last_active on user-send before the server
+    // sees the message; that bump must place the survivor by its FRESH time.
+    const previous = [session({ id: 'typing', last_active: 900 }), session({ id: 'settled', last_active: 100 })]
+
+    const incoming = [session({ id: 'settled', last_active: 100, message_count: 3 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['typing'])
+
+    expect(merged.map(s => s.id)).toEqual(['typing', 'settled'])
+  })
+
+  it('falls back to started_at for survivors that have no last_active yet', () => {
+    // A brand-new session (no persisted message) carries last_active 0; the
+    // backend's effective-recency key falls back to started_at, so we must
+    // too, or a fresh draft sinks to the very bottom of the sidebar.
+    const previous = [
+      session({ id: 'draft', last_active: 0, started_at: 500 }),
+      session({ id: 'other', last_active: 400 })
+    ]
+
+    const incoming = [session({ id: 'other', last_active: 400, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['draft'])
+
+    expect(merged.map(s => s.id)).toEqual(['draft', 'other'])
+  })
+
+  it('interleaves against the title-preserving merged rows, not the raw incoming page', () => {
+    // The optimistic last_active carried onto an incoming row must count for
+    // its position in the interleave: previous knows 'bumped' was touched at
+    // 300 even though the server page still reports 100.
+    const previous = [session({ id: 'survivor', last_active: 200 }), session({ id: 'bumped', last_active: 300 })]
+
+    const incoming = [session({ id: 'bumped', last_active: 100, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['survivor'])
+
+    expect(merged.map(s => s.id)).toEqual(['bumped', 'survivor'])
+    expect(merged[0]?.last_active).toBe(300)
+  })
 })
 
 describe('touchSessionActivity', () => {

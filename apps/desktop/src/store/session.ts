@@ -443,22 +443,20 @@ export function mergeSessionPage(
 
   // Survivors carry their old relative positions from `previous`, which can be
   // stale — the server page is the fresh `order=recent` truth. Sort survivors
-  // by the same effective-recency key the backend sorts by (last_active, then
-  // started_at, then id) and interleave them into the title-preserving merged
+  // by the same effective-recency key the backend sorts by (last_active with a
+  // started_at fallback) and interleave them into the title-preserving merged
   // rows so a retained session lands where recency puts it instead of the
   // whole set forming a stale block at the top of the sidebar (fixes #47203).
-  const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
+  // Ties keep the survivor first, matching the old prepend behavior.
+  const recency = (session: SessionInfo): number => Math.max(session.last_active || 0, session.started_at || 0)
 
-  const bySessionRecency = (a: SessionInfo, b: SessionInfo): number =>
-    recency(b) - recency(a) || (b.started_at ?? 0) - (a.started_at ?? 0) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
-
-  const sortedSurvivors = [...survivors].sort(bySessionRecency)
+  const sortedSurvivors = [...survivors].sort((a, b) => recency(b) - recency(a))
   const interleaved: SessionInfo[] = []
   let survivorIndex = 0
   let mergedIndex = 0
 
   while (survivorIndex < sortedSurvivors.length && mergedIndex < merged.length) {
-    if (bySessionRecency(sortedSurvivors[survivorIndex], merged[mergedIndex]) <= 0) {
+    if (recency(sortedSurvivors[survivorIndex]) >= recency(merged[mergedIndex])) {
       interleaved.push(sortedSurvivors[survivorIndex++])
     } else {
       interleaved.push(merged[mergedIndex++])

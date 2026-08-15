@@ -920,6 +920,24 @@ def _forward_relay_fronted_run(
     )
 
 
+def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
+    """Parenthetical delivery note for a manual run's completion summary.
+
+    Follows the refreshed job record (#83993): ``run_one_job`` writes
+    ``last_delivery_error`` via ``mark_job_run`` when the post-run delivery
+    (telegram/discord/…) failed, and the summary must not claim success over
+    that record — the calling agent relays this line to the user. Local jobs
+    never deliver; an empty/missing error keeps the legacy wording
+    byte-for-byte.
+    """
+    if deliver == "local":
+        return " (output saved locally only)"
+    err = str(refreshed.get("last_delivery_error") or "").strip()
+    if not err:
+        return " (output was delivered there by the job itself)"
+    return f" (⚠ delivery FAILED: {err[:200]})"
+
+
 def _execute_job_now(
     job: Dict[str, Any], extra_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1345,11 +1363,7 @@ def _try_dispatch_background_run(
             f"Result: {'ok' if res.get('success') else 'FAILED'}"
             + (f" — {res.get('error')}" if res.get("error") else ""),
             f"Delivery target: {deliver}"
-            + (
-                " (output was delivered there by the job itself)"
-                if deliver != "local"
-                else " (output saved locally only)"
-            ),
+            + _manual_run_delivery_note(deliver, refreshed),
         ]
         if refreshed.get("next_run_at"):
             lines.append(f"Next scheduled run: {refreshed['next_run_at']}")

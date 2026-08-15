@@ -2274,7 +2274,8 @@ def init_agent(
     if _config_context_length is not None and isinstance(_model_cfg, dict):
         _default = _model_cfg.get("default")
         if isinstance(_default, dict):
-            _default = str(_default.get("model") or _default.get("default") or "")
+            from hermes_cli.config import split_model_config_default
+            _default, _ = split_model_config_default(_default)
         _configured_default_model = str(_default or "").strip()
         _configured_default_runtime_model = _configured_default_model
         _active_runtime_model = agent.model

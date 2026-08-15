@@ -666,7 +666,8 @@ def _resolve_active_context_length() -> int:
             model_cfg = {}
         _raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
         if isinstance(_raw_model_id, dict):
-            _raw_model_id = _raw_model_id.get("model") or _raw_model_id.get("provider") or ""
+            from hermes_cli.config import split_model_config_default
+            _raw_model_id, _ = split_model_config_default(_raw_model_id)
         model_id = str(_raw_model_id).strip()
         if not model_id:
             return 0

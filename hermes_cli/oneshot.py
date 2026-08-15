@@ -345,7 +345,8 @@ def _run_agent(
     else:
         _raw = model_cfg.get("default") or model_cfg.get("model") or ""
         if isinstance(_raw, dict):
-            cfg_model = str(_raw.get("model") or _raw.get("default") or _raw.get("provider") or "")
+            from hermes_cli.config import split_model_config_default
+            cfg_model, _ = split_model_config_default(_raw)
         else:
             cfg_model = str(_raw or "")
 

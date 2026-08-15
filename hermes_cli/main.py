@@ -975,7 +975,8 @@ def _has_any_provider_configured() -> bool:
     if isinstance(model_cfg, dict):
         _default = model_cfg.get("default")
         if isinstance(_default, dict):
-            _model_name = (_default.get("model") or _default.get("provider") or "")
+            from hermes_cli.config import split_model_config_default
+            _model_name, _ = split_model_config_default(_default)
         else:
             _model_name = (_default or "")
         _model_name = (str(_model_name) if not isinstance(_model_name, str) else _model_name).strip()

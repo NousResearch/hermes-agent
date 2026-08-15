@@ -2236,7 +2236,7 @@ def anthropic_prompt_cache_policy(
         return False, False
 
     if isinstance(eff_model, dict):
-        eff_model = eff_model.get('default') or eff_model.get('model') or ''
+        eff_model = eff_model.get('model') or eff_model.get('default') or ''
     eff_model = eff_model if isinstance(eff_model, str) else str(eff_model or '')
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()

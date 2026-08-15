@@ -4382,24 +4382,10 @@ def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[
     return None, model
 
 def _split_model_config_default(raw_default: Any) -> tuple[str, str]:
-    """Canonicalize a config ``model.default``/``model.model`` value.
-
-    A dict-valued default (``model.default: {provider: ..., model: ...}``)
-    pairs the model string with the provider it must be routed through. The
-    dict is flattened here at the shared boundary so both halves stay
-    together through ``HermesCLI`` construction: the model becomes a plain
-    string and the provider is returned explicitly instead of being lost to
-    the outer merged ``model.provider`` default (often ``"auto"``, which
-    runtime resolution treats as authoritative and would otherwise route the
-    model through the wrong active provider).
-
-    Returns ``(model, provider)``; both are ``""`` when nothing is usable.
-    """
-    if isinstance(raw_default, dict):
-        provider = str(raw_default.get("provider") or "").strip()
-        model = raw_default.get("model") or raw_default.get("default")
-        return (str(model or "").strip(), provider)
-    return (str(raw_default or "").strip(), "")
+    # Thin wrapper around the shared helper in config.py — kept for
+    # backward compat with existing call sites in this module.
+    from hermes_cli.config import split_model_config_default
+    return split_model_config_default(raw_default)
 
 
 class _VoiceInputMessage:
@@ -6688,8 +6674,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Normalize provider-specific model IDs and routing."""
         current_model = str(self.model or "").strip()
         if isinstance(self.model, dict):
-            _m_dict = self.model
-            current_model = str(_m_dict.get("model") or _m_dict.get("default") or _m_dict.get("provider") or "").strip()
+            _m, _ = _split_model_config_default(self.model)
+            current_model = _m
         changed = False
 
         try:
@@ -14820,9 +14806,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 from hermes_cli.config import load_config
 
+                _img_model, _img_provider = "", ""
+                if isinstance(self.model, dict):
+                    _img_model, _ = _split_model_config_default(self.model)
+                else:
+                    _img_model = str(self.model or "")
+                if isinstance(self.provider, dict):
+                    _, _img_provider = _split_model_config_default(self.provider)
+                else:
+                    _img_provider = str(self.provider or "")
                 _img_mode = decide_image_input_mode(
-                    str(self.provider or "").strip() if not isinstance(self.provider, dict) else str(self.provider.get("provider") or self.provider.get("default") or "").strip(),
-                    str(self.model or "").strip() if not isinstance(self.model, dict) else str(self.model.get("model") or self.model.get("default") or "").strip(),
+                    _img_provider.strip(),
+                    _img_model.strip(),
                     load_config(),
                     requested_provider=(self.requested_provider or "").strip(),
                 )

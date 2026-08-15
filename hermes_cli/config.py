@@ -2847,6 +2847,27 @@ def _strip_default_values(
     return result
 
 
+def split_model_config_default(raw_default: Any) -> tuple[str, str]:
+    """Canonicalize a config ``model.default``/``model.model`` value.
+
+    A dict-valued default (``model.default: {provider: ..., model: ...}``)
+    pairs the model string with the provider it must be routed through. The
+    dict is flattened here at the shared boundary so both halves stay
+    together through ``HermesCLI`` construction: the model becomes a plain
+    string and the provider is returned explicitly instead of being lost to
+    the outer merged ``model.provider`` default (often ``"auto"``, which
+    runtime resolution treats as authoritative and would otherwise route the
+    model through the wrong active provider).
+
+    Returns ``(model, provider)``; both are ``""`` when nothing is usable.
+    """
+    if isinstance(raw_default, dict):
+        provider = str(raw_default.get("provider") or "").strip()
+        model = raw_default.get("model") or raw_default.get("default")
+        return (str(model or "").strip(), provider)
+    return (str(raw_default or "").strip(), "")
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -2891,6 +2912,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     _has_nested_default = isinstance(model_in, dict) and (
         isinstance(model_in.get("default"), dict)
         or isinstance(model_in.get("model"), dict)
+        or isinstance(model_in.get("name"), dict)
     )
     # A model dict needs canonicalization if its id lives under a non-canonical
     # key (``model``/``name``) — either because ``default`` is empty (we must
@@ -2920,7 +2942,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     # resolution treats as authoritative and would otherwise route the model
     # through the wrong active provider), but never over an explicitly
     # configured outer provider.
-    for _key in ("default", "model"):
+    for _key in ("default", "model", "name"):
         _val = model.get(_key)
         if isinstance(_val, dict):
             _nested_model = _val.get("model") or _val.get("default")

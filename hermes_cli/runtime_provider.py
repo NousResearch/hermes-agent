@@ -325,8 +325,9 @@ def _get_model_config() -> Dict[str, Any]:
         # Handle model.default being a dict {provider: ..., model: ...} rather than a string
         _default = cfg.get("default")
         if isinstance(_default, dict):
-            cfg_provider = str(_default.get("provider") or model_cfg.get("provider") or "")
-            cfg_model = str(_default.get("model") or _default.get("default") or "")
+            from hermes_cli.config import split_model_config_default
+            cfg_model, cfg_provider = split_model_config_default(_default)
+            cfg_provider = cfg_provider or str(model_cfg.get("provider") or "")
             cfg["default"] = cfg_model
             if cfg_provider and not cfg.get("provider"):
                 cfg["provider"] = cfg_provider

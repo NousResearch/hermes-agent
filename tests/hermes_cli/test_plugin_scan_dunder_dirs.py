@@ -13,13 +13,10 @@ def test_scan_skips_dunder_dirs_and_still_loads_real_plugin(tmp_path: Path):
     demo.mkdir(parents=True)
     (demo / "plugin.yaml").write_text("name: demo\nversion: 0.1.0\ndescription: x\n")
     (demo / "__pycache__").mkdir()
-    pycache = root / "__pycache__"
-    pycache.mkdir()
-    pycache.chmod(0o000)
-    try:
-        found = PluginManager()._scan_directory(root, "user")
-    finally:
-        pycache.chmod(0o700)
+    (root / "__pycache__").mkdir()
+    (root / "__MACOSX__").mkdir()
+
+    found = PluginManager()._scan_directory(root, "user")
 
     assert [manifest.name for manifest in found] == ["demo"]
 

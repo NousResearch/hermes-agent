@@ -343,6 +343,23 @@ def atomic_write_text(
         raise
 
 
+def open_private_append(
+    path: Union[str, Path],
+    *,
+    encoding: str = "utf-8",
+    mode: int = 0o600,
+):
+    """Append text, applying ``mode`` only when creating the inode.
+
+    Existing files keep their permissions. POSIX modes are advisory on
+    Windows, where ACLs provide at-rest protection.
+    """
+    def _opener(target: str, flags: int) -> int:
+        return os.open(target, flags, mode)
+
+    return open(Path(path), "a", encoding=encoding, opener=_opener)
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,

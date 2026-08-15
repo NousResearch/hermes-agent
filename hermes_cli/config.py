@@ -825,6 +825,24 @@ def _secure_dir(path):
     _chown_to_hermes_uid(path)
 
 
+def artifact_file_mode() -> int:
+    """Return the create mode for private artifacts; advisory on Windows."""
+    return 0o660 if is_managed() else 0o600
+
+
+def secure_artifact_dir(path: str | Path) -> None:
+    """Create an artifact leaf privately without changing existing modes.
+
+    Managed installs retain their group-sharing umask. POSIX modes are
+    advisory on Windows, where ACLs provide at-rest protection.
+    """
+    path = Path(path)
+    if is_managed():
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
 def _is_container() -> bool:
     """Detect if we're running inside a Docker/Podman/LXC container.
 

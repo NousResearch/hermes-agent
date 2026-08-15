@@ -1076,6 +1076,8 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    # Discovery result shaping (appended to preserve positional compatibility)
+    detail: str = "adaptive",
 ) -> str:
     """Run session search and close databases opened by this invocation."""
     owned_dbs: List[Any] = []
@@ -1103,6 +1105,7 @@ def session_search(
             window=window,
             sort=sort,
             profile=profile,
+            detail=detail,
             _owned_dbs=owned_dbs,
         )
     finally:

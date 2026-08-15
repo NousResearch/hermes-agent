@@ -3204,14 +3204,23 @@ def _append_node_dir_for_service(
     """
     from hermes_constants import iter_hermes_node_dirs
 
+    managed_node_present = False
     for directory in iter_hermes_node_dirs(hermes_root):
         entry = str(directory)
         try:
             present = directory.is_dir()
         except OSError:
             present = False
-        if present and entry not in path_entries:
-            path_entries.append(entry)
+        if present:
+            managed_node_present = True
+            if entry not in path_entries:
+                path_entries.append(entry)
+
+    # Ambient PATH lookup is a fallback, not an additional rung. Once the
+    # target Hermes home provides managed Node, consulting the invoker's PATH
+    # makes a system unit differ between sudo/root and its service user.
+    if managed_node_present:
+        return
 
     resolved_node = shutil.which("node")
     if not resolved_node:

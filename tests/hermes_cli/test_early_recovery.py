@@ -142,6 +142,24 @@ def test_early_recovery_module_is_stdlib_only(tmp_path):
 # recover_if_needed unit behavior
 # ---------------------------------------------------------------------------
 
+
+def test_pid_liveness_recognizes_current_process():
+    assert er._pid_is_running(os.getpid()) is True
+    assert er._pid_is_running(0) is False
+
+
+def test_marker_owner_liveness_uses_recorded_pid(tmp_path, monkeypatch):
+    marker = tmp_path / ".update-incomplete"
+    marker.write_text("started=1\npid=4321\n", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(
+        er, "_pid_is_running", lambda pid: seen.append(pid) or True
+    )
+
+    assert er._marker_owner_is_live(marker) is True
+    assert seen == [4321]
+
+
 def _project(tmp_path: Path, *, pyproject: bool = True) -> Path:
     root = tmp_path / "proj"
     root.mkdir(exist_ok=True)
@@ -453,11 +471,38 @@ def test_lazy_marker_alone_does_not_trigger_core_install(tmp_path, monkeypatch):
     er.recover_if_needed(project_root=root, argv=[])
 
 
-def test_core_marker_skipped_when_user_is_running_update(tmp_path, monkeypatch):
-    """A launch of `hermes update` itself must not race its own markers."""
+def test_core_marker_from_dead_updater_is_recovered_on_update_retry(
+    tmp_path, monkeypatch
+):
+    """Retrying ``hermes update`` must consume a prior deferral marker.
+
+    The self-lock preflight exits after writing this marker.  Desktop and CLI
+    retries both keep ``update`` in argv, so an argv-only skip loops forever.
+    """
     root = _project(tmp_path)
     core_marker = root / ".update-incomplete"
-    core_marker.write_text('{"attempts": 0}', encoding="utf-8")
+    core_marker.write_text("started=1\npid=1234\n", encoding="utf-8")
+
+    from hermes_cli import _install_repair as ir
+
+    calls = []
+    monkeypatch.setattr(ir, "run_core_install", lambda project_root: calls.append(project_root))
+    monkeypatch.setattr(er, "_marker_owner_is_live", lambda _marker: False, raising=False)
+    import hermes_cli._install_repair  # noqa: F401
+
+    er.recover_if_needed(project_root=root, argv=["update"])
+
+    assert calls == [root]
+    assert not core_marker.exists()
+
+
+def test_core_marker_owned_by_live_updater_is_not_recovered(
+    tmp_path, monkeypatch
+):
+    """A second launch must not reinstall into an active updater's venv."""
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text("started=1\npid=1234\n", encoding="utf-8")
 
     from hermes_cli import _install_repair as ir
 
@@ -465,12 +510,14 @@ def test_core_marker_skipped_when_user_is_running_update(tmp_path, monkeypatch):
         ir,
         "run_core_install",
         lambda _r: (_ for _ in ()).throw(
-            AssertionError("install must not run for `hermes update` argv")
+            AssertionError("must not race a live updater")
         ),
     )
+    monkeypatch.setattr(er, "_marker_owner_is_live", lambda _marker: True, raising=False)
     import hermes_cli._install_repair  # noqa: F401
 
-    er.recover_if_needed(project_root=root, argv=["update"])
+    er.recover_if_needed(project_root=root, argv=[])
+
     assert core_marker.exists()
 
 

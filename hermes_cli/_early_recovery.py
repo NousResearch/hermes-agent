@@ -61,6 +61,67 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _pid_is_running(pid: int) -> bool:
+    """Best-effort stdlib-only process liveness probe.
+
+    ``os.kill(pid, 0)`` is not a no-op on Windows, so use the Win32 process
+    handle API there.  An access-denied result is conservatively live: racing
+    an elevated updater is worse than postponing recovery for one launch.
+    """
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            synchronize = 0x00100000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [
+                ctypes.c_ulong,
+                ctypes.c_int,
+                ctypes.c_ulong,
+            ]
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = ctypes.c_int
+            handle = kernel32.OpenProcess(synchronize, False, pid)
+            if not handle:
+                return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
+            try:
+                return kernel32.WaitForSingleObject(handle, 0) == 258
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _marker_owner_is_live(marker: Path) -> bool:
+    """True when a legacy update marker names a process still running."""
+    try:
+        body = marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in body.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "pid":
+            try:
+                return _pid_is_running(int(value.strip()))
+            except ValueError:
+                return False
+    return False
+
+
 def _pinned_specs(packages: list[str], project_root: Path) -> list[str]:
     """Map bare package names to their pinned specs from pyproject.toml.
 
@@ -293,10 +354,6 @@ def recover_if_needed(
     """
     try:
         args = sys.argv[1:] if argv is None else argv
-        # Same deliberately-loose match as main(): the real update flow writes
-        # and clears its own markers — a recovery install must not race it.
-        if "update" in args:
-            return
         root = _project_root() if project_root is None else project_root
         if _pytest_owns_live_checkout(root):
             return
@@ -319,8 +376,21 @@ def recover_if_needed(
         # every launch, so attempts past the ceiling are left for main.py's
         # post-import recovery path (which can safely probe-import after this
         # process already holds whatever extensions it needs).
+        # A live marker owner means another updater is currently inside the
+        # marker-to-install window.  Never race it.  A dead owner means this is
+        # a prior deferral/interruption and MUST be recovered even when this
+        # launch is itself `hermes update`: CLI and Desktop retries preserve
+        # that argv, and skipping solely on argv recreates the self-lock loop.
         if core_marker.exists():
+            if _marker_owner_is_live(core_marker):
+                return
             _complete_pending_core_install(root, core_marker)
+            return
+
+        # Keep the historical update-argv exclusion for the lazy-refresh
+        # marker.  Unlike the core marker it is not a deferred native install,
+        # and the active update flow owns its probe/repair lifecycle.
+        if "update" in args:
             return
 
         broken = _probe_broken_packages()

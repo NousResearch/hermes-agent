@@ -2855,7 +2855,9 @@ def _(rid, params: dict) -> dict:
     # include the system prompt so the export matches the dashboard save.
     saved_dir = get_hermes_home() / "sessions" / "saved"
     try:
-        saved_dir.mkdir(parents=True, exist_ok=True)
+        from hermes_cli.config import secure_artifact_dir
+
+        secure_artifact_dir(saved_dir)
     except Exception as e:
         return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
 
@@ -2880,19 +2882,20 @@ def _(rid, params: dict) -> dict:
         )
 
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "model": getattr(agent, "model", ""),
-                    "session_id": session_id,
-                    "session_start": session_start,
-                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
-                    "messages": messages,
-                },
-                f,
-                indent=2,
-                ensure_ascii=False,
-            )
+        from hermes_cli.config import artifact_file_mode
+        from utils import atomic_json_write
+
+        atomic_json_write(
+            path,
+            {
+                "model": getattr(agent, "model", ""),
+                "session_id": session_id,
+                "session_start": session_start,
+                "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                "messages": messages,
+            },
+            mode=artifact_file_mode(),
+        )
         return _ok(rid, {"file": str(path)})
     except Exception as e:
         return _err(rid, 5011, str(e))

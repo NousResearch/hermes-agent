@@ -11,12 +11,23 @@ the absolute path plus the resume hint for the live session.
 from __future__ import annotations
 
 import json
-import sys
+import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+posix_only = pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX permission bits are advisory on Windows",
+)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 @pytest.fixture
@@ -25,10 +36,7 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Clear any cached hermes_home computation
-    import hermes_constants
-    if hasattr(hermes_constants, "_hermes_home_cache"):
-        hermes_constants._hermes_home_cache = None
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
     return home
 
 
@@ -49,10 +57,8 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     work.mkdir()
     monkeypatch.chdir(work)
 
-    # Import fresh to pick up the HERMES_HOME fixture
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
-
+    # No sys.modules surgery: save_conversation resolves the home through a
+    # call-time get_hermes_home(), which re-reads HERMES_HOME on every call.
     import cli  # noqa: F401  (module under test)
 
     stub = _make_stub_cli([
@@ -61,7 +67,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     ])
 
     # Call the unbound method against our stub.
-    cli.HermesCLI.save_conversation(stub, "/save json")
+    cli.HermesCLI.save_conversation(stub)
 
     # File must NOT be in CWD
     cwd_leak = list(work.glob("hermes_conversation_*.json"))
@@ -75,9 +81,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
 
     payload = json.loads(files[0].read_text())
     assert payload["model"] == "test-model"
-    # /save now emits the canonical export_session shape: the session id
-    # lives under "id" (was "session_id" in the legacy snapshot format).
-    assert payload["id"] == "20260101_120000_abc123"
+    assert payload["session_id"] == "20260101_120000_abc123"
     assert payload["messages"] == [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
@@ -90,12 +94,10 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
 
 
 def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
     import cli
 
     stub = _make_stub_cli([])
-    cli.HermesCLI.save_conversation(stub, "/save json")
+    cli.HermesCLI.save_conversation(stub)
 
     saved_dir = hermes_home / "sessions" / "saved"
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
@@ -103,32 +105,115 @@ def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
     assert "No conversation to save" in out
 
 
-def test_save_conversation_bare_shows_usage(hermes_home, capsys):
-    """Bare /save prints the usage card and writes nothing."""
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
+@posix_only
+def test_save_conversation_fresh_dir_and_file_owner_only(hermes_home, tmp_path, monkeypatch):
+    """Under a permissive umask, saved/ and a fresh snapshot must not leak bits.
+
+    Regression: the handler used a bare mkdir plus open(path, "w"), so a
+    transcript of the entire conversation landed at umask-derived 0o755/0o644 -
+    readable by every other account on a shared box.
+    """
+    monkeypatch.chdir(tmp_path)
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])
-    cli.HermesCLI.save_conversation(stub, "/save")
+
+    old_umask = os.umask(0o022)
+    try:
+        cli.HermesCLI.save_conversation(stub)
+    finally:
+        os.umask(old_umask)
 
     saved_dir = hermes_home / "sessions" / "saved"
-    assert not saved_dir.exists() or not list(saved_dir.iterdir())
-    out = capsys.readouterr().out
-    # Usage card lists every format and the redact option
-    for token in ("json", "md", "html", "redact", "Usage:"):
-        assert token in out, (token, out)
+    files = list(saved_dir.glob("hermes_conversation_*.json"))
+    assert len(files) == 1, files
+    assert not _mode(saved_dir) & 0o077, (
+        f"saved dir mode {oct(_mode(saved_dir))} leaks to group/other"
+    )
+    assert not _mode(files[0]) & 0o077, (
+        f"snapshot mode {oct(_mode(files[0]))} leaks to group/other"
+    )
 
 
-def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
+@posix_only
+def test_save_conversation_retightens_preexisting_broad_snapshot(
+    hermes_home, tmp_path, monkeypatch
+):
+    """A pre-existing 0o644 snapshot at the same path is rewritten to 0o600.
+
+    Freezing the timestamp collides the target path with a file already on disk
+    at a broad mode. That is what proves the write passes an explicit mode
+    rather than merely inheriting the temp file 0o600 default: the atomic
+    writer preserves the destination mode unless one is passed.
+    """
+    monkeypatch.chdir(tmp_path)
+    import cli
+
+    frozen = datetime(2026, 1, 1, 12, 0, 0)
+    monkeypatch.setattr(cli, "datetime", SimpleNamespace(now=lambda: frozen))
+
+    saved_dir = hermes_home / "sessions" / "saved"
+    saved_dir.mkdir(parents=True)
+    path = saved_dir / "hermes_conversation_20260101_120000.json"
+    path.write_text("{}", encoding="utf-8")
+    os.chmod(path, 0o644)
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    stub = _make_stub_cli(history)
+
+    old_umask = os.umask(0o022)
+    try:
+        cli.HermesCLI.save_conversation(stub)
+    finally:
+        os.umask(old_umask)
+
+    assert _mode(path) == 0o600, oct(_mode(path))
+    # The rewrite must be complete JSON, not a truncated or partial file.
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["messages"] == history
+    assert payload["model"] == "test-model"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+
+
+@posix_only
+def test_save_conversation_managed_setgid_parent_group_mode(tmp_path, monkeypatch):
+    """Managed + setgid parent: saved/ stays group-writable, snapshot is 0o660."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    os.chmod(home, 0o2770)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    monkeypatch.chdir(tmp_path)
+
+    probe = home / "kernel-probe"
+    probe.mkdir()
+    # Only the setgid-preservation assertion depends on the kernel inheriting
+    # the bit (Linux does, macOS/APFS does not). The managed mode contract
+    # itself does not, so it is asserted on every POSIX platform.
+    setgid_inherited = bool(_mode(probe) & stat.S_ISGID)
+
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])
-    cli.HermesCLI.save_conversation(stub, "/save pdf")
 
-    saved_dir = hermes_home / "sessions" / "saved"
-    assert not saved_dir.exists() or not list(saved_dir.iterdir())
-    out = capsys.readouterr().out
-    assert "Usage:" in out
+    old_umask = os.umask(0o007)
+    try:
+        cli.HermesCLI.save_conversation(stub)
+    finally:
+        os.umask(old_umask)
+
+    saved_dir = home / "sessions" / "saved"
+    files = list(saved_dir.glob("hermes_conversation_*.json"))
+    assert len(files) == 1, files
+    assert _mode(saved_dir) & 0o777 == 0o770, oct(_mode(saved_dir))
+    assert _mode(files[0]) == 0o660, oct(_mode(files[0]))
+    if setgid_inherited:
+        assert _mode(saved_dir) & stat.S_ISGID, (
+            "inherited setgid must survive; without it 0o660 group-write is "
+            "useless to the second UID of a managed install"
+        )

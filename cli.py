@@ -43,7 +43,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Mapping
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -2007,14 +2007,6 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
     ``refs/remotes/*``. If a repo has no remote-tracking refs yet, there is no
     usable remote baseline to compare against, so treat it as having no
     "unpushed" commits.
-
-    SHALLOW-CLONE CAVEAT: in a shallow clone (the installer default) the
-    shallow boundary can disconnect an older worktree HEAD from origin/*,
-    making already-public commits look unpushed. The verdict here stays
-    conservative (True) on purpose — deleting on unverifiable history would
-    risk real work. Callers that can afford it should deepen first via
-    ``_deepen_shallow_repo`` (the startup pruner does) or check
-    ``_repo_is_shallow`` before presenting this verdict as fact.
     """
     import subprocess
 
@@ -2058,88 +2050,6 @@ def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
         return bool(result.stdout.strip())
     except Exception:
         return True
-
-
-def _repo_is_shallow(repo_path: str, timeout: int = 5) -> bool:
-    """Return whether *repo_path* belongs to a shallow clone.
-
-    Shallowness poisons every history-connectivity verdict the worktree
-    machinery relies on: an older worktree's HEAD (a past snapshot of main)
-    is disconnected from current ``origin/main`` by the shallow boundary, so
-    ``git log HEAD --not --remotes`` misreports thousands of already-public
-    commits as "unpushed" and the worktree is preserved forever. The default
-    installer clones with ``--depth 1``, so this is the normal state of a
-    user install, not an edge case.
-
-    Fails toward False: if git can't be queried we don't want callers to
-    take shallow-specific branches on top of an unknown state.
-    """
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-shallow-repository"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_path,
-        )
-        return result.returncode == 0 and result.stdout.strip() == "true"
-    except Exception:
-        return False
-
-
-def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
-    """One-time blobless unshallow so history-based verdicts become correct.
-
-    Fetches the full commit/tree graph (``--unshallow --filter=blob:none``)
-    without downloading historical file contents, which keeps the transfer a
-    small fraction of a full clone. Runs only from background paths (the
-    startup pruner thread), never on the interactive session-close path.
-
-    Falls back to a plain ``--unshallow`` if the server rejects partial-clone
-    filters. Fail-soft: returns whether the repo is actually non-shallow
-    afterwards; on failure (offline, no remote) callers keep today's
-    preserve-everything behavior.
-    """
-    import subprocess
-
-    if not _repo_is_shallow(repo_root):
-        return True
-
-    try:
-        remotes = subprocess.run(
-            ["git", "remote"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=repo_root,
-        )
-        names = [r.strip() for r in remotes.stdout.splitlines() if r.strip()]
-        if remotes.returncode != 0 or not names:
-            return False
-        remote = "origin" if "origin" in names else names[0]
-
-        for extra in (["--filter=blob:none"], []):
-            try:
-                result = subprocess.run(
-                    ["git", "fetch", remote, "--unshallow", *extra],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_root,
-                )
-            except subprocess.TimeoutExpired:
-                return False
-            if result.returncode == 0:
-                break
-            logger.debug(
-                "git fetch --unshallow%s failed: %s",
-                " " + " ".join(extra) if extra else "",
-                result.stderr.strip()[-500:],
-            )
-    except Exception as e:
-        logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
-        return False
-
-    deepened = not _repo_is_shallow(repo_root)
-    if deepened:
-        logger.info(
-            "Deepened shallow clone at %s so worktree cleanup can verify "
-            "push state", repo_root,
-        )
-    return deepened
 
 
 # Upper bound on retained `git cherry` verdict entries (see
@@ -2379,17 +2289,8 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     has_unpushed = _worktree_has_unpushed_commits(wt_path, timeout=10)
 
     if has_unpushed:
-        if _repo_is_shallow(repo_root):
-            # In a shallow clone the unpushed verdict is unreliable: the
-            # shallow boundary disconnects this worktree's history from
-            # origin/*, so already-public commits look "unpushed". Be honest
-            # about why we're keeping it — the startup pruner deepens the
-            # clone in the background and will reap it on a later startup.
-            print(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")
-            print("  The next `hermes -w` session deepens the clone and prunes merged worktrees automatically.")
-        else:
-            print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
-            print(f"  To clean up manually: git worktree remove --force {wt_path}")
+        print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+        print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
@@ -2581,15 +2482,6 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
         return
-
-    # A shallow clone (the installer's default `--depth 1`) disconnects old
-    # worktree HEADs from current origin/main, so the unpushed-commits guard
-    # misclassifies every aged worktree as unpushed work and preserves it
-    # forever. Deepen once — bloblessly, in this background thread — so all
-    # history verdicts below (and the session-exit cleanup) become correct.
-    # Fail-soft: offline, we just keep today's preserve-everything behavior.
-    if _repo_is_shallow(repo_root):
-        _deepen_shallow_repo(repo_root)
 
     now = time.time()
     stale_work_cutoff = now - (7 * 24 * 3600)
@@ -4212,8 +4104,8 @@ def _preserve_ctrl_enter_newline() -> bool:
     NOT be bound to submit;
     binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
     submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit when
-    display.cli_multiline_shortcuts is disabled, so we keep that legacy opt-out.
+    some thin PTYs without SSH) still need c-j bound to submit, so we keep
+    that binding for those.
 
     See issue #22379.
     """
@@ -4242,33 +4134,22 @@ def _preserve_ctrl_enter_newline() -> bool:
     return False
 
 
-def _bind_prompt_submit_keys(
-    kb,
-    handler,
-    *,
-    multiline_shortcuts_enabled: Optional[bool] = None,
-) -> None:
+def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
-    Enter is always submit. By default, c-j (Ctrl+J/LF) is left for the
-    multiline newline handler because that is the common agent-harness UX.
-    Users can set ``display.cli_multiline_shortcuts: false`` to restore the
-    legacy POSIX fallback that binds c-j to submit on local thin PTYs whose
-    plain Enter arrives as LF instead of CR.
+    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
+    some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
+    instead of CR — without this, Enter appears dead on those terminals.
 
-    Even when the setting is disabled, environments where Ctrl+Enter is known
-    to arrive as c-j (Windows, WSL, SSH, Windows Terminal, Ghostty) keep c-j
-    reserved for newline; otherwise Ctrl+Enter submits instead of composing.
+    Exception: on Windows, WSL, SSH sessions, Windows Terminal, and Ghostty,
+    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
+    plain Enter / c-m). We leave c-j unbound there so the c-j newline
+    handler registered separately can fire — giving the user an
+    Enter-involving newline keystroke without terminal settings changes.
     See _preserve_ctrl_enter_newline() and issue #22379.
     """
-    if multiline_shortcuts_enabled is None:
-        multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled()
     kb.add("enter")(handler)
-    if (
-        sys.platform != "win32"
-        and not multiline_shortcuts_enabled
-        and not _preserve_ctrl_enter_newline()
-    ):
+    if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
         kb.add("c-j")(handler)
 
 
@@ -6576,9 +6457,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
             pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
 
-            from utils import is_truthy_value
-
-            enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
+            enabled = bool(pet_cfg.get("enabled"))
             slug = str(pet_cfg.get("slug", "") or "")
             scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
             cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
@@ -9118,7 +8997,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Ctrl+J, Alt+Enter, or \\+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
@@ -9741,92 +9620,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return True
 
 
-    def save_conversation(self, cmd: str = "/save"):
-        """Handle /save — export the current session to json, md, or html.
+    def save_conversation(self):
+        """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
-        Usage: ``/save [json|md|html] [filename] [redact]``
-
-        The snapshot is a convenience export for sharing or off-line
-        inspection; every message is already persisted incrementally to the
-        SQLite session DB, so the live session remains resumable via
-        ``hermes --resume <id>`` regardless of whether the user ever runs
-        ``/save``. ``redact`` runs the export through the force-mode secret
-        redaction pass before writing.
+        The snapshot is a convenience export for sharing or off-line inspection;
+        every message is already persisted incrementally to the SQLite session
+        DB, so the live session remains resumable via ``hermes --resume <id>``
+        regardless of whether the user ever runs ``/save``.
         """
-        from hermes_cli.session_export import (
-            SAVE_USAGE,
-            normalize_save_format,
-            render_session_for_save,
-        )
-
-        parts = cmd.split()[1:]
-        if not parts:
-            print(SAVE_USAGE)
+        if not self.conversation_history:
+            print("(;_;) No conversation to save.")
             return
-        redact = False
-        if parts[-1].lower() in ("redact", "--redact"):
-            redact = True
-            parts = parts[:-1]
-            if not parts:
-                print(SAVE_USAGE)
-                return
-
-        try:
-            fmt = normalize_save_format(parts[0])
-        except ValueError as e:
-            print(f"(._.) {e}")
-            print(SAVE_USAGE)
-            return
-        filename = parts[1] if len(parts) > 1 else None
-
-        # Prefer the durable DB row (has metadata + tool calls); fall back to
-        # the in-memory history for sessions that never touched the DB.
-        # getattr: test doubles (SimpleNamespace / object.__new__) may not
-        # carry _session_db or session_id.
-        session_data = None
-        _db = getattr(self, "_session_db", None)
-        _sid = getattr(self, "session_id", None)
-        if _db and _sid:
-            try:
-                session_data = _db.export_session(_sid)
-            except Exception:
-                session_data = None
-        if not session_data:
-            if not self.conversation_history:
-                print("(;_;) No conversation to save.")
-                return
-            session_data = {
-                "id": self.session_id,
-                "model": self.model,
-                "started_at": self.session_start.timestamp(),
-                "messages": self.conversation_history,
-            }
-
-        if redact:
-            from hermes_cli.session_export_md import redact_session_data
-
-            session_data = redact_session_data(session_data)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_dir = get_hermes_home() / "sessions" / "saved"
         try:
-            saved_dir.mkdir(parents=True, exist_ok=True)
+            from hermes_cli.config import secure_artifact_dir
+
+            secure_artifact_dir(saved_dir)
         except Exception as e:
             print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
             return
-        if filename:
-            path = Path(filename).expanduser()
-            if not path.is_absolute():
-                path = Path.cwd() / path
-        else:
-            path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
+        path = saved_dir / f"hermes_conversation_{timestamp}.json"
 
         try:
-            content = render_session_for_save(session_data, fmt)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            label = {"json": "JSON", "md": "Markdown", "html": "HTML"}[fmt]
-            print(f"(^_^)v Conversation saved to: {path} ({label})")
+            from hermes_cli.config import artifact_file_mode
+            from utils import atomic_json_write
+
+            atomic_json_write(
+                path,
+                {
+                    "model": self.model,
+                    "session_id": self.session_id,
+                    "session_start": self.session_start.isoformat(),
+                    "messages": self.conversation_history,
+                },
+                mode=artifact_file_mode(),
+            )
+            print(f"(^_^)v Conversation snapshot saved to: {path}")
             if self.session_id:
                 print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:
@@ -11585,7 +11416,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "worktree":
             self._handle_worktree_command(cmd_original)
         elif canonical == "save":
-            self.save_conversation(cmd_original)
+            self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
         elif canonical == "suggestions":
@@ -15743,11 +15574,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_user_message_idx = None
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
-            from agent.message_metadata import stamp_message_timestamp
-
-            staged_user_message = stamp_message_timestamp(
-                {"role": "user", "content": message}
-            )
+            staged_user_message = {"role": "user", "content": message}
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -17127,8 +16954,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Key bindings for the input area
         kb = KeyBindings()
 
-        _multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled(self.config or CLI_CONFIG)
-
         from prompt_toolkit.keys import Keys as _IgnoreKeys
 
         @kb.add(_IgnoreKeys.Ignore, eager=True)
@@ -17314,18 +17139,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             # --- Normal input routing ---
-            raw_text = event.app.current_buffer.text
-            if (
-                _multiline_shortcuts_enabled
-                and event.app.current_buffer.cursor_position == len(raw_text)
-                and _is_backslash_line_continuation(raw_text)
-            ):
-                continued = _apply_backslash_line_continuation(raw_text)
-                event.app.current_buffer.text = continued
-                event.app.current_buffer.cursor_position = len(continued)
-                event.app.invalidate()
-                return
-            text = raw_text.strip()
+            text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
                 # Handle /model directly on the UI thread so interactive pickers
@@ -17479,11 +17293,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._inline_pastes(event.app.current_buffer)
                 event.app.current_buffer.reset(append_to_history=True)
 
-        _bind_prompt_submit_keys(
-            kb,
-            handle_enter,
-            multiline_shortcuts_enabled=_multiline_shortcuts_enabled,
-        )
+        _bind_prompt_submit_keys(kb, handle_enter)
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
@@ -17496,17 +17306,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             event.current_buffer.insert_text('\n')
 
-        if _multiline_shortcuts_enabled or _preserve_ctrl_enter_newline():
+        if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
             def handle_ctrl_enter_newline(event):
-                """Ctrl+J inserts a newline for multi-line input.
+                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
 
-                This is enabled by default to match Claude Code / Codex /
-                OpenCode behavior. On Windows Terminal and similar environments,
-                Ctrl+Enter is delivered as the same c-j key code, so this also
-                covers Ctrl+Enter there. Set display.cli_multiline_shortcuts:
-                false to restore legacy c-j submit behavior on unusual POSIX
-                PTYs where plain Enter arrives as LF.
+                Windows Terminal (incl. WSL/SSH sessions through it) delivers
+                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
+                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
+                terminals, giving an Enter-involving newline keystroke
+                without requiring terminal settings changes. Ctrl+J (the raw
+                LF keystroke) also triggers this by virtue of being the same
+                key code — a harmless side effect since Ctrl+J has no
+                conflicting Hermes binding. See issue #22379.
                 """
                 event.current_buffer.insert_text('\n')
 
@@ -18149,7 +17961,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from hermes_cli.config import load_config
             from hermes_cli.voice import (
                 normalize_voice_record_key_for_prompt_toolkit,
-                pt_key_to_sequence,
                 voice_record_key_from_config,
             )
             _raw_key = voice_record_key_from_config(load_config())
@@ -18175,7 +17986,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # voice.record_key mid-session (Copilot round-13 on #19835).
         self.set_voice_record_key_cache(_raw_key)
 
-        @kb.add(*pt_key_to_sequence(_voice_key))
+        @kb.add(_voice_key)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
 
@@ -19920,13 +19731,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
                 # The app enables focus reporting + mouse tracking; record that
+<<<<<<< HEAD
                 # so _run_cleanup resets them on exit (#36823). When multiline
                 # shortcuts are on, also ask supported terminals (e.g. iTerm2)
                 # to report modified keys distinctly (kitty protocol +
                 # modifyOtherKeys); the cleanup reset pops both modes.
+=======
+                # so _run_cleanup resets them on exit (#36823).
+>>>>>>> 4d28f8d5f (fix(security): create conversation snapshots privately)
                 _mark_tui_input_modes_active()
-                if _multiline_shortcuts_enabled:
-                    _enable_extended_enter_keys(app.output)
                 # Drive the petdex mascot animation (no-op when no pet enabled).
                 self._pet_start_anim()
                 app.run()

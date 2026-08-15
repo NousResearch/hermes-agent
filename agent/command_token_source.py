@@ -50,6 +50,13 @@ _TOKEN_REFRESH_LEEWAY_SECONDS = 60.0
 # A token helper reads a local credential cache and should answer in
 # milliseconds; anything approaching this budget is hung, not slow.
 _MINT_TIMEOUT_SECONDS = 15
+# When a helper advertises NO expiry, the token cannot be cached for the life
+# of the process: nothing in the request path re-mints on 401 (the SDK retries
+# 429/5xx only), so an expired no-TTL token would 401 every request until
+# restart. Re-mint on a bounded window instead — the helper answers from a
+# local credential cache in milliseconds, so a periodic re-run is cheap, and a
+# helper that wants a longer cache can simply advertise its real expiry.
+_NO_TTL_REFRESH_SECONDS = 900.0
 
 
 class CommandTokenError(RuntimeError):
@@ -150,23 +157,20 @@ class CommandTokenSource:
         self._label = label or "custom"
         self._lock = threading.Lock()
         self._token = ""
-        self._expires_at: Optional[float] = None
+        self._expires_at: float = 0.0
 
     def __call__(self) -> str:
         with self._lock:
-            # ``expires_at is None`` means the command advertised no TTL: use
-            # the token and rely on the caller's 401 handling, rather than
-            # inventing an expiry. Same contract as buzz's is_expired().
-            if self._token and (
-                self._expires_at is None or time.monotonic() < self._expires_at
-            ):
+            if self._token and time.monotonic() < self._expires_at:
                 return self._token
             token, ttl = _mint(self._command, self._label)
             self._token = token
             self._expires_at = (
                 time.monotonic() + max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0)
                 if ttl
-                else None
+                # No advertised TTL: bounded cache (see _NO_TTL_REFRESH_SECONDS)
+                # — there is no 401-driven re-mint hook to fall back on.
+                else time.monotonic() + _NO_TTL_REFRESH_SECONDS
             )
             logger.debug(
                 "Minted key_cmd token for provider %s (ttl=%s)",

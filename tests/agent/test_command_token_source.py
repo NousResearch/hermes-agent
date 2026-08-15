@@ -98,24 +98,33 @@ class TestCaching:
         assert source() == source()
 
     def test_expired_token_is_reminted(self):
+        # date +%s%N changes every run; $RANDOM would be bash-only (empty
+        # under dash, which is what /bin/sh is on Debian-family CI).
         source = CommandTokenSource(
-            """printf '{"access_token":"tok-%s","expires_in":3600}' $RANDOM""", "dbx"
+            """printf '{"access_token":"tok-%s","expires_in":3600}' "$(date +%s%N)" """,
+            "dbx",
         )
         first = source()
         # Force the cache past its expiry.
         source._expires_at = 0.0
         assert source() != first
 
-    def test_no_advertised_ttl_caches_indefinitely(self):
-        """No TTL means trust the token and refresh on 401.
+    def test_no_advertised_ttl_caches_on_a_bounded_window(self):
+        """No TTL means a bounded cache, not a process-lifetime one.
 
-        Inventing a synthetic expiry would re-run the command on a schedule
-        the issuer never asked for.
+        Nothing in the request path re-mints on 401 (SDK retries cover
+        429/5xx only), so caching forever would wedge an expired token until
+        restart. The window keeps the helper from running per-request while
+        guaranteeing an eventual re-mint.
         """
+        from agent.command_token_source import _NO_TTL_REFRESH_SECONDS
+
         source = CommandTokenSource("date +%s%N", "dbx")
-        source()
-        assert source._expires_at is None
-        assert source() == source()
+        first = source()
+        assert 0 < source._expires_at - time.monotonic() <= _NO_TTL_REFRESH_SECONDS
+        assert source() == first  # cached inside the window
+        source._expires_at = time.monotonic() - 1  # cross the window
+        assert source() != first  # re-minted after it
 
     def test_advertised_ttl_sets_an_expiry(self):
         source = CommandTokenSource(

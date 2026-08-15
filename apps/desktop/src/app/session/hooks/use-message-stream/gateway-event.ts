@@ -605,6 +605,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                   typeof payload!.turn_started_at === 'number' && payload!.turn_started_at > 0
                     ? payload!.turn_started_at * 1000
                     : null
+
                 return {
                   ...state,
                   busy,

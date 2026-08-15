@@ -667,6 +667,7 @@ function ResumeTimerHarness({
 }) {
   const activeSessionId = useStore($activeSessionId)
   const busyRef = useRef(false)
+
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
@@ -675,6 +676,7 @@ function ResumeTimerHarness({
     setBusy,
     setMessages
   })
+
   const actions = useSessionActions({
     activeSessionId,
     activeSessionIdRef: cache.activeSessionIdRef,
@@ -1198,6 +1200,7 @@ describe('session.resume turn timer contract', () => {
 
       return {} as never
     })
+
     vi.mocked(getAllSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-running' } as never)
 
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
@@ -1868,12 +1871,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
   it('restores the warm reconnect turn clock from session.activate', async () => {
     const turnStartedAtSeconds = 1_700_000_123
+
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
+
     const cachedState = clientState('stored-A')
     cachedState.busy = true
     cachedState.turnStartedAt = null
+
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
       current: new Map([['rt-A', cachedState]])
     }

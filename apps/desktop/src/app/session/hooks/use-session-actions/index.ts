@@ -1227,13 +1227,10 @@ export function useSessionActions({
                   // Point live deltas at the recovered row when the backend is
                   // still mid-turn; a settled recovery keeps the stream idle.
                   streamId: resumedRunning ? inFlightRecovery.streamId : null,
-                  turnStartedAt: resumedRunning
-                    ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt)
-                    : null
+                  turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
                 }
               : {
-                  turnStartedAt:
-                    resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
+                  turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
                 })
           }),
           storedSessionId

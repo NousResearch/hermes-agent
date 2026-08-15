@@ -282,4 +282,25 @@ describe('subagent store', () => {
     expect(listFor('s1')[1]?.status).toBe('running')
     expect(activeSubagentCount(listFor('s1'))).toBe(1)
   })
+
+  // Folded in from PR #85995: a subagent.complete carrying a still-active
+  // payload status ('running'/'queued') must also settle as failed — the
+  // event itself is the source of truth that the child is done.
+  it.each(['running', 'queued'] as const)(
+    'treats a completion event with %s payload status as terminal failure',
+    status => {
+      upsertSubagent(
+        's1',
+        { goal: 'inconsistent completion', status: 'running', subagent_id: 'ic1', task_index: 0, tool_name: 'search_files' },
+        true,
+        'subagent.start'
+      )
+      upsertSubagent('s1', { status, subagent_id: 'ic1', task_index: 0 }, false, 'subagent.complete')
+
+      const items = listFor('s1')
+      expect(items[0]?.status).toBe('failed')
+      expect(items[0]?.currentTool).toBeUndefined()
+      expect(activeSubagentCount(items)).toBe(0)
+    }
+  )
 })

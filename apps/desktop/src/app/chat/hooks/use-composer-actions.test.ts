@@ -295,7 +295,8 @@ describe('useComposerActions native image drops', () => {
           add,
           remove: vi.fn(() => null),
           target: 'test-composer',
-          update: vi.fn(() => true)
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
         }
       })
     )
@@ -310,11 +311,14 @@ describe('useComposerActions native image drops', () => {
     expect(saveImageBuffer).toHaveBeenCalledOnce()
     expect(readFileDataUrl).toHaveBeenCalledWith(durablePath)
     expect(readFileDataUrl).not.toHaveBeenCalledWith(transientPath)
+    // The bounded-preview pipeline no longer retains the full-resolution data
+    // URL on the attachment (`previewUrl`); the durable path is the authority
+    // and the display thumbnail resolves asynchronously. What matters here is
+    // that the attachment is keyed to the DURABLE path, not the transient one.
     expect(add).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'image',
-        path: durablePath,
-        previewUrl
+        path: durablePath
       })
     )
   })

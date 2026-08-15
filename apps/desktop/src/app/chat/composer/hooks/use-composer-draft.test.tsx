@@ -215,6 +215,41 @@ describe('useComposerDraft — rehydrate diagnostic log stays redacted', () => {
   })
 })
 
+describe('useComposerDraft — draft survives full unmount (Settings navigation, #41079)', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('session-nav')
+  })
+
+  it('stashes the unsent draft on unmount and restores it on remount', () => {
+    // The user typed but has not sent; the draft was stashed by the normal
+    // typing debounce path at some earlier point.
+    stashSessionDraft('session-nav', 'unsent thought', [])
+
+    const { unmount } = render(
+      <ProbeHarness activeQueueSessionKey="session-nav" onLayoutSnapshot={() => undefined} sessionId="session-nav" />
+    )
+
+    // Navigating to Settings unmounts the chat composer entirely. The swap
+    // effect's cleanup must stash the loaded draft back under its scope —
+    // NOT drop it with the React state.
+    unmount()
+
+    mockComposerApi.setText.mockClear()
+
+    const remount = render(
+      <ProbeHarness activeQueueSessionKey="session-nav" onLayoutSnapshot={() => undefined} sessionId="session-nav" />
+    )
+
+    // Remount restored the text into the composer core (setText mirrors
+    // paintDraft's write path — the editor DOM isn't mounted in this harness).
+    expect(mockComposerApi.setText).toHaveBeenCalledWith('unsent thought')
+
+    remount.unmount()
+  })
+})
+
 describe('useComposerDraft — a closing composer hands the focus-bus key back', () => {
   afterEach(() => {
     cleanup()

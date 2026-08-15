@@ -2231,7 +2231,6 @@ export const zh: Translations = {
       copyIdFailed: '无法复制会话 ID',
 
       sessionActions: '会话操作',
-      markRead: '标记为已读',
       sessionRunning: '会话运行中',
       needsInput: '需要你输入',
       waitingForAnswer: '正在等待你的回答',

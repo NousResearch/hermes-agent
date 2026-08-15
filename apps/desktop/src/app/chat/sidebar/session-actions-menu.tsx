@@ -50,6 +50,7 @@ import {
   sessionPinId,
   setSessions
 } from '@/store/session'
+import { ackStoredSessionId } from '@/store/session-unread'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles } from '@/store/session-states'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
@@ -323,8 +324,10 @@ function useSessionActions({
         triggerHaptic('selection')
 
         if (unread || isUnread) {
-          // Clear the transient family dot immediately…
+          // Clear the transient family dot immediately (and ack the persisted
+          // watermark/marker so a list refresh doesn't repaint it)…
           markSessionRead(sessionId)
+          ackStoredSessionId(sessionId)
 
           // …and retire the persisted watermark when the row carries one.
           if (unread) {

@@ -703,6 +703,18 @@ export function markAllSessionsRead() {
 // already-viewed completion keeps re-lighting the row.
 export const $lastReadAtBySessionId = atom<Record<string, number>>({})
 
+/** A new turn started for this session: the read baseline only guarded the
+ *  PREVIOUS completion's re-asserts, so drop it — the new turn's finish must
+ *  re-light even when it lands in the same millisecond as the last read. */
+export const clearReadBaseline = (storedSessionId: string) => {
+  const map = $lastReadAtBySessionId.get()
+
+  if (storedSessionId in map) {
+    const { [storedSessionId]: _dropped, ...rest } = map
+    $lastReadAtBySessionId.set(rest)
+  }
+}
+
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
   // Opening a session clears its unread state — the user is now looking at it.

@@ -2044,7 +2044,6 @@ export const en: Translations = {
       openInSplit: 'Open in split',
       copyIdFailed: 'Could not copy session ID',
       sessionActions: 'Session actions',
-      markRead: 'Mark as read',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',

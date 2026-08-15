@@ -123,6 +123,7 @@ import {
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { notifyError } from '@/store/notifications'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -1671,6 +1672,9 @@ export function ChatSidebar({
                           onClick={event => {
                             event.stopPropagation()
                             markAllSessionsRead()
+                            // Ack the persisted layer too, or the next list
+                            // refresh repaints every dot just dismissed.
+                            ackAllSessionsRead()
                           }}
                           size="icon-xs"
                           variant="ghost"

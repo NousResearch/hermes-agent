@@ -282,6 +282,16 @@ export function ackStoredSessionId(storedSessionId: null | string): void {
   }
 }
 
+/** Sidebar "Mark all as read" — ack every LOADED row (watermark := its current
+ *  count, markers retired) so the persisted layer doesn't repaint the dots the
+ *  user just dismissed on the next list refresh. Rows not loaded keep their
+ *  state: an unseen session in a collapsed profile stays honestly unread. */
+export function ackAllSessionsRead(): void {
+  for (const row of rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])) {
+    ackSessionRow(row)
+  }
+}
+
 /** DELETE/ARCHIVE CLEANUP — the session is gone from the user's world, so its
  *  watermark and marker are dead weight. Drops every candidate id (stored id,
  *  live id, lineage root) from both persisted records in `profile`'s bucket

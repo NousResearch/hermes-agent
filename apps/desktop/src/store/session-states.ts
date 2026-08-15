@@ -39,13 +39,14 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  clearReadBaseline,
   lineageAliases,
   markSessionRead,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
   setSessions
 } from './session'
-import { markSessionUnreadFinished } from './session-unread'
+import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -182,6 +183,11 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
   if (next.busy && !wasWorking) {
     clearSettled(storedId)
+    // A NEW turn is starting: the read baseline guarded the PREVIOUS
+    // completion's re-asserts. Dropping it here means this turn's finish
+    // re-lights even if it lands within the same millisecond as the last
+    // read (same-tick submit → finish in tests and fast local models).
+    clearReadBaseline(storedId)
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
 
@@ -679,8 +685,10 @@ export function openSessionTile(
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
   // setSelectedStoredSessionId cleared unread, so tile-opened sessions kept
-  // their green dot even while the user was reading them.
+  // their green dot even while the user was reading them. Acks the persisted
+  // watermark/marker too so a later list refresh doesn't repaint it.
   markSessionRead(storedSessionId)
+  ackStoredSessionId(storedSessionId)
 
   if (storedSessionId === $selectedStoredSessionId.get()) {
     return
@@ -933,11 +941,13 @@ export const selectionHomesToWorkspace = (selected: null | string, tiles: readon
 // FOCUSED session, not the selected one: a tile is never $selectedStoredSessionId,
 // and a tile tab click goes through activateTreePane rather than focusOpenSession,
 // so this is the one hook that catches every way a tile reaches the front.
+// Clears the whole conversation family (markSessionRead) AND acks the
+// persisted watermark/marker (ackStoredSessionId) so the next list refresh
+// doesn't repaint the dot the user just cleared by looking at it.
 $focusedStoredSessionId.listen(focused => {
-  const cur = $unreadFinishedSessionIds.get()
-
-  if (focused && cur.includes(focused)) {
-    $unreadFinishedSessionIds.set(cur.filter(id => id !== focused))
+  if (focused) {
+    markSessionRead(focused)
+    ackStoredSessionId(focused)
   }
 })
 

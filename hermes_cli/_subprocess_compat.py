@@ -50,6 +50,9 @@ __all__ = [
 
 IS_WINDOWS = sys.platform == "win32"
 
+# Private launcher-to-child metadata. This is diagnostic state, not user config.
+_WINDOWS_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
+
 
 def split_command_line(line: str) -> list[str]:
     """Split a user-supplied command line into tokens, Windows-safely.

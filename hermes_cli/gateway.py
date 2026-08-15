@@ -68,9 +68,6 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
-# Private launcher-to-child metadata. This is diagnostic state, not user config.
-_WINDOWS_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
-
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -2070,6 +2067,8 @@ def _windows_gateway_breakaway_state() -> bool | None:
     """Consume private spawn metadata without guessing for older launchers."""
     if not is_windows():
         return None
+    from hermes_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+
     value = os.environ.pop(_WINDOWS_GATEWAY_BREAKAWAY_ENV, None)
     if value == "1":
         return True

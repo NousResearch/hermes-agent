@@ -41,15 +41,13 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from hermes_cli._subprocess_compat import (
+    _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
 )
 
 logger = logging.getLogger(__name__)
-
-# Private launcher-to-child metadata. This is diagnostic state, not user config.
-_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
@@ -919,7 +917,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
 
     # Inherit PATH etc. from the current env, overlay our required vars.
     env = {**os.environ, **env_overlay}
-    primary_env = {**env, _GATEWAY_BREAKAWAY_ENV: "1"}
+    primary_env = {**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}
 
     # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't
     #                                       receive Ctrl+C from our group
@@ -971,7 +969,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
             error_code,
         )
         flags_no_breakaway = windows_detach_flags_without_breakaway()
-        fallback_env = {**env, _GATEWAY_BREAKAWAY_ENV: "0"}
+        fallback_env = {**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
                 argv,

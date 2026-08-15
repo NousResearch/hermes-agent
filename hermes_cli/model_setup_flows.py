@@ -901,6 +901,7 @@ def _model_flow_custom(config):
     from hermes_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import (
+        custom_endpoint_identity,
         custom_endpoint_key_env,
         get_env_value,
         load_config,
@@ -1065,13 +1066,29 @@ def _model_flow_custom(config):
     # on host:port so two servers on one machine keep separate credentials.
     custom_key_env = ""
     if effective_key:
-        _parsed = urllib.parse.urlparse(effective_url)
-        _identity = _parsed.hostname or ""
-        if _parsed.port:
-            _identity = f"{_identity}_{_parsed.port}"
-        custom_key_env = custom_endpoint_key_env(_identity)
+        custom_key_env = custom_endpoint_key_env(
+            custom_endpoint_identity(effective_url)
+        )
         save_env_value(custom_key_env, effective_key)
         print(f"  API key saved to .env as {custom_key_env}")
+
+    def _persist_custom_model_credentials(model_cfg: dict) -> None:
+        if custom_key_env:
+            model_cfg["key_env"] = custom_key_env
+            model_cfg.pop("api_key", None)
+            model_cfg.pop("api", None)
+            return
+        previous_url = str(model_cfg.get("base_url") or "").strip()
+        if (
+            previous_url
+            and custom_endpoint_identity(previous_url)
+            != custom_endpoint_identity(effective_url)
+        ):
+            # A→B without a replacement key must not keep A's key_env.
+            model_cfg.pop("key_env", None)
+            model_cfg.pop("api_key_env", None)
+            model_cfg.pop("api_key", None)
+            model_cfg.pop("api", None)
 
     if model_name:
         _save_model_choice(model_name)
@@ -1083,11 +1100,8 @@ def _model_flow_custom(config):
             model = {"default": model} if model else {}
             cfg["model"] = model
         model["provider"] = "custom"
+        _persist_custom_model_credentials(model)
         model["base_url"] = effective_url
-        if custom_key_env:
-            model["key_env"] = custom_key_env
-            model.pop("api_key", None)
-            model.pop("api", None)
         if api_mode:
             model["api_mode"] = api_mode
         else:
@@ -1111,11 +1125,8 @@ def _model_flow_custom(config):
         if not isinstance(_caller_model, dict):
             _caller_model = {"default": _caller_model} if _caller_model else {}
         _caller_model["provider"] = "custom"
+        _persist_custom_model_credentials(_caller_model)
         _caller_model["base_url"] = effective_url
-        if custom_key_env:
-            _caller_model["key_env"] = custom_key_env
-            _caller_model.pop("api_key", None)
-            _caller_model.pop("api", None)
         if api_mode:
             _caller_model["api_mode"] = api_mode
         else:

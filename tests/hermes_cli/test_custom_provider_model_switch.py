@@ -116,8 +116,53 @@ class TestCustomProviderModelSwitch:
         config = yaml.safe_load(config_path.read_text()) or {}
         assert config["model"]["base_url"] == "https://new.example.test/v1"
 
+    def test_custom_endpoint_rotation_without_key_clears_old_key_env(
+        self,
+        config_home,
+    ):
+        """CLI custom A→B with no replacement key must drop model.key_env."""
+        import yaml
+        from hermes_cli.main import _model_flow_custom
 
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom\n"
+            "  base_url: https://old.example.test/v1\n"
+            "  key_env: HERMES_CUSTOM_OLD_EXAMPLE_TEST_API_KEY\n"
+            "custom_providers: []\n"
+        )
+        (config_home / ".env").write_text(
+            "HERMES_CUSTOM_OLD_EXAMPLE_TEST_API_KEY=sk-old\n"
+        )
 
+        with patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["new-model"],
+                "used_fallback": False,
+                "probed_url": "https://new.example.test/v1/models",
+            },
+        ), \
+             patch("hermes_cli.secret_prompt.masked_secret_prompt", return_value=""), \
+             patch("hermes_cli.main._prompt_custom_api_mode_selection", return_value=""), \
+             patch(
+                 "builtins.input",
+                 side_effect=[
+                     "https://new.example.test/v1",
+                     "",
+                     "",
+                     "New Endpoint",
+                 ],
+             ), \
+             patch("builtins.print"):
+            _model_flow_custom({})
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["base_url"] == "https://new.example.test/v1"
+        assert "key_env" not in config["model"]
+        assert "api_key" not in config["model"]
 
     def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
         """Selecting an env-backed custom provider must not inline the secret."""

@@ -1617,6 +1617,105 @@ class TestWebServerEndpoints:
             for e in custom
         )
 
+    def test_set_model_main_custom_rotation_clears_old_key_env(self):
+        """A→B without a replacement key must not keep A's key_env.
+
+        Resolution would send the old secret to the new host.
+        """
+        from hermes_cli.config import load_config
+
+        first = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "gpt-oss-120b",
+                "base_url": "https://text.example.com/v1",
+                "api_key": "sk-secret-a",
+            },
+        )
+        assert first.status_code == 200
+        assert first.json()["ok"] is True
+
+        rotated = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "gpt-oss-120b",
+                "base_url": "https://other.example.com/v1",
+            },
+        )
+        assert rotated.status_code == 200
+        assert rotated.json()["ok"] is True
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["base_url"] == "https://other.example.com/v1"
+        assert "key_env" not in model_cfg
+        assert "api_key" not in model_cfg
+
+    def test_set_model_auxiliary_custom_persists_key_env(self):
+        """Auxiliary custom assignments must not write plaintext keys."""
+        from hermes_cli.config import get_env_path, load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "custom",
+                "model": "vision-model",
+                "base_url": "https://vision.example.com/v1",
+                "api_key": "sk-aux-secret",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        slot = (load_config().get("auxiliary") or {}).get("vision")
+        assert isinstance(slot, dict)
+        assert slot["base_url"] == "https://vision.example.com/v1"
+        assert slot["key_env"] == "HERMES_CUSTOM_VISION_EXAMPLE_COM_API_KEY"
+        assert not str(slot.get("api_key") or "").strip()
+        env_text = get_env_path().read_text(encoding="utf-8")
+        assert "HERMES_CUSTOM_VISION_EXAMPLE_COM_API_KEY=sk-aux-secret" in env_text
+
+    def test_set_model_auxiliary_custom_rotation_clears_key_env(self):
+        """Auxiliary A→B without a new key must drop the old key_env."""
+        from hermes_cli.config import load_config
+
+        first = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "custom",
+                "model": "vision-model",
+                "base_url": "https://vision.example.com/v1",
+                "api_key": "sk-aux-a",
+            },
+        )
+        assert first.status_code == 200
+
+        rotated = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "custom",
+                "model": "vision-model",
+                "base_url": "https://vision-b.example.com/v1",
+            },
+        )
+        assert rotated.status_code == 200
+
+        slot = (load_config().get("auxiliary") or {}).get("vision")
+        assert isinstance(slot, dict)
+        assert slot["base_url"] == "https://vision-b.example.com/v1"
+        assert not str(slot.get("key_env") or "").strip()
+        assert not str(slot.get("api_key") or "").strip()
+
 
 
 

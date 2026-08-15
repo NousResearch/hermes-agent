@@ -74,6 +74,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
     remove_env_value,
+    custom_endpoint_identity,
     custom_endpoint_key_env,
     check_config_version,
     detect_install_method,
@@ -1751,6 +1752,7 @@ def _apply_main_model_assignment(
     if not isinstance(model_cfg, dict):
         model_cfg = {}
     prev_provider = str(model_cfg.get("provider") or "").strip().lower()
+    prev_base = str(model_cfg.get("base_url") or "").strip()
     new_provider = provider.strip().lower()
     model_cfg["provider"] = provider
     model_cfg["default"] = model
@@ -1761,20 +1763,24 @@ def _apply_main_model_assignment(
         # it so the new provider's default endpoint is used. Same-provider
         # re-assignment keeps the user's configured base_url intact.
         model_cfg["base_url"] = ""
+    new_base = str(model_cfg.get("base_url") or "").strip()
+    incoming_key_env = key_env.strip()
+    incoming_api_key = api_key.strip()
     # The endpoint key follows the same lifecycle as base_url: an explicit key
     # is always persisted; an existing key is dropped only when switching to a
     # different provider (it belonged to the old endpoint), and preserved on a
     # same-provider re-pick so re-selecting a model doesn't wipe the key.
     # When ``key_env`` is supplied the secret lives in ``.env``; config.yaml
     # only references the env var (#57547).
-    if key_env.strip():
-        model_cfg["key_env"] = key_env.strip()
+    if incoming_key_env:
+        model_cfg["key_env"] = incoming_key_env
         # Remove inline key aliases so the secret never lives in config.yaml.
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
-    elif api_key.strip():
-        model_cfg["api_key"] = api_key.strip()
+    elif incoming_api_key:
+        model_cfg["api_key"] = incoming_api_key
         model_cfg.pop("api", None)
         model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
     elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
         # A stale endpoint secret can live under the legacy ``api`` alias with
         # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
@@ -1782,8 +1788,23 @@ def _apply_main_model_assignment(
         # old endpoint's secret survives in config.yaml and contaminates a later
         # custom resolution. clear_model_endpoint_credentials scrubs both.
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+    endpoint_rotated = bool(
+        prev_base
+        and new_base
+        and custom_endpoint_identity(prev_base) != custom_endpoint_identity(new_base)
+    )
     if new_provider != prev_provider:
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
+        if not incoming_key_env:
+            clear_model_endpoint_credentials(
+                model_cfg, clear_api_key=False, clear_api_mode=False, clear_key_env=True
+            )
+    elif endpoint_rotated and not incoming_key_env and not incoming_api_key:
+        # Custom A→B without a replacement key must not keep A's key_env.
+        # Resolution would send the old secret to the new host.
+        clear_model_endpoint_credentials(
+            model_cfg, clear_api_mode=False, clear_key_env=True
+        )
     model_cfg.pop("context_length", None)
     return model_cfg
 
@@ -7356,11 +7377,7 @@ def _apply_model_assignment_sync(
         # pass the env-var name instead of the secret (#57547).
         key_env = ""
         if provider.strip().lower() in {"custom", "local"} and base_url and api_key:
-            _parsed = urllib.parse.urlparse(base_url)
-            _identity = _parsed.hostname or ""
-            if _parsed.port:
-                _identity = f"{_identity}_{_parsed.port}"
-            key_env = custom_endpoint_key_env(_identity)
+            key_env = custom_endpoint_key_env(custom_endpoint_identity(base_url))
             save_env_value(key_env, api_key)
 
         model_cfg = _apply_main_model_assignment(
@@ -7502,7 +7519,7 @@ def _apply_model_assignment_sync(
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
             slot_cfg.pop("base_url", None)
-            clear_model_endpoint_credentials(slot_cfg)
+            clear_model_endpoint_credentials(slot_cfg, clear_key_env=True)
             aux[slot] = slot_cfg
         cfg["auxiliary"] = aux
         save_config(cfg)
@@ -7519,6 +7536,7 @@ def _apply_model_assignment_sync(
         if not isinstance(slot_cfg, dict):
             slot_cfg = {}
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
+        prev_base = str(slot_cfg.get("base_url") or "").strip()
         new_provider = provider.strip().lower()
         slot_cfg["provider"] = provider
         slot_cfg["model"] = model
@@ -7533,10 +7551,23 @@ def _apply_model_assignment_sync(
             # what actually wires the endpoint in.
             slot_cfg["base_url"] = base_url
             if api_key:
-                slot_cfg["api_key"] = api_key
+                aux_key_env = custom_endpoint_key_env(
+                    custom_endpoint_identity(base_url)
+                )
+                save_env_value(aux_key_env, api_key)
+                slot_cfg["key_env"] = aux_key_env
+                clear_model_endpoint_credentials(slot_cfg, clear_api_mode=False)
+            elif (
+                prev_base
+                and custom_endpoint_identity(prev_base)
+                != custom_endpoint_identity(base_url)
+            ):
+                clear_model_endpoint_credentials(
+                    slot_cfg, clear_api_mode=False, clear_key_env=True
+                )
         elif new_provider != prev_provider and new_provider != "custom":
             slot_cfg.pop("base_url", None)
-            clear_model_endpoint_credentials(slot_cfg)
+            clear_model_endpoint_credentials(slot_cfg, clear_key_env=True)
         aux[slot] = slot_cfg
 
     cfg["auxiliary"] = aux

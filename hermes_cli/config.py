@@ -29,6 +29,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
@@ -1074,6 +1075,7 @@ def clear_model_endpoint_credentials(
     clear_api_key: bool = True,
     clear_api_mode: bool = True,
     clear_base_url: bool = False,
+    clear_key_env: bool = False,
 ) -> Dict[str, Any]:
     """Remove stale inline endpoint credentials from a model config.
 
@@ -1088,6 +1090,9 @@ def clear_model_endpoint_credentials(
     if clear_api_key:
         model_cfg.pop("api_key", None)
         model_cfg.pop("api", None)
+    if clear_key_env:
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
     if clear_base_url:
@@ -4296,6 +4301,19 @@ def save_env_value(key: str, value: str):
 
     os.environ[key] = value
     invalidate_env_cache()
+
+
+def custom_endpoint_identity(base_url: str) -> str:
+    """Stable host:port identity for a custom endpoint URL.
+
+    Two URLs that differ only by path share a credential slot; two ports on
+    the same host do not. Empty or unparseable URLs yield an empty identity.
+    """
+    parsed = urllib.parse.urlparse(str(base_url or "").strip())
+    identity = parsed.hostname or ""
+    if parsed.port:
+        identity = f"{identity}_{parsed.port}"
+    return identity
 
 
 def custom_endpoint_key_env(identity: str) -> str:

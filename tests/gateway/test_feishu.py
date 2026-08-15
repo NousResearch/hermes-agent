@@ -1123,6 +1123,33 @@ class TestAdapterBehavior(unittest.TestCase):
         # down, which only works by accident (httpx's eager buffering).
         self.assertLess(events.index("content_read"), events.index("client_exit"))
 
+    def test_failed_file_attachment_is_explicitly_reported_to_agent(self):
+        """An unavailable Feishu file must not look like a readable filename."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            message_id="om_svg_1",
+            message_type="file",
+            content=json.dumps({"file_key": "file_svg_1", "file_name": "logo.svg"}),
+            mentions=[],
+        )
+
+        with patch.object(
+            adapter,
+            "_download_feishu_message_resource",
+            new=AsyncMock(return_value=("", "")),
+        ):
+            text, _message_type, media_urls, media_types, _mentions = asyncio.run(
+                adapter._extract_message_content(message)
+            )
+
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+        self.assertIn("logo.svg", text)
+        self.assertIn("could not be downloaded", text)
+
     def test_download_remote_document_blocks_connect_time_rebind(self):
         import httpcore
         from httpcore._backends.auto import AutoBackend
@@ -2465,5 +2492,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
-

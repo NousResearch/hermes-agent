@@ -11813,26 +11813,22 @@ def main():
         help="1Password (op:// references) integration",
     )
 
-    # Lazy import — only pays for itself when this subcommand is actually used.
-    # The secrets_cli module imports agent.secret_sources.bitwarden which loads
-    # cryptography._rust.pyd on Windows; loading it eagerly here would cause
-    # hermes update to self-lock (the updater itself maps the .pyd before the
-    # dependency sync runs).  Defer the import until the dispatcher actually
-    # handles a secrets subcommand.
+    # The secrets_cli and onepassword_secrets_cli modules use lazy-imported
+    # backends (agent.secret_sources.bitwarden / onepassword), so registering
+    # their parsers here does NOT load cryptography._rust.pyd.  The imports
+    # happen inside each cmd_* handler at first use.
+    from hermes_cli import secrets_cli as _secrets_cli
+    from hermes_cli import onepassword_secrets_cli as _op_secrets_cli
+
+    _secrets_cli.register_cli(secrets_bw)
+    _op_secrets_cli.register_cli(secrets_op)
+
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)
-        bw_sub = getattr(args, "secrets_bw_command", None)
-        op_sub = getattr(args, "secrets_op_command", None)
-        if sub in ("bitwarden", "bw") and bw_sub is not None:
-            from hermes_cli import secrets_cli as _secrets_cli
-            _secrets_cli.register_cli(secrets_bw)
-            return args.func(args)
-        if sub in ("onepassword", "op", "1password") and op_sub is not None:
-            from hermes_cli import onepassword_secrets_cli as _op_secrets_cli
-            _op_secrets_cli.register_cli(secrets_op)
-            return args.func(args)
-        secrets_parser.print_help()
-        return 0
+        if sub is None:
+            secrets_parser.print_help()
+            return 0
+        return args.func(args)
 
     secrets_parser.set_defaults(func=_dispatch_secrets)
 

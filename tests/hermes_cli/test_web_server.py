@@ -476,6 +476,70 @@ class TestWebServerEndpoints:
             "sidebar-stale"
         ]
 
+    def test_startup_eager_reconcile_heals_stale_store(self):
+        """The lifespan's eager reconcile brings a stale store current.
+
+        #79531/#80037: after `hermes update` an old-schema state.db used to
+        stay stale until the first NEW session forced a writable open —
+        every /api/sessions poll 500ed with "no such column" in between.
+        The lifespan now schedules one writable open at startup; this
+        exercises that worker directly against a store missing
+        sessions.last_read_at and asserts the schema is brought current.
+        """
+        import sqlite3
+
+        from hermes_cli import web_server
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("eager-stale", source="cli")
+        finally:
+            seed.close()
+
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        web_server._eager_reconcile_own_session_db()
+
+        healed = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
+            }
+        finally:
+            healed.close()
+        assert "last_read_at" in columns
+
+        # The healed store serves the full rich listing.
+        db = SessionDB(db_path=db_path, read_only=True)
+        try:
+            rows = db.list_sessions_rich(limit=10, compact_rows=True)
+        finally:
+            db.close()
+        assert [r["id"] for r in rows] == ["eager-stale"]
+
+    def test_startup_eager_reconcile_never_raises(self, monkeypatch):
+        """A store the eager reconcile cannot open must not break startup."""
+        import sqlite3 as sqlite3_module
+
+        import hermes_state
+
+        from hermes_cli import web_server
+
+        def boom(*args, **kwargs):
+            raise sqlite3_module.OperationalError("database is locked")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", boom)
+        # Must swallow — reads fall back to the per-poll probe heal.
+        web_server._eager_reconcile_own_session_db()
+
     def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
         """A probe failure reconciliation can't cure must not retry forever.
 

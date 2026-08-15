@@ -46,10 +46,16 @@ export function linkifyFilePaths(source: string, cwd?: string): string {
 }
 
 function linkifyProseChunk(chunk: string, cwd?: string): string {
-  // Mask existing markdown links ([label](url)) with placeholders so their
-  // targets are never relinked, then restore after linking plain paths.
+  // Mask existing markdown links ([label](url)) and inline code (`…`) with
+  // placeholders so their targets are never relinked, then restore after
+  // linking plain paths. Inline code must be protected too: a path inside
+  // backticks renders as code, not as a link, so rewriting it there would
+  // leak raw markdown syntax onto the screen.
   const protectedSpans: string[] = []
   const masked = chunk.replace(/\[[^\]]*\]\([^)]*\)/g, match => {
+    protectedSpans.push(match)
+    return `\u0000${protectedSpans.length - 1}\u0000`
+  }).replace(/`[^`\n]+`/g, match => {
     protectedSpans.push(match)
     return `\u0000${protectedSpans.length - 1}\u0000`
   })

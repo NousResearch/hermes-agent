@@ -64,4 +64,16 @@ describe('linkifyFilePaths', () => {
       '见 https://github.com/user/repo/file.md'
     )
   })
+
+  it('leaves inline code (backtick) paths untouched', () => {
+    const src = '运行 `docs/guide.md` 和 `/tmp/a.md` 都不动'
+    expect(linkifyFilePaths(src, '/repo')).toBe(src)
+  })
+
+  it('links plain-text relative paths even next to inline-code ones', () => {
+    const src = '看 docs/guide.md 与代码里的 `docs/guide.md`'
+    const out = linkifyFilePaths(src, '/repo')
+    expect(out).toContain('[docs/guide.md](#media:%2Frepo%2Fdocs%2Fguide.md)')
+    expect(out).toContain('`docs/guide.md`')
+  })
 })

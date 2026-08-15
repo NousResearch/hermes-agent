@@ -905,6 +905,19 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # MoA is a virtual chat-completions provider backed by the
         # in-process MoAClient facade. Do not rebuild a request-local
         # OpenAI client from the virtual runtime metadata.
+        #
+        # After a client replacement (credential rotation /
+        # dead-connection cleanup / fallback+restore), agent.client may
+        # become a native OpenAI client while agent.provider stays
+        # "moa".  Pop the MoA-internal key so the native SDK does not
+        # reject it as an unexpected kwarg — but only when the live
+        # client is NOT the facade: the facade consumes the key, and
+        # stripping it there forces a wasteful duplicate reference
+        # fan-out (the facade re-prepares from scratch).  Only the MoA
+        # facade's completions object exposes ``prepare()``.  (#78382)
+        _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+        if not callable(getattr(_completions, "prepare", None)):
+            api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
     return request_client.chat.completions.create(**api_kwargs)

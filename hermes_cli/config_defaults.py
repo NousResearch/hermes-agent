@@ -78,6 +78,15 @@ DEFAULT_CONFIG = {
         # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
         # active turns finish *before* stop() begins (#77184).
         "restart_drain_timeout": 0,
+        # Cron-only floor under the stop()/drain wait (seconds). A chat turn
+        # interrupted by a restart is announced to the user and resumed on
+        # their next message; an interrupted cron run is written to jobs.json
+        # as a permanent failure that nobody is waiting on, so it must not
+        # inherit restart_drain_timeout's 0 (#82161). Clamped at runtime to
+        # the shutdown-watchdog leash minus teardown headroom, so raising it
+        # past ~50s has no effect unless TimeoutStopSec is raised too.
+        # 0 = opt out (cron drains on restart_drain_timeout, legacy).
+        "cron_drain_timeout": 30,
         # In-band restart wait for active turns to finish before stop()
         # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
         # this cap for in-flight agents/cron/api runs to complete naturally

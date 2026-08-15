@@ -572,8 +572,18 @@ class TestTodoSnapshotMergedNotDuplicated:
             lambda: "## Current Tasks\n- [ ] inspect image"
         )
 
+        # Input transcript must be large enough that the fake compressor's
+        # output is a genuine shrink — the no-growth commit guard refuses
+        # to persist a compression that grows the transcript.
+        input_msgs = [
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"m{i} " + "x" * 400,
+            }
+            for i in range(20)
+        ]
         compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
+            input_msgs, "sys", approx_tokens=120_000
         )
 
         assert len(compressed) == 3

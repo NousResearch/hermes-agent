@@ -7523,17 +7523,71 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
-def _close_cached_client(client: Any) -> None:
-    """Apply the canonical best-effort close policy to one cached client."""
+def _schedule_async_close(close_result: Any, client: Any) -> None:
+    """Finish an async close without leaking an unawaited coroutine."""
+    async def _await_close() -> None:
+        try:
+            await close_result
+        except Exception:
+            pass
+        finally:
+            _force_close_async_httpx(client)
+
+    runner = _await_close()
+    try:
+        import asyncio as _aio
+
+        try:
+            loop = _aio.get_running_loop()
+        except RuntimeError:
+            _aio.run(runner)
+        else:
+            task = loop.create_task(runner)
+
+            def _consume(completed_task) -> None:
+                try:
+                    completed_task.exception()
+                except BaseException:
+                    pass
+
+            task.add_done_callback(_consume)
+            runner = None
+    except Exception:
+        if runner is not None:
+            try:
+                runner.close()
+            except Exception:
+                pass
+        _force_close_async_httpx(client)
+
+
+def _close_cached_client(client: Any, *, close_async: bool = False) -> None:
+    """Close one cached client, awaiting async transports only when safe."""
     if client is None:
         return
-    _force_close_async_httpx(client)
+    close_fn = getattr(client, "close", None)
+    if not callable(close_fn):
+        _force_close_async_httpx(client)
+        return
     try:
-        close_fn = getattr(client, "close", None)
-        if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
-            close_fn()
+        close_result = close_fn()
     except Exception:
-        pass
+        _force_close_async_httpx(client)
+        return
+    if inspect.isawaitable(close_result):
+        if close_async:
+            _schedule_async_close(close_result, client)
+        else:
+            # Do not await a client owned by another live event loop.
+            # Closing the coroutine avoids an unawaited-coroutine warning;
+            # the transport is still neutered for safe eventual GC.
+            try:
+                close_result.close()
+            except Exception:
+                pass
+            _force_close_async_httpx(client)
+        return
+    _force_close_async_httpx(client)
 
 
 def shutdown_cached_clients() -> None:
@@ -7541,14 +7595,34 @@ def shutdown_cached_clients() -> None:
 
     Call this during CLI shutdown, *before* the event loop is closed, to
     avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
+
+    Snapshot and clear the cache under the lock, then close transports outside
+    it. Async transport shutdown may block while an owner loop drains; holding
+    the global cache lock during that wait stalls unrelated auxiliary callers
+    and can turn teardown into a process-wide lock convoy.
     """
     with _client_cache_lock:
-        for key, entry in list(_client_cache.items()):
-            client = entry[0]
-            if client is None:
-                continue
-            _close_cached_client(client)
+        clients = [
+            (entry[0], entry[2])
+            for entry in _client_cache.values()
+            if entry[0] is not None
+        ]
         _client_cache.clear()
+    try:
+        import asyncio as _aio
+
+        running_loop = _aio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    for client, owner_loop in clients:
+        # A live foreign loop owns its async transport. Calling its coroutine
+        # on this thread can bind/close sockets from the wrong loop; neuter it
+        # and let that owner finish teardown. Closed loops are safe to drain
+        # locally, and the current loop can await its own client.
+        close_async = owner_loop is not None and (
+            owner_loop.is_closed() or owner_loop is running_loop
+        )
+        _close_cached_client(client, close_async=close_async)
 
 
 def cleanup_stale_async_clients() -> None:
@@ -7559,15 +7633,18 @@ def cleanup_stale_async_clients() -> None:
     This is defense-in-depth — the primary fix is ``neuter_async_httpx_del``
     which disables ``__del__`` entirely.
     """
+    stale_clients = []
     with _client_cache_lock:
         stale_keys = []
         for key, entry in _client_cache.items():
             client, _default, cached_loop = entry
             if cached_loop is not None and cached_loop.is_closed():
-                _force_close_async_httpx(client)
                 stale_keys.append(key)
+                stale_clients.append(client)
         for key in stale_keys:
             del _client_cache[key]
+    for client in stale_clients:
+        _close_cached_client(client, close_async=True)
 
 
 def _is_openrouter_client(client: Any) -> bool:
@@ -7660,7 +7737,12 @@ def _get_cached_client(
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
-                _force_close_async_httpx(cached_client)
+                # Only a client whose owner loop is closed may be awaited from
+                # this thread; a live foreign loop remains force-neutered.
+                owner_loop_closed = (
+                    cached_loop is not None and cached_loop.is_closed()
+                )
+                _close_cached_client(cached_client, close_async=owner_loop_closed)
                 del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)
@@ -7710,7 +7792,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # This concurrently built loser was never exposed to a caller,
                 # so it is safe to close immediately.
-                _close_cached_client(built_client)
+                _close_cached_client(built_client, close_async=async_mode)
     return client, model or default_model
 
 

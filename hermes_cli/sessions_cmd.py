@@ -93,10 +93,14 @@ def cmd_sessions(args, sessions_parser=None):
             try:
                 from hermes_state import SessionDB
 
-                n = SessionDB()._conn.execute(
-                    "SELECT COUNT(*) FROM sessions"
-                ).fetchone()[0]
-                print(f"✓ Repaired — {n} sessions recovered.")
+                _repair_db = SessionDB()
+                try:
+                    n = _repair_db._conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                    print(f"✓ Repaired — {n} sessions recovered.")
+                finally:
+                    _repair_db.close()
             except Exception:
                 print("✓ Repaired.")
         else:

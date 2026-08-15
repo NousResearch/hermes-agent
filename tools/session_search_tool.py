@@ -33,6 +33,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+from hermes_state_common import _RESET_END_REASONS
+
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
 # delegate subagent runs are tagged "subagent"; kanban dispatcher workers are
@@ -82,15 +84,12 @@ _COMPACTION_PREFIXES = (
 # parent_session_id lineage with the current session, but the prior content
 # is NOT in live context — unlike compression continuations (summary carried
 # forward) and live delegation children (parent still running).
-_FRESH_RESET_END_REASONS = frozenset({
-    "session_reset",
-    "session_switch",
-    "idle",
-    "daily",
-    "suspended",
-    "resume_pending_expired",
-    "new_session",
-})
+#
+# Derived from the canonical gateway reset-reason set so the recovery fence
+# and this tool cannot drift (see the comment on _RESET_END_REASONS).
+# "new_session" is the CLI /new end reason (cli.py), which the gateway set
+# does not include.
+_FRESH_RESET_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -193,30 +192,28 @@ def _is_compression_ended(db, session_id: str) -> bool:
 
 
 def _session_left_live_context(db, session_id: str) -> bool:
-    """True when *session_id* was ended, so its transcript is not in live context.
+    """True when *session_id*'s transcript is no longer in anyone's live context.
 
-    Covers compression rotation AND /new-reset / idle / CLI new_session.
-    Live delegation children have ``end_reason is None`` and stay excluded.
+    Two shapes qualify:
+
+    - ``compression``: the transcript was summarised into the continuation
+      child, so the original rows left live context.
+    - fresh resets (:data:`_FRESH_RESET_END_REASONS`): every
+      ``_RESET_END_REASONS`` member plus CLI ``new_session`` — the child
+      starts empty and carries nothing forward.
+
+    Everything else stays excluded from same-lineage recall: live delegation
+    children (``end_reason is None``) are still visible to the parent agent,
+    and ``branched`` parents were verbatim-copied into the branch child, so
+    their content IS the current context.
     """
-    return _session_end_reason(db, session_id) is not None
+    end_reason = _session_end_reason(db, session_id)
+    return end_reason == "compression" or _is_fresh_reset_session(end_reason)
 
 
 def _is_fresh_reset_session(end_reason: Optional[str]) -> bool:
     """True when *end_reason* is a /new-style reset (transcript not carried forward)."""
     return end_reason in _FRESH_RESET_END_REASONS
-
-
-def _has_reset_from_marker(model_config: Any) -> bool:
-    """True when model_config carries the gateway ``_reset_from`` lineage marker."""
-    if isinstance(model_config, dict):
-        return bool(model_config.get("_reset_from"))
-    if isinstance(model_config, str) and model_config:
-        try:
-            parsed = json.loads(model_config)
-        except (TypeError, ValueError):
-            return "_reset_from" in model_config
-        return isinstance(parsed, dict) and bool(parsed.get("_reset_from"))
-    return False
 
 
 def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
@@ -484,15 +481,18 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
-        # list_sessions_rich already admits /new-reset children
-        # (_reset_from marker / same-key heuristic). The extra skip below
-        # used to drop every parent_session_id row, which hid those
-        # conversations from browse after /new (#85756).
+        # list_sessions_rich (include_children=False) already applies the
+        # canonical child classifier (_LISTABLE_CHILD_SQL): roots, /branch
+        # children, and /new-reset children are admitted (stable markers plus
+        # the legacy same-key heuristic), while delegation/compression
+        # children are hidden. Re-classifying rows here in Python duplicated
+        # that predicate and re-hid legacy pre-marker reset children the SQL
+        # deliberately admits — trust the query instead (#85756).
         sessions = db.list_sessions_rich(
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
-        )  # fetch extra so we can skip current / live children
+        )  # fetch extra so we can skip current / compression roots
 
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id)
@@ -509,14 +509,6 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             # children share a lineage root but carry no transcript — keep
             # that root browsable.
             if has_compression_hop and current_root and sid == current_root:
-                continue
-            # Hide live children (delegation, still-open continuations)
-            # unless they are /new-reset fragments. Reset children keep
-            # parent_session_id for lineage but are independent conversations.
-            if s.get("parent_session_id") and not (
-                _is_fresh_reset_session(s.get("end_reason"))
-                or _has_reset_from_marker(s.get("model_config"))
-            ):
                 continue
             results.append({
                 "session_id": sid,
@@ -916,7 +908,7 @@ def _discover(
     return json.dumps(_final_payload, ensure_ascii=False)
 
 
-def session_search(
+def _session_search_impl(
     query: str = "",
     role_filter: str = None,
     limit: int = 3,
@@ -930,6 +922,8 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    *,
+    _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -942,15 +936,6 @@ def session_search(
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
     """
-    if db is None:
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
-
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -973,6 +958,8 @@ def session_search(
             return tool_error(f"profile '{profile}': {e}", success=False)
         if profile_db is not None:
             db = profile_db
+            if _owned_dbs is not None:
+                _owned_dbs.append(profile_db)
             current_session_id = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
@@ -1039,6 +1026,57 @@ def session_search(
         current_session_id=current_session_id,
         link_profile=profile,
     )
+
+
+def session_search(
+    query: str = "",
+    role_filter: str = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: str = None,
+    # Scroll shape
+    session_id: str = None,
+    around_message_id: int = None,
+    window: int = 5,
+    # Discovery shape
+    sort: str = None,
+    # Cross-profile (any shape)
+    profile: str = None,
+) -> str:
+    """Run session search and close databases opened by this invocation."""
+    owned_dbs: List[Any] = []
+    if db is None:
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            owned_dbs.append(db)
+        except Exception:
+            logging.debug("SessionDB unavailable for session_search", exc_info=True)
+            from hermes_state import format_session_db_unavailable
+
+            return tool_error(format_session_db_unavailable(), success=False)
+
+    try:
+        return _session_search_impl(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+            profile=profile,
+            _owned_dbs=owned_dbs,
+        )
+    finally:
+        for owned_db in reversed(owned_dbs):
+            try:
+                owned_db.close()
+            except Exception:
+                logging.debug("Failed to close session_search SessionDB", exc_info=True)
 
 
 def check_session_search_requirements() -> bool:

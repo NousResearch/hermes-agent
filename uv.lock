@@ -12,12 +12,18 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
+setuptools = false
+h2 = false
 vercel = false
+pillow = false
+unpaddedbase64 = false
+defusedxml = false
 aiohttp = false
 cryptography = false
+mcp = false
+python-olm = false
 nemo-relay = false
 huggingface-hub = false
-h2 = false
 
 [manifest]
 overrides = [

@@ -102,6 +102,15 @@ class ClassifiedError:
     def is_auth(self) -> bool:
         return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
+    @property
+    def billing_unverified(self) -> bool:
+        """True when a ``billing`` verdict rests on an ambiguous body.
+
+        Anthropic's "out of extra usage" 400 can also be a content-filter
+        rejection (#82154); surfaces must hedge rather than assert exhaustion.
+        """
+        return bool(self.error_context.get("billing_unverified"))
+
 
 
 # ── Provider-specific patterns ──────────────────────────────────────────
@@ -130,6 +139,25 @@ _BILLING_PATTERNS = [
     "model_not_supported_on_free_tier",
     "not available on the free tier",
 ]
+
+# Billing-pattern matches that are NOT proof of billing exhaustion. Anthropic
+# returns the identical "out of extra usage" body on a subscription OAuth
+# token both when the overage bucket is genuinely depleted AND when its
+# server-side content filter rejects part of the request (#82154) — the two
+# are indistinguishable from the response. Classification stays ``billing``
+# (rotation + fallback remain the right recovery either way), but the
+# ambiguity is carried in ``error_context`` so downstream surfaces hedge
+# instead of asserting exhaustion as fact, and the credential pool applies a
+# short cooldown instead of the one-hour billing bench (a content-filter
+# rejection leaves the credential perfectly healthy).
+_UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
+
+
+def _billing_ambiguity_context(error_msg: str) -> Dict[str, Any]:
+    """error_context marking a billing verdict as unverified (see above)."""
+    if any(p in error_msg for p in _UNVERIFIED_BILLING_PATTERNS):
+        return {"billing_unverified": True, "possible_content_filter": True}
+    return {}
 
 # xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
 # provider-scoped: other providers' generic billing codes historically remain
@@ -1511,6 +1539,10 @@ def _classify_400(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+            # "out of extra usage" on a 400 is ambiguous — it can also be a
+            # content-filter rejection (#82154). Mark the verdict unverified
+            # so downstream hedges and the pool skips the 1-hour bench.
+            error_context=_billing_ambiguity_context(error_msg),
         )
 
     # Generic 400 + large session → probable context overflow
@@ -1692,6 +1724,10 @@ def _classify_by_message(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+            # Status-less path: adapters can strip the HTTP status from the
+            # Anthropic "out of extra usage" 400, so the same ambiguity
+            # marking applies here (#82154).
+            error_context=_billing_ambiguity_context(error_msg),
         )
 
     # Rate limit patterns

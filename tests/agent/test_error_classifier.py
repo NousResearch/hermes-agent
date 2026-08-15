@@ -812,7 +812,13 @@ class TestAdversarialEdgeCases:
         """Anthropic returns 400 with 'out of extra usage' when the user's
         extra-usage allowance is depleted. Must classify as billing so the
         fallback chain engages (with credential rotation) instead of the
-        generic format_error path, which never rotates. (#11736, #13170)"""
+        generic format_error path, which never rotates. (#11736, #13170)
+
+        #82154: the identical body is ALSO returned when Anthropic's content
+        filter rejects part of the request on a subscription OAuth token, so
+        the billing verdict must be marked unverified — downstream surfaces
+        hedge instead of asserting exhaustion, and the credential pool skips
+        the one-hour billing bench."""
         e = MockAPIError(
             "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
             status_code=400,
@@ -826,6 +832,33 @@ class TestAdversarialEdgeCases:
         assert result.should_fallback is True
         assert result.retryable is False
         assert result.should_rotate_credential is True
+        assert result.billing_unverified is True
+        assert result.error_context.get("possible_content_filter") is True
+
+    def test_400_unambiguous_billing_body_is_not_marked_unverified(self):
+        """A 400 whose billing evidence is NOT the ambiguous 'out of extra
+        usage' body keeps a confirmed verdict (#82154)."""
+        e = MockAPIError(
+            "Your credit balance is too low to access the Anthropic API.",
+            status_code=400,
+            body={"error": {
+                "type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the Anthropic API.",
+            }},
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.billing_unverified is False
+
+    def test_statusless_extra_usage_is_marked_unverified(self):
+        """Adapters can strip the HTTP status from the Anthropic 400; the
+        message-only path must carry the same ambiguity marking (#82154)."""
+        e = Exception(
+            "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.billing_unverified is True
 
     def test_200_with_error_body(self):
         """200 status with error in body — should be unknown, not crash."""

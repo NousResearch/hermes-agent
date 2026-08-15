@@ -63,6 +63,24 @@ from agent.delegation_context import (
 logger = logging.getLogger(__name__)
 
 
+def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
+    """Done-callback: close a SessionDB whose constructor finished after run_job's timeout.
+
+    When ``run_job``'s SessionDB init times out, the worker thread is abandoned
+    (``shutdown(wait=False)``) so the job can proceed without a session store.
+    If the constructor later completes inside that abandoned worker, the
+    Future's result — an open SessionDB holding .db / WAL / SHM file handles —
+    would be orphaned and never closed, leaking descriptors until EMFILE
+    (#72782).  This callback retrieves and closes that eventual late result.
+    """
+    try:
+        db = future.result()
+        if db is not None:
+            db.close()
+    except Exception:
+        pass
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -939,6 +957,12 @@ def mark_running_jobs_interrupted(
                 "leaving persisted state untouched",
                 job_id,
             )
+            # Still report the interruption to the caller: the gateway
+            # shutdown path uses the returned IDs to send the
+            # interrupted-cron notice while adapters are still connected
+            # (#82232). The in-memory interrupt flag WAS recorded above —
+            # only the persisted last_status write is skipped here.
+            marked.append(job_id)
             continue
         try:
             with use_cron_store(profile_home):
@@ -3723,6 +3747,102 @@ DRIFT_SKIP_MARKER = "[drift_skip]"
 DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
 
 
+
+def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
+    """True when primary provider resolution failed for a transient network reason.
+
+    Agent crons resolve OAuth credentials (token refresh / discovery) before the
+    agent loop starts. A short DNS outage (Cloudflare WARP / macOS resolver blip)
+    surfaces as httpx/httpcore ConnectError or raw OSError errno 8 ("nodename nor
+    servname provided") and must be eligible for ``fallback_providers`` the same
+    way AuthError already is — otherwise a healthy XAI_API_KEY / Anthropic rung
+    never gets tried and the whole job dies before the first model call.
+    """
+    # Walk the cause chain; scheduler wraps raw transport errors.
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        name = type(cur).__name__
+        module = type(cur).__module__ or ""
+        msg = str(cur).lower()
+        # Explicit transport classes from httpx/httpcore/aiohttp.
+        if name in {
+            "ConnectError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "NetworkError",
+            "TimeoutException",
+            "ClientConnectorError",
+            "ClientConnectorDNSError",
+            "ServerTimeoutError",
+            "ClientOSError",
+        }:
+            return True
+        if "httpx" in module or "httpcore" in module or "aiohttp" in module:
+            if any(
+                needle in msg
+                for needle in (
+                    "nodename nor servname",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "failed to resolve",
+                    "connection refused",
+                    "network is unreachable",
+                    "timed out",
+                    "timeout",
+                )
+            ):
+                return True
+        if isinstance(cur, OSError):
+            # Platform-safe classification (the raw-literal set {8, 7, 11, ...}
+            # from the first revision mixed macOS getaddrinfo constants with
+            # errno values and does not hold on Linux — see PR review).
+            # socket.gaierror carries getaddrinfo codes (EAI_*), plain OSError
+            # carries errno; compare each against its own constant namespace.
+            import errno as _errno
+            import socket as _socket
+
+            if isinstance(cur, _socket.gaierror):
+                _eai_transient = {
+                    getattr(_socket, _n)
+                    for _n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
+                    if hasattr(_socket, _n)
+                }
+                if cur.errno in _eai_transient:
+                    return True
+            else:
+                err_no = getattr(cur, "errno", None)
+                if err_no in {
+                    _errno.ECONNREFUSED,
+                    _errno.ECONNRESET,
+                    _errno.EHOSTUNREACH,
+                    _errno.ENETUNREACH,
+                    _errno.ENETDOWN,
+                    _errno.ETIMEDOUT,
+                    _errno.EAGAIN,
+                }:
+                    return True
+            if any(
+                needle in msg
+                for needle in (
+                    "nodename nor servname",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "network is unreachable",
+                )
+            ):
+                return True
+        # Bare RuntimeError/Exception that already carries the DNS text
+        # (format_runtime_provider_error sometimes surfaces the raw message).
+        if "nodename nor servname" in msg or "name or service not known" in msg:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Whether cron pre-dispatch configuration validation is enabled.
 
@@ -3924,6 +4044,130 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
         if reason:
             return reason
     return None
+
+
+def _cron_cleanup_timeout_seconds() -> float:
+    """Return the wall-clock bound for cron post-run cleanup."""
+    default = 10.0
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("cleanup_timeout_seconds")
+        if configured is not None:
+            timeout = float(configured)
+            if timeout >= 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron cleanup timeout from config: %s", exc)
+    return default
+
+
+def _run_cron_cleanup_with_timeout(
+    cleanup,
+    *,
+    job_id: str,
+    label: str,
+    timeout_seconds: Optional[float] = None,
+) -> bool:
+    """Run fallible post-run cleanup without permanently wedging a cron ID."""
+    timeout = (
+        _cron_cleanup_timeout_seconds()
+        if timeout_seconds is None
+        else float(timeout_seconds)
+    )
+    if timeout <= 0:
+        try:
+            cleanup()
+            return True
+        except (Exception, KeyboardInterrupt) as exc:
+            logger.debug("Job '%s': %s failed: %s", job_id, label, exc)
+            return False
+
+    done = threading.Event()
+    error: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            cleanup()
+        except BaseException as exc:
+            error.append(exc)
+        finally:
+            done.set()
+
+    # A daemon thread is deliberate: unlike ThreadPoolExecutor workers it is
+    # not joined by Python's interpreter-exit hook if the cleanup target never
+    # returns. The scheduler can release its dispatch guard and the gateway can
+    # still shut down normally.
+    worker = threading.Thread(
+        target=_runner,
+        name=f"cron-cleanup-{job_id}",
+        daemon=True,
+    )
+    worker.start()
+    if not done.wait(timeout):
+        logger.error(
+            "Job '%s': %s exceeded %.1fs; abandoning cleanup so future runs remain dispatchable",
+            job_id,
+            label,
+            timeout,
+        )
+        return False
+    if error:
+        logger.debug("Job '%s': %s failed: %s", job_id, label, error[0])
+        return False
+    return True
+
+
+class _BoundedCronSessionDB:
+    """Proxy SessionDB cleanup calls through the cron cleanup timeout.
+
+    After the first failed or timed-out operation the proxy fails subsequent
+    calls immediately. A damaged SQLite connection should leak at most one
+    abandoned cleanup worker, not one worker per finalization step.
+    """
+
+    def __init__(self, session_db, job_id: str):
+        self._session_db = session_db
+        self._job_id = job_id
+        self._disabled = False
+
+    def __getattr__(self, name):
+        target = getattr(self._session_db, name)
+        if not callable(target):
+            return target
+
+        def _bounded(*args, **kwargs):
+            if self._disabled:
+                raise RuntimeError("session finalization disabled after prior cleanup failure")
+
+            result = {}
+
+            def _call():
+                try:
+                    result["value"] = target(*args, **kwargs)
+                except BaseException as exc:
+                    result["error"] = exc
+                    raise
+
+            ok = _run_cron_cleanup_with_timeout(
+                _call,
+                job_id=self._job_id,
+                label=f"session finalization ({name})",
+            )
+            if not ok:
+                error = result.get("error")
+                if error is not None:
+                    raise error
+                # No exception reached the caller and the operation still did
+                # not complete: this is the timeout path. Disable the damaged
+                # connection so later finalization steps fail immediately.
+                self._disabled = True
+                raise TimeoutError(f"session finalization method {name} timed out")
+            return result.get("value")
+
+        return _bounded
 
 
 def run_job(
@@ -4186,8 +4430,17 @@ def run_job(
 
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            _session_db_future = _session_db_pool.submit(SessionDB)
             try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+                _session_db = _session_db_future.result(timeout=_session_db_timeout)
+            except concurrent.futures.TimeoutError:
+                # The worker is abandoned (shutdown below doesn't wait for it).
+                # If SessionDB() later completes inside it, the future's result
+                # would be orphaned and its SQLite FDs (.db, WAL, SHM) leak
+                # until process exit.  Register a done-callback that retrieves
+                # and closes any eventual late result (#72782).
+                _session_db_future.add_done_callback(_close_late_session_db_result)
+                raise
             finally:
                 # Don't wait for a wedged connect() to unwind — abandon the
                 # worker thread (same pattern as the agent inactivity timeout
@@ -4683,15 +4936,33 @@ def run_job(
                 str(runtime.get("provider") or "").strip().lower()
                 or primary_provider_for_drift
             )
-        except AuthError as auth_exc:
-            # Primary provider auth failed — try each configured provider/model
-            # pair atomically. Keeping the primary model while changing only the
-            # provider can silently route a paid GPT model through OpenRouter.
+        except Exception as resolve_exc:
+            # Primary provider resolution failed. Walk fallback_providers for:
+            #   1) AuthError (missing/expired credential)
+            #   2) Transient network/DNS failures during OAuth refresh or
+            #      discovery (e.g. macOS morning DNS blip → httpx.ConnectError
+            #      "[Errno 8] nodename nor servname provided").
+            # Previously only AuthError tried the chain; a ConnectError during
+            # xai-oauth token refresh killed agent crons even when XAI_API_KEY
+            # / Anthropic fallbacks were healthy (Daily Focus Kickoff 2026-08-11).
+            # Keeping provider+model atomic still applies — never swap only the
+            # provider while retaining a paid primary model.
+            is_auth = isinstance(resolve_exc, AuthError)
+            is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
+            if not (is_auth or is_transient_net):
+                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
             primary_provider_for_drift = (
-                str(getattr(auth_exc, "provider", "") or "").strip().lower()
+                str(getattr(resolve_exc, "provider", "") or "").strip().lower()
                 or primary_provider_for_drift
             )
-            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            reason = "auth" if is_auth else "transient network"
+            logger.warning(
+                "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
+                job_id,
+                reason,
+                resolve_exc,
+            )
             fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
@@ -4725,10 +4996,7 @@ def run_job(
                 except Exception as fb_exc:
                     logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
             if runtime is None:
-                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
-        except Exception as exc:
-            message = format_runtime_provider_error(exc)
-            raise RuntimeError(message) from exc
+                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         reasoning_config = resolve_reasoning_config(
             _cfg if isinstance(_cfg, dict) else {}, str(model)
@@ -5230,6 +5498,9 @@ def run_job(
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # The agent turn has already returned. Bound every subsequent DB
+            # operation so storage failure cannot hold the dispatch guard.
+            _session_db = _BoundedCronSessionDB(_session_db, job_id)
             # Compression can rotate the live agent onto a continuation while
             # this run is in flight. Finalize that continuation, not the stale
             # cron id captured before AIAgent started. SessionDB is the source
@@ -5314,29 +5585,37 @@ def run_job(
             _teardown_cron_agent(agent, job_id)
 
 
-def _teardown_cron_agent(agent, job_id: str) -> None:
-    """Release an ephemeral cron agent's async resources.
+def _teardown_cron_agent(
+    agent, job_id: str, *, timeout_seconds: Optional[float] = None
+) -> None:
+    """Release an ephemeral cron agent's async resources within a hard bound.
 
     Split out of ``run_job``'s ``finally`` so a caller that defers teardown
     (to deliver first — #58720) can invoke the identical cleanup AFTER delivery.
-    Closes the agent (subprocesses, sandboxes, browser daemons, OpenAI/httpx
-    client) and reaps stale async clients whose loop has since closed. Idempotent
-    and independently guarded, matching the original inline behavior.
+    The timeout matters because this executes after ``run_conversation`` has
+    returned, outside the agent inactivity watchdog.
     """
-    try:
-        if agent is not None:
-            agent.close()
-    except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
-    # Each cron run spins up a short-lived worker thread whose event loop
-    # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
-    # httpx clients cached under that loop are now unusable — reap them
-    # so their transports don't accumulate in the process-global cache.
-    try:
-        from agent.auxiliary_client import cleanup_stale_async_clients
-        cleanup_stale_async_clients()
-    except Exception as e:
-        logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+    def _cleanup_agent() -> None:
+        try:
+            if agent is not None:
+                agent.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # Each cron run spins up a short-lived worker thread whose event loop
+        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+        # httpx clients cached under that loop are now unusable — reap them.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception as e:
+            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+
+    _run_cron_cleanup_with_timeout(
+        _cleanup_agent,
+        job_id=job_id,
+        label="agent resource teardown",
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
@@ -5548,6 +5827,8 @@ def _run_one_job_body(
     execution_id = job.get("execution_id")
     if not execution_id:
         execution_id = create_execution(job["id"], source="direct")["id"]
+    delivery_attempted = False
+    delivery_error = None
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -5659,7 +5940,6 @@ def _run_one_job_body(
         # / empty-response computation, or _deliver_result itself — raises, the
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
-        delivery_error = None
         blocked_config = False
         side_effect_ownership_lost = False
         try:
@@ -5770,6 +6050,7 @@ def _run_one_job_body(
                     with _side_effect_fence() as owns_delivery:
                         if not owns_delivery:
                             raise _FireClaimLostDuringSideEffect
+                        delivery_attempted = True
                         delivery_error = _deliver_result(
                             job,
                             deliver_content,
@@ -5825,6 +6106,23 @@ def _run_one_job_body(
 
         interrupted = _consume_interrupted_flag(job["id"], execution_token)
         if interrupted:
+            if delivery_error:
+                # The gateway shutdown already wrote last_status for this run,
+                # so mark_job_run is skipped below — but it could not know that
+                # the notice we just tried to send never left the process (the
+                # adapters were torn down first, #82232). Record the delivery
+                # failure on its own via update_job: mark_job_run also advances
+                # next_run_at and the repeat counter, and running that a second
+                # time for one run would skip a fire or auto-delete the job
+                # early.
+                try:
+                    from cron.jobs import update_job
+                    update_job(job["id"], {"last_delivery_error": delivery_error})
+                except Exception as _rec_err:
+                    logger.debug(
+                        "Failed recording delivery_error for interrupted job %s: %s",
+                        job["id"], _rec_err,
+                    )
             finish_execution(
                 execution_id,
                 success=False,
@@ -5875,11 +6173,49 @@ def _run_one_job_body(
         # a stale worker must not record over a replacement claim owner.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
+        delivery_outcome = "suppressed"
+        # Owner fencing: a stale worker whose fire claim was taken over (or a
+        # transport-cancelled worker) must not send a failure alert on top of
+        # the replacement run's own delivery — fall through silently and let
+        # the fenced bookkeeping below decide what (if anything) to record.
+        if (
+            isinstance(e, Exception)
+            and not delivery_attempted
+            and not isinstance(e, _FireClaimLostDuringSideEffect)
+            and not _fire_claim_ownership_lost()
+        ):
+            normalized_deliver = _normalize_deliver_value(
+                job.get("deliver", "local")
+            )
+            unresolved_origin = False
+            try:
+                delivery_attempted = True
+                delivery_error = _deliver_result(
+                    job,
+                    _summarize_cron_failure_for_delivery(job, _err_text),
+                    adapters=adapters,
+                    loop=loop,
+                )
+            except Exception as delivery_exc:
+                delivery_error = str(delivery_exc)
+                logger.error(
+                    "Delivery failed for job %s: %s", job["id"], delivery_exc
+                )
+            if not delivery_error and normalized_deliver == "origin":
+                unresolved_origin = not _resolve_delivery_targets(job)
+            if delivery_error:
+                delivery_outcome = "failed"
+            elif unresolved_origin:
+                delivery_outcome = "not_configured"
+            elif normalized_deliver != "local":
+                delivery_outcome = "delivered"
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}
                 if fire_owner is not None:
                     mark_kwargs["expected_fire_owner"] = fire_owner
+                if isinstance(e, Exception):
+                    mark_kwargs["delivery_error"] = delivery_error
                 mark_job_run(job["id"], False, _err_text, **mark_kwargs)
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.
@@ -5888,7 +6224,12 @@ def _run_one_job_body(
                 job["id"], record_err,
             )
         try:
-            finish_execution(execution_id, success=False, error=_err_text)
+            finish_execution(
+                execution_id,
+                success=False,
+                error=_err_text,
+                delivery_outcome=delivery_outcome,
+            )
         except Exception as record_err:
             logger.error(
                 "Failed to finish execution record for job %s: %s",
@@ -6170,14 +6511,19 @@ def tick(
                 execution = create_execution(job_id, source="builtin")
                 dispatched_job = dict(job, execution_id=execution["id"])
                 _ctx = contextvars.copy_context()
-            except BaseException:
+            except Exception as execution_err:
                 # Init/creation failure between the claim and the submit —
                 # release the in-flight claim immediately so the next tick can
                 # retry instead of wedging on 'already running' forever (the
                 # audit requirement: every add is paired with guaranteed
-                # cleanup). Re-raise so the caller sees the failure.
+                # cleanup).
                 release_running_job(job_id)
-                raise
+                logger.exception(
+                    "Job '%s' not dispatched: execution creation failed: %s",
+                    job.get("name", job_id),
+                    execution_err,
+                )
+                return None
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
                 try:

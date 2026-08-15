@@ -472,7 +472,21 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
         job = result.get("job", {})
-        if job.get("executed"):
+        # A manual run can be dispatched to the gateway daemon's background
+        # delegation worker instead of executing inline (e.g. when the CLI
+        # process inherits a gateway/desktop session env and the run
+        # resolves a session key). Such responses carry
+        # execution_mode="background" and/or a delegation_id, and the job
+        # keeps running AFTER this CLI process exits — a terminal
+        # success/failure verdict would be a lie (#83340). Report the
+        # background dispatch instead of claiming the run failed.
+        delegation_id = job.get("delegation_id")
+        if job.get("execution_mode") == "background" or delegation_id:
+            if delegation_id:
+                print(f"  Running in background (delegation {delegation_id}).")
+            else:
+                print("  Running in background.")
+        elif job.get("executed"):
             outcome = "succeeded" if job.get("execution_success") else "failed"
             print(f"  Ran now: {outcome}.")
         elif job.get("execution_skipped"):

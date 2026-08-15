@@ -984,10 +984,11 @@ def _cleanup_all_browsers(*args, **kwargs):
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
+_cleanup_in_progress = False
 _cli_wake_owner = None
 # One-shot CLI finalization runs before process cleanup so plugins can observe
 # the session boundary while the agent is still attached. If a signal lands in
-# that narrow window, atexit cleanup must not emit that session finalize again.
+# that narrow window, atexit cleanup must not emit that session finalization again.
 _single_query_finalize_attempted_session_ids: set[str | None] = set()
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
@@ -1058,7 +1059,7 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
 
-def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
+def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = False) -> None:
     """Guarantee the process actually exits once shutdown has begun.
 
     Two hang classes have kept "dead" CLI processes alive for minutes:
@@ -1094,6 +1095,13 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
 
     def _watchdog():
         time.sleep(timeout_s)
+        # If this is the outer, signal-armed watchdog and cleanup is already in
+        # progress, let the cleanup-owned timer enforce shutdown for the current
+        # cycle. The signal timer is a broader backstop when graceful unwind
+        # never starts.
+        if from_signal and _cleanup_in_progress:
+            return
+
         # Still alive — cleanup or interpreter teardown is wedged.
         try:
             logger.warning(
@@ -1162,108 +1170,112 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
     if base <= 0:
         return  # explicitly disabled
     try:
-        _arm_exit_watchdog(timeout_s=base * 2)
+        _arm_exit_watchdog(timeout_s=base * 2, from_signal=True)
     except Exception:
         pass  # never let the backstop break signal handling
 
 
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
-    global _cleanup_done
+    global _cleanup_done, _cleanup_in_progress
     if _cleanup_done:
         return
     _cleanup_done = True
-
-    # Bound total shutdown time: if cleanup (or the interpreter's
-    # thread-join teardown after it) wedges, force-exit instead of
-    # leaving a zombie CLI holding the terminal for minutes.
-    _arm_exit_watchdog()
-
-    # Reset terminal input modes first, before the slower resource teardown
-    # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
-    # user's terminal becomes usable immediately, and a later step raising
-    # can't skip the reset (#36823). No-op unless the TUI actually ran.
-    _reset_terminal_input_modes_on_exit()
+    _cleanup_in_progress = True
 
     try:
-        from tools.wake_word import stop_listening as _stop_wake_word
-        if _cli_wake_owner is not None:
-            _stop_wake_word(owner=_cli_wake_owner)
-    except Exception:
-        pass
-    try:
-        _cleanup_all_terminals()
-    except Exception:
-        pass
-    try:
-        from tools.async_delegation import interrupt_all as _interrupt_async_delegations
-        _interrupt_async_delegations(reason="CLI shutdown")
-    except Exception:
-        pass
-    try:
-        _cleanup_all_browsers()
-    except Exception:
-        pass
-    try:
-        from tools.mcp_tool import shutdown_mcp_servers
-        shutdown_mcp_servers()
-    except BaseException:
-        pass
-    # Close cached auxiliary LLM clients (sync + async) so that
-    # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
-    # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
-    try:
-        from agent.auxiliary_client import shutdown_cached_clients
-        shutdown_cached_clients()
-    except Exception:
-        pass
-    # Shut down memory provider (on_session_end + shutdown_all) at actual
-    # session boundary — NOT per-turn inside run_conversation().
-    if notify_session_finalize:
-        cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
-        if _should_emit_cleanup_session_finalize(cleanup_session_id):
-            _notify_session_finalize(
-                session_id=cleanup_session_id,
-                platform="cli",
-                reason="shutdown",
-            )
-    try:
-        if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
-            # A /new shortly before exit leaves its end→switch boundary task
-            # (old-session extraction, LLM-bound) queued on the memory
-            # manager's serialized worker. shutdown_all()'s drain only waits
-            # ~5s and cancels queued tasks, so give pending work a bounded
-            # head start via the manager's own barrier — otherwise a
-            # "/new then quit" silently drops the old session's extraction.
-            # The 30s exit watchdog remains the hard backstop.
-            _mm = getattr(_active_agent_ref, '_memory_manager', None)
-            if _mm is not None and hasattr(_mm, 'flush_pending'):
-                try:
-                    _mm.flush_pending(timeout=10)
-                except Exception:
-                    pass
-            # Forward the agent's own transcript so memory providers'
-            # ``on_session_end`` hooks see the real conversation instead of
-            # an empty list (#15165). ``_session_messages`` is set on
-            # ``AIAgent.__init__`` and refreshed every turn via
-            # ``_persist_session``. Fall back to no-arg on test stubs /
-            # partially-initialised agents where the attribute is missing.
-            _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
-            if isinstance(_session_msgs, list):
-                logger.info(
-                    "CLI cleanup calling memory shutdown for session %s with %d message(s)",
-                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
-                    len(_session_msgs),
+        # Bound total shutdown time: if cleanup (or the interpreter's
+        # thread-join teardown after it) wedges, force-exit instead of
+        # leaving a zombie CLI holding the terminal for minutes.
+        _arm_exit_watchdog()
+
+        # Reset terminal input modes first, before the slower resource teardown
+        # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
+        # user's terminal becomes usable immediately, and a later step raising
+        # can't skip the reset (#36823). No-op unless the TUI actually ran.
+        _reset_terminal_input_modes_on_exit()
+
+        try:
+            from tools.wake_word import stop_listening as _stop_wake_word
+            if _cli_wake_owner is not None:
+                _stop_wake_word(owner=_cli_wake_owner)
+        except Exception:
+            pass
+        try:
+            _cleanup_all_terminals()
+        except Exception:
+            pass
+        try:
+            from tools.async_delegation import interrupt_all as _interrupt_async_delegations
+            _interrupt_async_delegations(reason="CLI shutdown")
+        except Exception:
+            pass
+        try:
+            _cleanup_all_browsers()
+        except Exception:
+            pass
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers
+            shutdown_mcp_servers()
+        except BaseException:
+            pass
+        # Close cached auxiliary LLM clients (sync + async) so that
+        # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
+        # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
+        try:
+            from agent.auxiliary_client import shutdown_cached_clients
+            shutdown_cached_clients()
+        except Exception:
+            pass
+        # Shut down memory provider (on_session_end + shutdown_all) at actual
+        # session boundary — NOT per-turn inside run_conversation().
+        if notify_session_finalize:
+            cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
+            if _should_emit_cleanup_session_finalize(cleanup_session_id):
+                _notify_session_finalize(
+                    session_id=cleanup_session_id,
+                    platform="cli",
+                    reason="shutdown",
                 )
-                _active_agent_ref.shutdown_memory_provider(_session_msgs)
-            else:
-                logger.info(
-                    "CLI cleanup calling memory shutdown for session %s without session message list",
-                    getattr(_active_agent_ref, "session_id", None) or "<unknown>",
-                )
-                _active_agent_ref.shutdown_memory_provider()
-    except Exception as e:
-        logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
+        try:
+            if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
+                # A /new shortly before exit leaves its end→switch boundary task
+                # (old-session extraction, LLM-bound) queued on the memory
+                # manager's serialized worker. shutdown_all()'s drain only waits
+                # ~5s and cancels queued tasks, so give pending work a bounded
+                # head start via the manager's own barrier — otherwise a
+                # "/new then quit" silently drops the old session's extraction.
+                # The 30s exit watchdog remains the hard backstop.
+                _mm = getattr(_active_agent_ref, '_memory_manager', None)
+                if _mm is not None and hasattr(_mm, 'flush_pending'):
+                    try:
+                        _mm.flush_pending(timeout=10)
+                    except Exception:
+                        pass
+                # Forward the agent's own transcript so memory providers'
+                # on_session_end hooks see the real conversation instead of
+                # an empty list (#15165). ``_session_messages`` is set on
+                # ``AIAgent.__init__`` and refreshed every turn via
+                # ``_persist_session``. Fall back to no-arg on test stubs /
+                # partially-initialised agents where the attribute is missing.
+                _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
+                if isinstance(_session_msgs, list):
+                    logger.info(
+                        "CLI cleanup calling memory shutdown for session %s with %d message(s)",
+                        getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                        len(_session_msgs),
+                    )
+                    _active_agent_ref.shutdown_memory_provider(_session_msgs)
+                else:
+                    logger.info(
+                        "CLI cleanup calling memory shutdown for session %s without session message list",
+                        getattr(_active_agent_ref, "session_id", None) or "<unknown>",
+                    )
+                    _active_agent_ref.shutdown_memory_provider()
+        except Exception as e:
+            logger.warning("CLI cleanup memory shutdown failed: %s", e, exc_info=True)
+    finally:
+        _cleanup_in_progress = False
 
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:

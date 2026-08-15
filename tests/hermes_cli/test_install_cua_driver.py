@@ -239,6 +239,46 @@ class TestInstallCuaDriverUpgrade:
 
         info.assert_not_called()
 
+    def test_quiet_refresh_closes_stdin_and_honors_custom_timeout(self):
+        """A background refresh must neither wait on a hidden prompt nor
+        inherit the explicit install command's 11-minute ceiling."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = ("", None)
+
+        with patch(
+                 "subprocess.run",
+                 return_value=MagicMock(returncode=0, stderr=""),
+             ), \
+             patch("subprocess.Popen", return_value=fake_proc) as popen, \
+             patch.object(
+                 tools_config.shutil,
+                 "which",
+                 return_value="/usr/local/bin/cua-driver",
+             ), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(
+                 tools_config,
+                 "_repair_cua_driver_autostart_windows",
+                 return_value=True,
+             ), \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_print_success"):
+            assert tools_config._run_cua_driver_installer(
+                label="Refreshing",
+                verbose=False,
+                installer_timeout=120,
+            ) is True
+
+        assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
+        fake_proc.communicate.assert_called_once_with(timeout=120)
+
     def test_upgrade_can_suppress_installer_progress(self):
         from hermes_cli import tools_config
 
@@ -517,6 +557,7 @@ class TestRequireConfirmedUpdate:
         ok, runner, _ = self._install(state, require_confirmed=True)
         assert ok is True
         runner.assert_called_once()
+        assert runner.call_args.kwargs["installer_timeout"] == 120
 
     @pytest.mark.windows_only
     def test_windows_confirmed_update_defers_interactive_installer(self):
@@ -1049,6 +1090,10 @@ class TestInstallerTimeoutKillsProcessGroup:
         parent.kill.assert_called_once_with()
         fake_proc.kill.assert_not_called()
         assert fake_proc.communicate.call_count == 2
+        assert (
+            fake_proc.communicate.call_args_list[1].kwargs["timeout"]
+            == tools_config._CUA_INSTALLER_REAP_TIMEOUT
+        )
 
     @pytest.mark.windows_only
     def test_windows_tree_enumeration_failure_falls_back_to_direct_kill(self):

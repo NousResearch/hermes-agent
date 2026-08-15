@@ -2218,6 +2218,12 @@ export const en: Translations = {
       done: skill => `Added /${skill}`,
       doneTip: 'The skill loads when you send'
     },
+    githubSuggestions: {
+      label: 'Set up GitHub',
+      tip: 'GitHub works through the gh CLI skills here — click to connect your account',
+      done: 'Added /github-auth',
+      doneTip: 'Send the message and the agent walks you through GitHub sign-in'
+    },
     repairSuggestions: {
       label: server => `Reconnect ${server}`,
       tip: server => `A ${server} call just failed with a connection error`,

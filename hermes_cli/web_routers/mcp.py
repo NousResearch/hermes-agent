@@ -444,6 +444,12 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 if entry.tools.default_enabled is not None
                 else None,
                 "post_install": entry.post_install or "",
+                # Composer-suggestion triggers (desktop brand pills). Present
+                # only for entries whose manifest declares a `suggest` block.
+                "suggest": {
+                    "keywords": list(entry.suggest.keywords),
+                    "hosts": list(entry.suggest.hosts),
+                } if entry.suggest else None,
                 "needs_install": entry.install is not None,
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],

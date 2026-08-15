@@ -2405,6 +2405,12 @@ export const zh: Translations = {
       done: skill => `已添加 /${skill}`,
       doneTip: '发送时将加载该技能'
     },
+    githubSuggestions: {
+      label: '设置 GitHub',
+      tip: '这里通过 gh CLI 技能使用 GitHub — 点击连接你的账号',
+      done: '已添加 /github-auth',
+      doneTip: '发送消息后，agent 将引导你完成 GitHub 登录'
+    },
     repairSuggestions: {
       label: server => `重新连接 ${server}`,
       tip: server => `${server} 调用刚因连接错误失败`,

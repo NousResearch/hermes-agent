@@ -1930,6 +1930,16 @@ export function getMcpCatalog(profile?: null | string): Promise<McpCatalogRespon
   })
 }
 
+/** `gh` CLI presence + auth state, for the composer's GitHub skill pill
+ *  (GitHub is deliberately not an MCP — the github/* skills are the
+ *  integration). Backend caches for 5 minutes; `refresh` bypasses. */
+export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; authenticated: boolean }> {
+  return window.hermesDesktop.api<{ available: boolean; authenticated: boolean }>({
+    ...profileScoped(),
+    path: `/api/git/gh-auth${refresh ? '?refresh=true' : ''}`
+  })
+}
+
 export function installMcpCatalogEntry(
   name: string,
   env: Record<string, string> = {},

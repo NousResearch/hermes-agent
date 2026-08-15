@@ -141,6 +141,51 @@ async def test_post_turn_loop_completion_noop_without_inflight_tick(loop_env):
     assert reloaded.ticks_fired == 0
 
 
+def test_streamed_already_sent_none_recovers_text_for_hooks():
+    """Streamed turns return None. Hooks must still see the delivered reply."""
+    event = _make_event("wakeup")
+    event._streamed_final_response = "CI is green.\nLOOP_COMPLETE"
+    assert GatewayRunner._final_text_for_post_turn_hooks(None, event) == (
+        "CI is green.\nLOOP_COMPLETE"
+    )
+    assert GatewayRunner._final_text_for_post_turn_hooks(None, _make_event("x")) == ""
+    assert (
+        GatewayRunner._final_text_for_post_turn_hooks(
+            {"final_response": "from dict"}, event
+        )
+        == "from dict"
+    )
+
+
+@pytest.mark.asyncio
+async def test_streamed_already_sent_completes_loop_tick(loop_env):
+    """A streamed wakeup must not leave awaiting_response stuck."""
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+    assert mgr.state.awaiting_response is True
+    assert mgr.is_due() is False
+
+    event = _make_event("wakeup")
+    event._streamed_final_response = "CI is done.\nLOOP_COMPLETE"
+    # Same inputs the already_sent branch leaves for _handle_message.
+    final_text = GatewayRunner._final_text_for_post_turn_hooks(None, event)
+    assert final_text.strip()
+
+    await GatewayRunner._post_turn_loop_completion(
+        runner,
+        session_entry=_FakeSessionEntry(),
+        source=None,
+        final_response=final_text,
+    )
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert reloaded.status == "done"
+
+
 @pytest.mark.asyncio
 async def test_empty_agent_result_releases_inflight_loop_tick(loop_env):
     runner = _make_runner()

@@ -17,14 +17,28 @@ class TestGatewayConnectionErrorReply:
             "ConnectionError: [WinError 10061] No connection could be made",
             "Errno 111 Connection refused",
             "All connection attempts failed: Connection refused",
-            "cannot connect to http://127.0.0.1:8033/v1",
-            "failed to establish a new connection",
         ]
         for text in samples:
             assert _looks_like_gateway_provider_error(text), text
             reply = _gateway_provider_error_reply(text)
             assert "not responding" in reply.lower(), text
             assert "not running or is unreachable" in reply, text
+
+    def test_broad_connection_phrases_still_map_once_classified(self):
+        """Reply selector keeps the full phrase set; the gate does not."""
+        for text in (
+            "cannot connect to http://127.0.0.1:8033/v1",
+            "failed to establish a new connection",
+        ):
+            reply = _gateway_provider_error_reply(text)
+            assert "not running or is unreachable" in reply, text
+
+    def test_prose_cannot_connect_is_not_a_provider_error(self):
+        text = (
+            "cannot connect to the office VPN from this cafe, "
+            "so I used the backup notes instead"
+        )
+        assert not _looks_like_gateway_provider_error(text)
 
     def test_other_errors_keep_generic_reply(self):
         for text in (

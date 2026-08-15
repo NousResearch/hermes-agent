@@ -727,11 +727,6 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|actively\s+refused"
     r"|winerror\s+10061"
     r"|errno\s+111"
-    r"|no\s+route\s+to\s+host"
-    r"|network\s+is\s+unreachable"
-    r"|cannot\s+connect"
-    r"|failed\s+to\s+establish"
-    r"|could\s+not\s+connect"
     r"|all\s+connection\s+attempts\s+failed"
     r")",
     re.IGNORECASE,

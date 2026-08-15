@@ -1712,8 +1712,18 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # before services.exe, fail-open), yet it is alive and supervised.
     # Querying the task state catches that case: if HermesGateway is
     # Running, the reaper must not touch its process tree (#86098).
-    if is_windows() and _windows_scheduled_task_running("HermesGateway"):
-        return False
+    if is_windows():
+        try:
+            # The install-time task name is profile-aware (Hermes_Gateway /
+            # Hermes_Gateway_<profile>) — never hardcode it, or the guard is
+            # dormant on every standard `hermes gateway install` deployment.
+            from hermes_cli.gateway_windows import get_task_name
+
+            _task_name = get_task_name()
+        except Exception:
+            _task_name = "Hermes_Gateway"
+        if _windows_scheduled_task_running(_task_name):
+            return False
 
     from gateway.status import _pid_exists, write_planned_stop_marker
 

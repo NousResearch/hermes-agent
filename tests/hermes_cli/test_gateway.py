@@ -793,7 +793,24 @@ class TestWindowsScheduledTaskSupervisorGuard:
         monkeypatch.setattr(gateway, "is_windows", lambda: True)
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr(gateway, "_windows_scheduled_task_running", lambda name: True)
+        # The guard must query the PROFILE-AWARE install-time task name from
+        # gateway_windows.get_task_name(), never a hardcoded literal — a
+        # hardcoded "HermesGateway" would leave the guard dormant on every
+        # standard install (task name is Hermes_Gateway / Hermes_Gateway_<p>).
+        import hermes_cli.gateway_windows as gateway_windows
+
+        monkeypatch.setattr(
+            gateway_windows, "get_task_name", lambda: "Hermes_Gateway_testprof"
+        )
+        queried = []
+
+        def _fake_task_running(name):
+            queried.append(name)
+            return True
+
+        monkeypatch.setattr(
+            gateway, "_windows_scheduled_task_running", _fake_task_running
+        )
 
         # Guard: if the task check were bypassed, these would be reaped.
         def _boom_find_gateway_pids(exclude_pids=None):
@@ -807,6 +824,7 @@ class TestWindowsScheduledTaskSupervisorGuard:
 
         assert result is False
         assert killed_pids == []
+        assert queried == ["Hermes_Gateway_testprof"]
 
     def test_not_running_task_still_reaps_real_orphan(self, monkeypatch):
         """HermesGateway not Running (or missing) => reaper behaves as before

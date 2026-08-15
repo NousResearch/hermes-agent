@@ -804,10 +804,16 @@ def _safe_name(context_id: str) -> str:
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log."""
     try:
+        from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+        from utils import open_private_append
+
         d = _conv_dir()
-        d.mkdir(parents=True, exist_ok=True)
+        secure_artifact_dir(d)
         rec = {"ts": time.time(), "role": role, "text": text, "task_id": task_id}
-        with (d / f"{_safe_name(context_id)}.jsonl").open("a", encoding="utf-8") as fh:
+        with open_private_append(
+            d / f"{_safe_name(context_id)}.jsonl",
+            mode=artifact_file_mode(),
+        ) as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass

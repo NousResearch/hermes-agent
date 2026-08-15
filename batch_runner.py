@@ -483,7 +483,10 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             }
             
             # Append to batch output file
-            with open(batch_output_file, 'a', encoding='utf-8') as f:
+            from hermes_cli.config import artifact_file_mode
+            from utils import open_private_append
+
+            with open_private_append(batch_output_file, mode=artifact_file_mode()) as f:
                 f.write(json.dumps(trajectory_entry, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
@@ -1327,4 +1330,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

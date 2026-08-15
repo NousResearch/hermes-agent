@@ -117,7 +117,12 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { findGitBash as _findGitBash } from './find-git-bash'
-import { installFindShortcut, installFoundInPageForwarder, performFindAfterIndexingStarted, stopFind } from './find-in-page'
+import {
+  installFindShortcut,
+  installFoundInPageForwarder,
+  performFindAfterIndexingStarted,
+  stopFind
+} from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { readDirForIpc } from './fs-read-dir'
 import {
@@ -8613,9 +8618,7 @@ function persistSshConnectionToken(profile, source, token) {
       const entry = registry.connections.find(c => c.id === id)
 
       if (entry && entry.kind === 'ssh') {
-        writeDesktopConnectionsRegistry(
-          upsertConnection(registry, { ...entry, token: encryptDesktopSecret(token) })
-        )
+        writeDesktopConnectionsRegistry(upsertConnection(registry, { ...entry, token: encryptDesktopSecret(token) }))
       }
 
       return
@@ -9275,7 +9278,13 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
 
     poolEntry.remoteBaseUrl = connection.baseUrl
 
-    return { ...connection, profile: profileKey, connectionId: source.id, logs: hermesLog.slice(-80), ...getWindowState() }
+    return {
+      ...connection,
+      profile: profileKey,
+      connectionId: source.id,
+      logs: hermesLog.slice(-80),
+      ...getWindowState()
+    }
   }
 
   // remote / cloud: one gateway host serves every profile of that source,
@@ -10015,6 +10024,7 @@ async function startHermes() {
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
+
   // Claim Ctrl/Cmd+F in the main process — on Pop!_OS / GNOME-based Linux
   // distros the Ctrl+F keydown does not reach the renderer's `view.findInPage`
   // binding (#81727). Routing it through `before-input-event` forwards the

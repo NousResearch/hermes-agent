@@ -411,6 +411,7 @@ function setActiveMark(mark: HTMLElement | null): void {
   }
 
   mark.setAttribute(ACTIVE_ATTR, '')
+
   // Block: 'nearest' so a match already on screen doesn't twitch, but a
   // match below the fold scrolls into view instead of silently landing off-
   // screen. Inline: 'nearest' for the same reason. Guarded: jsdom does not
@@ -443,11 +444,7 @@ const DEFAULT_RESULT: ScopedFindResult = { count: 0, activeOrdinal: 0 }
  * plain object instead of pushing into the store keeps this helper testable
  * without a nanostores harness — the store wires it up.
  */
-export function performScopedFind(
-  root: Element,
-  query: string,
-  options: ScopedFindOptions
-): ScopedFindResult {
+export function performScopedFind(root: Element, query: string, options: ScopedFindOptions): ScopedFindResult {
   if (!query) {
     clearHighlights(root)
     setActiveMark(null)
@@ -460,6 +457,7 @@ export function performScopedFind(
   }
 
   const existingMarks = [...root.querySelectorAll<HTMLElement>(`mark.${HIGHLIGHT_CLASS}`)]
+
   // The marks store the ORIGINAL-CASE source slice (`highlightMatches`
   // writes `mark.textContent = matchText`), so byte-equality against the
   // typed query fails on the first match whose casing differs — 'Hermes'

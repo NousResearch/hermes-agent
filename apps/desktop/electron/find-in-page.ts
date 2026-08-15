@@ -190,6 +190,7 @@ const IS_MAC = () => process.platform === 'darwin'
 
 export function installFindShortcut(window: Electron.BrowserWindow, isMac: () => boolean = IS_MAC): () => void {
   const { webContents } = window
+
   if (!webContents || webContents.isDestroyed()) {
     return () => {}
   }
@@ -198,6 +199,7 @@ export function installFindShortcut(window: Electron.BrowserWindow, isMac: () =>
     if (!webContents || webContents.isDestroyed()) {
       return
     }
+
     const key = String(input.key || '').toLowerCase()
     // Accept the platform's primary accelerator (Cmd on macOS, Ctrl elsewhere)
     // AND literal Ctrl on macOS so the chord still reaches us when the user
@@ -205,17 +207,17 @@ export function installFindShortcut(window: Electron.BrowserWindow, isMac: () =>
     // Ctrl+F before the renderer's keydown fires — this main-process handler
     // runs strictly before that (#81727).
     const hasMod = isMac() ? input.meta || input.control : input.control
-    const isFindChord =
-      key === 'f' &&
-      hasMod &&
-      !input.alt &&
-      !input.shift
+
+    const isFindChord = key === 'f' && hasMod && !input.alt && !input.shift
+
     if (!isFindChord) {
       return
     }
+
     if (typeof event.preventDefault === 'function') {
       event.preventDefault()
     }
+
     webContents.send('hermes:open-find-bar')
   }
 

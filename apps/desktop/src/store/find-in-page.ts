@@ -1,11 +1,6 @@
 import { atom } from 'nanostores'
 
-import {
-  captureFindScope,
-  currentFindScope,
-  performScopedFind,
-  releaseFindScope
-} from '@/lib/find-in-page-scope'
+import { captureFindScope, currentFindScope, performScopedFind, releaseFindScope } from '@/lib/find-in-page-scope'
 
 export interface FindInPageState {
   active: boolean

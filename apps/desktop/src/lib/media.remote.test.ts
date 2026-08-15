@@ -89,9 +89,7 @@ describe('mediaGatewayStreamUrl', () => {
 
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
     $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
-    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
-      'hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer'
-    )
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
   })
 })
 

@@ -266,7 +266,6 @@ describe('installFoundInPageForwarder', () => {
   })
 })
 
-
 describe('installFindShortcut', () => {
   // Minimal BrowserWindow stub: only `webContents` is touched.
   function makeFakeWindow(wc: FakeWebContents) {
@@ -279,20 +278,23 @@ describe('installFindShortcut', () => {
     const uninstall = installFindShortcut(win)
 
     // Ctrl+F on Linux/Windows (no meta, no alt, no shift).
-    const result = wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: true,
-      meta: false,
-      alt: false,
-      shift: false,
-    })
+    const result = wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
+
     // The listener calls preventDefault on the event; the fake's emit returns
     // truthy because the event fired — what matters is the side effects.
     void result
 
-    assert.deepEqual(wc.calls.send, [
-      { channel: 'hermes:open-find-bar', payload: undefined }
-    ])
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
 
     uninstall()
   })
@@ -306,17 +308,19 @@ describe('installFindShortcut', () => {
     const uninstall = installFindShortcut(win, () => true)
 
     // Cmd+F on macOS: meta held, no control/alt/shift.
-    wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: false,
-      meta: true,
-      alt: false,
-      shift: false,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: false,
+        meta: true,
+        alt: false,
+        shift: false
+      }
+    )
 
-    assert.deepEqual(wc.calls.send, [
-      { channel: 'hermes:open-find-bar', payload: undefined }
-    ])
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
 
     uninstall()
   })
@@ -330,17 +334,19 @@ describe('installFindShortcut', () => {
     const uninstall = installFindShortcut(win, () => true)
 
     // Ctrl+F with no meta on macOS still opens the FindBar.
-    wc.emit('before-input-event', {}, {
-      key: 'F',
-      control: true,
-      meta: false,
-      alt: false,
-      shift: false,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'F',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
 
-    assert.deepEqual(wc.calls.send, [
-      { channel: 'hermes:open-find-bar', payload: undefined }
-    ])
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
 
     uninstall()
   })
@@ -353,13 +359,17 @@ describe('installFindShortcut', () => {
     const win = makeFakeWindow(wc)
     const uninstall = installFindShortcut(win, () => false)
 
-    wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: false,
-      meta: true,
-      alt: false,
-      shift: false,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: false,
+        meta: true,
+        alt: false,
+        shift: false
+      }
+    )
 
     assert.equal(wc.calls.send.length, 0, 'meta (Cmd) is not a valid chord on non-macOS')
 
@@ -371,13 +381,17 @@ describe('installFindShortcut', () => {
     const win = makeFakeWindow(wc)
     const uninstall = installFindShortcut(win)
 
-    wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: false,
-      meta: false,
-      alt: false,
-      shift: false,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: false,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
 
     assert.equal(wc.calls.send.length, 0, 'plain F must not open the FindBar')
 
@@ -389,13 +403,17 @@ describe('installFindShortcut', () => {
     const win = makeFakeWindow(wc)
     const uninstall = installFindShortcut(win)
 
-    wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: true,
-      meta: false,
-      alt: false,
-      shift: true,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: true
+      }
+    )
 
     assert.equal(wc.calls.send.length, 0, 'Ctrl+Shift+F is reserved (session.focusSearch)')
 
@@ -407,13 +425,17 @@ describe('installFindShortcut', () => {
     const win = makeFakeWindow(wc)
     const uninstall = installFindShortcut(win)
 
-    wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: true,
-      meta: false,
-      alt: true,
-      shift: false,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: true,
+        shift: false
+      }
+    )
 
     assert.equal(wc.calls.send.length, 0)
 
@@ -426,13 +448,17 @@ describe('installFindShortcut', () => {
     const uninstall = installFindShortcut(win)
     uninstall()
 
-    wc.emit('before-input-event', {}, {
-      key: 'f',
-      control: true,
-      meta: false,
-      alt: false,
-      shift: false,
-    })
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
 
     assert.equal(wc.calls.send.length, 0, 'listener must be detached after uninstall()')
   })

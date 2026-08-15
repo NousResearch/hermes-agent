@@ -1102,18 +1102,27 @@ def _confirm_startup_expensive_model_override(args) -> None:
 
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.model_selection_guards import combined_selection_warning
+        from hermes_cli.model_selection_guards import (
+            combined_message,
+            selection_warnings,
+        )
     except Exception as exc:
         logger.warning("startup model cost guard unavailable: %s", exc)
         return
 
     try:
-        model_cfg = (load_config().get("model") or {})
+        config = load_config()
     except Exception as exc:
         logger.warning("startup model cost guard could not load config: %s", exc)
-        model_cfg = {}
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    model_cfg = config.get("model") or {}
     if not isinstance(model_cfg, dict):
         model_cfg = {}
+    security_cfg = config.get("security") or {}
+    if not isinstance(security_cfg, dict):
+        security_cfg = {}
 
     model = explicit_model or (model_cfg.get("default") or "").strip()
     if not model:
@@ -1122,7 +1131,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
     try:
         # Unified registry: cost guard + id-keyed guards (e.g. the
         # data-training-tier warning) all fire at startup too.
-        warning = combined_selection_warning(
+        warnings = selection_warnings(
             model,
             provider=provider,
             base_url=(model_cfg.get("base_url") or ""),
@@ -1131,15 +1140,41 @@ def _confirm_startup_expensive_model_override(args) -> None:
     except Exception as exc:
         logger.warning("startup model cost guard failed for %s/%s: %s", provider, model, exc)
         return
-    if warning is None:
+    if not warnings:
         return
 
     # Cost and provider-routing confirmation is intentionally independent of
     # --yolo / --accept-hooks: those flags approve local command/tool risk, not
     # paid aggregator spend or a surprising provider route.
-    message = warning.message
-    if not sys.stdin.isatty():
+    is_interactive = sys.stdin.isatty()
+    allow_unattended_data_training = (
+        security_cfg.get("allow_data_training_tiers_noninteractive") is True
+    )
+    if not is_interactive and allow_unattended_data_training:
+        acknowledged = [
+            warning for warning in warnings if warning.kind == "data_policy"
+        ]
+        if acknowledged:
+            sys.stderr.write(combined_message(acknowledged) + "\n")
+            sys.stderr.write(
+                "Proceeding in non-interactive mode because "
+                "security.allow_data_training_tiers_noninteractive is true.\n"
+            )
+            warnings = [
+                warning for warning in warnings if warning.kind != "data_policy"
+            ]
+            if not warnings:
+                return
+
+    message = combined_message(warnings)
+    if not is_interactive:
         sys.stderr.write(message + "\n")
+        if any(warning.kind == "data_policy" for warning in warnings):
+            sys.stderr.write(
+                "To acknowledge data-training tiers for unattended runs, set "
+                "security.allow_data_training_tiers_noninteractive to true "
+                "in config.yaml.\n"
+            )
         sys.stderr.write(
             "Refusing this startup model override in non-interactive mode. "
             "Run interactively and confirm if you intend to use it.\n"

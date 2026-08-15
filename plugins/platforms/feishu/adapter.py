@@ -2704,7 +2704,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # clicking Typing on a bot message) is still routed through.
         loop = self._loop
         if (
-            operator_type in {"bot", "app"}
+            not self.config.extra.get("route_user_reactions", True)
+            or operator_type in {"bot", "app"}
             or not message_id
             or loop is None
             or bool(getattr(loop, "is_closed", lambda: False)())

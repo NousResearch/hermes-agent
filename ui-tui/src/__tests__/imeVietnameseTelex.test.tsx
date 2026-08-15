@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 
 import { renderSync } from '@hermes/ink'
 import React, { useState } from 'react'
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TextInput } from '../components/textInput.js'
 
@@ -41,11 +41,13 @@ class FakeTty extends EventEmitter {
   }
   setRawMode(mode: boolean): this {
     this.isRaw = mode
+
     return this
   }
   write(chunk: string | Uint8Array, cb?: (err?: Error | null) => void): boolean {
     this.chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
     cb?.()
+
     return true
   }
 }
@@ -192,10 +194,12 @@ describe('Fast-echo suppression reset (60ms window)', () => {
 
     try {
       await tick()
+
       for (const r of reads) {
         stdin1.send(r)
         await tick()
       }
+
       // After "ha", fast-echo is enabled (inkRepaintedRef.current = false)
       expect(values1.at(-1)).toBe('ha')
 

@@ -12,12 +12,16 @@ function keysToText(keys: Array<{ name?: string; sequence?: string }>): string {
   // Reconstruct what the composer would insert: backspaces delete, everything
   // else with a printable sequence inserts its sequence.
   let out = ''
+
   for (const k of keys) {
     if (k.name === 'backspace') {
       out = out.slice(0, -1)
+
       continue
     }
+
     const seq = k.sequence ?? ''
+
     // Mirror the composer's PRINTABLE gate
     if (/^[ -~\u00a0-\uffff]+$/.test(seq)) {
       out += seq
@@ -27,6 +31,7 @@ function keysToText(keys: Array<{ name?: string; sequence?: string }>): string {
       out += `«DROP:${[...seq].map(c => 'U+' + c.codePointAt(0)!.toString(16)).join(',')}»`
     }
   }
+
   return out
 }
 
@@ -58,6 +63,7 @@ describe('parser does not silently drop printable codepoints', () => {
 
   it('exhaustive: DEL between every pair of letters never drops a letter', () => {
     const letters = [...'aăâeêioôơuưy']
+
     for (const a of letters) {
       for (const b of letters) {
         const input = `${a}\x7f${b}`

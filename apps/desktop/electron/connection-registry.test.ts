@@ -9,8 +9,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import type {
-  ConnectionRegistry} from './connection-registry';
+import type { ConnectionRegistry } from './connection-registry'
 import {
   agentHandle,
   connectionIdForLabel,
@@ -75,7 +74,8 @@ test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
 
 test('save rejects the reserved "local" id on non-local kinds', () => {
   assert.throws(
-    () => normalizeConnectionInput({ id: 'local', kind: 'remote', label: 'Sneaky', url: 'http://x:1' }, emptyRegistry()),
+    () =>
+      normalizeConnectionInput({ id: 'local', kind: 'remote', label: 'Sneaky', url: 'http://x:1' }, emptyRegistry()),
     /reserved/
   )
 })
@@ -108,7 +108,14 @@ test('token only persists on token-auth remotes; oauth/cloud drop it', () => {
 // --- mergeConnectionInput (edit inheritance) ---
 
 test('merge preserves fields the editor does not carry (org, ssh extras)', () => {
-  const cloud = { authMode: 'oauth' as const, id: 'c', kind: 'cloud' as const, label: 'Cloud', org: 'nous', url: 'https://a.cloud' }
+  const cloud = {
+    authMode: 'oauth' as const,
+    id: 'c',
+    kind: 'cloud' as const,
+    label: 'Cloud',
+    org: 'nous',
+    url: 'https://a.cloud'
+  }
   const renamed = mergeConnectionInput({ id: 'c', kind: 'cloud', label: 'Renamed', url: 'https://a.cloud' }, cloud)
 
   assert.equal(renamed.org, 'nous')
@@ -262,8 +269,22 @@ test('normalizeRegistry round-trips a valid registry unchanged in shape', () => 
     primary: 'homelab',
     connections: [
       { id: 'local', kind: 'local', label: 'This device' },
-      { id: 'homelab', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119', authMode: 'token', token: { v: 1 } },
-      { id: 'cloud-1', kind: 'cloud', label: 'Hermes Cloud', url: 'https://a.hermes.cloud', authMode: 'oauth', org: 'nous' },
+      {
+        id: 'homelab',
+        kind: 'remote',
+        label: 'Homelab',
+        url: 'http://10.0.0.5:9119',
+        authMode: 'token',
+        token: { v: 1 }
+      },
+      {
+        id: 'cloud-1',
+        kind: 'cloud',
+        label: 'Hermes Cloud',
+        url: 'https://a.hermes.cloud',
+        authMode: 'oauth',
+        org: 'nous'
+      },
       { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222 }
     ]
   }
@@ -272,7 +293,10 @@ test('normalizeRegistry round-trips a valid registry unchanged in shape', () => 
 
   assert.equal(registry.primary, 'homelab')
   assert.equal(registry.connections.length, 4)
-  assert.deepEqual(registry.connections.map(c => c.id), ['local', 'homelab', 'cloud-1', 'spark'])
+  assert.deepEqual(
+    registry.connections.map(c => c.id),
+    ['local', 'homelab', 'cloud-1', 'spark']
+  )
   assert.deepEqual(registry.connections[1].token, { v: 1 })
   assert.equal(registry.connections[3].port, 2222)
 })

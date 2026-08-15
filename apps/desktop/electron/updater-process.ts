@@ -362,6 +362,7 @@ export function observeUpdaterHandoff(
   deps: ObserveUpdaterHandoffDeps = {}
 ): Promise<UpdaterHandoffOutcome> {
   const setTimeoutFn = deps.setTimeoutFn ?? setTimeout
+
   const clearTimeoutFn =
     deps.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
 

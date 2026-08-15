@@ -50,6 +50,7 @@ function workspaceManifests(): { name: string, manifest: Manifest }[] {
   for (const pattern of patterns) {
     // The globs in use are plain paths or a single trailing ``/*``.
     const parent = pattern.endsWith('/*') ? path.join(REPO_ROOT, pattern.slice(0, -2)) : null
+
     const dirs = parent === null
       ? [pattern]
       : fs.existsSync(parent)
@@ -78,6 +79,7 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
 
     if (react !== reactDom) {
       offenders.push(`${name} declares react"${react}" but react-dom"${reactDom}"`)
+
       continue
     }
 

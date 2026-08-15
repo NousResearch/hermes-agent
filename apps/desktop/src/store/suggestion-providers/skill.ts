@@ -149,7 +149,11 @@ export function skillTouchedInMessages(skillName: string, messages: readonly Cha
 
   for (const message of messages) {
     for (const part of message.parts) {
-      if (part.type === 'tool-call' && SKILL_TOOL_NAMES.has(part.toolName) && argNamesSkill(skillArgName(part), skillName)) {
+      if (
+        part.type === 'tool-call' &&
+        SKILL_TOOL_NAMES.has(part.toolName) &&
+        argNamesSkill(skillArgName(part), skillName)
+      ) {
         return true
       }
 

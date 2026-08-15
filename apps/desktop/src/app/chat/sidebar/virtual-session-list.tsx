@@ -161,7 +161,9 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       )}
       ref={scrollerRef}
     >
-      <div className="relative" style={{ height: `${totalSize}px` }}>{rows}</div>
+      <div className="relative" style={{ height: `${totalSize}px` }}>
+        {rows}
+      </div>
     </div>
   )
 }

@@ -27,7 +27,13 @@
  * these into the IPC layer and owns file I/O + secret encryption.
  */
 
-import { hostLabelFromBaseUrl, modeIsRemoteLike, normalizeRemoteBaseUrl, normalizeSshConfig, normAuthMode } from './connection-config'
+import {
+  hostLabelFromBaseUrl,
+  modeIsRemoteLike,
+  normalizeRemoteBaseUrl,
+  normalizeSshConfig,
+  normAuthMode
+} from './connection-config'
 
 export const REGISTRY_VERSION = 2
 
@@ -204,7 +210,12 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
     throw new Error('The id "local" is reserved for the local connection.')
   }
 
-  const id = input.id || connectionIdForLabel(label, registry.connections.map(c => c.id))
+  const id =
+    input.id ||
+    connectionIdForLabel(
+      label,
+      registry.connections.map(c => c.id)
+    )
 
   if (kind === 'ssh') {
     const ssh = normalizeSshConfig({
@@ -436,7 +447,10 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
     )
 
     const entry: RegistryConnection = {
-      id: connectionIdForLabel(label, connections.map(c => c.id)),
+      id: connectionIdForLabel(
+        label,
+        connections.map(c => c.id)
+      ),
       kind,
       label,
       url,
@@ -473,12 +487,18 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
       return existing
     }
 
-    const label = uniqueLabel(ssh.host, connections.map(c => c.label))
+    const label = uniqueLabel(
+      ssh.host,
+      connections.map(c => c.label)
+    )
 
     const { mode: _mode, ...sshFields } = ssh
 
     const entry: RegistryConnection = {
-      id: connectionIdForLabel(label, connections.map(c => c.id)),
+      id: connectionIdForLabel(
+        label,
+        connections.map(c => c.id)
+      ),
       kind: 'ssh',
       label,
       ...sshFields

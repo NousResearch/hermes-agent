@@ -12,7 +12,11 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { approvalReplaySessionId, resolveGatewayEventSessionId, UNSCOPED_STREAM_EVENT_TYPES } from '@/lib/gateway-events'
+import {
+  approvalReplaySessionId,
+  resolveGatewayEventSessionId,
+  UNSCOPED_STREAM_EVENT_TYPES
+} from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'

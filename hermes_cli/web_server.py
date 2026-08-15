@@ -4701,7 +4701,9 @@ async def update_hermes():
             "ok": False,
             "pid": None,
             "name": "hermes-update",
-            "error": "nix_update_unsupported",
+            "error": (
+                "apt_update_required" if install_method == "apt" else "nix_update_unsupported"
+            ),
             "message": message,
             "update_command": message,
         }
@@ -4800,7 +4802,7 @@ async def check_hermes_update(force: bool = False):
     ``POST /api/hermes/update`` actually runs ``hermes update``.
 
     Returns:
-        install_method: 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
+        install_method: 'apt' | 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
                 -1 if behind by an unknown count, or null if the

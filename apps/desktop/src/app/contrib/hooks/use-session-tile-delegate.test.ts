@@ -196,6 +196,15 @@ describe('useSessionTileDelegate resumeTile', () => {
       storedSessionId: 'stored-x'
     })
   })
+
+  it('does not branch when the clicked tile no longer has live state', async () => {
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), { branchLoadedSession })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
+    expect(branchLoadedSession).not.toHaveBeenCalled()
+  })
 })
 
 describe('useSessionTileDelegate interruptSession', () => {

@@ -947,6 +947,11 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
     # individually so update does not silently strip working capabilities.
+    #
+    # Self-lock deferral (relocated preflight — #86735): the ZIP code swap
+    # above is already committed; defer only the dependency sync when this
+    # process holds a native extension the sync must rewrite.
+    _m()._abort_dependency_sync_if_self_locked()
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -3166,33 +3171,142 @@ def _detect_venv_python_processes(
 # below cannot rewrite the backing ``.pyd``/``.dll`` — Windows blocks REPLACE
 # on a mapped image — and the update dies with ``os error 5`` between
 # uninstall and reinstall, stranding the venv half-updated (#83569).
-# ``cryptography`` is the canonical case: ``hermes_cli.main`` imports it at
-# startup while resolving external secret sources, so EVERY CLI-driven
-# ``hermes update`` used to self-lock before that import was made lazy.
+# ``cryptography`` is the canonical case: ``hermes_cli.main`` used to import
+# it at startup while resolving external secret sources; ``PyYAML``'s
+# ``_yaml`` C extension is loaded by every CLI process (config parsing).
 # Keep this guard as defence-in-depth against future eager imports (new
 # secret sources, plugins absorbed into core, refactors of the startup
-# order).  Keys are module prefixes in ``sys.modules``; values are display
-# names.
-_SELF_LOCKING_NATIVE_MODULES: dict[str, str] = {
-    "cryptography.hazmat.bindings._rust": "cryptography (_rust.pyd)",
+# order) — but the guard must be HONEST (#86735/#86780/#86781: a preflight
+# that fired on every run, before the fetch, re-bricked the exact flow it
+# was meant to protect).  Two honesty gates:
+#
+# 1. It only fires when the dependency sync would actually REWRITE the
+#    loaded distribution (``_dependency_sync_would_rewrite``): if the
+#    installed version already satisfies the on-disk pyproject pins, uv/pip
+#    will not touch the mapped ``.pyd``, so there is no lock to trip.
+# 2. It runs AFTER the code swap (git pull / ZIP commit), immediately
+#    before the venv rewrite — so the on-disk pyproject is the NEW one
+#    (gate 1 compares against the right target) and a deferral no longer
+#    strands the user on the old checkout: the next launch's marker
+#    recovery completes the dependency install against the already-updated
+#    pyproject.
+#
+# Keys are module prefixes in ``sys.modules``; values are
+# ``(display name, PyPI distribution name)``.
+_SELF_LOCKING_NATIVE_MODULES: dict[str, tuple[str, str]] = {
+    "cryptography.hazmat.bindings._rust": ("cryptography (_rust.pyd)", "cryptography"),
+    "yaml._yaml": ("PyYAML (_yaml.pyd)", "pyyaml"),
 }
 
 
+def _dependency_sync_would_rewrite(dist_name: str) -> bool | None:
+    """Whether ``uv pip install -e .[all]`` would replace *dist_name*'s files.
+
+    Compares the installed distribution version against every applicable
+    requirement for it in the on-disk ``pyproject.toml`` (base dependencies
+    plus all optional extras).  Returns:
+
+    - ``False`` — installed version satisfies every pin: the resolver will
+      leave the wheel alone, so a mapped extension is NOT at risk.
+    - ``True``  — some pin is not satisfied (or the distribution is
+      missing): the sync will rewrite it.
+    - ``None``  — could not determine (parse failure, unparseable pins).
+
+    Never raises.  Callers treat ``None`` as fail-OPEN (no deferral): a
+    module in the registry can be loaded by every process (PyYAML), so
+    deferring on uncertainty would recreate the #86735 always-firing loop.
+    """
+    try:
+        from importlib import metadata as _ilmd
+
+        installed = _ilmd.version(dist_name)
+    except Exception:
+        return True  # not installed → the sync will definitely install it
+    try:
+        import tomllib
+
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+        from packaging.version import Version
+
+        pyproject = _m().PROJECT_ROOT / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        project = data.get("project") or {}
+        req_strings: list[str] = list(project.get("dependencies") or [])
+        for extra_reqs in (project.get("optional-dependencies") or {}).values():
+            req_strings.extend(extra_reqs or [])
+
+        target = canonicalize_name(dist_name)
+        installed_v = Version(installed)
+        saw_pin = False
+        for req_str in req_strings:
+            try:
+                req = Requirement(req_str)
+            except Exception:
+                continue
+            if canonicalize_name(req.name) != target:
+                continue
+            if req.marker is not None and not req.marker.evaluate():
+                continue
+            saw_pin = True
+            if installed_v not in req.specifier:
+                return True
+        if saw_pin:
+            return False
+        # Not pinned anywhere in pyproject: the resolver may still move it
+        # as a transitive — we cannot cheaply predict that, so stay honest
+        # about the uncertainty.
+        return None
+    except Exception:
+        return None
+
+
 def _detect_self_loaded_native_modules() -> list[str]:
-    """Native venv extensions already loaded into THIS updater process.
+    """Native venv extensions loaded into THIS process that the sync would rewrite.
 
     Returns display names (empty off Windows — POSIX lets a running process
     keep using an unlinked inode, so self-locking is a Windows-only hazard).
-    Never raises.
+    A loaded module whose installed version already satisfies the on-disk
+    pyproject pins is NOT reported: the dependency sync will not touch its
+    files, so there is no swap at risk (#86735 — the always-firing variant
+    of this preflight bricked every Windows update).  Never raises.
     """
     if not _m()._is_windows():
         return []
-    found = [
-        display
-        for prefix, display in _SELF_LOCKING_NATIVE_MODULES.items()
-        if prefix in sys.modules
-    ]
+    found = []
+    for prefix, (display, dist) in _SELF_LOCKING_NATIVE_MODULES.items():
+        if prefix not in sys.modules:
+            continue
+        # Defer ONLY on a CONFIRMED pending rewrite. An "unknown" result
+        # (unreadable/unparseable pyproject, no pin found) must fail OPEN:
+        # PyYAML is loaded in every CLI process, so treating unknown as
+        # at-risk would re-create the exact always-firing loop this guard's
+        # first version caused (#86735). The downside of a missed deferral
+        # is the pre-existing failure mode — a mid-sync os error 5 that the
+        # marker recovery already handles — which is strictly less harmful
+        # than an update that can never run.
+        if _m()._dependency_sync_would_rewrite(dist) is not True:
+            continue
+        found.append(display)
     return sorted(set(found))
+
+
+def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
+    """Defer (exit 2) when THIS process holds a native module the sync must replace.
+
+    Runs at the last moment before the venv rewrite — after the code swap —
+    so the on-disk pyproject reflects the update target and a deferral
+    leaves the user on NEW code with only the dependency install pending
+    (completed by the next launch's marker recovery).  No-op when nothing
+    at-risk is loaded.
+    """
+    locked = _m()._detect_self_loaded_native_modules()
+    if not locked:
+        return
+    _m()._defer_update_for_self_lock(locked)
+    if gateway_resume is not None:
+        _m()._resume_windows_gateways_after_update(gateway_resume)
+    sys.exit(2)
 
 
 def _defer_update_for_self_lock(loaded: list[str]) -> None:
@@ -3210,9 +3324,9 @@ def _defer_update_for_self_lock(loaded: list[str]) -> None:
         print(f"    {name}")
     print()
     print("  On Windows a mapped extension cannot be replaced by the process")
-    print("  holding it. The update has been deferred: the next `hermes` launch")
-    print("  will complete it in a fresh process before anything imports these")
-    print("  modules.")
+    print("  holding it. The code update has been applied; only the dependency")
+    print("  sync has been deferred: the next `hermes` launch will complete it")
+    print("  in a fresh process before anything imports these modules.")
     _m()._write_update_incomplete_marker()
 
 
@@ -4313,19 +4427,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
 
-    # Self-lock preflight: the venv-holder sweep above excludes this process
-    # by design (a CLI `hermes update` IS the venv python), so an updater
-    # that has already imported a native venv extension would sail through
-    # and lock its own dependency sync — the #83569 failure mode. Refuse
-    # before touching the checkout; the marker makes the next fresh launch
-    # finish the install. Deliberately not bypassed by --force-venv: that
-    # escape hatches external holders; it cannot unmap an image from the
-    # running process.
-    _self_locked = _m()._detect_self_loaded_native_modules()
-    if _self_locked:
-        _m()._defer_update_for_self_lock(_self_locked)
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        sys.exit(2)
+    # Self-lock deferral moved: the venv-holder sweep above excludes this
+    # process by design (a CLI `hermes update` IS the venv python), and an
+    # updater that has imported a native venv extension cannot rewrite its
+    # own mapped .pyd (#83569). That check used to run HERE — before the
+    # fetch — but firing pre-fetch meant a deferral stranded the user on the
+    # OLD checkout, and any startup path that eagerly loaded cryptography
+    # turned every Windows update into an exit-2 loop (#86735/#86780/#86781).
+    # It now runs via _abort_dependency_sync_if_self_locked() after the code
+    # swap, immediately before the dependency sync — the only phase the lock
+    # can actually break — and only when the sync would truly rewrite the
+    # loaded distribution.
 
     # Capture this after every fail-closed venv guard, but before either
     # update path can remove the ignored release tree.
@@ -4594,6 +4706,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("⚠ Checkout is current, but the venv is unhealthy:")
                 print(f"  {detail}")
                 print("→ Repairing Python dependencies...")
+                # Self-lock deferral (#86735): the repair rewrites the venv
+                # too — same mapped-extension hazard as the update sync.
+                _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
                 _write_update_incomplete_marker()
                 from hermes_cli.managed_uv import ensure_uv
 
@@ -4827,6 +4942,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
+        #
+        # Self-lock deferral (relocated preflight — #86735): if THIS process
+        # holds a native extension the sync must rewrite, defer NOW — after
+        # the code swap, so only the dependency install is pending and the
+        # next fresh launch completes it via the marker.
+        _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
         #
         # Drop the core-install breadcrumb BEFORE touching the venv. If the
         # install is killed mid-flight (Ctrl-C, terminal close, WSL OOM), the

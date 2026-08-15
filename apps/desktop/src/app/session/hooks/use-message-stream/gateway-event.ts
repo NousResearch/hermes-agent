@@ -53,6 +53,7 @@ import {
   setSecretRequest,
   setSudoRequest
 } from '@/store/prompts'
+import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { recordAgentReaction } from '@/store/reactions-local'
 import {
   $currentCwd,
@@ -211,6 +212,20 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'tool.progress',
   'tool.generating',
   'tool.complete'
+])
+
+const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
+  'error',
+  'message.complete',
+  'message.delta',
+  'message.interim',
+  'message.start',
+  'reasoning.available',
+  'reasoning.delta',
+  'tool.complete',
+  'tool.generating',
+  'tool.progress',
+  'tool.start'
 ])
 
 interface GatewayEventDeps {
@@ -385,6 +400,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       if (sessionId && DRAFT_SUPERSEDING_EVENT_TYPES.has(event.type)) {
         setSessionDraftingTool(sessionId, '')
+      }
+
+      if (sessionId && PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES.has(event.type)) {
+        setSessionProviderWait(sessionId, '')
       }
 
       if (event.type === 'gateway.ready') {
@@ -807,10 +826,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         }
       } else if (event.type === 'thinking.delta') {
-        // thinking.delta carries the kawaii spinner status (face + verb from
-        // KawaiiSpinner), not real reasoning. The bottom-of-thread loading
-        // indicator already covers that UX, so we ignore these events to
-        // avoid a duplicative "Thinking" disclosure showing spinner text.
+        // Most thinking.delta frames are kawaii spinner rewrites and stay out
+        // of the transcript. Explained provider waits are different: the core
+        // emits them after prolonged silence, so name that wait in the existing
+        // bottom-of-thread status row instead of leaving only an unlabeled timer.
+        if (sessionId) {
+          setSessionProviderWait(sessionId, providerWaitText(coerceGatewayText(payload?.text)))
+        }
       } else if (event.type === 'reaction') {
         // Core-detected affection (ily / <3 / good bot) on the user's message.
         // Play hearts only for the visible session so background turns stay quiet.

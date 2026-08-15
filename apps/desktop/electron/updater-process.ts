@@ -318,3 +318,116 @@ export function spawnUpdaterProcess(
 
   return child
 }
+
+export interface UpdaterHandoffOutcome {
+  ok: boolean
+  /** Set when ok is false. */
+  reason?: 'spawn-error' | 'early-exit'
+  /** Human-readable detail for logs (never contains argv secrets). */
+  message?: string
+  /** Exit code when the child exited inside the settle window. */
+  code?: number | null
+  /** Signal when the child was killed inside the settle window. */
+  signal?: string | null
+}
+
+export interface ObserveUpdaterHandoffDeps {
+  setTimeoutFn?: (callback: () => void, ms: number) => unknown
+  clearTimeoutFn?: (timer: unknown) => void
+}
+
+/**
+ * Watch a just-spawned detached updater for the duration of the quit dwell
+ * and report whether the hand-off actually became viable (#66753).
+ *
+ * Before this, the Desktop called `unref()` and quit after a fixed dwell
+ * without ever observing the child's async `error` event (ENOENT/EACCES —
+ * Node reports exec failures asynchronously) or an early `exit`. A failed
+ * spawn therefore looked identical to a successful one: the app vanished, no
+ * updater appeared, and nothing relaunched. Worse, an unhandled `'error'`
+ * event on the detached child would crash the Electron main process outright.
+ *
+ * Success is: no `error` event AND either the child survives the settle
+ * window or it exits 0 inside it (the Windows `cmd start` wrapper exits 0
+ * immediately by design — see wrapHandoffForDetachedConsole). Failure is a
+ * spawn `error`, a non-zero exit, or a signal death inside the window.
+ *
+ * Children that expose no event interface (bare test doubles) settle as ok
+ * after the window — the observation is a best-effort hardening, never a new
+ * way to wedge an update.
+ */
+export function observeUpdaterHandoff(
+  child: UpdaterChild,
+  settleMs: number,
+  deps: ObserveUpdaterHandoffDeps = {}
+): Promise<UpdaterHandoffOutcome> {
+  const setTimeoutFn = deps.setTimeoutFn ?? setTimeout
+  const clearTimeoutFn =
+    deps.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
+
+  const observable = child as UpdaterChild & {
+    once?: (event: string, listener: (...args: unknown[]) => void) => unknown
+    removeListener?: (event: string, listener: (...args: unknown[]) => void) => unknown
+  }
+
+  if (typeof observable.once !== 'function') {
+    return new Promise(resolve => {
+      setTimeoutFn(() => resolve({ ok: true }), settleMs)
+    })
+  }
+
+  return new Promise(resolve => {
+    let settled = false
+
+    const finish = (outcome: UpdaterHandoffOutcome) => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      clearTimeoutFn(timer)
+      observable.removeListener?.('error', onError)
+      observable.removeListener?.('exit', onExit)
+      resolve(outcome)
+    }
+
+    const onError = (...args: unknown[]) => {
+      const error = args[0] as (Error & { code?: string }) | undefined
+
+      finish({
+        ok: false,
+        reason: 'spawn-error',
+        message: `updater spawn failed: ${error?.code || error?.message || 'unknown error'}`
+      })
+    }
+
+    const onExit = (...args: unknown[]) => {
+      const code = args[0] as number | null
+      const signal = args[1] as string | null
+
+      if (signal || (typeof code === 'number' && code !== 0)) {
+        finish({
+          ok: false,
+          reason: 'early-exit',
+          message: signal
+            ? `updater died from signal ${signal} before the settle window elapsed`
+            : `updater exited ${code} before the settle window elapsed`,
+          code: code ?? null,
+          signal: signal ?? null
+        })
+
+        return
+      }
+
+      // Clean exit 0 inside the window is expected for wrapper shapes
+      // (cmd.exe `start` on Windows exits immediately after launching the
+      // real script in its own console).
+      finish({ ok: true, code: code ?? 0, signal: null })
+    }
+
+    const timer = setTimeoutFn(() => finish({ ok: true }), settleMs)
+
+    observable.once('error', onError)
+    observable.once('exit', onExit)
+  })
+}

@@ -231,6 +231,7 @@ import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from '
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
+  observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
@@ -3485,10 +3486,33 @@ async function applyUpdates(opts = {}) {
     // appears), THEN quit to release the venv shim. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
+    //
+    // The dwell doubles as the hand-off settle window (#66753): watch the
+    // detached child for an async spawn `error` (ENOENT/EACCES) or an early
+    // non-zero/signal exit. On failure, DON'T quit — the user would be left
+    // with no app, no updater, and no evidence. Restart our backend and
+    // surface the error instead. The pre-written marker names the dead child
+    // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
+    const dwellStartedAt = Date.now()
+    const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+    if (!handoffOutcome.ok) {
+      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+
+      rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+      startHermes().catch(() => {})
+
+      return { ok: false, error: 'updater-spawn-failed', message }
+    }
+
     isQuittingForHandoff = true
-    setTimeout(() => {
-      app.quit()
-    }, UPDATE_HANDOFF_DWELL_MS)
+    setTimeout(
+      () => {
+        app.quit()
+      },
+      Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
+    )
 
     return { ok: true, handedOff: true, updater }
   } finally {
@@ -3578,11 +3602,26 @@ async function handOffWindowsBootstrapRecovery(reason) {
   )
   // Same dwell as the in-app update hand-off (#50419): give the updater's
   // window time to appear before we vanish, so the recovery doesn't look like
-  // a crash and provoke a mid-recovery relaunch.
+  // a crash and provoke a mid-recovery relaunch. The dwell doubles as the
+  // hand-off settle window (#66753): a spawn error or early updater death
+  // returns false so the caller falls through to its next recovery path
+  // instead of quitting into nothing.
+  const dwellStartedAt = Date.now()
+  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+  if (!handoffOutcome.ok) {
+    rememberLog(`[bootstrap] recovery hand-off not viable, staying alive: ${handoffOutcome.message}`)
+
+    return false
+  }
+
   isQuittingForHandoff = true
-  setTimeout(() => {
-    app.quit()
-  }, UPDATE_HANDOFF_DWELL_MS)
+  setTimeout(
+    () => {
+      app.quit()
+    },
+    Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
+  )
 
   return true
 }
@@ -3788,10 +3827,30 @@ async function applyUpdatesPosixHandoff(opts: any) {
     percent: 100
   })
 
+  // Settle window (#66753): the reported macOS failure mode is exactly this
+  // path — the app quits, bash/posix.sh dies early (or was never spawnable),
+  // and the user is left with no app, no updater, and no relaunch. Watch the
+  // child through the dwell; on spawn error or early death, stay alive and
+  // surface the failure instead of quitting into nothing.
+  const dwellStartedAt = Date.now()
+  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+  if (!handoffOutcome.ok) {
+    const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+
+    rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+    emitUpdateProgress({ stage: 'error', message, percent: null })
+
+    return { ok: false, error: 'updater-spawn-failed', message }
+  }
+
   isQuittingForHandoff = true
-  setTimeout(() => {
-    app.quit()
-  }, UPDATE_HANDOFF_DWELL_MS)
+  setTimeout(
+    () => {
+      app.quit()
+    },
+    Math.max(0, UPDATE_HANDOFF_DWELL_MS - (Date.now() - dwellStartedAt))
+  )
 
   return { ok: true, handedOff: true, updater: handoff.scriptPath }
 }

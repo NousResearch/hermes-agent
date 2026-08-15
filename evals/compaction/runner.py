@@ -88,41 +88,69 @@ QUESTION: {question}
 Answer in one or two sentences."""
 
 
-def keyword_search(archive: list, query: str, top_k: int = 3, excerpt_chars: int = 2500) -> str:
+def keyword_search(archive: list, query: str, top_k: int = 4, excerpt_chars: int = 2500) -> str:
     """Simulate session_search over the archived (compacted-away) region.
 
-    Scores each message by query-term frequency (case-insensitive), returns
-    the top_k as excerpts centered on the densest term cluster. This is a
-    conservative stand-in for the real FTS5 backend — real session_search
-    has ranking, snippets, and windows, so live recovery should only be
-    better than this sim.
+    Uses an in-memory SQLite FTS5 index with BM25 ranking — the same engine
+    production session_search runs on — so the sim's retrieval quality
+    matches what a live agent gets. Falls back to term-frequency scoring if
+    FTS5 is unavailable.
     """
+    import sqlite3 as _sq
+
     terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_#./-]{3,}", query)]
     if not terms:
         return "(no results)"
-    scored = []
-    for i, m in enumerate(archive):
-        c = m.get("content")
-        if not isinstance(c, str) or len(c) < 20:
-            continue
-        lc = c.lower()
-        score = sum(lc.count(t) for t in terms)
-        if score > 0:
-            scored.append((score, i, c))
-    scored.sort(key=lambda x: -x[0])
-    if not scored:
-        return "(no results)"
-    out = []
-    for score, i, c in scored[:top_k]:
-        # center excerpt on the first term hit
-        lc = c.lower()
-        first = min((lc.find(t) for t in terms if lc.find(t) >= 0), default=0)
-        start = max(0, first - excerpt_chars // 4)
-        out.append(
-            f"--- result (message #{i}, role={archive[i].get('role')}) ---\n"
-            + c[start:start + excerpt_chars]
+    rows = [
+        (i, m.get("role") or "", m["content"])
+        for i, m in enumerate(archive)
+        if isinstance(m.get("content"), str) and len(m["content"]) >= 20
+    ]
+    hits = []
+    try:
+        db = _sq.connect(":memory:")
+        db.execute("CREATE VIRTUAL TABLE arch USING fts5(content, role UNINDEXED, idx UNINDEXED)")
+        db.executemany(
+            "INSERT INTO arch (content, role, idx) VALUES (?, ?, ?)",
+            [(c, r, i) for i, r, c in rows],
         )
-    return "\n\n".join(out)
+        fts_query = " OR ".join(
+            '"' + t.replace('"', "") + '"' for t in terms
+        )
+        cur = db.execute(
+            "SELECT idx, role, content, bm25(arch) AS rank, "
+            "snippet(arch, 0, '', '', ' … ', 40) AS snip "
+            "FROM arch WHERE arch MATCH ? ORDER BY rank LIMIT ?",
+            (fts_query, top_k),
+        )
+        for idx, role, content, rank, snip in cur.fetchall():
+            lc = content.lower()
+            first = min((lc.find(t) for t in terms if lc.find(t) >= 0), default=0)
+            start = max(0, first - excerpt_chars // 4)
+            hits.append(
+                f"--- result (message #{idx}, role={role}) ---\n"
+                f"[match: {snip[:200]}]\n"
+                + content[start:start + excerpt_chars]
+            )
+        db.close()
+    except _sq.OperationalError:
+        # FTS5 unavailable — degrade to term-frequency scoring.
+        scored = []
+        for i, r, c in rows:
+            lc = c.lower()
+            score = sum(lc.count(t) for t in terms) / (1 + len(c) / 4000)
+            if score > 0:
+                scored.append((score, i, r, c))
+        scored.sort(key=lambda x: -x[0])
+        for score, i, r, c in scored[:top_k]:
+            lc = c.lower()
+            first = min((lc.find(t) for t in terms if lc.find(t) >= 0), default=0)
+            start = max(0, first - excerpt_chars // 4)
+            hits.append(
+                f"--- result (message #{i}, role={r}) ---\n"
+                + c[start:start + excerpt_chars]
+            )
+    return "\n\n".join(hits) if hits else "(no results)"
 
 
 def _call(prompt: str, max_tokens: int = 2000) -> str:
@@ -215,9 +243,14 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
     results = []
     for qa in questions:
         if with_recovery:
+            # The summary (digests, verbatim user msgs, recovery footer) sits
+            # near the FRONT of the serialized context; give the query writer
+            # that portion plus the recent tail so it can mine anchor
+            # identifiers (PR numbers, paths, error strings) for the query.
+            hint = context_text[:60_000] + "\n...\n" + context_text[-8_000:]
             query = _call(
                 SEARCH_QUERY_PROMPT.format(
-                    context_hint=context_text[-20_000:], question=qa["q"],
+                    context_hint=hint, question=qa["q"],
                 ),
                 max_tokens=100,
             ).strip().strip('"')

@@ -834,6 +834,29 @@ TRANSCRIPT SEGMENT:
 """
 
 
+_LOW_SIGNAL_TOOL_RE = re.compile(
+    r"^\{?\"?(?:output|status|success)\"?\s*[:=]?\s*\"?(?:|success|true|ok|0|\[\])\"?\s*,?\s*"
+    r"(?:\"exit_code\"\s*:\s*0)?\s*\}?$"
+)
+
+
+def _digest_worthy(role: str, content: str) -> bool:
+    """Filter no-signal rows out of the digest input.
+
+    Empty/trivial tool acks, bare exit-0 envelopes, and sub-80-char tool
+    echoes dilute the chunk digests (the GUI-lineage eval showed digests
+    starving on tool-noise-heavy regions). Assistant/user rows always pass.
+    """
+    if role != "tool":
+        return True
+    stripped = content.strip()
+    if len(stripped) < 80:
+        return False
+    if _LOW_SIGNAL_TOOL_RE.match(stripped[:200]):
+        return False
+    return True
+
+
 def _serialize_turns_for_digest(
     turns: List[Dict[str, Any]],
     pristine: "dict[str, str] | None" = None,
@@ -851,6 +874,8 @@ def _serialize_turns_for_digest(
             original = pristine.get(str(msg.get("tool_call_id") or ""))
             if original and len(original) > len(content):
                 content = original
+        if not _digest_worthy(str(role or ""), content):
+            continue
         parts.append(f"[{role}] {content}")
     return "\n\n".join(parts)
 

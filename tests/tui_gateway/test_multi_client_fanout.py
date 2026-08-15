@@ -327,6 +327,197 @@ def test_a_fanout_with_no_live_peer_is_dead():
     assert server._transport_is_dead(FanoutTransport()) is True
 
 
+def test_steer_authority_recognizes_the_exact_client_inside_a_fanout():
+    """Wrapping attached peers must not revoke the commissioning peer's authority."""
+    owner, watcher, stranger = (
+        _FakeClient("owner"),
+        _FakeClient("watcher"),
+        _FakeClient("stranger"),
+    )
+    session = _session(transport=FanoutTransport(owner, watcher))
+    server._sessions["sid"] = session
+    try:
+        token = server.bind_transport(owner)
+        try:
+            assert server._current_session_steer_authority("sid") == (owner, session)
+        finally:
+            server.reset_transport(token)
+
+        token = server.bind_transport(stranger)
+        try:
+            assert server._current_session_steer_authority("sid") == (None, None)
+        finally:
+            server.reset_transport(token)
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_steer_authority_is_granted_to_an_attached_watcher():
+    """A client that attached to watch a session may also steer its subagents.
+
+    This is INTENTIONAL and wider than the pre-fan-out rule, which admitted only
+    whichever client happened to hold the transport slot. A mirrored session has
+    no single owner in that slot, so authority is membership in it. Narrowing
+    this back to the commissioning peer would need a per-subagent record of who
+    commissioned it, which this change does not add; the widening is stated in
+    the pull request description, and this test pins it so it cannot be changed
+    silently in either direction.
+    """
+    owner, watcher, stranger = (
+        _FakeClient("owner"),
+        _FakeClient("watcher"),
+        _FakeClient("stranger"),
+    )
+    session = _session(transport=owner)
+    server._attach_session_transport(session, watcher)
+    solo = _session(transport=owner)
+    server._sessions["sid"] = session
+    server._sessions["solo"] = solo
+    try:
+        token = server.bind_transport(watcher)
+        try:
+            assert server._current_session_steer_authority("sid") == (watcher, session)
+            # Control: on a single-client session the same watcher is a stranger,
+            # so the widening reaches attached clients and nobody else.
+            assert server._current_session_steer_authority("solo") == (None, None)
+        finally:
+            server.reset_transport(token)
+
+        token = server.bind_transport(stranger)
+        try:
+            assert server._current_session_steer_authority("sid") == (None, None)
+        finally:
+            server.reset_transport(token)
+    finally:
+        server._sessions.pop("sid", None)
+        server._sessions.pop("solo", None)
+
+
+# ── browser-control session ownership ──────────────────────────────────────
+#
+# The four browser.controller.* handlers gate on the session slot exactly as
+# subagent.steer did, so fan-out breaks them the same way and the fix is the
+# same predicate. These tests pin the gate itself: they assert on the ownership
+# error message and stop at the NEXT gate ("no controller registered for this
+# session"), so a later broker change cannot make them pass vacuously.
+
+_CONTROLLER_IDENTITY = {"user_id": "user-fixture", "provider": "provider-fixture"}
+_NOT_OWNED = "session is not owned by this transport"
+_NO_CONTROLLER = "no controller registered for this session"
+
+
+def _controller_client(name: str) -> _FakeClient:
+    """A fan-out client that also carries a server-authenticated identity."""
+    client = _FakeClient(name)
+    client.auth_identity = dict(_CONTROLLER_IDENTITY)
+    return client
+
+
+def _controller_rpc(transport, method_name: str, **params) -> dict:
+    return server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method_name,
+            "params": params,
+        },
+        transport,
+    )
+
+
+def _error_message(response: dict) -> str | None:
+    return (response.get("error") or {}).get("message")
+
+
+def test_browser_control_ownership_gate_admits_a_peer_inside_a_fanout():
+    """Wrapping attached peers must not revoke browser control for all of them."""
+    owner, watcher, stranger = (
+        _controller_client("owner"),
+        _controller_client("watcher"),
+        _controller_client("stranger"),
+    )
+    session = _session(transport=FanoutTransport(owner, watcher), profile="default")
+    server._sessions["sid"] = session
+    try:
+        # The peer that would have registered the controller clears the
+        # ownership gate and stops at the next one.
+        assert _error_message(_controller_rpc(owner, "browser.controller.heartbeat", session_id="sid")) == _NO_CONTROLLER
+        # Widened, exactly as the steer conversion widened steer: any attached
+        # peer clears the session gate. The broker's is_owner check below it is
+        # what still refuses a peer that did not register the controller.
+        assert _error_message(_controller_rpc(watcher, "browser.controller.heartbeat", session_id="sid")) == _NO_CONTROLLER
+        # An unattached client is still refused at the ownership gate.
+        assert _error_message(_controller_rpc(stranger, "browser.controller.heartbeat", session_id="sid")) == _NOT_OWNED
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_browser_control_ownership_gate_is_unchanged_for_a_single_client():
+    """Control: a bare slot still compares by identity on all four handlers."""
+    owner, stranger = _controller_client("owner"), _controller_client("stranger")
+    session = _session(transport=owner, profile="default")
+    server._sessions["solo"] = session
+    try:
+        for method_name in (
+            "browser.controller.heartbeat",
+            "browser.controller.result",
+            "browser.controller.detach",
+        ):
+            assert _error_message(_controller_rpc(stranger, method_name, session_id="solo")) == _NOT_OWNED
+        assert _error_message(_controller_rpc(owner, "browser.controller.heartbeat", session_id="solo")) == _NO_CONTROLLER
+    finally:
+        server._sessions.pop("solo", None)
+
+
+def test_browser_controller_registers_and_detaches_inside_a_fanout(monkeypatch):
+    """End to end: registration on a mirrored session, then a clean detach."""
+    from gateway import browser_control_broker
+
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.browser_control_enabled", lambda: True
+    )
+    owner, watcher, stranger = (
+        _controller_client("owner"),
+        _controller_client("watcher"),
+        _controller_client("stranger"),
+    )
+    session = _session(transport=FanoutTransport(owner, watcher), profile="default")
+    server._sessions["sid"] = session
+    registration = {}
+    try:
+        registration = _controller_rpc(
+            owner,
+            "browser.controller.register",
+            session_id="sid",
+            controller_id="controller-fixture",
+            browser_profile_id="browser-profile-fixture",
+            capabilities=["controller.noop"],
+            protocol_version=browser_control_broker.BROWSER_CONTROL_PROTOCOL_VERSION,
+        )
+        assert registration.get("error") is None, registration
+        assert registration["result"]["scope"]["session_id"] == "sid"
+
+        # The registering peer owns the controller; the fan-out peer that did
+        # not register clears the session gate and is refused by the broker.
+        assert _controller_rpc(owner, "browser.controller.heartbeat", session_id="sid")["result"] == {"ok": True}
+        assert _error_message(_controller_rpc(watcher, "browser.controller.heartbeat", session_id="sid")) == "controller is not owned by this transport"
+        assert _error_message(_controller_rpc(stranger, "browser.controller.heartbeat", session_id="sid")) == _NOT_OWNED
+
+        detached = _controller_rpc(owner, "browser.controller.detach", session_id="sid")
+        assert detached.get("error") is None, detached
+    finally:
+        if registration.get("result"):
+            broker = browser_control_broker.get_browser_control_broker()
+            scope = broker.scope_for_session(
+                session_id="sid",
+                principal_id=registration["result"]["scope"]["principal_id"],
+                transport_family=registration["result"]["scope"]["transport_family"],
+            )
+            if scope is not None:
+                broker.detach(scope, notify_controller=False)
+        server._sessions.pop("sid", None)
+
+
 # ── event delivery ─────────────────────────────────────────────────────────
 
 

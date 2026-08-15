@@ -11,9 +11,11 @@ import re
 import stat
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -844,7 +846,9 @@ class TestRecallStatus:
 
 
 class TestSyncTurn:
-    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config):
+    def test_sync_turn_retains_metadata_rich_turn(self, provider_with_config, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
         p = provider_with_config(
             retain_tags=["conv", "session1"],
             retain_source="hermes",
@@ -894,8 +898,29 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
+        assert content[0][0]["timestamp"] == event_time.isoformat(timespec="seconds")
+        assert content[0][1]["timestamp"] == event_time.isoformat(timespec="seconds")
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
+        assert item["timestamp"] == event_time.isoformat(timespec="seconds")
+
+    @pytest.mark.asyncio
+    async def test_retain_timestamp_is_serialized_by_pinned_client(self, provider):
+        from hindsight_client import Hindsight
+
+        item = provider._build_retain_kwargs("hello")
+        item.pop("bank_id", None)
+        item.pop("retain_async", None)
+
+        client = Hindsight(base_url="http://localhost:9999", api_key="test-key")
+        client._memory_api.retain_memories = AsyncMock(return_value=SimpleNamespace(ok=True))
+        try:
+            await client.aretain_batch(bank_id="test-bank", items=[item])
+            call = client._memory_api.retain_memories.await_args
+            assert call is not None
+            request = call.args[1]
+            assert request.to_dict()["items"][0]["timestamp"] == item["timestamp"]
+        finally:
+            await client.aclose()
 
 
     def test_resume_creates_new_document(self, tmp_path, monkeypatch):

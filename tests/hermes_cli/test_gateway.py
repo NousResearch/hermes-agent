@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -11,6 +12,9 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway
+
+
+_BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 def _install_fake_gateway_run(monkeypatch, start_gateway):
@@ -47,6 +51,102 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
         "get_gateway_runtime_snapshot",
         lambda *a, **k: gateway.GatewayRuntimeSnapshot(manager="manual process"),
     )
+
+
+def _run_native_windows_gateway_start_diag(
+    tmp_path, breakaway_marker: str | None
+):
+    script = textwrap.dedent(
+        """
+        import ctypes
+        import json
+        import os
+        import pathlib
+        import sys
+        import types
+
+        import hermes_cli.gateway as gateway_cli
+
+        async def start_gateway(*, replace, verbosity):
+            assert "_HERMES_GATEWAY_BREAKAWAY" not in os.environ
+            return True
+
+        fake_run = types.ModuleType("gateway.run")
+        fake_run.start_gateway = start_gateway
+        fake_run._exit_after_graceful_shutdown = lambda code: None
+        sys.modules["gateway.run"] = fake_run
+
+        gateway_cli._guard_official_docker_root_gateway = lambda: None
+        gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
+        gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
+        gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
+        gateway_cli.supports_systemd_services = lambda: False
+        gateway_cli.run_gateway(quiet=True)
+
+        diag_path = pathlib.Path(os.environ["HERMES_HOME"]) / "logs" / "gateway-exit-diag.log"
+        rows = [json.loads(line) for line in diag_path.read_text(encoding="utf-8").splitlines()]
+        start = next(row for row in rows if row["tag"] == "gateway.start")
+        payload = {
+            "diag": start,
+            "get_console_window": bool(ctypes.windll.kernel32.GetConsoleWindow()),
+        }
+        print("DIAG_JSON=" + json.dumps(payload))
+        """
+    )
+    env: dict[str, str] = dict(os.environ)
+    env.update(
+        {
+            "HERMES_HOME": str(tmp_path),
+            "HERMES_GATEWAY_DETACHED": "1",
+            "HERMES_GATEWAY_EXIT_DIAG": "1",
+            "HERMES_GATEWAY_MAX_STARTS": "0",
+            "PYTHONIOENCODING": "utf-8",
+        }
+    )
+    if breakaway_marker is None:
+        env.pop(_BREAKAWAY_MARKER, None)
+    else:
+        env[_BREAKAWAY_MARKER] = breakaway_marker
+
+    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=windows_detach_flags_without_breakaway(),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    line = next(
+        line for line in completed.stdout.splitlines() if line.startswith("DIAG_JSON=")
+    )
+    return json.loads(line.removeprefix("DIAG_JSON="))
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize(
+    ("marker", "expected_breakaway"),
+    [("1", True), ("0", False), (None, None)],
+)
+def test_windows_gateway_start_diag_reports_detach_state(
+    tmp_path, marker, expected_breakaway
+):
+    """DEVNULL is a Windows TTY but must not masquerade as a console window."""
+    payload = _run_native_windows_gateway_start_diag(tmp_path, marker)
+    diag = payload["diag"]
+
+    assert payload["get_console_window"] is False
+    assert diag["stdin_is_tty"] is True
+    assert diag["console_window_attached"] is False
+    assert diag["detached"] is True
+    assert diag["breakaway"] is expected_breakaway
 
 
 

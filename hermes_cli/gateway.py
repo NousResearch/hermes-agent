@@ -68,6 +68,9 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+# Private launcher-to-child metadata. This is diagnostic state, not user config.
+_WINDOWS_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -2049,6 +2052,30 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
         return not bool(sys.stdin and sys.stdin.isatty())
     except (ValueError, OSError):
         return True
+
+
+def _windows_console_window_attached() -> bool | None:
+    """Return whether Windows assigned this process a console window."""
+    if not is_windows():
+        return None
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())  # type: ignore[attr-defined]
+    except (OSError, AttributeError):
+        return None
+
+
+def _windows_gateway_breakaway_state() -> bool | None:
+    """Consume private spawn metadata without guessing for older launchers."""
+    if not is_windows():
+        return None
+    value = os.environ.pop(_WINDOWS_GATEWAY_BREAKAWAY_ENV, None)
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    return None
 
 
 # =============================================================================
@@ -5539,6 +5566,12 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         _stdin_is_tty = bool(sys.stdin and sys.stdin.isatty())
     except (ValueError, OSError):
         _stdin_is_tty = False
+    _console_window_attached = _windows_console_window_attached()
+    _gateway_detached = (
+        os.getenv("HERMES_GATEWAY_DETACHED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    _breakaway = _windows_gateway_breakaway_state()
     _absorb_windows_console_controls = _windows_gateway_should_absorb_console_controls()
     if _absorb_windows_console_controls:
         try:
@@ -5641,6 +5674,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         replace=replace,
         argv=sys.argv,
         stdin_is_tty=_stdin_is_tty,
+        console_window_attached=_console_window_attached,
+        detached=_gateway_detached,
+        breakaway=_breakaway,
         absorb_windows_console_controls=_absorb_windows_console_controls,
     )
 

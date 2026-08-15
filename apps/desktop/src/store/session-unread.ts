@@ -224,7 +224,6 @@ export function markSessionUnreadFinished(storedSessionId: string): void {
 /** ACK — the user opened (or is looking at) this session: watermark := its
  *  current message_count, and any explicit marker is retired. */
 function ackSessionRow(row: SessionInfo): void {
-
   const profile = profileKeyForRow(row)
   const durableId = sessionPinId(row)
 

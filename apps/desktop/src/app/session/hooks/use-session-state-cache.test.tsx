@@ -40,6 +40,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     setActiveSessionId(null)
     setActiveSessionStoredIdRotation(null)
     setSelectedStoredSessionId(null)
+    window.history.pushState({}, '', '/')
   })
   it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
     let cache!: Cache
@@ -99,6 +100,68 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect($activeSessionStoredIdRotation.get()).toBeNull()
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('does not steal the foreground when the primary route is another session', () => {
+    let cache!: Cache
+
+    window.history.pushState({}, '', '/stored-B')
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('follows A -> A-next when the primary route is that same session', () => {
+    let cache!: Cache
+
+    window.history.pushState({}, '', '/stored-A')
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
+  })
+
+  it('follows A -> A-next when there is no route and no store selection', () => {
+    let cache!: Cache
+
+    window.history.pushState({}, '', '/')
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
   })
 })
 

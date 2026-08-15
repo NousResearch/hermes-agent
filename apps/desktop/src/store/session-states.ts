@@ -160,7 +160,14 @@ export function isSessionInForeground(storedSessionId: string): boolean {
 
   const selected = $selectedStoredSessionId.get()
 
-  return selected !== null && foregroundIds.has(selected)
+  if (selected !== null) {
+    return foregroundIds.has(selected)
+  }
+
+  // No route and no store selection: a fresh unpersisted chat is still
+  // the thing on screen. The caller already requires the rotating runtime
+  // to be $activeSessionId, so allow that session's own A -> A-next.
+  return true
 }
 
 // --- Transition detection (called automatically from publishSessionState) ---

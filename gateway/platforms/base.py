@@ -6782,7 +6782,7 @@ class BasePlatformAdapter(ABC):
                 outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
-        except Exception as e:
+        except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
@@ -6804,6 +6804,14 @@ class BasePlatformAdapter(ABC):
                     "[%s] Failed to send error notification to user: %s",
                     self.name, notify_err, exc_info=True,
                 )  # Last resort — don't let error reporting crash the handler
+            # Preserve shutdown semantics: SystemExit/KeyboardInterrupt must
+            # still propagate after the user-facing failure notification, so
+            # the loop's own signal handling can shut down cleanly. Other
+            # BaseExceptions (e.g. GeneratorExit) are contained like ordinary
+            # failures — this handler is fire-and-forget, so swallowing them
+            # here prevents "Task exception was never retrieved" radio silence.
+            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                raise
         finally:
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not

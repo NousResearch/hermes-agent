@@ -140,3 +140,37 @@ describe('actionAllowedInInput', () => {
     expect(actionAllowedInInput('view.findInPage', 'mod+end')).toBe(false)
   })
 })
+
+describe('comboFromEvent — IME composition keydowns never resolve to combos (#84957)', () => {
+  it('returns null while a composition is in progress (isComposing)', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    // Typing 你 with a Chinese IME: the preedit keydowns carry isComposing.
+    // Before the guard, these canonicalized to combos and fired keybinds
+    // (e.g. dispatched `session.new` mid-composition).
+    expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: true, key: 'n' }))).toBeNull()
+    expect(comboFromEvent(keydown({ code: 'Enter', isComposing: true, key: 'Enter' }))).toBeNull()
+    expect(comboFromEvent(keydown({ code: 'Space', isComposing: true, key: ' ' }))).toBeNull()
+  })
+
+  it('returns null for the legacy key="Process" (VK_PROCESSKEY) keydown', async () => {
+    const { comboFromEvent } = await loadCombo('Win32')
+
+    expect(comboFromEvent(keydown({ code: 'KeyW', key: 'Process' }))).toBeNull()
+  })
+
+  it('ignores IME-synthesized modifier-name keys on non-modifier codes', async () => {
+    const { comboFromEvent } = await loadCombo('Win32')
+
+    // Q9 2002-style legacy IMEs synthesize key="Control" with code="KeyW",
+    // which would otherwise canonicalize to a phantom ctrl+w (close tab).
+    expect(comboFromEvent(keydown({ code: 'KeyW', key: 'Control' }))).toBeNull()
+    expect(comboFromEvent(keydown({ code: 'KeyA', key: 'Shift' }))).toBeNull()
+  })
+
+  it('still resolves real combos after composition ends', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    expect(comboFromEvent(keydown({ code: 'KeyN', isComposing: false, key: 'n', metaKey: true }))).toBe('mod+n')
+  })
+})

@@ -10307,6 +10307,25 @@ def _run_prompt_submit(
                 agent.clear_interrupt()
             except Exception:
                 pass
+    # Desktop/TUI observability (#86647): this is the ONE INFO record proving
+    # a Desktop/TUI prompt was accepted by THIS process, and it ties together
+    # every id a rotation-mute trace needs — the UI session id, the gateway
+    # session_key, and the agent's live session_id (which compression rotates
+    # independently of the other two). Before this line a Desktop request left
+    # no trace in agent.log at all ("0 platform=desktop" — see #86647), so a
+    # muted window was structurally indistinguishable from a request that
+    # never arrived. No prompt content is logged.
+    _turn_started_monotonic = time.monotonic()
+    logger.info(
+        "tui prompt accepted: ui_session=%s session_key=%s agent_session_id=%s "
+        "kind=%s chars=%s images=%d",
+        sid,
+        session.get("session_key") or "",
+        getattr(agent, "session_id", "") or "",
+        display_kind or "user",
+        len(text) if isinstance(text, str) else "-",
+        len(images),
+    )
     _emit("message.start", sid)
 
     def run():
@@ -11067,6 +11086,32 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
+            # Closing bookend of the "tui prompt accepted" record above —
+            # fires on every path (success, returned error, exception,
+            # interrupt), so one accepted prompt always produces exactly one
+            # finished record. agent.session_id is re-read here because
+            # compression may have rotated it mid-turn: an accepted/finished
+            # pair whose agent_session_id changed IS a rotation trace
+            # (#86647). A missing finished record means the turn thread died
+            # without reaching this finally.
+            logger.info(
+                "tui turn finished: ui_session=%s session_key=%s "
+                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs",
+                sid,
+                session.get("session_key") or "",
+                getattr(agent, "session_id", "") or "",
+                (
+                    result.get("interrupted")
+                    and "interrupted"
+                    or result.get("error")
+                    and "error"
+                    or "complete"
+                )
+                if isinstance(result, dict)
+                else ("error" if turn_error_retained else "complete"),
+                turn_error_retained,
+                time.monotonic() - _turn_started_monotonic,
+            )
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).
             _retire_turn_marker(session, marker_key)

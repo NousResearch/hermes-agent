@@ -16912,8 +16912,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 return getattr(_blueprint_result, "text", "") or None
 
-        if canonical == "export":
-            return await self._handle_export_command(event)
+        if canonical == "save":
+            return await self._handle_save_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)

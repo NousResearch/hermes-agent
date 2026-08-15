@@ -291,42 +291,6 @@ class SessionPortabilityMixin:
         base["messages"] = [msg for seg in segments for msg in (seg.get("messages") or [])]
         return base
 
-    @staticmethod
-    def format_session_as_markdown(export_data: Dict[str, Any]) -> str:
-        """Format exported session data as a readable Markdown document."""
-        lines = []
-        session_id = export_data.get("id", "Unknown")
-        lines.append(f"# Session Export: {session_id}\n")
-        
-        title = export_data.get("title")
-        if title:
-            lines.append(f"**Title**: {title}")
-
-        created_at = export_data.get("created_at")
-        if created_at:
-            lines.append(f"**Started**: {created_at}")
-
-        if title or created_at:
-            lines.append("\n---\n")
-
-        for msg in export_data.get("messages", []):
-            role = msg.get("role", "unknown").capitalize()
-            content = msg.get("content", "")
-
-            if role == "User":
-                lines.append(f"## {role}\n\n{content}\n")
-            elif role == "Assistant":
-                reasoning = msg.get("reasoning", "")
-                if reasoning:
-                    lines.append(f"## {role} (Reasoning)\n\n{reasoning}\n")
-                lines.append(f"## {role}\n\n{content}\n")
-            elif role == "Tool":
-                lines.append(f"### Tool Result\n\n```\n{content}\n```\n")
-            else:
-                lines.append(f"## {role}\n\n{content}\n")
-
-        return "\n".join(lines)
-
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """
         Export all sessions (with messages) as a list of dicts.

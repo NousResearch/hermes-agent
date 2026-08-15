@@ -47,11 +47,14 @@ def _completions(completer: SlashCommandCompleter, text: str):
 class TestCommandRegistry:
 
 
-    def test_export_command_registered(self):
-        cmd = resolve_command("export")
+    def test_save_command_supports_formats(self):
+        cmd = resolve_command("save")
         assert cmd is not None
-        assert cmd.name == "export"
-        assert cmd.args_hint == "[format] [filename]"
+        assert cmd.name == "save"
+        # /save is a cross-platform session export: json (default), md, html
+        assert not cmd.cli_only
+        for token in ("json", "md", "html"):
+            assert token in (cmd.args_hint or "")
 
     def test_no_duplicate_canonical_names(self):
         names = [cmd.name for cmd in COMMAND_REGISTRY]

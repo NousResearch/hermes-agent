@@ -9342,56 +9342,59 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return True
 
 
-    def _handle_export_command(self, cmd: str):
-        """Handle /export command to export session history to file."""
-        if not self._session_db:
-            _cprint("  Session database not available.")
-            return
+    def save_conversation(self, cmd: str = "/save"):
+        """Handle /save — export the current session to json, md, or html.
 
-        parts = cmd.split()
-        format_type = "markdown"
-        filename = f"session_{self.session_id}.md"
+        Usage: ``/save [json|md|html] [filename] [redact]``
 
-        if len(parts) > 1:
-            arg = parts[1].lower()
-            if arg in ["json", "md", "markdown"]:
-                format_type = "json" if arg == "json" else "markdown"
-                filename = f"session_{self.session_id}.{'json' if format_type == 'json' else 'md'}"
-            else:
-                filename = arg
+        The snapshot is a convenience export for sharing or off-line
+        inspection; every message is already persisted incrementally to the
+        SQLite session DB, so the live session remains resumable via
+        ``hermes --resume <id>`` regardless of whether the user ever runs
+        ``/save``. ``redact`` runs the export through the force-mode secret
+        redaction pass before writing.
+        """
+        from hermes_cli.session_export import (
+            normalize_save_format,
+            render_session_for_save,
+        )
 
-        if len(parts) > 2:
-            filename = parts[2]
-
-        export_data = self._session_db.export_session(self.session_id)
-        if not export_data:
-            _cprint(f"  Failed to export session {self.session_id}.")
-            return
+        parts = cmd.split()[1:]
+        redact = False
+        if parts and parts[-1].lower() in ("redact", "--redact"):
+            redact = True
+            parts = parts[:-1]
 
         try:
-            with open(filename, "w", encoding="utf-8") as f:
-                if format_type == "json":
-                    import json
-                    json.dump(export_data, f, indent=2, ensure_ascii=False)
-                else:
-                    from hermes_state import SessionDB
-                    f.write(SessionDB.format_session_as_markdown(export_data))
-    
-            _cprint(f"  Session exported successfully to {filename}")
-        except Exception as e:
-            _cprint(f"  Error writing export file: {e}")
-
-    def save_conversation(self):
-        """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
-
-        The snapshot is a convenience export for sharing or off-line inspection;
-        every message is already persisted incrementally to the SQLite session
-        DB, so the live session remains resumable via ``hermes --resume <id>``
-        regardless of whether the user ever runs ``/save``.
-        """
-        if not self.conversation_history:
-            print("(;_;) No conversation to save.")
+            fmt = normalize_save_format(parts[0] if parts else None)
+        except ValueError as e:
+            print(f"(._.) {e}")
             return
+        filename = parts[1] if len(parts) > 1 else None
+
+        # Prefer the durable DB row (has metadata + tool calls); fall back to
+        # the in-memory history for sessions that never touched the DB.
+        session_data = None
+        if self._session_db and self.session_id:
+            try:
+                session_data = self._session_db.export_session(self.session_id)
+            except Exception:
+                session_data = None
+        if not session_data:
+            if not self.conversation_history:
+                print("(;_;) No conversation to save.")
+                return
+            session_data = {
+                "id": self.session_id,
+                "model": self.model,
+                "started_at": self.session_start.timestamp(),
+                "messages": self.conversation_history,
+            }
+
+        if redact:
+            from hermes_cli.session_export_md import redact_session_data
+
+            session_data = redact_session_data(session_data)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_dir = get_hermes_home() / "sessions" / "saved"
@@ -9400,17 +9403,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as e:
             print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
             return
-        path = saved_dir / f"hermes_conversation_{timestamp}.json"
+        if filename:
+            path = Path(filename).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+        else:
+            path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
 
         try:
+            content = render_session_for_save(session_data, fmt)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "model": self.model,
-                    "session_id": self.session_id,
-                    "session_start": self.session_start.isoformat(),
-                    "messages": self.conversation_history,
-                }, f, indent=2, ensure_ascii=False)
-            print(f"(^_^)v Conversation snapshot saved to: {path}")
+                f.write(content)
+            label = {"json": "JSON", "md": "Markdown", "html": "HTML"}[fmt]
+            print(f"(^_^)v Conversation saved to: {path} ({label})")
             if self.session_id:
                 print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:
@@ -11167,9 +11172,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":
-            self.save_conversation()
-        elif canonical == "export":
-            self._handle_export_command(cmd_original)
+            self.save_conversation(cmd_original)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
         elif canonical == "suggestions":

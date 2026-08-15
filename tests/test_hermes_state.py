@@ -1056,25 +1056,6 @@ class TestDeleteAndExport:
 
 
 
-    def test_format_session_as_markdown(self, db):
-        db.create_session(session_id="s1", source="cli", model="test")
-        db.append_message("s1", role="user", content="Hello")
-        db.append_message("s1", role="assistant", content="Hi")
-        db.append_message("s1", role="assistant", content="Wait", reasoning="Thinking...")
-        db.append_message("s1", role="tool", content="Tool Result")
-        db.set_session_title("s1", "Test Title")
-
-        export = db.export_session("s1")
-        md_output = db.format_session_as_markdown(export)
-
-        assert "# Session Export: s1" in md_output
-        assert "**Title**: Test Title" in md_output
-        assert "## User\n\nHello" in md_output
-        assert "## Assistant\n\nHi" in md_output
-        assert "## Assistant (Reasoning)\n\nThinking..." in md_output
-        assert "## Assistant\n\nWait" in md_output
-        assert "### Tool Result\n\n```\nTool Result\n```" in md_output
-
     def test_export_nonexistent(self, db):
         assert db.export_session("nope") is None
 

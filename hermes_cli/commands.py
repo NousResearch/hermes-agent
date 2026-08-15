@@ -154,10 +154,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
-    CommandDef("save", "Save the current conversation", "Session",
-               cli_only=True),
-    CommandDef("export", "Export the current session history to a file", "Session",
-               args_hint="[format] [filename]"),
+    CommandDef("save", "Save/export the current conversation (json, md, or html)", "Session",
+               args_hint="[json|md|html] [filename] [redact]"),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
@@ -1328,7 +1326,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     interactive surface; whoami is a rare debug lookup) — without this
 #     entry /loop tips the registry past the 50-cap and silently clamps
 #     /platform, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami"})
+#   - platform: informational platform/environment lookup; reached via
+#     /hermes platform on Slack. Demoted when /save became gateway-available
+#     (session export is an interactive surface; platform is a rare
+#     informational lookup) — without this entry /save tips the registry
+#     past the 50-cap and silently clamps /platform, breaking parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

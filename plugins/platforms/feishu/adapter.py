@@ -68,7 +68,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
@@ -2012,6 +2012,89 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    @staticmethod
+    def _normalize_quick_launcher_text(value: Any) -> str:
+        """Normalize a short launcher command without broad intent matching."""
+        normalized = re.sub(r"\s+", "", str(value or "")).casefold()
+        if normalized.startswith("/"):
+            normalized = normalized[1:]
+        return normalized.rstrip("。.!！?？")
+
+    def _match_quick_launcher(self, text: str) -> Optional[Dict[str, Any]]:
+        """Return the exact configured quick launcher for *text*, if any."""
+        wanted = self._normalize_quick_launcher_text(text)
+        if not wanted:
+            return None
+        configured = (self.config.extra or {}).get("quick_launchers", [])
+        if not isinstance(configured, list):
+            return None
+        for candidate in configured:
+            if not isinstance(candidate, dict):
+                continue
+            url = str(candidate.get("url") or "").strip()
+            parsed = urlsplit(url)
+            if parsed.scheme != "https" or not parsed.netloc:
+                continue
+            keywords = candidate.get("keywords") or []
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            aliases = [candidate.get("name"), *keywords]
+            if wanted in {
+                self._normalize_quick_launcher_text(alias)
+                for alias in aliases
+                if alias
+            }:
+                return candidate
+        return None
+
+    @staticmethod
+    def _build_quick_launcher_card(launcher: Dict[str, Any]) -> Dict[str, Any]:
+        title = str(launcher.get("title") or launcher.get("name") or "Open app").strip()
+        description = str(launcher.get("description") or "Open the configured application.").strip()
+        button_text = str(launcher.get("button_text") or "Open app").strip()
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": title, "tag": "plain_text"},
+                "template": str(launcher.get("template") or "blue"),
+            },
+            "elements": [
+                {"tag": "markdown", "content": description},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": button_text},
+                            "type": "primary",
+                            "url": str(launcher["url"]).strip(),
+                        }
+                    ],
+                },
+            ],
+        }
+
+    async def _send_quick_launcher_card(
+        self,
+        chat_id: str,
+        launcher: Dict[str, Any],
+    ) -> SendResult:
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        card = self._build_quick_launcher_card(launcher)
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None,
+                metadata=None,
+            )
+            return self._finalize_send_result(response, "quick launcher send failed")
+        except Exception as exc:
+            logger.error("[Feishu] Quick launcher send error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def edit_message(
         self,
         chat_id: str,
@@ -3149,6 +3232,22 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
+            if event.message_type in {MessageType.TEXT, MessageType.COMMAND}:
+                launcher = self._match_quick_launcher(event.text)
+                if launcher is not None:
+                    result = await self._send_quick_launcher_card(chat_id, launcher)
+                    if result.success:
+                        logger.info(
+                            "[Feishu] Sent quick launcher %r in chat %s",
+                            launcher.get("name") or launcher.get("title") or "<unnamed>",
+                            chat_id,
+                        )
+                        return
+                    logger.warning(
+                        "[Feishu] Quick launcher failed in chat %s; falling back to agent: %s",
+                        chat_id,
+                        result.error,
+                    )
             await self.handle_message(event)
 
     # =========================================================================

@@ -562,10 +562,12 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     neither is set the key is resolved from the alias HOST, never from the
     previously active provider (#83612).
 
-    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``)
-    and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
-    into DirectAlias objects.  The provider is parsed from the ``provider/``
-    prefix in the value; if no slash, the current provider is used.
+    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``
+    or hand-written). String entries (``ds-flash: deepseek/deepseek-v4-flash``)
+    are converted into DirectAlias objects with the provider parsed from the
+    ``provider/`` prefix in the value; if no slash, the current provider is
+    used. Dict entries use the same shape as ``model_aliases:`` (``model``,
+    ``provider``, ``base_url`` keys).
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
@@ -588,18 +590,34 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                         key_env=str(entry.get("key_env", "") or "").strip(),
                     )
 
-        # --- model.aliases (string-based format, from config set) ---
+        # --- model.aliases (from config set / hand-written config) ---
         model_section = cfg.get("model", {})
         if isinstance(model_section, dict):
             simple_aliases = model_section.get("aliases")
             if isinstance(simple_aliases, dict):
                 current_provider = model_section.get("provider", "")
                 for name, value in simple_aliases.items():
+                    key = name.strip().lower()
+                    if not key or key in merged:
+                        continue  # don't override explicit model_aliases entries
+                    if isinstance(value, dict):
+                        # Dict form mirrors the ``model_aliases:`` shape:
+                        # localqwen: {model: qwen3.5:4b, provider: custom}.
+                        # Hand-written configs already use it; honoring it
+                        # here keeps aliases with an explicit provider from
+                        # being silently dropped (#87189).
+                        model = str(value.get("model") or "").strip()
+                        if not model:
+                            continue
+                        provider = str(value.get("provider") or "").strip()
+                        merged[key] = DirectAlias(
+                            model=model,
+                            provider=provider or current_provider or "custom",
+                            base_url=str(value.get("base_url") or "").strip(),
+                        )
+                        continue
                     if not isinstance(value, str) or not value.strip():
                         continue
-                    key = name.strip().lower()
-                    if key in merged:
-                        continue  # don't override explicit model_aliases entries
                     val = value.strip()
                     if "/" in val:
                         provider, model = val.split("/", 1)

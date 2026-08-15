@@ -402,6 +402,26 @@ def _parse_relates_to(relates_to: Any) -> MatrixRelation:
     return MatrixRelation(reply_target=target)
 
 
+@dataclass(frozen=True)
+class _MatrixReplyContext:
+    """Resolved content of the event a message replies to.
+
+    An all-unset instance means there is no reply context to surface
+    (not a reply, or the target could not be resolved).
+    """
+
+    text: Optional[str] = None
+    author_id: Optional[str] = None
+    author_name: Optional[str] = None
+    is_own_message: bool = False
+    # Tri-state, mirroring _is_sender_authorized: True/False when an
+    # authorization check is registered, None when one isn't.
+    author_authorized: Optional[bool] = None
+
+
+_EMPTY_REPLY_CONTEXT = _MatrixReplyContext()
+
+
 _REPLY_FALLBACK_SENDER_RE = re.compile(r"^<(@[^>]+)>\s?")
 
 _EVENT_TEXT_CACHE_SIZE = 500
@@ -3661,6 +3681,10 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _event_body(evt: Any) -> str:
+        # Every mautrix MessageEventContent subtype exposes ``body`` as a
+        # direct attribute, so the attribute is read in preference to
+        # serialize(): the serialized form prefixes an edit's body with
+        # "* ", which must not leak into quoted context.
         content = getattr(evt, "content", None)
         if isinstance(content, dict):
             body = content.get("body", "")
@@ -3718,15 +3742,21 @@ class MatrixAdapter(BasePlatformAdapter):
         relation: MatrixRelation,
         quoted_hint: Optional[str],
         quoted_author_id: Optional[str] = None,
-    ) -> tuple[Optional[str], Optional[str], Optional[str], bool]:
+        *,
+        chat_type: Optional[str] = None,
+    ) -> _MatrixReplyContext:
         """Build the reply fields for a genuine reply.
 
-        Returns ``(reply_to_text, author_id, author_name, is_own_message)``.
         A legacy fallback quote wins when present (free); otherwise the
-        target event is resolved from cache or the API.
+        target event is resolved from cache or the API. On the fetch path
+        the parent's sender is classified through the registered
+        authorization check, so content from someone off the allowlist is
+        surfaced to the agent as unverified background rather than as
+        trusted input. A hint quote was delivered inline by the sender,
+        so no allowlist verdict is attached to it.
         """
         if not relation.reply_target:
-            return None, None, None, False
+            return _EMPTY_REPLY_CONTEXT
 
         if quoted_hint:
             author_name = (
@@ -3735,16 +3765,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 else None
             )
             is_own = bool(quoted_author_id) and quoted_author_id == self._user_id
-            return quoted_hint, quoted_author_id, author_name, is_own
+            return _MatrixReplyContext(
+                text=quoted_hint,
+                author_id=quoted_author_id,
+                author_name=author_name,
+                is_own_message=is_own,
+            )
 
         resolved = await self._resolve_event_context(room_id, relation.reply_target)
         if resolved is None:
-            return None, None, None, False
+            return _EMPTY_REPLY_CONTEXT
 
         sender, text = resolved
         author_name = await self._get_display_name(room_id, sender) if sender else None
         is_own = bool(sender) and sender == self._user_id
-        return text, sender or None, author_name, is_own
+
+        # Our own messages are trusted by construction; the allowlist
+        # governs who may drive the agent, not what the agent itself said.
+        authorized: Optional[bool] = None
+        if sender and not is_own:
+            authorized = self._is_sender_authorized(
+                sender, chat_type=chat_type, chat_id=room_id
+            )
+
+        return _MatrixReplyContext(
+            text=text,
+            author_id=sender or None,
+            author_name=author_name,
+            is_own_message=is_own,
+            author_authorized=authorized,
+        )
 
     async def fetch_thread_context(
         self,
@@ -3910,10 +3960,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # is treated as a command, matching how ``/command`` is recognized below.
         body = _normalize_matrix_bang_command(body)
 
-        reply_to_text, reply_author_id, reply_author_name, reply_is_own = (
-            await self._resolve_reply_context(
-                room_id, relation, quoted_hint, quoted_author_id
-            )
+        reply_ctx = await self._resolve_reply_context(
+            room_id, relation, quoted_hint, quoted_author_id, chat_type=chat_type
         )
 
         self._cache_event_text(event_id, sender, body)
@@ -3929,10 +3977,11 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=relation.reply_target,
-            reply_to_text=reply_to_text,
-            reply_to_author_id=reply_author_id,
-            reply_to_author_name=reply_author_name,
-            reply_to_is_own_message=reply_is_own,
+            reply_to_text=reply_ctx.text,
+            reply_to_author_id=reply_ctx.author_id,
+            reply_to_author_name=reply_ctx.author_name,
+            reply_to_is_own_message=reply_ctx.is_own_message,
+            reply_to_author_authorized=reply_ctx.author_authorized,
             # Sender metadata at MessageEvent level — `source.user_name`
             # already carries this, but downstream code (e.g. the prompt
             # layer, ghost-context rendering) historically reads the
@@ -4143,10 +4192,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     source_content.get("formatted_body")
                 )
 
-        reply_to_text, reply_author_id, reply_author_name, reply_is_own = (
-            await self._resolve_reply_context(
-                room_id, relation, quoted_hint, quoted_author_id
-            )
+        reply_ctx = await self._resolve_reply_context(
+            room_id, relation, quoted_hint, quoted_author_id, chat_type=chat_type
         )
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
@@ -4169,10 +4216,11 @@ class MatrixAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=relation.reply_target,
-            reply_to_text=reply_to_text,
-            reply_to_author_id=reply_author_id,
-            reply_to_author_name=reply_author_name,
-            reply_to_is_own_message=reply_is_own,
+            reply_to_text=reply_ctx.text,
+            reply_to_author_id=reply_ctx.author_id,
+            reply_to_author_name=reply_ctx.author_name,
+            reply_to_is_own_message=reply_ctx.is_own_message,
+            reply_to_author_authorized=reply_ctx.author_authorized,
             user_id=sender,
             user_name=display_name,
             channel_context=self._take_pending_room_notes(room_id),

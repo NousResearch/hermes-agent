@@ -325,7 +325,9 @@ describe('SidebarSessionRow', () => {
         onDelete={noop}
         onPin={noop}
         onResume={noop}
+        onToggleUnread={noop}
         session={makeSession({ started_at: startedAt, title: 'Timestamped session' })}
+        unread={false}
       />
     )
 

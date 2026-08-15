@@ -93,7 +93,7 @@ class TestAtomicJsonWrite:
 
         assert not errors
         # File should contain valid JSON from one of the writers
-        result = json.loads(target.read_text())
+    result = json.loads(target.read_text(encoding="utf-8"))
         assert "writer" in result
         assert len(result["data"]) == 100
 

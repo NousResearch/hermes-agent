@@ -30,8 +30,8 @@ def test_a2a_artifacts_are_private_and_parseable(tmp_path, monkeypatch):
     assert not _mode(conv_dir) & 0o077
     assert not _mode(conv) & 0o077
     assert not _mode(audit) & 0o077
-    assert json.loads(conv.read_text().strip())["text"] == "hello"
-    assert json.loads(audit.read_text().strip())["peer"] == "peer"
+    assert json.loads(conv.read_text(encoding="utf-8").strip())["text"] == "hello"
+    assert json.loads(audit.read_text(encoding="utf-8").strip())["peer"] == "peer"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits are advisory on Windows")

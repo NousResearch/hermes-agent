@@ -16141,7 +16141,7 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert saved_file.parent == saved_dir
     assert saved_file.exists()
 
-    payload = json.loads(saved_file.read_text())
+    payload = json.loads(saved_file.read_text(encoding="utf-8"))
     assert payload["model"] == "hermes-test"
     assert payload["session_id"] == "20260101_120000_abc123"
     assert payload["session_start"] == "2026-01-01T12:00:00"

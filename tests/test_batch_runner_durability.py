@@ -78,7 +78,7 @@ class TestTrajectoryWriteDurability:
         output_files = list(tmp_path.glob("*.jsonl"))
         assert len(output_files) >= 1
         for f in output_files:
-            lines = f.read_text().strip().split("\n")
+            lines = f.read_text(encoding="utf-8").strip().split("\n")
             for line in lines:
                 if line:
                     entry = json.loads(line)

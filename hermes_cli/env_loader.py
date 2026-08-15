@@ -645,10 +645,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # enabled sources pays the crypto load exactly once, on demand.
     # NOTE: only keys that smell like a real secret source trigger the import —
     # a generic dict entry must not force crypto load on every hermes launch.
-    _KNOWN_SOURCE_NAMES = frozenset({"bitwarden", "onepassword", "op", "1password", "bw"})
+    # We whitelist by *shape* (source dict with enabled flag) rather than
+    # hardcoding names, so plugin/test sources pass through unknown keys.
     any_enabled = any(
-        key in _KNOWN_SOURCE_NAMES and isinstance(v, dict) and v.get("enabled", True)
-        for key, v in cfg.items()
+        isinstance(v, dict) and v.get("enabled") is True
+        for v in cfg.values()
     )
     if not any_enabled:
         return

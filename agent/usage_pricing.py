@@ -1030,6 +1030,29 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _usage_get(obj: Any, name: str, default: Any = 0) -> Any:
+    """Read a field from a usage object that may be a dict or an attribute object.
+
+    The Responses API can return usage as either a typed SDK object (accessible
+    via ``getattr``) or a plain ``dict`` (from JSON deserialisation).  Using
+    ``getattr`` on a dict silently yields the default, zeroing out all token
+    counts.  This helper normalises access so both shapes work transparently.
+    """
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _usage_count(value: Any) -> int:
+    """Coerce a usage counter to a non-negative integer.
+
+    Providers occasionally emit malformed negative counters; clamp them to 0
+    so a bad field cannot corrupt session accounting (#85706).
+    """
+    return max(0, _to_int(value))
+
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
@@ -1269,47 +1292,89 @@ def normalize_usage(
     mode = (api_mode or "").strip().lower()
 
     if mode == "anthropic_messages" or provider_name == "anthropic":
-        input_tokens = _to_int(getattr(response_usage, "input_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
-        cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
-        cache_write_tokens = _to_int(getattr(response_usage, "cache_creation_input_tokens", 0))
-    elif mode == "codex_responses":
-        input_total = _to_int(getattr(response_usage, "input_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
-        details = getattr(response_usage, "input_tokens_details", None)
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
-        cache_write_tokens = _to_int(
-            getattr(details, "cache_creation_tokens", 0) if details else 0
+        input_tokens = _usage_count(_usage_get(response_usage, "input_tokens", 0))
+        output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
+        cache_read_tokens = _usage_count(_usage_get(response_usage, "cache_read_input_tokens", 0))
+        cache_write_tokens = _usage_count(
+            _usage_get(response_usage, "cache_creation_input_tokens", 0)
         )
+    elif mode == "codex_responses":
+        input_total = _usage_count(_usage_get(response_usage, "input_tokens", 0))
+        output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
+        details = _usage_get(response_usage, "input_tokens_details", None)
+        cache_read_tokens = _usage_count(
+            _usage_get(details, "cached_tokens", 0) if details else 0
+        )
+        # OpenAI's documented field for GPT-5.6+ explicit cache writes is
+        # `cache_write_tokens` (billed at 1.25x); `cache_creation_tokens` is
+        # kept as a fallback for older/alternate Responses-compatible
+        # endpoints (#70543).
+        cache_write_tokens = _usage_count(
+            _usage_get(details, "cache_write_tokens", 0) if details else 0
+        )
+        if not cache_write_tokens:
+            cache_write_tokens = _usage_count(
+                _usage_get(details, "cache_creation_tokens", 0) if details else 0
+            )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
-        prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
-        details = getattr(response_usage, "prompt_tokens_details", None)
+        # OpenAI-style names first; fall back to Anthropic-style
+        # (input_tokens/output_tokens). Local OpenAI-compatible servers like
+        # mlx_vlm.server emit the Anthropic names in chat_completions responses,
+        # and the OpenAI Python client preserves them as extra attributes.
+        prompt_total = _usage_count(
+            _usage_get(response_usage, "prompt_tokens", 0)
+        ) or _usage_count(_usage_get(response_usage, "input_tokens", 0))
+        output_tokens = _usage_count(
+            _usage_get(response_usage, "completion_tokens", 0)
+        ) or _usage_count(_usage_get(response_usage, "output_tokens", 0))
+        details = _usage_get(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
         # top-level fields that some OpenAI-compatible proxies (OpenRouter, Vercel
         # AI Gateway, Cline) expose when routing Claude models — without this
         # fallback, cache writes are undercounted as 0 and cache reads can be
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        cache_read_tokens = _usage_count(
+            _usage_get(details, "cached_tokens", 0) if details else 0
+        )
         if not cache_read_tokens:
-            cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+            cache_read_tokens = _usage_count(
+                _usage_get(response_usage, "cache_read_input_tokens", 0)
+            )
         if not cache_read_tokens:
             # DeepSeek's native API (api.deepseek.com) reports context-cache
             # hits as top-level prompt_cache_hit_tokens (+ the complementary
             # prompt_cache_miss_tokens; prompt_tokens = hit + miss), not the
             # OpenAI nested shape. Without this, direct DeepSeek sessions
             # always showed 0 cache-hit tokens (#61871).
-            cache_read_tokens = _to_int(
-                getattr(response_usage, "prompt_cache_hit_tokens", 0)
+            cache_read_tokens = _usage_count(
+                _usage_get(response_usage, "prompt_cache_hit_tokens", 0)
             )
-        cache_write_tokens = _to_int(
-            getattr(details, "cache_write_tokens", 0) if details else 0
+        if not cache_read_tokens:
+            # Kimi/Moonshot's native API (api.moonshot.cn / .ai) reports
+            # context-cache hits as a top-level usage.cached_tokens, not the
+            # OpenAI nested prompt_tokens_details.cached_tokens shape. Without
+            # this, direct Kimi sessions always showed 0 cache-hit tokens and
+            # the hits were billed at the full input rate (#65722).
+            cache_read_tokens = _usage_count(
+                _usage_get(response_usage, "cached_tokens", 0)
+            )
+        cache_write_tokens = _usage_count(
+            _usage_get(details, "cache_write_tokens", 0) if details else 0
         )
         if not cache_write_tokens:
-            cache_write_tokens = _to_int(
-                getattr(response_usage, "cache_creation_input_tokens", 0)
+            cache_write_tokens = _usage_count(
+                _usage_get(details, "cache_creation_input_tokens", 0)
+                if details else 0
+            )
+        if not cache_write_tokens:
+            cache_write_tokens = _usage_count(
+                _usage_get(response_usage, "cache_creation_input_tokens", 0)
+            )
+        if not cache_write_tokens:
+            cache_write_tokens = _usage_count(
+                _usage_get(response_usage, "cache_write_tokens", 0)
             )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
@@ -1321,14 +1386,14 @@ def normalize_usage(
     # hidden thinking was invisible in session accounting even though it
     # dominates output spend on models like deepseek-v4-flash (measured:
     # single calls burning 21K reasoning tokens to emit 500 visible tokens).
-    output_details = getattr(response_usage, "output_tokens_details", None)
+    output_details = _usage_get(response_usage, "output_tokens_details", None)
     if output_details:
-        reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+        reasoning_tokens = _usage_count(_usage_get(output_details, "reasoning_tokens", 0))
     if not reasoning_tokens:
-        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        completion_details = _usage_get(response_usage, "completion_tokens_details", None)
         if completion_details:
-            reasoning_tokens = _to_int(
-                getattr(completion_details, "reasoning_tokens", 0)
+            reasoning_tokens = _usage_count(
+                _usage_get(completion_details, "reasoning_tokens", 0)
             )
 
     # Cache observability for MiniMax's Anthropic wire: on MiniMax-M3,

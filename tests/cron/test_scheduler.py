@@ -254,6 +254,24 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_unresolved_target_still_delivered_as_written(self):
+        """A stored job's platform-native target keeps delivering when neither
+        parser nor directory recognizes it. Routing cron through
+        resolve_send_target turned these into a warning plus a silently
+        dropped delivery; pass_unresolved_references hands the raw id to the adapter
+        again."""
+        job = {"deliver": "telegram:ops-room"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value=None,
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "ops-room",
+            "thread_id": None,
+        }
+
 
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.

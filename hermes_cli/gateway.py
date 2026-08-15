@@ -1555,6 +1555,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     own = {os.getpid()}
     if extra_exclude:
         own |= extra_exclude
+    # On macOS, exclude the launchd-managed gateway PID so the orphan reaper
+    # doesn't kill a supervised gateway when Hermes Desktop opens (the serve
+    # process calls this on startup).  supports_systemd_services() returns
+    # False on macOS, so without this the launchd gateway looks like an
+    # unsupervised orphan and gets SIGTERM'd, causing launchd to restart it.
+    if is_macos():
+        try:
+            own |= _get_service_pids()
+        except Exception:
+            pass
     try:
         # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
         # for the current profile when no systemd supervisor is present.

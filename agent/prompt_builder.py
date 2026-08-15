@@ -13,7 +13,13 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import (
+    get_hermes_home,
+    get_skills_dir,
+    is_wsl,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from typing import List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1477,7 +1483,12 @@ def drain_truncation_warnings() -> list:
 # Skills prompt cache
 # =========================================================================
 
-_SKILLS_PROMPT_CACHE_MAX = 8
+# Sized for multi-profile processes: since #86313 the cache key carries a
+# per-profile skills_dir (one entry per profile × platform), so the old cap
+# of 8 could thrash on a gateway multiplexing default + several bots (each
+# miss = full os.walk manifest rebuild). ~32 costs low single-digit MB worst
+# case.
+_SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2: entries gained org provenance fields (org_id/org_author/rel_dir) for M2
@@ -1718,6 +1729,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    skills_dir_override: "Path | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1739,13 +1751,44 @@ def build_skills_system_prompt(
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
     """
-    skills_dir = get_skills_dir()
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    # Home resolution is EXPLICIT when a caller passes skills_dir_override
+    # (the agent knows its own profile home from its session_db path). This
+    # avoids the ContextVar-on-a-thread trap: build threads that didn't bind
+    # HERMES_HOME would otherwise fall back to the launch (default) home and
+    # leak the default profile's skills into a bot's prompt (confirmed: a
+    # no-override thread builds default's full index). Snapshot + external
+    # dirs are scoped to the same home so nothing reads ambient state.
+    if skills_dir_override is not None:
+        skills_dir = Path(skills_dir_override)
+        _home_token = set_hermes_home_override(str(skills_dir.parent))
+    else:
+        skills_dir = get_skills_dir()
+        _home_token = None
+    try:
+        external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists() and not external_dirs:
-        return ""
+        if not skills_dir.exists() and not external_dirs:
+            return ""
 
-    # ── Layer 1: in-process LRU cache ─────────────────────────────────
+        return _build_skills_system_prompt_inner(
+            skills_dir,
+            external_dirs,
+            available_tools,
+            available_toolsets,
+            compact_categories,
+        )
+    finally:
+        if _home_token is not None:
+            reset_hermes_home_override(_home_token)
+
+
+def _build_skills_system_prompt_inner(
+    skills_dir: "Path",
+    external_dirs: "list[Path]",
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+    compact_categories: "frozenset[str] | None",
+) -> str:
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
@@ -2116,12 +2159,21 @@ def _truncate_content(
     return head + marker + tail
 
 
-def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+def load_soul_md(
+    context_length: Optional[int] = None,
+    home_override: "Path | None" = None,
+) -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
+
+    ``home_override`` scopes the read to an explicit profile home (the agent
+    knows its own home from its session_db path). Without it, resolution is
+    ambient — which on a thread that lost the HERMES_HOME ContextVar falls
+    back to the launch home and reads the wrong profile's SOUL.md (#50233,
+    same class as the skills-index leak fixed in #86313).
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -2129,7 +2181,8 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
+    _home = Path(home_override) if home_override is not None else get_hermes_home()
+    soul_path = _home / "SOUL.md"
     if not soul_path.exists():
         return None
     try:
@@ -2312,6 +2365,7 @@ def build_context_files_prompt(
     skip_soul: bool = False,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,
+    home_override: "Path | None" = None,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -2375,7 +2429,7 @@ def build_context_files_prompt(
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md(context_length)
+        soul_content = load_soul_md(context_length, home_override=home_override)
         if soul_content:
             sections.append(soul_content)
 

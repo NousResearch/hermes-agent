@@ -397,9 +397,17 @@ _VALID_API_MODES = {
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid."""
+    """Validate an api_mode value from config. Returns None if invalid.
+
+    Legacy/alias spellings (``openai``, ``anthropic``, ``responses``, …) are
+    canonicalized via the shared alias map before validation, so configs
+    written against older releases keep selecting the transport they named
+    instead of silently falling through to hostname-based detection.
+    """
     if isinstance(raw, str):
-        normalized = raw.strip().lower()
+        from hermes_cli.config import _canonical_api_mode
+
+        normalized = _canonical_api_mode(raw).lower()
         if normalized in _VALID_API_MODES:
             return normalized
     return None

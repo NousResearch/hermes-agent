@@ -23,7 +23,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
+import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -40,6 +40,35 @@ type VoiceSubmitMode = 'direct' | 'draft'
 
 const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
   typeof value === 'string' && value.trim().toLowerCase() === 'draft' ? 'draft' : 'direct'
+
+// Shallow-compare Usage to avoid creating a new object reference when values
+// haven't changed. A fresh reference on every streaming event forces every
+// $uiState subscriber (including the status rule) to re-render, which showed
+// up as per-delta status-bar flicker on iTerm2 (#41480). The comparator
+// iterates the union of keys generically so a future Usage field (e.g.
+// active_subagents, consumed by the status rule's subagent segment) can never
+// be silently dropped from the comparison.
+export const usageChanged = (prev: Usage, next: Usage): boolean => {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)]) as Set<keyof Usage>
+
+  for (const key of keys) {
+    if (prev[key] !== next[key]) {
+      return true
+    }
+  }
+
+  return false
+}
+
+export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined): Usage => {
+  if (!patch) {
+    return prev
+  }
+
+  const merged: Usage = { ...prev, ...patch }
+
+  return usageChanged(prev, merged) ? merged : prev
+}
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
@@ -745,7 +774,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
-          usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
+          usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
@@ -1370,7 +1399,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('ready')
 
         if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage) }))
         }
 
         // Billing wall (out of credits / payment required): open a proper

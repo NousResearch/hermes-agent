@@ -31,6 +31,35 @@ def _(rid, params: dict) -> dict:
     __globals__ onto server.py, so module-level names here are invisible.
     """
 
+    def _latest_message_preview(db, session_id):
+        """Short excerpt of the NEWEST user/assistant message in a session.
+
+        Rosters show this under each agent's name — messaging-app semantics
+        (latest exchange), unlike the shared first-message preview that
+        session lists use for recognition. Tool rows, inactive rows, and
+        empty content are skipped; agent-delivery prefixes are kept
+        (callers style them). Same query shape as
+        SessionDB.latest_message_row_id.
+        """
+        try:
+            with db._lock:
+                row = db._conn.execute(
+                    "SELECT content FROM messages"
+                    " WHERE session_id = ? AND role IN ('user', 'assistant')"
+                    " AND active = 1"
+                    " AND content IS NOT NULL AND TRIM(content) != ''"
+                    " ORDER BY id DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+        except Exception:
+            return ""
+        if not row:
+            return ""
+        text = " ".join(str(row[0] or "").split()).strip()
+        if len(text) > 80:
+            return text[:80] + "..."
+        return text
+
     def _latest_profile_session_row(profile_path):
         """Most recent human-facing session in a profile's state.db, or None.
 
@@ -55,7 +84,7 @@ def _(rid, params: dict) -> dict:
                 ):
                     if (s.get("source") or "").strip().lower() in deny:
                         continue
-                    return {
+                    row = {
                         "id": s["id"],
                         "title": s.get("title") or "",
                         "preview": s.get("preview") or "",
@@ -63,6 +92,17 @@ def _(rid, params: dict) -> dict:
                         "last_active": s.get("last_active") or s.get("started_at") or 0,
                         "message_count": s.get("message_count") or 0,
                     }
+                    # Roster surfaces want "where the conversation IS", not
+                    # where it began: override the shared first-message
+                    # preview with the newest user/assistant text. Best-
+                    # effort — any failure keeps the first-message preview.
+                    try:
+                        latest = _latest_message_preview(db, s["id"])
+                        if latest:
+                            row["preview"] = latest
+                    except Exception:
+                        pass
+                    return row
             finally:
                 try:
                     db.close()
@@ -206,7 +246,19 @@ def _(rid, params: dict) -> dict:
     # .env (only over the seeded comment-only stub — never clobber real
     # secrets a clone brought along) and auth.json (only when absent), then
     # inherit model.provider/model.default unless the caller pinned a model.
-    mirrored = {"env": False, "auth": False, "model_inherited": False}
+    #
+    # ``share_auth`` (default false): SKIP the auth.json copy so the new
+    # profile reads OAuth/token state through the global-root fallback
+    # instead (hermes_cli.auth: profile reads fall back to the global
+    # store, and token refreshes write THROUGH to it). A copy forks token
+    # state — the first refresh in either store invalidates the other
+    # for single-use refresh tokens. Sharing keeps one live token pool
+    # for the main profile and every bot. Static .env keys still copy
+    # (no refresh semantics, so copying is safe).
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    share_auth = is_truthy_value(params.get("share_auth", False))
+    if share_auth:
+        mirrored["auth"] = "shared"
     if is_truthy_value(params.get("mirror_credentials", True)):
         import shutil
 
@@ -228,7 +280,7 @@ def _(rid, params: dict) -> dict:
         try:
             src_auth = launch_home / "auth.json"
             dst_auth = path / "auth.json"
-            if src_auth.is_file() and not dst_auth.exists():
+            if not share_auth and src_auth.is_file() and not dst_auth.exists():
                 shutil.copy2(src_auth, dst_auth)
                 try:
                     os.chmod(str(dst_auth), 0o600)
@@ -241,6 +293,62 @@ def _(rid, params: dict) -> dict:
     model = str(params.get("model") or "").strip()
     provider = str(params.get("provider") or "").strip()
     model_set = False
+
+    def _mirror_voice_sections() -> bool:
+        """Copy voice config (stt/tts/voice) from the launch profile.
+
+        Desktop dictation and TTS are profile-scoped: /api/audio/transcribe
+        resolves the ``stt`` section inside the TARGET profile's home. A
+        freshly created profile has only a ``model`` section, so voice fell
+        back to defaults (local whisper, often not installed) and dictation
+        "didn't work in bot mode" while working on the primary profile.
+
+        Reads/writes go through the canonical loaders scoped to the target
+        profile via the context-local HERMES_HOME override — the same
+        mechanism as ``_write_profile_model`` (config-read-guard: no raw
+        yaml on config.yaml).
+        """
+        try:
+            from hermes_cli.config import (
+                load_config_readonly,
+                read_user_config_raw,
+                save_config,
+            )
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            src_cfg = load_config_readonly() or {}
+            sections = {
+                k: src_cfg[k] for k in ("stt", "tts", "voice") if src_cfg.get(k)
+            }
+            if not sections:
+                return False
+
+            token = set_hermes_home_override(str(path))
+            try:
+                # Write-back round-trip on the raw file: load_config() would
+                # merge DEFAULT_CONFIG, making every section look present and
+                # the mirror a no-op (and save_config would then persist the
+                # entire default tree into the fresh profile).
+                dst_cfg = read_user_config_raw() or {}
+                changed = False
+                for key, value in sections.items():
+                    if key not in dst_cfg:
+                        dst_cfg[key] = value
+                        changed = True
+                if changed:
+                    save_config(dst_cfg)
+            finally:
+                reset_hermes_home_override(token)
+            return changed
+        except Exception:
+            return False
+
+    if is_truthy_value(params.get("mirror_credentials", True)):
+        mirrored["voice"] = _mirror_voice_sections()
+
     if model and provider:
         try:
             from hermes_cli.web_routers.profiles import _write_profile_model
@@ -249,20 +357,36 @@ def _(rid, params: dict) -> dict:
             model_set = True
         except Exception:
             pass
-    elif is_truthy_value(params.get("mirror_credentials", True)) and not (path / "config.yaml").exists():
-        # No explicit pin and no cloned config: inherit the launch profile's
-        # provider+model so the first turn resolves. Same writer as the pin.
+    elif is_truthy_value(params.get("mirror_credentials", True)):
+        # No explicit pin: inherit the launch profile's provider+model so the
+        # first turn resolves. Gate on the MODEL SECTION being absent, not on
+        # config.yaml existing — earlier mirroring steps (voice sections,
+        # #85755) legitimately create the file first, and a file-existence
+        # gate silently skipped inheritance for every non-clone bot
+        # ("No inference provider configured" on first message, tester
+        # report). Clones bring their own model section and stay untouched.
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_cli.config import load_config_readonly, read_user_config_raw
             from hermes_cli.web_routers.profiles import _write_profile_model
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
 
-            cfg = load_config_readonly() or {}
-            model_cfg = cfg.get("model") or {}
-            inherited_provider = str(model_cfg.get("provider") or "")
-            inherited_model = str(model_cfg.get("default") or "")
-            if inherited_provider and inherited_model:
-                _write_profile_model(path, inherited_provider, inherited_model)
-                mirrored["model_inherited"] = True
+            token = set_hermes_home_override(str(path))
+            try:
+                dst_model = (read_user_config_raw() or {}).get("model") or {}
+            finally:
+                reset_hermes_home_override(token)
+
+            if not (dst_model.get("provider") and dst_model.get("default")):
+                cfg = load_config_readonly() or {}
+                model_cfg = cfg.get("model") or {}
+                inherited_provider = str(model_cfg.get("provider") or "")
+                inherited_model = str(model_cfg.get("default") or "")
+                if inherited_provider and inherited_model:
+                    _write_profile_model(path, inherited_provider, inherited_model)
+                    mirrored["model_inherited"] = True
         except Exception:
             pass
 
@@ -322,7 +446,20 @@ def _(rid, params: dict) -> dict:
                         {"name": skill_name, "enabled": skill_name.lower() not in disabled}
                     )
 
-            from toolsets import get_all_toolsets, get_toolset_info
+            # Toolsets: the same filtered universe the `hermes tools`
+            # checklist offers — configurable toolsets (built-in + plugin),
+            # minus platform-restricted ones that don't apply here — with
+            # enablement resolved the way the runtime actually resolves it.
+            # The raw registry (get_all_toolsets) leaks internal platform
+            # composites (hermes-discord, feishu_drive, ...) and reports
+            # everything "enabled" whenever the profile has no pin, which a
+            # capabilities UI then faithfully mis-renders (tester report).
+            from hermes_cli.tools_config import (
+                _get_effective_configurable_toolsets,
+                _get_platform_tools,
+                _toolset_allowed_for_platform,
+            )
+            from toolsets import resolve_toolset
 
             tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
             pinned = tools_cfg.get("enabled_toolsets")
@@ -331,15 +468,44 @@ def _(rid, params: dict) -> dict:
                 if isinstance(pinned, list)
                 else None
             )
+            try:
+                platform_enabled = set(
+                    _get_platform_tools(cfg, "cli", include_default_mcp_servers=False)
+                )
+            except Exception:
+                platform_enabled = set()
+            try:
+                from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+            except Exception:
+                _DEFAULT_OFF_TOOLSETS = set()
             toolsets_out = []
-            for ts_name in sorted(get_all_toolsets().keys()):
-                info = get_toolset_info(ts_name) or {}
+            for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
+                if not _toolset_allowed_for_platform(ts_name, "cli"):
+                    continue
+                enabled = (
+                    ts_name in pinned_set
+                    if pinned_set is not None
+                    else ts_name in platform_enabled
+                )
+                # Default-off integrations (a2a, yuanbao, spotify, ...) are
+                # opt-ins; when the profile hasn't opted in they're noise in
+                # a per-profile editor — `hermes tools` / Settings is where
+                # you turn them on globally first. Enabled ones still show.
+                # yuanbao rides the same rule: a region-specific integration
+                # that isn't in _DEFAULT_OFF_TOOLSETS but is equally opt-in.
+                if (ts_name in _DEFAULT_OFF_TOOLSETS or ts_name == "yuanbao") and not enabled:
+                    continue
+                try:
+                    tool_count = len(set(resolve_toolset(ts_name)))
+                except Exception:
+                    tool_count = 0
                 toolsets_out.append(
                     {
                         "name": ts_name,
-                        "description": info.get("description") or "",
-                        "tool_count": len(info.get("tools") or []),
-                        "enabled": True if pinned_set is None else ts_name in pinned_set,
+                        "label": ts_label,
+                        "description": ts_desc or "",
+                        "tool_count": tool_count,
+                        "enabled": enabled,
                     }
                 )
 
@@ -348,6 +514,31 @@ def _(rid, params: dict) -> dict:
             try:
                 if soul_path.is_file():
                     soul = soul_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+            # MCP servers configured for this profile (config.yaml
+            # mcp_servers). Report name + enabled + a transport hint so a
+            # capabilities UI can list and toggle them without parsing the
+            # raw config shape.
+            mcp_out = []
+            try:
+                mcp_cfg = cfg.get("mcp_servers")
+                if isinstance(mcp_cfg, dict):
+                    for srv_name in sorted(mcp_cfg.keys()):
+                        entry = mcp_cfg.get(srv_name)
+                        if not isinstance(entry, dict):
+                            continue
+                        transport = "stdio"
+                        if entry.get("url"):
+                            transport = str(entry.get("transport") or "http")
+                        mcp_out.append(
+                            {
+                                "name": str(srv_name),
+                                "enabled": not is_truthy_value(entry.get("disabled", False)),
+                                "transport": transport,
+                            }
+                        )
             except Exception:
                 pass
 
@@ -374,6 +565,7 @@ def _(rid, params: dict) -> dict:
                     "skills": installed,
                     "toolsets": toolsets_out,
                     "toolsets_pinned": pinned_set is not None,
+                    "mcp_servers": mcp_out,
                 },
             )
         finally:
@@ -486,10 +678,25 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 applied["model"] = False
 
-        needs_cfg = isinstance(params.get("disabled_skills"), list) or isinstance(
-            params.get("enabled_toolsets"), list
+        needs_cfg = (
+            isinstance(params.get("disabled_skills"), list)
+            or isinstance(params.get("enabled_toolsets"), list)
+            or isinstance(params.get("enabled_mcp_servers"), list)
         )
         if needs_cfg:
+            # Launch profile's MCP catalog, read BEFORE the home override
+            # flips config resolution to the target profile.
+            launch_mcp = {}
+            if isinstance(params.get("enabled_mcp_servers"), list):
+                try:
+                    from hermes_cli.config import load_config_readonly
+
+                    launch_cfg = load_config_readonly() or {}
+                    if isinstance(launch_cfg.get("mcp_servers"), dict):
+                        launch_mcp = launch_cfg["mcp_servers"]
+                except Exception:
+                    launch_mcp = {}
+
             token = set_hermes_home_override(str(profile_dir))
             try:
                 from hermes_cli.config import load_config, save_config
@@ -524,6 +731,44 @@ def _(rid, params: dict) -> dict:
                         applied["toolsets"] = True
                     except Exception:
                         applied["toolsets"] = False
+
+                # ``enabled_mcp_servers`` (list[str], replace semantics):
+                # toggle the profile's mcp_servers entries via the standard
+                # ``disabled`` flag. Enabling a server the profile doesn't
+                # define copies its definition from the LAUNCH profile's
+                # config (capabilities UIs offer the main profile's catalog);
+                # unknown names are skipped, never invented. Server defs are
+                # config, not secrets — credentials stay in .env/auth.
+                if isinstance(params.get("enabled_mcp_servers"), list):
+                    try:
+                        wanted = {
+                            str(s).strip()
+                            for s in params["enabled_mcp_servers"]
+                            if str(s).strip()
+                        }
+                        cfg = load_config() or {}
+                        mcp_cfg = (
+                            cfg.get("mcp_servers")
+                            if isinstance(cfg.get("mcp_servers"), dict)
+                            else {}
+                        )
+
+                        for srv in wanted:
+                            if srv in mcp_cfg and isinstance(mcp_cfg[srv], dict):
+                                mcp_cfg[srv].pop("disabled", None)
+                            elif srv in launch_mcp and isinstance(launch_mcp[srv], dict):
+                                mcp_cfg[srv] = dict(launch_mcp[srv])
+                                mcp_cfg[srv].pop("disabled", None)
+                        for srv, entry in mcp_cfg.items():
+                            if srv not in wanted and isinstance(entry, dict):
+                                entry["disabled"] = True
+
+                        if mcp_cfg:
+                            cfg["mcp_servers"] = mcp_cfg
+                        save_config(cfg)
+                        applied["mcp_servers"] = True
+                    except Exception:
+                        applied["mcp_servers"] = False
             finally:
                 reset_hermes_home_override(token)
 

@@ -24,6 +24,8 @@ import os
 import json
 import re
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import threading
 import time
@@ -39,6 +41,20 @@ from tools.registry import (
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
+
+_post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar(
+    "post_tool_call_hook_suppressed", default=False
+)
+
+
+@contextmanager
+def suppress_post_tool_call_hook():
+    """Let an outer executor own the terminal post-tool event."""
+    token = _post_tool_call_hook_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _post_tool_call_hook_suppressed.reset(token)
 
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
@@ -1138,6 +1154,8 @@ def _emit_post_tool_call_hook(
     result *after* the gate (parsing the result is only worth it when a
     listener will actually consume it).
     """
+    if _post_tool_call_hook_suppressed.get():
+        return
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):

@@ -359,6 +359,16 @@ class TestAgentBrowserPostSetup:
     (and Windows .cmd-shim) lookup.
     """
 
+    @pytest.fixture(autouse=True)
+    def _stub_browser_use_install(self):
+        """Both browser branches now attempt a Browser Use CLI install first
+        (the CLI drives every non-Camofox backend). Stub it so these
+        Chromium-branch tests never bootstrap uv / hit the network, and so
+        their print/subprocess assertions stay scoped to the agent-browser
+        logic under test."""
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as stub:
+            yield stub
+
     def test_warns_when_neither_npx_nor_agent_browser_on_path(self):
         with patch("shutil.which", return_value=None), patch(
             "subprocess.run"
@@ -614,6 +624,61 @@ class TestAgentBrowserPostSetup:
             _run_post_setup("agent_browser")  # must not raise
 
         assert any("timed out" in c.args[0] for c in warn.call_args_list)
+
+
+class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
+    """The Browser Use CLI is the primary driver engine for every browser
+    backend except Camofox — so EVERY browser picker selection except
+    Camofox must attempt the CLI install, not just the explicit
+    "Browser Use" row."""
+
+    @pytest.mark.parametrize("key", ["agent_browser", "browserbase", "browser_use_cli"])
+    def test_browser_post_setup_attempts_cli_install(self, key):
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+            "shutil.which", return_value=None
+        ), patch("subprocess.run"):
+            _run_post_setup(key)
+        ensure.assert_called_once()
+
+    def test_camofox_post_setup_never_touches_browser_use(self):
+        """Camofox is Firefox-based with no CDP surface; the CDP-only
+        browser-use harness cannot drive it, so its setup must not pull
+        the CLI in."""
+        with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
+            "hermes_constants.find_node_executable", return_value=None
+        ), patch("subprocess.run"):
+            _run_post_setup("camofox")
+        ensure.assert_not_called()
+
+    def test_ensure_helper_always_delegates_to_install_cli(self):
+        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
+        helper — install_cli() owns the managed-copy check and provisions
+        $HERMES_HOME/bin when only side installs exist."""
+        with patch(
+            "hermes_cli.tools_config.shutil.which", return_value="/usr/bin/browser-use"
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
+        ) as install:
+            from hermes_cli.tools_config import _ensure_browser_use_cli
+
+            _ensure_browser_use_cli()
+        install.assert_called_once()
+
+    def test_ensure_helper_install_failure_is_non_fatal(self):
+        """A failed install must warn and fall back, never raise — the
+        uvx zero-install path and the built-in tools remain available."""
+        from hermes_cli.tools_config import _ensure_browser_use_cli
+
+        with patch(
+            "hermes_cli.tools_config.shutil.which", return_value=None
+        ), patch(
+            "tools.browser_use_cli.install_cli",
+            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
+        ), patch("hermes_cli.tools_config._print_warning") as warn:
+            _ensure_browser_use_cli()  # must not raise
+
+        assert any("failed" in c.args[0] for c in warn.call_args_list)
 
 
 class TestImagegenBackendRegistry:

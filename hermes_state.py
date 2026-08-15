@@ -255,6 +255,15 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # None result ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
+# Billing-bucket classes that aren't a routable provider identity on their
+# own — used by session_gateway_runtime's billing_provider fallback and by
+# tui_gateway.server._stored_session_runtime_overrides. A session that
+# persisted only one of these (never ran /model) must fall back to the
+# ambient config default rather than restore a bare bucket. Shared here so
+# both consumers stay in sync (previously duplicated as a set in
+# tui_gateway/server.py).
+_BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
+
 
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
@@ -1483,7 +1492,13 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # enumerate causes (e.g. the cron scheduler's explainer-variant suppression)
 # must iterate this tuple instead of hardcoding the list, so adding a bucket
 # can never silently desynchronize them.
-PERSISTENCE_ERROR_CAUSES = ("locked", "disk", "unknown")
+PERSISTENCE_ERROR_CAUSES = (
+    "locked",
+    "compression",
+    "turn_lease",
+    "disk",
+    "unknown",
+)
 
 
 def classify_persistence_error(exc_or_str) -> str:
@@ -1496,9 +1511,13 @@ def classify_persistence_error(exc_or_str) -> str:
     send it again", while a full disk or read-only database needs the
     disk-space/permissions advice. Returns one of PERSISTENCE_ERROR_CAUSES:
 
-    * ``"locked"``  — lock/busy contention (another process holds the write
-      lock, or a live compression lease refused the write); transient,
-      retry-later guidance applies.
+    * ``"locked"``  — SQLite lock/busy contention (another process holds the
+      database write lock); transient, retry-later guidance applies.
+    * ``"compression"`` — a live compression lease refused the transcript
+      write; the database itself is healthy and unlocked.
+    * ``"turn_lease"`` — a presented session-turn-lease holder no longer
+      owns the conversation (expired, released, or reclaimed); fail-fast
+      fencing, not a storage fault.
     * ``"disk"``    — disk full / read-only / permission-shaped failures
       (delegates the disk-full patterns to :func:`is_disk_full_error` so the
       two classifiers can never drift apart — e.g. ENOSPC).
@@ -1511,14 +1530,18 @@ def classify_persistence_error(exc_or_str) -> str:
     # writer" / "Compression lease lost") contains neither "locked" nor
     # "busy", so it must be matched by type and by phrase (for strings that
     # survived RPC wrapping).
+    if isinstance(exc_or_str, SessionTurnLeaseLostError):
+        return "turn_lease"
     if isinstance(exc_or_str, CompressionSessionBusyError):
-        return "locked"
+        return "compression"
     text = str(exc_or_str).lower()
+    if "turn lease" in text:
+        return "turn_lease"
+    if "being compressed" in text or "compression lease" in text:
+        return "compression"
     if (
         "locked" in text
         or "busy" in text
-        or "being compressed" in text
-        or "compression lease" in text
     ):
         return "locked"
     if (
@@ -2310,6 +2333,16 @@ class SessionCompressionInProgressError(CompressionSessionBusyError):
 
     Subclassing keeps every existing ``except CompressionSessionBusyError``
     handler working unchanged.
+    """
+
+
+class SessionTurnLeaseLostError(RuntimeError):
+    """A transcript write presented a turn-lease holder that no longer owns it.
+
+    Fail-fast fencing: do not retry inside ``_execute_write``. The caller
+    either still thinks it owns the conversation after expiry/reclaim, or
+    the lease row is gone. A later writer may already be persisting a
+    newer turn; landing this write would interleave a stale reply.
     """
 
 
@@ -5730,6 +5763,221 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 session_id, exc,
             )
 
+    def _session_turn_lease_key_on_conn(self, conn, session_id: str) -> str:
+        """Walk compression parents on ``conn`` to the conversation lease key.
+
+        Must run on the same connection as the lease INSERT/UPDATE/DELETE.
+        A prior ``get_session`` failure must not compute a child id that the
+        later write then persists: refresh would walk to the parent and
+        fail-close. Markers bind to ``parent_session_id`` (same contract as
+        ``_NON_CONTINUATION_CHILD_FILTER_SQL``). Lock errors propagate so
+        ``_execute_write`` / ``acquire_session_turn_lease`` can retry.
+        """
+        if not session_id:
+            return session_id
+
+        def _row(sid: str):
+            row = conn.execute(
+                "SELECT id, parent_session_id, source, model_config, end_reason "
+                "FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            return dict(row) if row else None
+
+        current = _row(session_id)
+        seen = {session_id}
+        while current:
+            parent_id = current.get("parent_session_id")
+            if (
+                not parent_id
+                or parent_id in seen
+                or self._is_explicit_fork_child_row(current)
+            ):
+                break
+            parent = _row(parent_id)
+            if not parent or parent.get("end_reason") != "compression":
+                break
+            seen.add(parent_id)
+            current = parent
+        return str(current.get("id") or session_id) if current else session_id
+
+    def _session_turn_lease_key(self, session_id: str) -> str:
+        """Return the stable serialization key for every compression segment.
+
+        Acquire/refresh/release resolve this inside their write transaction.
+        This helper is for tests and diagnostics; it does not swallow lock
+        errors (a swallowed walk plus a later successful write was the
+        fail-open that replayed the post-rotation refresh miss).
+        """
+        if not session_id:
+            return session_id
+        with self._read_ctx() as conn:
+            return self._session_turn_lease_key_on_conn(conn, session_id)
+
+    def try_acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+        patience_s: Optional[float] = None,
+    ) -> bool:
+        """Atomically acquire the cross-process turn lease for a conversation.
+
+        Compression rotates a session into child segments, so the durable key
+        is the lineage root rather than the current segment id. The walk and
+        INSERT share one write transaction. Expired leases and leases whose
+        structured local holder PID is known dead are reclaimed in that same
+        transaction.
+        """
+        if not session_id or not holder:
+            return False
+        now = time.time()
+        expires_at = now + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is not None:
+                current_holder = row["holder"]
+                if (
+                    float(row["expires_at"]) <= now
+                    or _compression_lock_holder_process_is_dead(current_holder)
+                ):
+                    conn.execute(
+                        "DELETE FROM session_turn_leases "
+                        "WHERE conversation_id = ? AND holder = ?",
+                        (conversation_id, current_holder),
+                    )
+            conn.execute(
+                "INSERT OR IGNORE INTO session_turn_leases "
+                "(conversation_id, holder, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (conversation_id, holder, now, expires_at),
+            )
+            owner = conn.execute(
+                "SELECT holder FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return owner is not None and owner["holder"] == holder
+
+        return bool(self._execute_write(_do, patience_s=patience_s))
+
+    def acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+        wait_seconds: float = 1800.0,
+        poll_interval_seconds: float = 1.0,
+        on_wait=None,
+        wait_notice_interval_seconds: float = 15.0,
+        should_abort=None,
+        acquire_patience_s: float = 0.5,
+    ) -> bool:
+        """Wait for a cross-process turn lease without holding a SQLite lock.
+
+        ``on_wait(elapsed_seconds)`` is best-effort: invoked when the first
+        attempt fails (elapsed ~0) and again about every
+        ``wait_notice_interval_seconds`` while still waiting, so UIs can show
+        that another process holds the conversation.
+
+        When ``should_abort()`` returns True (for example the agent received
+        ``/stop`` while waiting), acquisition stops immediately and returns
+        False without consuming the full ``wait_seconds`` budget.
+        """
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        wait_started = None
+        last_notice_at = None
+        notice_every = max(0.0, float(wait_notice_interval_seconds))
+        while True:
+            if should_abort is not None:
+                try:
+                    if should_abort():
+                        return False
+                except Exception:
+                    logger.debug(
+                        "session turn lease should_abort callback failed",
+                        exc_info=True,
+                    )
+            try:
+                if self.try_acquire_session_turn_lease(
+                    session_id,
+                    holder,
+                    ttl_seconds=ttl_seconds,
+                    patience_s=acquire_patience_s,
+                ):
+                    return True
+            except sqlite3.Error as exc:
+                # Long holder transactions (compression publish, large
+                # flushes) can exhaust a single write-patience budget.
+                # Keep polling until wait_seconds or should_abort.
+                if classify_persistence_error(exc) != "locked":
+                    raise
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                return False
+            if wait_started is None:
+                wait_started = now
+            if on_wait is not None and (
+                last_notice_at is None
+                or notice_every == 0.0
+                or (now - last_notice_at) >= notice_every
+            ):
+                try:
+                    on_wait(max(0.0, now - wait_started))
+                except Exception:
+                    logger.debug(
+                        "session turn lease on_wait callback failed",
+                        exc_info=True,
+                    )
+                last_notice_at = now
+            time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
+
+    def refresh_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        expires_at = time.time() + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            cursor = conn.execute(
+                "UPDATE session_turn_leases SET expires_at = ? "
+                "WHERE conversation_id = ? AND holder = ?",
+                (expires_at, conversation_id, holder),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def release_session_turn_lease(self, session_id: str, holder: str) -> None:
+        """Release a turn lease iff ``holder`` still owns it; idempotent."""
+        if not session_id or not holder:
+            return
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            conn.execute(
+                "DELETE FROM session_turn_leases "
+                "WHERE conversation_id = ? AND holder = ?",
+                (conversation_id, holder),
+            )
+
+        self._execute_write(_do)
+
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Return the current (non-expired) holder for ``session_id``, or None.
 
@@ -5893,7 +6141,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
-    def update_session_model(self, session_id: str, model: str) -> None:
+    def update_session_model(
+        self, session_id: str, model: str, provider: Optional[str] = None
+    ) -> None:
         """Update the model for a session after a mid-session switch.
 
         Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
@@ -5903,6 +6153,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         footer metadata is rebuilt on the next turn. A successful /model
         switch explicitly replaces any confirmed Browser runtime lock while
         preserving unrelated lineage markers in ``model_config``.
+
+        When *provider* is given, it is merged into ``model_config``
+        alongside the model (``$.model`` / ``$.provider``) so a later
+        resume recombines the persisted model with the provider that
+        actually serves it instead of the config.yaml primary provider
+        (#79536). Callers without provider knowledge leave any stored
+        provider untouched.
         """
         # This write bypasses the token queue, so deltas enqueued before the
         # switch must land first: a still-queued first delta carries the
@@ -5913,19 +6170,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self.flush_token_counts()
 
         def _do(conn):
+            # Use the shared merge discipline so lineage markers like
+            # _branched_from / _delegate_from survive. browser_model_lock
+            # is deleted via a None patch value (same semantics as the
+            # old json_remove).
+            patch: Dict[str, Any] = {"browser_model_lock": None}
+            if model:
+                patch["model"] = model
+            if provider:
+                patch["provider"] = provider
+            merged = self._merge_model_config_json(conn, session_id, patch)
+            if merged is _MODEL_CONFIG_ROW_MISSING:
+                return
             conn.execute(
-                """UPDATE sessions SET
-                   model = ?,
-                   model_config = CASE
-                       WHEN model_config IS NULL THEN NULL
-                       WHEN json_valid(model_config)
-                           THEN json_remove(model_config, '$.browser_model_lock')
-                       ELSE model_config
-                   END,
-                   system_prompt = NULL,
-                   system_prompt_hash = NULL
-                   WHERE id = ?""",
-                (model, session_id),
+                "UPDATE sessions SET "
+                "model = ?, model_config = ?, "
+                "system_prompt = NULL, system_prompt_hash = NULL "
+                "WHERE id = ?",
+                (model, merged, session_id),
             )
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
@@ -6118,21 +6380,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``gateway_runtime`` key (written by the gateway's
         ``_sync_session_model_from_agent`` and the CLI ``/model`` persist),
         falling back to the top-level ``provider``/``base_url``/``api_mode``
-        keys the TUI gateway's ``_runtime_model_config`` writes. Returns an
-        empty dict on any parse failure — resume falls back to ambient
-        config resolution.
+        keys the TUI gateway's ``_runtime_model_config`` writes. As a last
+        resort, falls back to the ``billing_provider`` column (written on
+        every session's first accounted API call) so sessions that never ran
+        ``/model`` still restore the provider that actually served them.
+        Returns an empty dict on any parse failure — resume falls back to
+        ambient config resolution.
         """
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):
             try:
                 raw = json.loads(raw)
             except Exception:
-                return {}
+                raw = {}
         if not isinstance(raw, dict):
-            return {}
+            raw = {}
         runtime = raw.get("gateway_runtime")
         if isinstance(runtime, dict) and runtime.get("provider"):
-            return dict(runtime)
+            # Filter None values: the persist path writes or-None to trigger
+            # deletion in the top-level merge, but gateway_runtime is replaced
+            # as a whole dict (not deep-merged), so None values survive here.
+            return {k: v for k, v in runtime.items() if v is not None}
         top_level = {
             key: raw.get(key)
             for key in ("provider", "base_url", "api_mode")
@@ -6140,7 +6408,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         }
         if top_level:
             return top_level
-        return dict(runtime) if isinstance(runtime, dict) else {}
+        # Last resort: billing_provider column. Written via COALESCE on every
+        # session's first accounted API call — the only durable record for
+        # sessions that never ran /model. Mirrors the TUI gateway's
+        # _stored_session_runtime_overrides fallback. Bare billing buckets
+        # ("auto"/"custom") are not routable identities — filter them out so
+        # resume falls back to the ambient config default instead.
+        billing_provider = str(
+            (session_meta or {}).get("billing_provider") or ""
+        ).strip()
+        if (
+            billing_provider
+            and billing_provider.lower() not in _BARE_BILLING_PROVIDERS
+        ):
+            return {"provider": billing_provider}
+        return {k: v for k, v in (runtime or {}).items() if v is not None} if isinstance(runtime, dict) else {}
 
     def update_session_billing_route(
         self,
@@ -7981,7 +8263,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return None
 
     def _check_transcript_write_guards(
-        self, conn, session_id: str, compression_lock_holder: Optional[str]
+        self,
+        conn,
+        session_id: str,
+        compression_lock_holder: Optional[str],
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> None:
         """Transcript-append admission checks, run INSIDE the write txn.
 
@@ -8002,6 +8289,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             raise SessionCompressionInProgressError(
                 f"Session {session_id!r} is being compressed by another writer"
             )
+        if turn_lease_holder:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            lease = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if lease is None or lease["holder"] != turn_lease_holder:
+                raise SessionTurnLeaseLostError(
+                    f"Session turn lease lost; refusing transcript write "
+                    f"for {session_id!r}"
+                )
+            now = time.time()
+            if float(lease["expires_at"]) <= now:
+                # Expiry makes the row reclaimable; it does not prove that a
+                # takeover occurred. BEGIN IMMEDIATE serializes this renewal
+                # with acquisition, so a still-matching owner can recover from
+                # a starved refresher without weakening the foreign-holder fence.
+                conn.execute(
+                    "UPDATE session_turn_leases SET expires_at = ? "
+                    "WHERE conversation_id = ? AND holder = ?",
+                    (
+                        now + max(0.1, float(turn_lease_ttl_seconds)),
+                        conversation_id,
+                        turn_lease_holder,
+                    ),
+                )
         session = conn.execute(
             "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
             (session_id,),
@@ -8081,6 +8395,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None,
         compression_lock_holder: Optional[str] = None,
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -8139,7 +8455,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             self._check_transcript_write_guards(
-                conn, session_id, compression_lock_holder
+                conn,
+                session_id,
+                compression_lock_holder,
+                turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -8201,7 +8521,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         messages: List[Dict[str, Any]],
         compression_lock_holder: Optional[str] = None,
+        turn_lease_holder: Optional[str] = None,
         chunk_rows: Optional[int] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Append multiple messages atomically in ONE write transaction.
 
@@ -8240,12 +8562,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     session_id,
                     messages[start:start + chunk_rows],
                     compression_lock_holder=compression_lock_holder,
+                    turn_lease_holder=turn_lease_holder,
+                    turn_lease_ttl_seconds=turn_lease_ttl_seconds,
                 )
             return inserted_total
 
         def _do(conn):
             self._check_transcript_write_guards(
-                conn, session_id, compression_lock_holder
+                conn,
+                session_id,
+                compression_lock_holder,
+                turn_lease_holder=turn_lease_holder,
+                turn_lease_ttl_seconds=turn_lease_ttl_seconds,
             )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, messages
@@ -9826,6 +10154,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
+        """True when ``session`` is a branch, delegate, or tool child of its parent.
+
+        Markers only count as a fork when they point at ``parent_session_id``.
+        Compression copies ``model_config`` onto the continuation
+        (``publish_compression_child`` callers pass
+        ``agent._session_init_model_config``), so a delegate's continuation
+        carries ``_delegate_from=<the delegate's own parent>``. Presence-only
+        matching would treat that real continuation as a fork — the same
+        misclassification ``_NON_CONTINUATION_CHILD_FILTER_SQL`` already
+        avoids by binding both markers to the queried parent.
+        """
         if session.get("source") == "tool":
             return True
         raw = session.get("model_config")
@@ -9835,10 +10174,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cfg = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, json.JSONDecodeError):
             return False
-        return isinstance(cfg, dict) and (
-            cfg.get("_branched_from") is not None
-            or cfg.get("_delegate_from") is not None
-        )
+        if not isinstance(cfg, dict):
+            return False
+        parent_id = session.get("parent_session_id")
+        branched = cfg.get("_branched_from")
+        delegated = cfg.get("_delegate_from")
+        if parent_id:
+            return branched == parent_id or delegated == parent_id
+        return branched is not None or delegated is not None
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
@@ -10746,6 +11089,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return retagged
 
         return self._execute_write(_do)
+
+    def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
+        """Return ``[(key, value), ...]`` for state_meta keys with ``prefix``.
+
+        Used by feature stores that persist one row per session under a
+        namespaced key (e.g. ``loop:<session_id>``) and need to enumerate
+        them across sessions (the gateway's idle /loop wakeup watcher).
+        ``prefix`` is matched literally — LIKE wildcards in it are escaped.
+        """
+        if not prefix:
+            return []
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'",
+                (escaped + "%",),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

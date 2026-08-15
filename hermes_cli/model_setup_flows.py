@@ -720,7 +720,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         DEFAULT_XAI_OAUTH_BASE_URL,
         PROVIDER_REGISTRY,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import provider_model_ids
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
@@ -780,8 +780,8 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     except Exception:
         pass
 
-    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
+    models = provider_model_ids("xai-oauth")
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)

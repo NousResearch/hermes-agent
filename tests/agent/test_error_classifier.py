@@ -4,6 +4,7 @@ import pytest
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
+    PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     _extract_status_code,
     _extract_error_body,
@@ -231,6 +232,38 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_requires_available_credits_is_billing(self):
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "Model 'openai/gpt-5.5-pro' requires available credits. "
+                    "Your account balance is too low to use paid models — "
+                    "add credits at https://portal.nousresearch.com or pick a free model."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="openai/gpt-5.5-pro")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_wrapped_402_uses_nested_body_message(self):
+        inner = MockAPIError(
+            "inner",
+            status_code=402,
+            body={"error": {"message": "Usage limit reached, try again in 5 minutes"}},
+        )
+        outer = Exception("outer")
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer)
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.message == "Usage limit reached, try again in 5 minutes"
 
     # ── Rate limit ──
 
@@ -340,6 +373,43 @@ class TestClassifyApiError:
 
 
 
+    def test_non_json_stream_validation_error_is_non_retryable(self):
+        e = MockAPIError(
+            "Provider stream returned non-JSON SSE data",
+            body={
+                "error": {
+                    "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                    "message": (
+                        "request validation failed: unsupported reasoning_effort"
+                    ),
+                }
+            },
+        )
+
+        result = classify_api_error(e)
+
+        assert result.status_code is None
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_non_json_stream_unknown_error_remains_retryable(self):
+        e = MockAPIError(
+            "Provider stream returned non-JSON SSE data",
+            body={
+                "error": {
+                    "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                    "message": "upstream sent opaque plain-text stream data",
+                }
+            },
+        )
+
+        result = classify_api_error(e)
+
+        assert result.status_code is None
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
 
     # ── 5xx that are actually context overflow ──
     # Some local inference servers (llama.cpp / llama-server, and vLLM/Ollama
@@ -1126,6 +1196,5 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
-
 
 

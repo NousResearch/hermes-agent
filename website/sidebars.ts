@@ -101,6 +101,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/kanban-worker-lanes',
             'user-guide/features/goals',
             'user-guide/features/heartbeat',
+            'user-guide/features/loops',
             'user-guide/features/code-execution',
             'user-guide/features/hooks',
             'user-guide/features/batch-processing',
@@ -260,6 +261,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-box',
                     'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',

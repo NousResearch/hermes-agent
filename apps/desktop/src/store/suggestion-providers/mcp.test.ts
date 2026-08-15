@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { MCP_DIRECTORY } from '@/lib/mcp-directory'
+
 import { matchSuggestions } from './mcp'
 
 const INDEX = [
@@ -91,5 +93,11 @@ describe('matchSuggestions', () => {
     expect(matchSuggestions('look at https://linear.app/team/issue/ABC-1', index)).toEqual([
       { keyword: 'linear.app', server: 'linear' }
     ])
+  })
+
+  it('does not offer GitHub through the generic OAuth registration path', () => {
+    const index = MCP_DIRECTORY.map(entry => ({ hosts: entry.hosts, keywords: entry.keywords, server: entry.name }))
+
+    expect(matchSuggestions('connect github', index)).toEqual([])
   })
 })

@@ -29,8 +29,10 @@ def _isolate_sessions():
     bt._active_sessions.update(orig)
 
 
-def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
-    """Create a fake agent-browser socket directory with optional PID files.
+def _make_socket_dir(
+    tmpdir, session_name, pid=None, owner_pid=None, pinned_target_id=None
+):
+    """Create a fake agent-browser socket directory with optional ownership files.
 
     Args:
         tmpdir: base temp directory
@@ -38,6 +40,7 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
         pid: daemon PID to write to <session>.pid (None = no file)
         owner_pid: owning hermes PID to write to <session>.owner_pid
                    (None = no file; tests the legacy path)
+        pinned_target_id: exact owned target recorded by agent-browser
     """
     d = tmpdir / f"agent-browser-{session_name}"
     d.mkdir()
@@ -45,6 +48,10 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
         (d / f"{session_name}.pid").write_text(str(pid))
     if owner_pid is not None:
         (d / f"{session_name}.owner_pid").write_text(str(owner_pid))
+    if pinned_target_id is not None:
+        (d / f"{session_name}.target").write_text(
+            '{"targetId":"' + pinned_target_id + '","url":"about:blank","pinned":true}'
+        )
     return d
 
 
@@ -143,6 +150,105 @@ class TestReapOrphanedBrowserSessions:
 
         _reap_orphaned_browser_sessions()
         assert not d.exists()
+
+    def test_live_orphan_closes_exact_pinned_target_before_reaping(
+        self, fake_tmpdir
+    ):
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_owned1234",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-OWNED",
+        )
+        terminated = []
+        with patch("gateway.status._pid_exists", side_effect=[False, True]), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.browser_tool._close_orphaned_pinned_target", return_value=True) as close_target, \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminated.append):
+            _reap_orphaned_browser_sessions()
+
+        close_target.assert_called_once_with(str(d), "cdp_owned1234")
+        assert terminated == [12345]
+        assert not d.exists()
+
+    def test_transient_pinned_close_failure_retains_daemon_and_ownership(
+        self, fake_tmpdir
+    ):
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_retry1234",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-RETRY",
+        )
+        terminated = []
+        with patch("gateway.status._pid_exists", side_effect=[False, True]), \
+             patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.browser_tool._close_orphaned_pinned_target", return_value=False), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminated.append):
+            _reap_orphaned_browser_sessions()
+
+        assert terminated == []
+        assert d.exists()
+        assert (d / "cdp_retry1234.target").exists()
+
+    def test_dead_pinned_daemon_retains_exact_ownership_record(self, fake_tmpdir):
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_dead12345",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-DEAD",
+        )
+        with patch("gateway.status._pid_exists", side_effect=[False, False]):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
+        assert (d / "cdp_dead12345.target").exists()
+
+    def test_orphan_close_uses_exact_named_session_without_discovery(
+        self, fake_tmpdir, monkeypatch
+    ):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kwargs: "/bin/agent-browser")
+        monkeypatch.setattr(bt, "_build_browser_env", lambda: {"PATH": "/usr/bin"})
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
+
+        class _Result:
+            stdout = '{"success":true,"data":{"targetId":"TARGET-OWNED"}}\n'
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return _Result()
+
+        monkeypatch.setattr(bt.subprocess, "run", fake_run)
+        assert bt._close_orphaned_pinned_target(
+            str(fake_tmpdir / "agent-browser-cdp_exact123"), "cdp_exact123"
+        )
+        argv, kwargs = calls[0]
+        assert argv == [
+            "/bin/agent-browser",
+            "--session",
+            "cdp_exact123",
+            "--pin-tab",
+            "--json",
+            "tab",
+            "close",
+        ]
+        assert "--cdp" not in argv
+        assert kwargs["env"]["AGENT_BROWSER_SOCKET_DIR"].endswith(
+            "agent-browser-cdp_exact123"
+        )
 
 
 class TestOwnerPidCrossProcess:

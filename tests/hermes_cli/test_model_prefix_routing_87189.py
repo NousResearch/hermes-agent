@@ -12,18 +12,36 @@ import hermes_cli.model_switch as model_switch
 
 
 class TestVendorPrefixRouting:
-    """detect_provider_for_model honors an explicit ``vendor/model`` prefix."""
+    """detect_provider_for_model honors a ``vendor/model`` prefix for
+    providers the user actually configured in their ``providers:`` block."""
 
-    def test_builtin_provider_prefix_routes_to_provider(self, monkeypatch):
+    def test_configured_provider_prefix_routes_to_provider(self, monkeypatch):
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
+        monkeypatch.setattr(models, "_configured_provider_ids", lambda: {"nous"})
         detected = models.detect_provider_for_model("nous/deepseek-v4-pro", "anthropic")
         assert detected == ("nous", "deepseek-v4-pro")
 
-    def test_configured_provider_prefix_routes_to_provider(self, monkeypatch):
+    def test_local_provider_prefix_routes_to_provider(self, monkeypatch):
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
         monkeypatch.setattr(models, "_configured_provider_ids", lambda: {"ollama"})
         detected = models.detect_provider_for_model("ollama/qwen3.5:4b", "anthropic")
         assert detected == ("ollama", "qwen3.5:4b")
+
+    def test_unconfigured_builtin_vendor_prefix_not_rerouted(self, monkeypatch):
+        """Built-in vendor slugs keep catalog/default routing.
+
+        ``google/gemini-2.5-flash`` is aggregator-native: the web config
+        field expects it to switch to OpenRouter, not to the Gemini provider
+        (``TestDenormalizeProviderSwitch`` in test_web_server.py). With no
+        user-configured provider for the vendor, prefix routing must stay
+        out of the way even when the models.dev catalog is unavailable.
+        """
+        monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
+        monkeypatch.setattr(models, "_configured_provider_ids", lambda: set())
+        detected = models.detect_provider_for_model(
+            "google/gemini-2.5-flash", "ollama-local"
+        )
+        assert detected is None
 
     def test_configured_provider_wins_over_alias_canonicalization(self, monkeypatch):
         """A user-named ``ollama`` block must not be rewritten to ``custom``."""
@@ -33,15 +51,15 @@ class TestVendorPrefixRouting:
         detected = models.detect_provider_for_model("ollama/qwen3.5:4b", "anthropic")
         assert detected == ("ollama", "qwen3.5:4b")
 
-    def test_provider_alias_prefix_canonicalized(self, monkeypatch):
+    def test_provider_alias_prefix_canonicalized_when_configured(self, monkeypatch):
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
-        monkeypatch.setattr(models, "_configured_provider_ids", lambda: set())
+        monkeypatch.setattr(models, "_configured_provider_ids", lambda: {"zai"})
         detected = models.detect_provider_for_model("glm/glm-4.7", "anthropic")
         assert detected == ("zai", "glm-4.7")
 
     def test_unknown_vendor_prefix_still_unmatched(self, monkeypatch):
         monkeypatch.setattr(models, "_find_openrouter_slug", lambda _name: None)
-        monkeypatch.setattr(models, "_configured_provider_ids", lambda: set())
+        monkeypatch.setattr(models, "_configured_provider_ids", lambda: {"ollama"})
         assert models.detect_provider_for_model("notaprovider/foo-model", "anthropic") is None
 
     def test_openrouter_slug_still_wins_over_prefix_routing(self, monkeypatch):
@@ -49,7 +67,7 @@ class TestVendorPrefixRouting:
         monkeypatch.setattr(
             models, "_find_openrouter_slug", lambda _name: "deepseek/deepseek-chat"
         )
-        monkeypatch.setattr(models, "_configured_provider_ids", lambda: set())
+        monkeypatch.setattr(models, "_configured_provider_ids", lambda: {"deepseek"})
         detected = models.detect_provider_for_model("deepseek/deepseek-chat", "anthropic")
         assert detected == ("openrouter", "deepseek/deepseek-chat")
 

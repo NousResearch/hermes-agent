@@ -183,34 +183,20 @@ class TestPendingInviteReconciliationRecordsDM:
         )
         assert adapter._dm_rooms.get("!dm_room:example.org") is True
 
-    @pytest.mark.parametrize(
-        "invite_state",
-        [
-            pytest.param(None, id="no-invite-state"),
-            pytest.param({"events": []}, id="empty-events"),
-            pytest.param(
-                {"events": [_member_invite_event(is_direct=False)]},
-                id="not-direct",
-            ),
-            pytest.param(
-                {"events": [_member_invite_event(state_key="@other:example.org")]},
-                id="member-event-for-other-user",
-            ),
-            pytest.param(
-                {"events": [_member_invite_event(sender="")]},
-                id="missing-inviter",
-            ),
-        ],
-    )
     @pytest.mark.asyncio
-    async def test_reconciled_invite_without_dm_signal_does_not_record(
-        self, invite_state
-    ):
+    async def test_reconciled_non_direct_invite_does_not_record(self):
+        """A pending invite without the is_direct flag joins (the inviter
+        is allow-listed) but records nothing in m.direct. Invites whose
+        inviter cannot be read from the stripped state at all are covered
+        by test_matrix_pending_invite_auth.py: they are rejected outright
+        by the inviter allowlist gate, so no join happens either."""
         adapter = _make_adapter()
         adapter._join_room_by_id = AsyncMock(return_value=True)
         adapter._record_dm_room = AsyncMock()
 
-        sync_data = _invite_sync_data(invite_state=invite_state)
+        sync_data = _invite_sync_data(
+            invite_state={"events": [_member_invite_event(is_direct=False)]}
+        )
         adapter._schedule_pending_invite_joins(sync_data)
         await self._drain_invite_tasks(adapter)
 

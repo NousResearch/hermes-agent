@@ -3751,14 +3751,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # federated Matrix user could invite the bot into arbitrary rooms,
         # exposing its presence and metadata. Mirrors the allow-list gate
         # used on the message/reaction paths.
-        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
-            "true",
-            "1",
-            "yes",
-        }
-        if not allow_all and not (
-            self._allowed_user_ids and inviter in self._allowed_user_ids
-        ):
+        if not self._is_authorized_inviter(inviter):
             logger.warning(
                 "Matrix: rejecting invite to %s from unauthorized user %s",
                 room_id,
@@ -3780,6 +3773,22 @@ class MatrixAdapter(BasePlatformAdapter):
             is_direct=is_direct and bool(inviter),
             inviter=inviter,
         )
+
+    def _is_authorized_inviter(self, inviter: str) -> bool:
+        """Whether an invite from this user may be auto-joined.
+
+        Fails closed: an unknown (empty) inviter or an empty allowlist
+        rejects the invite, unless GATEWAY_ALLOW_ALL_USERS opts out of
+        gating entirely.
+        """
+        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if allow_all:
+            return True
+        return bool(self._allowed_user_ids and inviter in self._allowed_user_ids)
 
     async def _join_room_by_id(self, room_id: str) -> bool:
         """Join a room by ID and refresh local caches on success."""
@@ -3857,6 +3866,25 @@ class MatrixAdapter(BasePlatformAdapter):
             # direct invite joined via reconciliation is never recorded in
             # m.direct and gets misclassified as a group.
             is_direct, inviter = self._extract_invite_dm_signal(invited_room)
+            # The inviter allowlist gate from _on_invite applies here too.
+            # Without it, an invite from an arbitrary federated user that
+            # arrives while the gateway is down would be auto-joined on
+            # restart, bypassing the gate. An inviter missing from the
+            # stripped invite state fails closed, like an empty sender in
+            # _on_invite.
+            if not self._is_authorized_inviter(inviter):
+                logger.warning(
+                    "Matrix: rejecting invite to %s from unauthorized user %s",
+                    room_id,
+                    inviter,
+                )
+                continue
+            if is_direct and not inviter:
+                logger.warning(
+                    "Matrix: joining direct invite to %s without recording it "
+                    "in m.direct because the invite state has no inviter",
+                    room_id,
+                )
             logger.info(
                 "Matrix: reconciling pending invite for %s (is_direct=%s)",
                 room_id,
@@ -3875,6 +3903,9 @@ class MatrixAdapter(BasePlatformAdapter):
         ``is_direct`` flag from the original invite; its sender is the
         inviter. Returns ``(False, "")`` when the signal is absent.
         """
+        if not self._user_id:
+            return False, ""
+
         if not isinstance(invited_room, dict):
             return False, ""
 

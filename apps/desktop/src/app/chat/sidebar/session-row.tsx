@@ -45,6 +45,7 @@ import {
 } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowDetails } from './session-row-details'
+import { resolveSessionRowClick } from './session-row-gesture'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -383,39 +384,37 @@ function SidebarSessionRowImpl({
             openSession(session.id, () => undefined, 'tab')
           })}
           onClick={event => {
-            const mod = event.metaKey || event.ctrlKey
+            // Modifier-click gestures on a row (see `resolveSessionRowClick`):
+            //   ⇧          → pin / unpin
+            //   ⌘/⌃        → open in a new tab (stack into main)
+            //   ⌘/⌃ + ⇧    → pop into its own window (needs standalone windows)
+            //   ⌥ + ⇧      → archive
+            // A plain click resumes. Archive also lives in the row's ⋯ and
+            // right-click menus and as a rebindable hotkey (`session.archive`).
+            // `openSession`'s 'window' intent already falls back to 'tab' when
+            // the bridge lacks standalone windows, so the resolver can always
+            // offer the window action here.
+            const action = resolveSessionRowClick(event, { canOpenWindow: true })
 
-            // ⇧⌘-click → pop into its own window (needs standalone windows).
-            if (mod && event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSession(session.id, () => undefined, 'window')
-
-              return
-            }
-
-            // ⌘/⌃-click → open in a new tab (stack into main).
-            if (mod) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSession(session.id, () => undefined, 'tab')
+            if (action === 'resume') {
+              onResume()
 
               return
             }
 
-            // ⇧-click → pin.
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
+            event.preventDefault()
+            event.stopPropagation()
+            triggerHaptic('selection')
+
+            if (action === 'archive') {
+              onArchive()
+            } else if (action === 'pin') {
               onPin()
-
-              return
+            } else if (action === 'newTab') {
+              openSession(session.id, () => undefined, 'tab')
+            } else {
+              openSession(session.id, () => undefined, 'window')
             }
-
-            onResume()
           }}
         >
           {(() => {

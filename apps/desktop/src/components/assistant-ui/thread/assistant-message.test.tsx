@@ -8,9 +8,14 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $displayTimestamps } from '@/store/display-timestamps'
+
 import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
 
 import { Thread } from '.'
+
+// Timeline timestamps render only when `display.timestamps` is enabled.
+$displayTimestamps.set(true)
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const completedAt = createdAt.getTime() / 1000 + 1.25

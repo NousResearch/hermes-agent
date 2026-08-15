@@ -33,6 +33,7 @@ const buildUiState = (): UiState => ({
   status: 'summoning hermes…',
   statusBar: 'top',
   streaming: true,
+  timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.
   theme: bootTheme ?? DEFAULT_THEME,

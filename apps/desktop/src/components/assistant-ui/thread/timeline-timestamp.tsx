@@ -1,7 +1,9 @@
 import { useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 
 import { cn } from '@/lib/utils'
+import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { formatTimelineRange } from './timestamp'
 
@@ -33,9 +35,13 @@ export const TimelineTimestamp: FC<{
   completedAt?: number
   timestamp?: number
 }> = ({ className, completedAt, timestamp }) => {
+  // One config key everywhere (#41531): `display.timestamps` in config.yaml
+  // gates transcript timestamps here exactly as it gates the classic CLI's
+  // [HH:MM] labels. Display-only, so toggling never touches model context.
+  const enabled = useStore($displayTimestamps)
   const started = unixDate(timestamp)
 
-  if (!started || !validUnixSeconds(timestamp)) {
+  if (!enabled || !started || !validUnixSeconds(timestamp)) {
     return null
   }
 

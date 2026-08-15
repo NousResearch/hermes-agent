@@ -2,6 +2,7 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
@@ -9,6 +10,9 @@ import { $toolDisclosureStates } from '@/store/tool-view'
 
 import { Thread } from '../thread'
 import { formatTimelineRange } from '../thread/timestamp'
+
+// Timeline timestamps render only when `display.timestamps` is enabled.
+$displayTimestamps.set(true)
 
 // A run of tool calls collapses to a one-line summary once it has settled, but
 // a run with anything still pending always renders its rows. That rule is what

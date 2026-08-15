@@ -4,10 +4,10 @@ import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { MessageLine } from '../components/messageLine.js'
+import { fmtMsgTimestamp, MessageLine } from '../components/messageLine.js'
 import { MAX_HISTORY } from '../config/limits.js'
 import { toTranscriptMessages } from '../domain/messages.js'
-import { capTranscriptHistory, upsert } from '../lib/messages.js'
+import { appendTranscriptMessage, capTranscriptHistory, upsert } from '../lib/messages.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -235,5 +235,39 @@ describe('capTranscriptHistory', () => {
     expect(capped[0]).toBe(intro)
     expect(capped[1]?.text).toBe(`m${rows.length - (MAX_HISTORY - 1)}`)
     expect(capped.at(-1)?.text).toBe('m1004')
+  })
+})
+
+describe('display.timestamps (#41531)', () => {
+  it('formats a Unix-seconds timestamp as [HH:MM] and rejects garbage', () => {
+    const noon = new Date()
+    noon.setHours(13, 5, 0, 0)
+
+    expect(fmtMsgTimestamp(noon.getTime() / 1000)).toBe('[13:05]')
+    expect(fmtMsgTimestamp(undefined)).toBeNull()
+    expect(fmtMsgTimestamp(0)).toBeNull()
+    expect(fmtMsgTimestamp(Number.NaN)).toBeNull()
+  })
+
+  it('threads persisted transcript timestamps onto rehydrated rows', () => {
+    const rows = [
+      { role: 'user', text: 'when was this', timestamp: 1_750_000_000 },
+      { role: 'assistant', text: 'right then', timestamp: 1_750_000_060 }
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result[0]?.createdAt).toBe(1_750_000_000)
+    expect(result[1]?.createdAt).toBe(1_750_000_060)
+  })
+
+  it('stamps live rows at append and preserves supplied times', () => {
+    const before = Date.now() / 1000
+    const [live] = appendTranscriptMessage([], { role: 'user', text: 'now' })
+
+    expect(live?.createdAt).toBeGreaterThanOrEqual(before - 1)
+    expect(live?.createdAt).toBeLessThanOrEqual(Date.now() / 1000 + 1)
+
+    const [kept] = appendTranscriptMessage([], { createdAt: 123, role: 'user', text: 'then' })
+    expect(kept?.createdAt).toBe(123)
   })
 })

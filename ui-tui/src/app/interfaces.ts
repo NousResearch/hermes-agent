@@ -345,6 +345,9 @@ export interface UiState {
   statusBar: StatusBarMode
   streaming: boolean
   theme: Theme
+  // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
+  // rows, the same config key the classic CLI honors (#41531).
+  timestamps: boolean
   usage: Usage
 }
 

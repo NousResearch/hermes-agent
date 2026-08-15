@@ -2,7 +2,12 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $displayTimestamps } from '@/store/display-timestamps'
+
 import { Thread } from '.'
+
+// Timeline timestamps render only when `display.timestamps` is enabled.
+$displayTimestamps.set(true)
 
 const timestamp = new Date('2026-05-01T00:00:00.000Z')
 

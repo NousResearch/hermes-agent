@@ -1215,7 +1215,7 @@ DEFAULT_CONFIG = {
         #   "off"     — no watcher messages at all
         "background_process_notifications": "concise",
         "streaming": False,
-        "timestamps": False,      # Show timestamp on user and assistant labels
+        "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and

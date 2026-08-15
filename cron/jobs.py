@@ -899,6 +899,132 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return MIN_GRACE
 
 
+# Durable (persisted-state) recovery counter for a recurring job wedged in a
+# stale ``last_status == "error"`` state with ``next_run_at`` parked in the
+# future.  This is the restart-surviving half of the recurring-cron wedge
+# (t_20e23f84 / t_8b5480b3): the in-memory stale-claim sweep in scheduler.py
+# heals a leaked ``_running_job_ids`` claim in-process, but a job whose
+# persisted ``next_run_at`` was re-armed into the future (the normal
+# post-error re-arm by ``mark_job_run``) is invisible to that sweep — it is
+# not in the running set, so nothing force-releases it, and it is not due, so
+# ``get_due_jobs`` never returns it.  It just sits.  This recovery re-arms
+# ``next_run_at`` to now so the next tick re-dispatches it, exactly like the
+# operator's force-run / mech_red_guard's ``cron resume`` but built-in.
+_persisted_error_recoveries: int = 0
+_PERSISTED_ERROR_RECOVERY_HISTORY = 20
+_persisted_error_recoveries_recent: list = []
+
+
+def _job_is_stale_error_recurring(
+    job: Dict[str, Any],
+    schedule: Dict[str, Any],
+    now: datetime,
+) -> bool:
+    """True when a recurring job is wedged in a stale persisted error state.
+
+    Condition (all must hold):
+      * it is a recurring (cron/interval) job (checked by caller);
+      * its persisted ``last_status == "error"`` (a prior fire errored and the
+        job never recovered);
+      * it has NOT successfully re-fired within its natural cadence — its
+        ``last_run_at`` is older than ``cadence + grace``, so this is not a
+        normal transient-error retry that will fire on its own soon, it is a
+        job that has been sitting errored for a full period with no recovery;
+      * it is not currently running in this process (a live run must never be
+        re-armed underneath itself, #62002-style).
+
+    ``last_run_at`` being older than one cadence is the key discriminator: a
+    job that errors and is retried on its normal schedule keeps ``last_run_at``
+    fresh (mark_job_run stamps it on every fire, success or failure), so the
+    stale check does not fire for a job that is merely erroring-and-retrying.
+    """
+    if job.get("last_status") != "error":
+        return False
+    if _job_running_in_this_process(str(job.get("id") or "")):
+        return False
+    last_run = job.get("last_run_at")
+    if not last_run:
+        return False
+    try:
+        last_run_dt = _ensure_aware(datetime.fromisoformat(last_run))
+    except (ValueError, TypeError):
+        return False
+    age_seconds = (now - last_run_dt).total_seconds()
+    if age_seconds < 0:
+        return False
+    cadence_seconds = _schedule_cadence_seconds(schedule)
+    if cadence_seconds is None:
+        # Unknown cadence (croniter unavailable / malformed expr): fall back to
+        # the grace window so a badly-parked job is still recovered, but never
+        # re-arm anything younger than the 2h grace cap.
+        cadence_seconds = _compute_grace_seconds(schedule)
+    return age_seconds > (cadence_seconds + _compute_grace_seconds(schedule))
+
+
+def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
+    """Approximate the natural period of a schedule, in seconds, or None.
+
+    Interval jobs use ``minutes * 60``.  Cron jobs measure the gap between the
+    next two fire times with croniter (falling back to None when croniter is
+    missing or the expr is malformed).
+    """
+    if not isinstance(schedule, dict):
+        return None
+    kind = schedule.get("kind")
+    if kind == "interval":
+        minutes = schedule.get("minutes")
+        try:
+            return float(minutes) * 60.0 if minutes else None
+        except (TypeError, ValueError):
+            return None
+    if kind == "cron":
+        if not _ensure_croniter():
+            return None
+        expr = schedule.get("expr")
+        if not expr:
+            return None
+        try:
+            base = _hermes_now()
+            it = croniter(expr, base)
+            first = it.get_next(datetime)
+            second = it.get_next(datetime)
+            gap = (second - first).total_seconds()
+            return gap if gap > 0 else None
+        except Exception:
+            return None
+    return None
+
+
+def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str) -> None:
+    """Persist a countable, probe-visible signal for one stale-error re-arm."""
+    global _persisted_error_recoveries
+    now = _hermes_now()
+    entry = {
+        "job_id": job.get("id"),
+        "name": job.get("name") or job.get("id"),
+        "previous_next_run_at": previous_next_run,
+        "rearmed_at": now.isoformat(),
+    }
+    _persisted_error_recoveries += 1
+    _persisted_error_recoveries_recent.append(entry)
+    del _persisted_error_recoveries_recent[:-_PERSISTED_ERROR_RECOVERY_HISTORY]
+    try:
+        path = _current_cron_store().cron_dir / "persisted_error_recoveries.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:  # never let telemetry break a tick
+        logger.debug("Could not append persisted-error-recovery record: %s", exc)
+
+
+def get_persisted_error_recovery_stats() -> Dict[str, Any]:
+    """Probe-visible snapshot of persisted-error recoveries."""
+    return {
+        "persisted_error_recoveries": _persisted_error_recoveries,
+        "recent": list(_persisted_error_recoveries_recent),
+    }
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -3095,6 +3221,37 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
                     continue
+
+            # Persisted-state stale-error recovery (t_8b5480b3): a recurring
+            # job whose persisted state shows last_status=error and whose
+            # last_run_at is older than a full cadence has been sitting wedged
+            # (errored once, next_run_at re-armed into the future by
+            # mark_job_run, but never re-dispatched — the restart-surviving
+            # half of the 2026-08-14 incident, invisible to the in-memory
+            # in-flight sweep). Re-arm next_run_at to now so the next tick
+            # returns it as due and re-dispatches it WITHOUT force-run/resume.
+            if (
+                kind in ("cron", "interval")
+                and next_run_dt > now
+                and _job_is_stale_error_recurring(job, schedule, now)
+            ):
+                jid = job.get("id")
+                logger.warning(
+                    "cron.persisted_error.recovered job='%s' id=%s — recurring "
+                    "job wedged in stale last_status=error without re-firing for "
+                    "a full cadence; re-arming next_run_at to now so it "
+                    "re-dispatches without force-run/resume",
+                    job.get("name", jid),
+                    jid,
+                )
+                _record_persisted_error_recovery(job, next_run)
+                job["next_run_at"] = now.isoformat()
+                next_run_dt = now
+                for rj in raw_jobs:
+                    if rj["id"] == jid:
+                        rj["next_run_at"] = now.isoformat()
+                        needs_save = True
+                        break
 
             if next_run_dt <= now:
 

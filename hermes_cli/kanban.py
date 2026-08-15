@@ -76,6 +76,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "evidence_repo": t.evidence_repo,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
         "session_id": t.session_id,
@@ -370,6 +371,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--evidence-repo", default=None, metavar="PATH",
+                          help="Check this task's completion against the git "
+                               "state of PATH. The completing worker (or the "
+                               "review handoff before it) must name the paths "
+                               "it changed in metadata.changed_files, and "
+                               "those paths must actually differ, or the "
+                               "completion is refused. Omit for work that "
+                               "legitimately produces no code — the check is "
+                               "off unless a repo is named.")
     p_create.add_argument("--model", default=None, dest="model_override",
                           help="Pin the worker to this model (passed as "
                                "-m <model>) without changing the profile's "
@@ -1581,6 +1591,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            evidence_repo=getattr(args, "evidence_repo", None),
             model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),

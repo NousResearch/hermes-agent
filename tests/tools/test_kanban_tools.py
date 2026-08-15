@@ -1134,3 +1134,69 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_evidence_repo_reaches_the_gate_through_the_create_tool(worker_env, tmp_path):
+    """An orchestrator only ever creates cards through `kanban_create`.
+
+    The CLI flag alone leaves the completion gate unreachable by the agent
+    that is supposed to turn it on, which is how a feature ships and protects
+    nothing. This drives the whole path with the tools: create with an
+    evidence repo, watch a false completion get refused, and watch a real one
+    land.
+    """
+    import subprocess
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    repo = tmp_path / "evidence-repo"
+    repo.mkdir()
+    for argv in (["init", "-b", "main"], ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "T"]):
+        subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
+    (repo / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True,
+                   capture_output=True)
+
+    created = json.loads(kt._handle_create({
+        "title": "change the module",
+        "assignee": "test-worker",
+        "evidence_repo": str(repo),
+    }))
+    assert created["ok"]
+    tid = created["task_id"]
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).evidence_repo == str(repo)
+    finally:
+        conn.close()
+
+    os.environ["HERMES_KANBAN_TASK"] = tid
+    # Nothing has changed yet, so the claim cannot be corroborated.
+    refused = json.loads(kt._handle_complete({
+        "task_id": tid,
+        "summary": "done",
+        "metadata": {"changed_files": ["mod.py"]},
+    }))
+    assert "error" in refused
+    assert "mod.py" in refused["error"]
+
+    (repo / "mod.py").write_text("x = 2\n", encoding="utf-8")
+    accepted = json.loads(kt._handle_complete({
+        "task_id": tid,
+        "summary": "done",
+        "metadata": {"changed_files": ["mod.py"]},
+    }))
+    assert accepted["ok"], accepted
+
+    # A card that names no repo is untouched by any of this.
+    plain = json.loads(kt._handle_create({
+        "title": "no evidence declared",
+        "assignee": "test-worker",
+    }))
+    os.environ["HERMES_KANBAN_TASK"] = plain["task_id"]
+    assert json.loads(kt._handle_complete({
+        "task_id": plain["task_id"], "summary": "done",
+    }))["ok"]

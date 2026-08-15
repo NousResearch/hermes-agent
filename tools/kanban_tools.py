@@ -799,6 +799,22 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.CompletionEvidenceError as ev_err:
+                # Same structured-rejection contract as the phantom-card
+                # gate above: nothing was mutated, so a corrected retry
+                # works. The difference is that retrying is not always the
+                # right move here — if the work genuinely did not happen,
+                # blocking is the honest outcome and the message has to say
+                # so, or the model will keep inventing paths to get past
+                # the gate.
+                return tool_error(
+                    f"{ev_err}\n"
+                    f"Your task is still in-flight (no state change). Either "
+                    f"retry kanban_complete with the paths you really changed, "
+                    f"or call kanban_block with kind=\"capability\" if you could "
+                    f"not make the change — blocking is the correct outcome when "
+                    f"there is nothing to show."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
@@ -1386,6 +1402,7 @@ def _handle_create(args: dict, **kw) -> str:
     # preserving the repository/branch convention without sharing a checkout.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    evidence_repo = args.get("evidence_repo")
     project_id = args.get("project") or args.get("project_id")
     project_source_task_id = None
     _inherit_project = workspace_kind is None and workspace_path is None
@@ -1443,6 +1460,7 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                evidence_repo=evidence_repo,
                 project_id=project_id,
                 project_source_task_id=project_source_task_id,
                 triage=triage,
@@ -1768,7 +1786,12 @@ KANBAN_COMPLETE_SCHEMA = {
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
+        "tests_run, decisions, findings, etc). ``metadata.changed_files`` "
+        "is verified, not decorative: when the card declares an evidence "
+        "repository, the kernel asks git whether those paths actually "
+        "differ and refuses the completion if they do not. If you could "
+        "not make the change, block with kind=\"capability\" — that is "
+        "the correct outcome, not a failure. At least one of "
         "``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
@@ -1937,8 +1960,12 @@ KANBAN_REQUEST_REVIEW_SCHEMA = {
             "metadata": {
                 "type": "object",
                 "description": (
-                    "Optional structured handoff facts for the reviewer, such "
-                    "as changed_files, tests_run, commit, or decisions."
+                    "Structured handoff facts for the reviewer, such as "
+                    "changed_files, tests_run, commit, or decisions. List "
+                    "every path you changed in ``changed_files``: you are "
+                    "the one who knows, and if the card declares an "
+                    "evidence repository the reviewer's completion is "
+                    "checked against this list."
                 ),
                 "additionalProperties": True,
             },
@@ -2202,6 +2229,23 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Absolute path for 'dir' or 'worktree' workspace. "
                     "Relative paths are rejected at dispatch."
+                ),
+            },
+            "evidence_repo": {
+                "type": "string",
+                "description": (
+                    "Absolute path to the repository this task's completion "
+                    "is checked against. Set it whenever the card asks for a "
+                    "code change: the kernel then refuses to close the card "
+                    "unless git shows the paths the worker claims to have "
+                    "changed actually differ. No commit is needed — a dirty "
+                    "working tree or a new file is enough. Say in the body "
+                    "that the worker must list what it changed in "
+                    "metadata.changed_files, and that blocking with "
+                    "kind=\"capability\" is the right answer if it cannot "
+                    "make the change. Leave this out for probes, syntheses, "
+                    "reviews and anything else that legitimately produces no "
+                    "code — the check does nothing unless a repo is named."
                 ),
             },
             "project": {

@@ -1115,6 +1115,12 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # Repository whose git state must corroborate this card's completion.
+    # ``None`` (the common case) disables the check entirely. When set,
+    # ``complete_task`` asks git whether the paths the worker claims to have
+    # changed actually differ, and refuses the completion if they do not.
+    # Name matches the ``--evidence-repo`` CLI flag on ``kanban create``.
+    evidence_repo: Optional[str] = None
     # When True, the dispatched worker runs in a Ralph-style goal loop
     # (the same engine behind the ``/goal`` slash command): after each
     # turn an auxiliary judge model evaluates the worker's response
@@ -1217,6 +1223,11 @@ class Task:
             ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
+            ),
+            evidence_repo=(
+                row["evidence_repo"]
+                if "evidence_repo" in keys and row["evidence_repo"]
+                else None
             ),
             goal_mode=(
                 bool(row["goal_mode"]) if "goal_mode" in keys and row["goal_mode"] else False
@@ -1394,6 +1405,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    -- Repository whose git state must corroborate this card's completion.
+    -- NULL (the common case) disables the check: the card closes on the
+    -- worker's word, as every card did before this column existed. When
+    -- set, ``complete_task`` asks git whether the claimed paths actually
+    -- differ and refuses the completion if they do not.
+    evidence_repo        TEXT,
     -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
     -- auxiliary judge re-evaluates the worker's response against the
     -- card title/body after each turn and feeds a continuation prompt
@@ -2623,6 +2640,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
+    if "evidence_repo" not in cols:
+        # Repository this task's completion is checked against. NULL (every
+        # existing row, and every task that does not declare one) leaves
+        # ``complete_task`` exactly as it was — probes, syntheses, reviews and
+        # anything else that legitimately produces no code still close on the
+        # worker's word. Declaring a path opts the card into the gate.
+        _add_column_if_missing(conn, "tasks", "evidence_repo", "evidence_repo TEXT")
+
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
@@ -3173,6 +3198,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    evidence_repo: Optional[str] = None,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -3495,10 +3521,11 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, model_override, provider_override,
+                        skills, max_retries, evidence_repo,
+                        model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3518,6 +3545,7 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        (evidence_repo.strip() or None) if evidence_repo else None,
                         model_override,
                         provider_override,
                         reasoning_effort,
@@ -5213,6 +5241,111 @@ def reassign_task(
         return False
 
 
+def _claimed_change_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+) -> tuple[list[str], Optional[str], Optional[str]]:
+    """Paths and commit the completion claims, plus where the claim came from.
+
+    Looks at the completing call's own metadata first, then falls back to the
+    latest ``review_requested`` run. The fallback is the normal path, not the
+    exception: the builder knows what it changed and hands off, and it is the
+    *reviewer* who calls ``complete_task``. Requiring the evidence on the
+    closing call alone would ask the reviewer to author facts about work they
+    did not do — which is exactly what happened on 2026-08-14.
+    """
+
+    def _extract(meta: object) -> tuple[list[str], Optional[str]]:
+        if not isinstance(meta, dict):
+            return [], None
+        raw = meta.get("changed_files")
+        paths = (
+            [p.strip() for p in raw if isinstance(p, str) and p.strip()]
+            if isinstance(raw, (list, tuple))
+            else []
+        )
+        commit = meta.get("commit")
+        commit = commit.strip() if isinstance(commit, str) and commit.strip() else None
+        return paths, commit
+
+    paths, commit = _extract(metadata)
+    if paths:
+        return paths, commit, "completion"
+
+    rows = conn.execute(
+        "SELECT metadata FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'review_requested' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        raw_meta = row["metadata"]
+        if not raw_meta:
+            continue
+        try:
+            handoff = json.loads(raw_meta)
+        except (ValueError, TypeError):
+            continue
+        paths, handoff_commit = _extract(handoff)
+        if paths:
+            return paths, commit or handoff_commit, "review_handoff"
+    return [], commit, None
+
+
+def _verify_completion_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    evidence_repo: str,
+    metadata: Optional[dict],
+) -> tuple[Optional[str], list[str], Optional[list[str]]]:
+    """Ask git whether ``task_id``'s completion claim survives contact.
+
+    Returns ``(reason, claimed, changed)`` where a non-``None`` ``reason``
+    means refuse. Deliberately narrow: it decides whether the claimed paths
+    exist as changes, never whether the changes are correct. The reviewer owns
+    correctness; this owns existence.
+    """
+    claimed, commit, _source = _claimed_change_evidence(conn, task_id, metadata)
+    repo = Path(evidence_repo).expanduser()
+    changed = _git_changed_paths(repo)
+    if changed is None:
+        return f"{repo} is not a readable git repository", claimed, None
+    if not claimed:
+        # Report what git sees anyway. A worker that forgot to name its paths
+        # cannot guess what to write from a bare refusal, and the answer is
+        # sitting in the diff.
+        return (
+            (
+                "no changed_files were claimed, by this completion or by the "
+                "review handoff that preceded it"
+            ),
+            [],
+            sorted(changed),
+        )
+    if commit and not _git_commit_exists(repo, commit):
+        return f"commit {commit} does not exist in {repo}", claimed, sorted(changed)
+
+    # Suffix match, so a worker may cite `security.py` or the repo-relative
+    # `backend/instagram_automation/security.py` and both resolve. Git reports
+    # repo-relative paths; workers reliably do not.
+    unmatched = [
+        path
+        for path in claimed
+        if not any(
+            actual == path or actual.endswith("/" + path.lstrip("./"))
+            for actual in changed
+        )
+    ]
+    if unmatched:
+        return (
+            (f"{repo} shows no change to {', '.join(unmatched)}"),
+            claimed,
+            sorted(changed),
+        )
+    return None, claimed, sorted(changed)
+
+
 def _verify_created_cards(
     conn: sqlite3.Connection,
     completing_task_id: str,
@@ -5349,6 +5482,59 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class CompletionEvidenceError(ValueError):
+    """Raised by ``complete_task`` when a task that declared an evidence
+    repository closes without a change that repository can confirm.
+
+    `done` is otherwise self-reported: ``complete_task`` stores a free-form
+    summary and a free-form metadata dict and checks neither against git, the
+    filesystem, or a test result. Measured on this install 2026-08-14, four rows
+    closed with "full backend suite 916 passed" and a reviewer's "APPROVED —
+    verified the diff covers every cited path" while no branch had a commit and
+    the worktree both of them named did not exist. The literature calls this
+    False Success and puts it at 44-76 % of all agent failures, so the sibling
+    gate for ``created_cards`` — phantom task ids, already refused here — is
+    extended to the same claim about files.
+
+    Sibling of :class:`HallucinatedCardsError` in every respect: a ``ValueError``
+    subclass so existing tool-error handlers treat it as recoverable, with the
+    structured facts attached for callers that want them.
+    """
+
+    def __init__(
+        self,
+        task_id: str,
+        repo: str,
+        claimed: list[str],
+        changed: Optional[list[str]],
+        reason: str,
+    ):
+        self.task_id = task_id
+        self.repo = repo
+        self.claimed = list(claimed)
+        # `None` means the repository could not be read at all, which is a
+        # different failure from "read it, nothing changed" and must not be
+        # flattened into an empty list.
+        self.changed = None if changed is None else list(changed)
+        self.reason = reason
+        if changed is None:
+            observed = "(repository unreadable — nothing could be checked)"
+        elif not changed:
+            observed = "(nothing — the working tree matches HEAD)"
+        else:
+            shown = ", ".join(changed[:5])
+            extra = len(changed) - 5
+            observed = f"{shown} (+{extra} more)" if extra > 0 else shown
+        super().__init__(
+            f"completion blocked: {reason}\n"
+            f"  repo:     {repo}\n"
+            f"  claimed:  {', '.join(claimed) or '(nothing)'}\n"
+            f"  changed:  {observed}\n"
+            f"  → put the paths you actually changed in metadata.changed_files, "
+            f'or block with kind="capability" if you could not make the change'
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5424,6 +5610,44 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # Sibling gate: the same treatment created_cards gets, applied to the
+    # claim about files. Opt-in — a NULL evidence_repo skips it entirely, so
+    # probes, syntheses and reviews close exactly as they always have.
+    evidence_row = conn.execute(
+        "SELECT evidence_repo FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    evidence_repo = (
+        evidence_row["evidence_repo"]
+        if evidence_row and "evidence_repo" in evidence_row.keys()
+        else None
+    )
+    if evidence_repo:
+        reason, claimed_paths, changed_paths = _verify_completion_evidence(
+            conn, task_id, evidence_repo, metadata
+        )
+        if reason:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "completion_blocked_no_evidence",
+                    {
+                        "evidence_repo": evidence_repo,
+                        "reason": reason,
+                        "claimed_paths": claimed_paths,
+                        "changed_paths": changed_paths,
+                        "summary_preview": (
+                            (summary or result or "").strip().splitlines()[0][:200]
+                            if (summary or result)
+                            else None
+                        ),
+                    },
+                )
+            raise CompletionEvidenceError(
+                task_id, evidence_repo, claimed_paths, changed_paths, reason
+            )
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -7529,6 +7753,71 @@ def _git_toplevel(path: Path) -> Optional[Path]:
         return Path(out).expanduser().resolve()
     except Exception:
         return Path(out).expanduser()
+
+
+def _git_changed_paths(repo: Path) -> Optional[set[str]]:
+    """Every path the working tree has touched since ``HEAD``, or ``None``.
+
+    ``None`` means the question could not be asked — the path is missing, is not
+    a git repository, or git failed. That is deliberately distinct from the
+    empty set, which means "asked, and nothing changed": a completion gate must
+    refuse both, but only the second is the worker's fault.
+
+    Working-tree state rather than commit range, because the cards in this
+    install routinely forbid committing. Measured 2026-08-14: the one task that
+    genuinely did its work left 23 modified files and zero commits, so a gate
+    that demanded a commit range would have rejected the honest case and passed
+    nothing at all.
+
+    Untracked files count. ``git diff`` alone cannot see a file that did not
+    exist at ``HEAD``, so a worker asked to write a new module would have had
+    its honest work refused. ``--exclude-standard`` keeps build output and
+    ignored files from passing as evidence.
+    """
+    seen: set[str] = set()
+    for argv in (
+        ["diff", "--name-only", "HEAD"],
+        ["ls-files", "--others", "--exclude-standard"],
+    ):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo), *argv],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        seen.update(
+            line.strip() for line in (result.stdout or "").splitlines() if line.strip()
+        )
+    return seen
+
+
+def _git_commit_exists(repo: Path, sha: str) -> bool:
+    """Whether ``sha`` resolves to a commit in ``repo``.
+
+    A fabricated identifier does not resolve, which is the point: it is the one
+    part of a completion claim that cannot be asserted into existence.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
 
 
 def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:

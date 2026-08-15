@@ -1591,3 +1591,166 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Completion evidence contract
+#
+# `complete_task` stores a free-form summary and a free-form metadata dict
+# and checks neither against the world. A task that declares an
+# `evidence_repo` opts into having its claim checked against git instead.
+# ---------------------------------------------------------------------------
+
+
+def _evidence_task(conn, repo, **kw):
+    return kb.create_task(
+        conn, title="evidence", assignee="builder",
+        evidence_repo=str(repo), **kw,
+    )
+
+
+def test_evidence_gate_refuses_a_completion_git_cannot_corroborate(kanban_home, tmp_path):
+    """The four shapes a false completion takes, all refused.
+
+    Each is a claim the worker can make with no work behind it: a repo
+    that does not exist, a repo where nothing changed, a path that was
+    not touched, and a fabricated commit id.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    conn = kb.connect()
+    try:
+        # 1. The declared repo is not a git repository at all.
+        tid = _evidence_task(conn, tmp_path / "nowhere")
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="done",
+                             metadata={"changed_files": ["README.md"]})
+
+        # 2. Real repo, but the working tree is clean.
+        tid = _evidence_task(conn, repo)
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="done",
+                             metadata={"changed_files": ["README.md"]})
+
+        # 3. Something changed, but not the path that was claimed.
+        (repo / "README.md").write_text("edited\n", encoding="utf-8")
+        tid = _evidence_task(conn, repo)
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="done",
+                             metadata={"changed_files": ["untouched.py"]})
+
+        # 4. Real change, fabricated commit id.
+        tid = _evidence_task(conn, repo)
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="done",
+                             metadata={"changed_files": ["README.md"],
+                                       "commit": "deadbeefcafe"})
+
+        # 5. No claim at all is also a refusal — the gate cannot be
+        #    satisfied by omitting the field it checks.
+        tid = _evidence_task(conn, repo)
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="done",
+                             metadata={"tests_run": 916})
+    finally:
+        conn.close()
+
+
+def test_evidence_gate_accepts_real_work_without_a_commit(kanban_home, tmp_path):
+    """A dirty working tree is enough; a new file counts too.
+
+    Cards frequently forbid committing, so requiring a commit range would
+    reject honest work. `git diff` alone cannot see a file that did not
+    exist at HEAD, so untracked files are counted as well — otherwise
+    "write a new module" would be unsatisfiable.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    (repo / "README.md").write_text("edited\n", encoding="utf-8")
+    (repo / "brand_new.py").write_text("def f(): pass\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (repo / "noise.log").write_text("ignored\n", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        tid = _evidence_task(conn, repo)
+        assert kb.complete_task(conn, tid, summary="edited it",
+                                metadata={"changed_files": ["README.md"]}) is True
+
+        tid = _evidence_task(conn, repo)
+        assert kb.complete_task(conn, tid, summary="wrote a module",
+                                metadata={"changed_files": ["brand_new.py"]}) is True
+
+        # An ignored build artifact is not evidence.
+        tid = _evidence_task(conn, repo)
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="built it",
+                             metadata={"changed_files": ["noise.log"]})
+    finally:
+        conn.close()
+
+
+def test_evidence_gate_reads_the_builders_review_handoff(kanban_home, tmp_path):
+    """The reviewer completes the task, but the builder knows the paths.
+
+    Requiring evidence on the closing call alone would ask the reviewer to
+    author facts about work they did not do, so the gate falls back to the
+    `review_requested` run the builder left behind.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    (repo / "README.md").write_text("edited\n", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        tid = _evidence_task(conn, repo)
+        run_id = kb.claim_task(conn, tid, claimer="builder").current_run_id
+        kb.request_review(conn, tid, reviewer="reviewer", expected_run_id=run_id,
+                          summary="built it",
+                          metadata={"changed_files": ["README.md"]})
+        # The reviewer passes no metadata of its own.
+        assert kb.complete_task(conn, tid, summary="approved") is True
+
+        # Without that handoff evidence there is nothing to inherit.
+        tid = _evidence_task(conn, repo)
+        run_id = kb.claim_task(conn, tid, claimer="builder").current_run_id
+        kb.request_review(conn, tid, reviewer="reviewer", expected_run_id=run_id,
+                          summary="built it")
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="approved")
+    finally:
+        conn.close()
+
+
+def test_evidence_gate_is_opt_in_and_retryable(kanban_home, tmp_path):
+    """A task without `evidence_repo` completes exactly as before, and a
+    refused task is left untouched so a corrected retry lands.
+
+    Mirrors the created_cards gate's contract: the rejection happens
+    before the write transaction, so the worker can fix its claim and
+    call complete again.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    (repo / "README.md").write_text("edited\n", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        plain = kb.create_task(conn, title="no evidence declared", assignee="builder")
+        assert kb.complete_task(conn, plain, summary="done") is True
+
+        tid = _evidence_task(conn, repo)
+        with pytest.raises(kb.CompletionEvidenceError):
+            kb.complete_task(conn, tid, summary="done",
+                             metadata={"changed_files": ["untouched.py"]})
+        assert kb.get_task(conn, tid).status != "done"
+
+        assert kb.complete_task(conn, tid, summary="done",
+                                metadata={"changed_files": ["README.md"]}) is True
+        assert kb.get_task(conn, tid).status == "done"
+
+        kinds = [r["kind"] for r in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ?", (tid,))]
+        assert "completion_blocked_no_evidence" in kinds
+    finally:
+        conn.close()

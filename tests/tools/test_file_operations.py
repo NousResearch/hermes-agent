@@ -14,6 +14,7 @@ from tools.file_operations import (
     PatchResult,
     SearchResult,
     SearchMatch,
+    ExecuteResult,
     LintResult,
     ShellFileOperations,
     MAX_LINE_LENGTH,
@@ -898,3 +899,107 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+# =========================================================================
+# search_files truncated flag
+# =========================================================================
+
+class TestSearchTruncatedFlag:
+    """Regression for #86480: truncated flag is unreachable in content search.
+
+    When the search backend is capped at `fetch_limit = limit + offset` lines
+    by `head -n`, a result that exactly fills the cap must be reported as
+    truncated.  The bug used `total > offset + limit`, which is always False
+    because `total` can never exceed the cap.  The fix uses `>=` for content
+    matches and adds the same check to `files_only` branches.
+    """
+
+    def _make_ops(self, payload: str, exit_code: int = 0):
+        """Return a ShellFileOperations whose _exec always returns `payload`."""
+        env = MagicMock()
+        env.cwd = "/tmp/test"
+        ops = ShellFileOperations(env)
+
+        def _mock_exec(*args, **kwargs):
+            return ExecuteResult(stdout=payload, exit_code=exit_code)
+
+        object.__setattr__(ops, "_exec", _mock_exec)
+        return ops
+
+    def _content_lines(self, n: int) -> str:
+        return "\n".join(f"src/file_{i:02d}.py:{i + 1}:match line {i}" for i in range(n))
+
+    def _file_lines(self, n: int) -> str:
+        return "\n".join(f"src/file_{i:02d}.py" for i in range(n))
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_content_exactly_at_cap_is_truncated(self, backend):
+        """A full page at the head cap means there may be more matches."""
+        limit, offset = 10, 0
+        fetch_limit = limit + offset
+        payload = self._content_lines(fetch_limit)
+        ops = self._make_ops(payload)
+
+        if backend == "rg":
+            result = ops._search_with_rg("match", ".", None, limit, offset, "content", 0)
+        else:
+            result = ops._search_with_grep("match", ".", None, limit, offset, "content", 0)
+
+        assert result.error is None
+        assert len(result.matches) == limit
+        assert result.total_count == fetch_limit
+        assert result.truncated is True
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_content_below_cap_is_not_truncated(self, backend):
+        """Fewer matches than the cap means the result is complete."""
+        limit, offset = 10, 0
+        payload = self._content_lines(9)
+        ops = self._make_ops(payload)
+
+        if backend == "rg":
+            result = ops._search_with_rg("match", ".", None, limit, offset, "content", 0)
+        else:
+            result = ops._search_with_grep("match", ".", None, limit, offset, "content", 0)
+
+        assert result.error is None
+        assert len(result.matches) == 9
+        assert result.total_count == 9
+        assert result.truncated is False
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_content_with_offset_is_truncated(self, backend):
+        """A page starting at offset can still hit the cap."""
+        limit, offset = 10, 5
+        fetch_limit = limit + offset
+        payload = self._content_lines(fetch_limit)
+        ops = self._make_ops(payload)
+
+        if backend == "rg":
+            result = ops._search_with_rg("match", ".", None, limit, offset, "content", 0)
+        else:
+            result = ops._search_with_grep("match", ".", None, limit, offset, "content", 0)
+
+        assert result.error is None
+        assert len(result.matches) == limit
+        assert result.total_count == fetch_limit
+        assert result.truncated is True
+
+    @pytest.mark.parametrize("backend", ["rg", "grep"])
+    def test_files_only_at_cap_is_truncated(self, backend):
+        """Files-only search also reports truncation when the cap is hit."""
+        limit, offset = 10, 0
+        fetch_limit = limit + offset
+        payload = self._file_lines(fetch_limit)
+        ops = self._make_ops(payload)
+
+        if backend == "rg":
+            result = ops._search_with_rg("match", ".", None, limit, offset, "files_only", 0)
+        else:
+            result = ops._search_with_grep("match", ".", None, limit, offset, "files_only", 0)
+
+        assert result.error is None
+        assert len(result.files) == limit
+        assert result.total_count == fetch_limit
+        assert result.truncated is True

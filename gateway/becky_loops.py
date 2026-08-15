@@ -605,9 +605,7 @@ class BeckyLoopsBridgeServer:
                 ):
                     raise _RemoteFailure("idempotency_conflict")
                 return await self._replay_reply_attempt(existing)
-            row, transcript, current_revision = self._current_topic(
-                source_ref, expected_revision
-            )
+            row, _, _ = self._current_topic(source_ref, expected_revision)
             attempt, created = await self._get_or_create_reply_attempt(
                 idempotency_key=idempotency_key,
                 source_ref=source_ref,
@@ -623,12 +621,7 @@ class BeckyLoopsBridgeServer:
                 ):
                     raise _RemoteFailure("idempotency_conflict")
                 return await self._replay_reply_attempt(attempt)
-            return await self._continue_reply_attempt(
-                attempt=attempt,
-                row=row,
-                transcript=transcript,
-                current_revision=current_revision,
-            )
+            return await self._continue_reply_attempt(attempt=attempt)
         if method == "becky.loops.reply_retry":
             if not self._valid_reply_retry_params(params):
                 return _PROTOCOL_FAILURE
@@ -645,15 +638,8 @@ class BeckyLoopsBridgeServer:
                 or attempt.expected_revision != expected_revision
             ):
                 raise _RemoteFailure("idempotency_conflict")
-            row, transcript, current_revision = self._current_topic(
-                source_ref, expected_revision
-            )
-            return await self._continue_reply_attempt(
-                attempt=attempt,
-                row=row,
-                transcript=transcript,
-                current_revision=current_revision,
-            )
+            self._current_topic(source_ref, expected_revision)
+            return await self._continue_reply_attempt(attempt=attempt)
         if method == "becky.loops.close":
             if not self._valid_close_params(params):
                 return _PROTOCOL_FAILURE
@@ -727,6 +713,13 @@ class BeckyLoopsBridgeServer:
             self._purge_reply_attempts(now)
             return self._reply_attempts.get(idempotency_key)
 
+    async def _discard_reply_attempt(self, attempt: _ReplyAttempt) -> None:
+        async with self._reply_attempts_lock:
+            for key, stored_attempt in self._reply_attempts.items():
+                if stored_attempt is attempt:
+                    self._reply_attempts.pop(key)
+                    return
+
     def _purge_reply_attempts(self, now: float) -> None:
         expired = [
             key
@@ -748,9 +741,6 @@ class BeckyLoopsBridgeServer:
         self,
         *,
         attempt: _ReplyAttempt,
-        row: dict[str, Any],
-        transcript: list[dict[str, Any]],
-        current_revision: str,
     ) -> dict[str, Any]:
         async with attempt.lock:
             attempt.in_progress = True
@@ -760,6 +750,13 @@ class BeckyLoopsBridgeServer:
                 if attempt.state == "send_failed":
                     raise _RemoteFailure("reply_retry_unavailable")
                 if attempt.comment_message_id is None:
+                    try:
+                        self._current_topic(
+                            attempt.source_ref, attempt.expected_revision
+                        )
+                    except Exception:
+                        await self._discard_reply_attempt(attempt)
+                        raise
                     try:
                         receipt = await self._send_topic(
                             thread_id=attempt.thread_id,
@@ -775,6 +772,13 @@ class BeckyLoopsBridgeServer:
                     attempt.comment_message_id = receipt.message_id
                     attempt.comment_sent_at = datetime.now(UTC).isoformat()
                 if attempt.answer is None:
+                    try:
+                        row, transcript, _ = self._current_topic(
+                            attempt.source_ref, attempt.expected_revision
+                        )
+                    except Exception:
+                        attempt.state = "answer_unavailable"
+                        raise
                     try:
                         answer = await self._generate_reply(
                             row=row,
@@ -793,6 +797,13 @@ class BeckyLoopsBridgeServer:
                     attempt.answer = answer
                     attempt.answer_generated_at = datetime.now(UTC).isoformat()
                     attempt.state = "answer_pending"
+                try:
+                    _, _, current_revision = self._current_topic(
+                        attempt.source_ref, attempt.expected_revision
+                    )
+                except _RemoteFailure:
+                    attempt.state = "answer_pending"
+                    raise
                 try:
                     await self._send_topic(
                         thread_id=attempt.thread_id,

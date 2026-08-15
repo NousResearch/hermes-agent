@@ -23,6 +23,7 @@ from gateway.becky_loops import BeckyLoopsBridgeServer, BeckyLoopsConfig
 
 SOURCE_REF = "loop_" + "A" * 43
 REVISION = "sha256:" + "a" * 64
+NEW_REVISION = "sha256:" + "b" * 64
 IDEMPOTENCY_KEY = "8c9c8217-cc0f-463d-a430-173f1802edb2"
 SECOND_IDEMPOTENCY_KEY = "f42862c7-55d7-423e-bc4f-b00b8538f0c5"
 
@@ -72,6 +73,22 @@ class RacingStore(FakeStore):
     def revision_for_topic(self, row: dict, transcript: list[dict]) -> str:
         del row, transcript
         return "sha256:" + "b" * 64
+
+
+class SequencedRevisionStore(FakeStore):
+    def __init__(self, revisions: list[str | Exception]) -> None:
+        super().__init__()
+        self.revisions = list(revisions)
+
+    def revision_for_topic(self, row: dict, transcript: list[dict]) -> str:
+        del row, transcript
+        if len(self.revisions) > 1:
+            revision = self.revisions.pop(0)
+        else:
+            revision = self.revisions[0]
+        if isinstance(revision, Exception):
+            raise revision
+        return revision
 
 
 def loop_summary() -> LoopSummary:
@@ -183,6 +200,17 @@ class FakeReplyGenerator:
         return str(outcome)
 
 
+class RevisionMutatingReplyGenerator(FakeReplyGenerator):
+    def __init__(self, store: FakeStore) -> None:
+        super().__init__(["Retained normalized answer."])
+        self.store = store
+
+    async def generate(self, **kwargs: Any) -> str:
+        answer = await super().generate(**kwargs)
+        self.store.rows[0]["revision"] = NEW_REVISION
+        return answer
+
+
 class BlockingReplyGenerator(FakeReplyGenerator):
     def __init__(self) -> None:
         super().__init__()
@@ -223,6 +251,18 @@ class FakeTelegramAdapter:
             message_id=str(900 + len(self.calls)),
             raw_response={"thread_fallback": False},
         )
+
+
+class RevisionMutatingTopicSender(FakeTopicSender):
+    def __init__(self, store: FakeStore) -> None:
+        super().__init__()
+        self.store = store
+
+    async def send_topic(self, **kwargs: Any) -> object:
+        receipt = await super().send_topic(**kwargs)
+        if len(self.calls) == 1:
+            self.store.rows[0]["revision"] = NEW_REVISION
+        return receipt
 
 
 class ProjectionDB:
@@ -504,6 +544,117 @@ async def test_bridge_rechecks_revision_before_reply_send_or_generation() -> Non
     assert response["error"] == {"code": -32000, "message": "revision_conflict"}
     assert sender.calls == []
     assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_rechecks_revision_immediately_before_comment_send() -> None:
+    store = SequencedRevisionStore([REVISION, NEW_REVISION])
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(store=store, sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    assert response["error"] == {"code": -32000, "message": "revision_conflict"}
+    assert sender.calls == []
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_discards_unsent_attempt_when_revision_recheck_crashes() -> None:
+    store = SequencedRevisionStore([REVISION, RuntimeError("db unavailable"), REVISION])
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(store=store, sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    response = await server._dispatch(request)
+    retry = await server._dispatch(request)
+
+    assert response["error"] == {"code": -32600, "message": "protocol"}
+    assert retry["result"]["answer_state"] == "answered"
+    assert len(sender.calls) == 2
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_rechecks_revision_after_comment_before_generation() -> None:
+    store = FakeStore()
+    sender = RevisionMutatingTopicSender(store)
+    generator = FakeReplyGenerator()
+    server = reply_server(store=store, sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    response = await server._dispatch(request)
+    replay = await server._dispatch(request)
+
+    assert response["error"] == {"code": -32000, "message": "revision_conflict"}
+    assert replay["result"]["answer_state"] == "answer_unavailable"
+    assert sender.calls[0]["text"] == "Can you clarify the next step?"
+    assert len(sender.calls) == 1
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_replays_safe_state_when_post_comment_recheck_crashes() -> None:
+    store = SequencedRevisionStore([REVISION, REVISION, RuntimeError("db unavailable")])
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(store=store, sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    response = await server._dispatch(request)
+    replay = await server._dispatch(request)
+
+    assert response["error"] == {"code": -32600, "message": "protocol"}
+    assert replay["result"]["answer_state"] == "answer_unavailable"
+    assert len(sender.calls) == 1
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_rechecks_revision_after_generation_before_answer_send() -> None:
+    store = FakeStore()
+    sender = FakeTopicSender()
+    generator = RevisionMutatingReplyGenerator(store)
+    server = reply_server(store=store, sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    response = await server._dispatch(request)
+    replay = await server._dispatch(request)
+
+    assert response["error"] == {"code": -32000, "message": "revision_conflict"}
+    assert replay["result"]["answer_state"] == "answer_pending"
+    assert replay["result"]["answer"] == "Retained normalized answer."
+    assert len(sender.calls) == 1
+    assert len(generator.calls) == 1
 
 
 @pytest.mark.asyncio

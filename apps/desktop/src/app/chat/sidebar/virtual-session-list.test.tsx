@@ -93,6 +93,7 @@ describe('VirtualSessionList', () => {
         onDeleteSession={noop}
         onResumeSession={noop}
         onTogglePin={noop}
+        onToggleUnread={noop}
         pinned={false}
         rows={rows}
         sortable={false}

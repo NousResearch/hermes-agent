@@ -172,3 +172,47 @@ class TestGetCategories:
         from hermes_cli.skills_config import _get_categories
         skills = [{"name": "a", "category": None, "description": ""}]
         assert "uncategorized" in _get_categories(skills)
+
+
+# ---------------------------------------------------------------------------
+# _normalize_skill_names — multiline block scalar (#48333)
+# ---------------------------------------------------------------------------
+
+class TestNormalizeSkillNamesMultiline:
+    """_normalize_skill_names must handle YAML block scalars produced by
+    ``hermes config set`` that embed the whole list as a multi-line string
+    with ``\\n`` separators and ``- `` prefixes (e.g.
+    ``"- airtable\\n- architecture\\n- ascii-art"``)."""
+
+    def test_multiline_block_scalar(self):
+        from hermes_cli.skills_config import _normalize_skill_names
+        result = _normalize_skill_names(
+            "- airtable\n- architecture\n- ascii-art"
+        )
+        assert result == {"airtable", "architecture", "ascii-art"}
+
+    def test_single_line_scalar_unchanged(self):
+        from hermes_cli.skills_config import _normalize_skill_names
+        assert _normalize_skill_names("my-skill") == {"my-skill"}
+
+    def test_yaml_list_unchanged(self):
+        from hermes_cli.skills_config import _normalize_skill_names
+        assert _normalize_skill_names(["a", "b"]) == {"a", "b"}
+
+    def test_none_is_empty(self):
+        from hermes_cli.skills_config import _normalize_skill_names
+        assert _normalize_skill_names(None) == set()
+
+    def test_multiline_no_dash_prefix(self):
+        """Lines without ``- `` prefix are treated as bare names."""
+        from hermes_cli.skills_config import _normalize_skill_names
+        assert _normalize_skill_names("airtable\narchitecture") == {
+            "airtable", "architecture"
+        }
+
+    def test_multiline_with_blank_lines(self):
+        from hermes_cli.skills_config import _normalize_skill_names
+        result = _normalize_skill_names(
+            "- airtable\n\n- architecture\n\n\n"
+        )
+        assert result == {"airtable", "architecture"}

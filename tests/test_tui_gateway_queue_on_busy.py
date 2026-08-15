@@ -357,6 +357,148 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
+# ── steer-mode burst preservation (#86134) ─────────────────────────────────
+
+def test_busy_steer_fallthrough_queues_without_interrupting(monkeypatch):
+    """A steer-mode fall-through must keep queue semantics, never interrupt.
+
+    #86134: ``AIAgent.interrupt()`` drops the pending steer buffer, so a hard
+    interrupt fired for a fall-through message destroyed the earlier
+    (successfully steered) messages of a burst AND killed the live turn.
+    """
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    interrupted = threading.Event()
+    agent = types.SimpleNamespace(
+        steer=lambda text: False,  # steer rejected → falls through to queue
+        interrupt=lambda *a, **k: interrupted.set(),
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit("r1", "sid", session, "follow-up", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == "follow-up"
+    # _interrupt_busy_session runs on a worker thread — give it a beat.
+    assert not interrupted.wait(0.2), "steer-mode fall-through must not hard-interrupt"
+
+
+def test_busy_steer_exception_falls_back_to_queue_without_interrupting(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    interrupted = threading.Event()
+    agent = types.SimpleNamespace(
+        steer=lambda text: (_ for _ in ()).throw(RuntimeError("boom")),
+        interrupt=lambda *a, **k: interrupted.set(),
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit("r1", "sid", session, "still here?", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == "still here?"
+    assert not interrupted.wait(0.2), "steer failure must not escalate to interrupt"
+
+
+def test_busy_steer_mode_multimodal_payload_queues_without_interrupting(monkeypatch):
+    """Image-bearing payloads are not steerable; they must queue, not kill."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    rich = [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    steered = []
+    interrupted = threading.Event()
+    agent = types.SimpleNamespace(
+        steer=lambda text: steered.append(text) or True,
+        interrupt=lambda *a, **k: interrupted.set(),
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit("r1", "sid", session, rich, "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert steered == []
+    assert session["queued_prompt"]["text"] == rich
+    assert not interrupted.wait(0.2), "multimodal steer fall-through must not interrupt"
+
+
+def test_busy_steer_burst_mix_preserves_accepted_steers_and_queue(monkeypatch):
+    """Burst of N messages: accepted steers survive a later fall-through.
+
+    Models the real ``AIAgent`` contract: ``steer()`` concatenates into a
+    pending buffer that ``interrupt()`` would clear. A rejected message later
+    in the burst must not clear the buffer or stop the turn (#86134).
+    """
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+
+    class _Agent:
+        def __init__(self):
+            self._pending_steer = None
+            self.accept = True
+            self.interrupted = threading.Event()
+
+        def steer(self, text):
+            if not self.accept:
+                return False
+            self._pending_steer = (
+                f"{self._pending_steer}\n{text}" if self._pending_steer else text
+            )
+            return True
+
+        def interrupt(self, *a, **k):
+            self._pending_steer = None  # what the real interrupt() does
+            self.interrupted.set()
+
+    agent = _Agent()
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {"user": "original ask"}
+
+    r1 = server._handle_busy_submit("r1", "sid", session, "first note", "ws-1")
+    r2 = server._handle_busy_submit("r2", "sid", session, "second note", "ws-1")
+    agent.accept = False  # third message loses the steer race
+    r3 = server._handle_busy_submit("r3", "sid", session, "third note", "ws-1")
+
+    assert r1["result"]["status"] == "steered"
+    assert r2["result"]["status"] == "steered"
+    assert r3["result"]["status"] == "queued"
+    # No hard interrupt fired for the fall-through message...
+    assert not agent.interrupted.wait(0.2), "burst fall-through must not hard-interrupt"
+    # ...so earlier steers are preserved, distinct, in order.
+    assert agent._pending_steer == "first note\nsecond note"
+    # Fall-through preserved for the turn-end drain.
+    assert session["queued_prompt"]["text"] == "third note"
+
+
+def test_busy_steer_fallthrough_burst_drains_all_texts_fifo(monkeypatch):
+    """Every fall-through text of a burst reaches the model after turn end."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    interrupted = threading.Event()
+    agent = types.SimpleNamespace(
+        steer=lambda text: False,
+        interrupt=lambda *a, **k: interrupted.set(),
+    )
+    session = _session(agent=agent, running=True)
+    for text in ("msg A", "msg B", "msg C"):
+        resp = server._handle_busy_submit("r", "sid", session, text, "ws-1")
+        assert resp["result"]["status"] == "queued"
+    assert not interrupted.wait(0.2), "queue fall-through burst must not interrupt"
+
+    dispatched = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, _session, text, **kwargs: dispatched.append(text),
+    )
+    session["running"] = False
+    while server._drain_queued_prompt("drain", "sid", session):
+        session["running"] = False
+        if not session.get("queued_prompt"):
+            break
+
+    joined = "\n".join(str(t) for t in dispatched)
+    for text in ("msg A", "msg B", "msg C"):
+        assert text in joined, f"burst message dropped: {text!r}"
+
+
 
 
 

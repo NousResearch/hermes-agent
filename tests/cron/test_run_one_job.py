@@ -176,7 +176,9 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
         "run_job",
         lambda *_a, **_kw: (True, "out", "final response", None),
     )
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(
+        s, "save_job_output", lambda jid, out, response: f"/tmp/{jid}.txt"
+    )
     monkeypatch.setattr(
         s,
         "_deliver_result",

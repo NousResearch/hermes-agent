@@ -461,7 +461,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     if output_mode == "files_only":
         return SearchResult(
             files=lines[offset:offset + limit], total_count=len(lines),
-            truncated=bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
+            truncated=len(lines) >= offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
     if output_mode == "count":
         counts = {}
         for line in lines:
@@ -492,7 +492,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     total = len(matches)
     return SearchResult(
         matches=matches[offset:offset + limit], total_count=total,
-        truncated=total > offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning,
+        truncated=total >= offset + limit or bool(limit_reason), limit_reason=limit_reason, warning=warning,
         **skip,
     )
 

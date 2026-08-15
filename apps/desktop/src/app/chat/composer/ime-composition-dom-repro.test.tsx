@@ -118,6 +118,7 @@ describe('composer IME composition — send button visibility (#39614)', () => {
 
       const flushEditorToDraft = (editor: HTMLDivElement) => {
         const next = editor.textContent ?? ''
+
         if (next !== draftRef.current) {
           draftRef.current = next
           setDraft(next)
@@ -130,9 +131,11 @@ describe('composer IME composition — send button visibility (#39614)', () => {
         if (composingRef.current || event.nativeEvent.isComposing) {
           return
         }
+
         if (event.key === 'Enter' && event.keyCode === 229) {
           return
         }
+
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault()
           submitCount++
@@ -151,7 +154,7 @@ describe('composer IME composition — send button visibility (#39614)', () => {
             composingRef.current = true
           }}
           onInput={event => {
-            if (composingRef.current) return
+            if (composingRef.current) {return}
             flushEditorToDraft(event.currentTarget)
           }}
           onKeyDown={handleKeyDown}

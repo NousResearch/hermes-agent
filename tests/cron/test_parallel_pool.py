@@ -178,7 +178,17 @@ class TestRunningJobGuard:
         monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "finish_execution", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "claim_dispatch", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            sched,
+            "claim_job_for_fire",
+            lambda job_id, **_kw: dict(
+                healthy_job, fire_claim={"by": "test-owner", "at": "now"}
+            )
+            if job_id == "healthy-job"
+            else None,
+        )
         monkeypatch.setattr(sched, "mark_execution_running", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)
 
         n = sched.tick(verbose=False)
 

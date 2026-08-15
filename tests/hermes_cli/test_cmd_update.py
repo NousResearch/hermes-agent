@@ -3,7 +3,7 @@
 import hashlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -808,6 +808,127 @@ class TestNodeRuntimeNpmResolution:
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
+
+    def test_update_rebuilds_desktop_that_disappears_mid_update(self):
+        """A previously packaged Desktop must be rebuilt when its release tree vanishes."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with (
+            patch.object(
+                hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
+            ) as packaged,
+            patch.object(hm, "_desktop_dist_exists", return_value=False),
+            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
+            patch.object(hm, "_desktop_build_needed", return_value=True),
+            patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
+        ):
+            had_desktop_app_before_update = update_cmd._desktop_app_present(desktop_dir)
+            assert not update_cmd._desktop_app_present(desktop_dir)
+            update_cmd._rebuild_desktop_after_update(
+                desktop_dir,
+                had_desktop_app_before_update=had_desktop_app_before_update,
+            )
+
+        assert packaged.call_count == 2
+        desktop_build.assert_called_once_with(
+            [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
+            cwd=PROJECT_ROOT,
+            env=ANY,
+        )
+
+    def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
+        """The Windows ZIP fallback restores Desktop after replacing ``apps/``."""
+        import zipfile
+
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        project_root = tmp_path / "hermes-agent"
+        (project_root / ".git").mkdir(parents=True)
+        desktop_dir = project_root / "apps" / "desktop"
+        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+        packaged_exe.parent.mkdir(parents=True)
+        packaged_exe.write_bytes(b"desktop")
+
+        def write_source_zip(_url, destination):
+            with zipfile.ZipFile(destination, "w") as archive:
+                archive.writestr("hermes-agent-main/apps/desktop/package.json", "{}")
+
+        def fail_git_fetch(command, **_kwargs):
+            if "fetch" in command:
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        desktop_builds = []
+
+        def rebuild_desktop(*_args, **_kwargs):
+            desktop_builds.append(not packaged_exe.exists())
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(hm, "_is_windows", lambda: True)
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
+        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr(hm, "_get_origin_url", lambda *_args: "")
+        monkeypatch.setattr(
+            hm,
+            "_desktop_packaged_executable",
+            lambda _desktop_dir: packaged_exe if packaged_exe.exists() else None,
+        )
+        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm.cmd")
+        monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(hm, "_run_logged_subprocess", rebuild_desktop)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
+        monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)
+        monkeypatch.setattr(hm, "_refresh_bootstrap_cache_scripts", lambda _branch: None)
+        monkeypatch.setattr(
+            hm, "_install_python_dependencies_with_optional_fallback", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr(hm, "_refresh_active_memory_provider_dependencies", lambda: None)
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *_args: None)
+        monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_args: None)
+        monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_args: None)
+        monkeypatch.setattr(
+            update_cmd,
+            "_validate_critical_modules_import",
+            lambda *_args: (True, None, None),
+        )
+        monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+        monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
+        monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
+        monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda _failures: None)
+        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path / "hermes-home")
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch("subprocess.run", side_effect=fail_git_fetch),
+            patch("urllib.request.urlretrieve", side_effect=write_source_zip),
+            patch("hermes_cli.managed_uv.ensure_uv", return_value="uv"),
+            patch("hermes_cli.managed_uv.update_managed_uv"),
+            patch(
+                "tools.skills_sync.sync_skills",
+                return_value={
+                    "copied": [],
+                    "updated": [],
+                    "user_modified": [],
+                    "cleaned": [],
+                    "relocated": [],
+                },
+            ),
+            patch("hermes_cli.model_catalog.seed_cache_from_checkout", return_value=False),
+        ):
+            update_cmd._cmd_update_impl(
+                SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
+                gateway_mode=False,
+            )
+
+        assert desktop_builds == [True]
 
 
 class TestUpdateNodeDependencies:

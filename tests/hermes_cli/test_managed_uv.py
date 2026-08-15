@@ -783,15 +783,6 @@ class TestPatchRetryOnVulnerableCandidate:
         fallback tries the next minor line, which may succeed."""
         import hermes_cli.managed_uv as managed_uv
 
-        install_calls = []
-        fake_run, fake_probe = self._versioned_probe_run({"3.11"})
-        original_fake_run = fake_run
-
-        def counting_fake_run(cmd, **kwargs):
-            if "install" in cmd:
-                install_calls.append(cmd[3])
-            return original_fake_run(cmd, **kwargs)
-
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
 
         current = SQLiteRuntimeInfo(
@@ -804,7 +795,14 @@ class TestPatchRetryOnVulnerableCandidate:
         all_vulnerable = {f"3.11.{v}" for v in range(30, 10, -1)} | {"3.11"}
         fake_run2, fake_probe2 = self._versioned_probe_run(all_vulnerable)
 
-        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run2)
+        install_calls = []
+
+        def counting_fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                install_calls.append(cmd[3])
+            return fake_run2(cmd, **kwargs)
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", counting_fake_run)
         monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe2)
         monkeypatch.setattr(
             managed_uv, "_list_available_patches", lambda *a, **kw: huge_patch_list
@@ -822,6 +820,185 @@ class TestPatchRetryOnVulnerableCandidate:
             "sanity: constant should stay small since each attempt is a "
             "real download+install+probe cycle"
         )
+        same_minor_explicit = [
+            call for call in install_calls if call.startswith("3.11.")
+        ]
+        assert len(same_minor_explicit) <= managed_uv._MAX_PATCH_RETRIES, (
+            f"same-minor explicit retries must be capped: {same_minor_explicit}"
+        )
+        assert install_calls[0] == "3.11"
+        # The run ends the moment the bare next-minor fallback succeeds.
+        assert install_calls[-1] == "3.12"
+        assert install_calls.count("3.12") == 1
+
+
+class TestMinorLineFallForward:
+    """Regression tests for issue #76106: when EVERY build on the current
+    minor line (e.g. all of 3.11 on Windows) links a vulnerable SQLite,
+    the provisioner must fall forward to the next supported minor line
+    (3.12, then 3.13) -- first via a bare minor request, then via explicit
+    patches on that line -- instead of leaving the user stuck on every
+    `hermes update` with no path to a fixed runtime.
+    """
+
+    @staticmethod
+    def _mapped_run(resolutions, fixed_versions, install_calls):
+        """Fake subprocess.run/probe pair driven by explicit tables:
+
+        - *resolutions*: request string -> python_version tuple the probe
+          reports for that request (bare minors resolve like uv would).
+        - *fixed_versions*: set of version tuples that link FIXED SQLite;
+          everything else probes as vulnerable 3.50.4.
+        - *install_calls*: list collecting each `uv python install` request,
+          in order, so tests can assert the actual request sequence.
+        """
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        state: dict = {"requested": None}
+
+        def fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                # cmd = [uv, "python", "install", <request>, ...]
+                state["requested"] = cmd[3]
+                state["generation"] = Path(kwargs["env"]["UV_PYTHON_INSTALL_DIR"])
+                install_calls.append(cmd[3])
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "list" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # uv python find → a path inside the generation dir, tagged with
+            # the request that produced it so the probe can look it up.
+            python = state["generation"] / "cpython" / "bin" / "python3"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text(state["requested"] or "")
+            return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
+
+        def fake_probe(python, **kwargs):
+            requested = Path(python).read_text()
+            version = resolutions[requested]
+            if version in fixed_versions:
+                return SQLiteRuntimeInfo(
+                    executable=Path(python),
+                    base_prefix=Path(python).parent.parent,
+                    python_version=version, sqlite_version=(3, 53, 1),
+                    sqlite_version_string="3.53.1", sqlite_source_id="fixed",
+                )
+            return SQLiteRuntimeInfo(
+                executable=Path(python),
+                base_prefix=Path(python).parent.parent,
+                python_version=version, sqlite_version=(3, 50, 4),
+                sqlite_version_string="3.50.4", sqlite_source_id="vulnerable",
+            )
+
+        return fake_run, fake_probe
+
+    @staticmethod
+    def _current_3_11_14():
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        return SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
+            python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4", sqlite_source_id="old",
+        )
+
+    def test_explicit_patch_fallback_when_bare_next_minor_is_vulnerable(
+        self, tmp_path, monkeypatch
+    ):
+        """The review-gap scenario from #76252: the bare '3.12' request
+        resolves to a VULNERABLE 3.12 build, but an explicit 3.12 patch
+        links fixed SQLite -- the `_list_available_patches(..., '3.12', ...)`
+        fallback branch must run, skip the already-tried bare resolution,
+        and succeed via the explicit patch."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        fake_run, fake_probe = self._mapped_run(
+            resolutions={
+                "3.11": (3, 11, 14),      # bare current minor: vulnerable
+                "3.12": (3, 12, 11),      # bare next minor: ALSO vulnerable
+                "3.12.10": (3, 12, 10),   # explicit patch: fixed
+            },
+            fixed_versions={(3, 12, 10)},
+            install_calls=install_calls,
+        )
+        patch_lists = {
+            # No newer 3.11 patch exists (the Windows #76106 reality).
+            "3.11": [(3, 11, 14), (3, 11, 13)],
+            # Newest 3.12 is the same build the bare request resolved to.
+            "3.12": [(3, 12, 11), (3, 12, 10)],
+        }
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches",
+            lambda uv_bin, minor, **kw: patch_lists[minor],
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=self._current_3_11_14()
+        )
+        assert result is not None, (
+            "Explicit-patch fallback on the next minor line must recover"
+        )
+        _, _, candidate = result
+        assert candidate.python_version == (3, 12, 10)
+        assert not candidate.wal_reset_vulnerable
+        # The actual uv-install request sequence: bare current minor, then
+        # bare next minor, then STRAIGHT to the fixed explicit patch --
+        # 3.12.11 must NOT be re-requested explicitly, because the bare
+        # '3.12' attempt already resolved to (and rejected) that build.
+        assert install_calls == ["3.11", "3.12", "3.12.10"]
+
+    def test_returns_none_with_bounded_attempts_when_all_minors_exhausted(
+        self, tmp_path, monkeypatch
+    ):
+        """When every build on every supported minor line (3.11-3.13) is
+        vulnerable, the provisioner must give up with None -- and the total
+        install workload must stay bounded by _MAX_PATCH_RETRIES per line."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        resolutions = {"3.11": (3, 11, 14), "3.12": (3, 12, 30), "3.13": (3, 13, 30)}
+        patch_lists = {}
+        for minor in (11, 12, 13):
+            versions = [(3, minor, v) for v in range(30, 10, -1)]  # 20 patches
+            patch_lists[f"3.{minor}"] = versions
+            for version in versions:
+                resolutions[".".join(str(p) for p in version)] = version
+
+        fake_run, fake_probe = self._mapped_run(
+            resolutions=resolutions, fixed_versions=set(),
+            install_calls=install_calls,
+        )
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches",
+            lambda uv_bin, minor, **kw: patch_lists[minor],
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=self._current_3_11_14()
+        )
+        assert result is None, "Nothing fixed anywhere: must give up cleanly"
+
+        cap = managed_uv._MAX_PATCH_RETRIES
+        # Per line: one bare request + at most _MAX_PATCH_RETRIES explicit
+        # patches; three lines total (3.11, 3.12, 3.13) and nothing beyond
+        # 3.13 (requires-python is <3.14).
+        assert install_calls.count("3.11") == 1
+        assert install_calls.count("3.12") == 1
+        assert install_calls.count("3.13") == 1
+        assert not any(call.startswith("3.14") for call in install_calls)
+        for minor in (11, 12, 13):
+            explicit = [
+                call for call in install_calls
+                if call.startswith(f"3.{minor}.")
+            ]
+            assert len(explicit) <= cap, (
+                f"3.{minor} explicit retries must be capped at {cap}: {explicit}"
+            )
+        assert len(install_calls) <= 3 * (1 + cap)
 
 
 class TestListAvailablePatches:

@@ -515,6 +515,7 @@ def _attempt_install_generation(
     python_root: Path,
     current: SQLiteRuntimeInfo,
     allow_minor_upgrade: bool = False,
+    tried_versions: set[tuple[int, int, int]] | None = None,
 ) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
     """One install+probe attempt for a specific version request (bare minor
     like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
@@ -522,6 +523,12 @@ def _attempt_install_generation(
     cleaned up before the next attempt, matching --reinstall semantics.
     Returns None (and cleans up) on any failure, including a vulnerable
     or off-line candidate.
+
+    When *tried_versions* is given, the probed candidate's version is
+    recorded in it so callers looping over explicit patches can skip a
+    version a bare-minor request already resolved to (and rejected) --
+    retrying it explicitly would spend a full download+install+probe+delete
+    cycle to reach a certain rejection.
     """
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     generation = python_root / f"generation-{token}"
@@ -594,6 +601,8 @@ def _attempt_install_generation(
         logger.warning("could not probe candidate Python runtime: %s", python)
         _remove_tree(generation, boundary=python_root)
         return None
+    if tried_versions is not None:
+        tried_versions.add(candidate.python_version[:3])
     if allow_minor_upgrade:
         # When falling forward to a higher minor line (e.g. 3.11 → 3.12),
         # only reject downgrades — allow the minor to differ.
@@ -639,9 +648,11 @@ def _install_safe_python_generation(
 
     request = _runtime_request(current)
     print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    tried_versions = {current.python_version[:3]}
     result = _attempt_install_generation(
         uv_bin, request, project_root=project_root,
         python_root=python_root, current=current,
+        tried_versions=tried_versions,
     )
     if result is not None:
         return result
@@ -657,7 +668,6 @@ def _install_safe_python_generation(
     patches = _list_available_patches(
         uv_bin, request, cwd=project_root, env=env_for_list
     )
-    tried_versions = {current.python_version[:3]}
     attempts = 0
     for version_tuple in patches:
         if attempts >= _MAX_PATCH_RETRIES:
@@ -693,6 +703,7 @@ def _install_safe_python_generation(
     # (>=3.11,<3.14) and the downstream import smoke-test gate
     # compatibility; we only need to stay inside that window.
     cur_major, cur_minor = current.python_version[:2]
+    fb_tried: set[tuple[int, int, int]] = set(tried_versions)
     for next_minor in range(cur_minor + 1, 14):  # up to 3.13
         next_request = f"{cur_major}.{next_minor}"
         print(
@@ -703,10 +714,14 @@ def _install_safe_python_generation(
             uv_bin, next_request, project_root=project_root,
             python_root=python_root, current=current,
             allow_minor_upgrade=True,
+            tried_versions=fb_tried,
         )
         if result is not None:
             return result
-        # Also try explicit patches on this minor line
+        # Also try explicit patches on this minor line, skipping whatever
+        # version the bare request above already resolved to (retrying it
+        # explicitly would spend a full download+install+probe+delete cycle
+        # to reach a certain rejection).
         env_for_list = managed_python_env(project_root, install_dir=python_root)
         fb_patches = _list_available_patches(
             uv_bin, next_request, cwd=project_root, env=env_for_list
@@ -715,7 +730,11 @@ def _install_safe_python_generation(
         for version_tuple in fb_patches:
             if fb_attempts >= _MAX_PATCH_RETRIES:
                 break
+            if version_tuple in fb_tried:
+                continue
+            fb_tried.add(version_tuple)
             explicit = ".".join(str(p) for p in version_tuple)
+            print(f"  → Retrying with explicit patch {explicit}...")
             fb_attempts += 1
             result = _attempt_install_generation(
                 uv_bin, explicit, project_root=project_root,

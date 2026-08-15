@@ -29,8 +29,8 @@ gateway ``/learn``, the dashboard "Learn a skill" panel) calls
 from __future__ import annotations
 
 # The house-style rules, distilled from AGENTS.md "Skill authoring standards
-# (HARDLINE)" and the hermes-agent-dev new-skill salvage reference. Embedded in
-# the prompt so the agent authors skills the way a maintainer would by hand.
+# (HARDLINE)". Embedded in the prompt so the agent authors skills the way a
+# maintainer would by hand.
 _AUTHORING_STANDARDS = """\
 Follow the Hermes skill-authoring standards exactly. These are the same
 HARDLINE rules a maintainer enforces in review:

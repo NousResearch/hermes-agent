@@ -183,9 +183,10 @@ class TestBuildJobPromptScansSkillContent:
     def test_skill_with_env_exfil_command_in_prose_is_allowed(self, cron_env):
         """A skill that *describes* an exfil command in prose (e.g. a
         security postmortem documenting "the attacker could just
-        ``cat ~/.hermes/.env``") must NOT be blocked. This was a real
-        false positive in the bundled `hermes-agent-dev` skill that
-        silently killed every PR-scout cron job for weeks.
+        ``cat ~/.hermes/.env``") must NOT be blocked. A skill containing
+        prose that describes an attack command in this shape once caused
+        a real false positive that silently killed every PR-scout cron
+        job for weeks.
 
         Skill bodies are vetted at install time by ``skills_guard.py``;
         the runtime cron scan is only a tripwire for unambiguous

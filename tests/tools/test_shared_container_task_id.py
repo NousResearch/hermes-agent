@@ -10,9 +10,9 @@ environments opt in to isolation by calling
 every other task_id collapses back to ``"default"``.
 
 If you change the collapse logic, update both the helper and these
-tests -- see `hermes-agent-dev` skill, "Why do subagents get their own
-containers?" section, and the Container lifecycle paragraph under
-Docker Backend in ``website/docs/user-guide/configuration.md``.
+tests -- see "Why do subagents get their own containers?" and the
+Container lifecycle paragraph under Docker Backend in
+``website/docs/user-guide/configuration.md``.
 """
 
 import pytest

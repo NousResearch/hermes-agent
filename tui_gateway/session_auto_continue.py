@@ -287,11 +287,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
-        if queued.get("transport") is not None:
-            # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
-            # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
-            # whole drained turn.
-            _attach_session_transport(session, queued["transport"])
+        queued_transport = queued.get("transport")
+        # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
+        # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
+        # whole drained turn. A peer that disconnected while its prompt sat in the queue is skipped: the
+        # prompt still runs, only the dead pin is dropped.
+        if queued_transport is not None and not _transport_is_dead(queued_transport):
+            _attach_session_transport(session, queued_transport)
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:

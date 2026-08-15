@@ -1798,6 +1798,14 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
     ``refs/remotes/*``. If a repo has no remote-tracking refs yet, there is no
     usable remote baseline to compare against, so treat it as having no
     "unpushed" commits.
+
+    SHALLOW-CLONE CAVEAT: in a shallow clone (the installer default) the
+    shallow boundary can disconnect an older worktree HEAD from origin/*,
+    making already-public commits look unpushed. The verdict here stays
+    conservative (True) on purpose — deleting on unverifiable history would
+    risk real work. Callers that can afford it should deepen first via
+    ``_deepen_shallow_repo`` (the startup pruner does) or check
+    ``_repo_is_shallow`` before presenting this verdict as fact.
     """
     import subprocess
 
@@ -1841,6 +1849,88 @@ def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
         return bool(result.stdout.strip())
     except Exception:
         return True
+
+
+def _repo_is_shallow(repo_path: str, timeout: int = 5) -> bool:
+    """Return whether *repo_path* belongs to a shallow clone.
+
+    Shallowness poisons every history-connectivity verdict the worktree
+    machinery relies on: an older worktree's HEAD (a past snapshot of main)
+    is disconnected from current ``origin/main`` by the shallow boundary, so
+    ``git log HEAD --not --remotes`` misreports thousands of already-public
+    commits as "unpushed" and the worktree is preserved forever. The default
+    installer clones with ``--depth 1``, so this is the normal state of a
+    user install, not an edge case.
+
+    Fails toward False: if git can't be queried we don't want callers to
+    take shallow-specific branches on top of an unknown state.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_path,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
+    """One-time blobless unshallow so history-based verdicts become correct.
+
+    Fetches the full commit/tree graph (``--unshallow --filter=blob:none``)
+    without downloading historical file contents, which keeps the transfer a
+    small fraction of a full clone. Runs only from background paths (the
+    startup pruner thread), never on the interactive session-close path.
+
+    Falls back to a plain ``--unshallow`` if the server rejects partial-clone
+    filters. Fail-soft: returns whether the repo is actually non-shallow
+    afterwards; on failure (offline, no remote) callers keep today's
+    preserve-everything behavior.
+    """
+    import subprocess
+
+    if not _repo_is_shallow(repo_root):
+        return True
+
+    try:
+        remotes = subprocess.run(
+            ["git", "remote"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=repo_root,
+        )
+        names = [r.strip() for r in remotes.stdout.splitlines() if r.strip()]
+        if remotes.returncode != 0 or not names:
+            return False
+        remote = "origin" if "origin" in names else names[0]
+
+        for extra in (["--filter=blob:none"], []):
+            try:
+                result = subprocess.run(
+                    ["git", "fetch", remote, "--unshallow", *extra],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_root,
+                )
+            except subprocess.TimeoutExpired:
+                return False
+            if result.returncode == 0:
+                break
+            logger.debug(
+                "git fetch --unshallow%s failed: %s",
+                " " + " ".join(extra) if extra else "",
+                result.stderr.strip()[-500:],
+            )
+    except Exception as e:
+        logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
+        return False
+
+    deepened = not _repo_is_shallow(repo_root)
+    if deepened:
+        logger.info(
+            "Deepened shallow clone at %s so worktree cleanup can verify "
+            "push state", repo_root,
+        )
+    return deepened
 
 
 # Upper bound on retained `git cherry` verdict entries (see
@@ -2080,8 +2170,17 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     has_unpushed = _worktree_has_unpushed_commits(wt_path, timeout=10)
 
     if has_unpushed:
-        print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
-        print(f"  To clean up manually: git worktree remove --force {wt_path}")
+        if _repo_is_shallow(repo_root):
+            # In a shallow clone the unpushed verdict is unreliable: the
+            # shallow boundary disconnects this worktree's history from
+            # origin/*, so already-public commits look "unpushed". Be honest
+            # about why we're keeping it — the startup pruner deepens the
+            # clone in the background and will reap it on a later startup.
+            print(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")
+            print("  The next `hermes -w` session deepens the clone and prunes merged worktrees automatically.")
+        else:
+            print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+            print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
@@ -2273,6 +2372,15 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
         return
+
+    # A shallow clone (the installer's default `--depth 1`) disconnects old
+    # worktree HEADs from current origin/main, so the unpushed-commits guard
+    # misclassifies every aged worktree as unpushed work and preserves it
+    # forever. Deepen once — bloblessly, in this background thread — so all
+    # history verdicts below (and the session-exit cleanup) become correct.
+    # Fail-soft: offline, we just keep today's preserve-everything behavior.
+    if _repo_is_shallow(repo_root):
+        _deepen_shallow_repo(repo_root)
 
     now = time.time()
     stale_work_cutoff = now - (7 * 24 * 3600)

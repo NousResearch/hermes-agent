@@ -328,6 +328,60 @@ class TestResolveEventContext:
         assert self.adapter._cached_event_text("$e599") == _MatrixEventContext("@a:ex.org", "m599")
 
     @pytest.mark.asyncio
+    async def test_edited_event_resolves_to_new_content(self):
+        """A fetched edit carries the stale original in body and the current
+        text in m.new_content; the reply quote must show the edit."""
+        evt = MagicMock()
+        evt.type = "m.room.message"
+        evt.sender = "@alice:ex.org"
+        evt.content = {
+            "msgtype": "m.text",
+            "body": "* new text",
+            "m.new_content": {"msgtype": "m.text", "body": "new text"},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$orig"},
+        }
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = AsyncMock(return_value=evt)
+
+        resolved = await self.adapter._resolve_event_context("!room:ex.org", "$edit")
+
+        assert resolved == _MatrixEventContext("@alice:ex.org", "new text")
+
+    @pytest.mark.asyncio
+    async def test_edit_fallback_star_prefix_is_stripped(self):
+        """When m.new_content is present but its body is unusable, the
+        fallback body is used minus the "* " edit marker."""
+        evt = MagicMock()
+        evt.type = "m.room.message"
+        evt.sender = "@alice:ex.org"
+        evt.content = {
+            "msgtype": "m.text",
+            "body": "* corrected words",
+            "m.new_content": {"msgtype": "m.text"},
+        }
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = AsyncMock(return_value=evt)
+
+        resolved = await self.adapter._resolve_event_context("!room:ex.org", "$edit")
+
+        assert resolved == _MatrixEventContext("@alice:ex.org", "corrected words")
+
+    @pytest.mark.asyncio
+    async def test_literal_star_body_without_edit_is_untouched(self):
+        """A message that genuinely starts with "* " is not an edit marker
+        when there is no m.new_content."""
+        evt = MagicMock()
+        evt.type = "m.room.message"
+        evt.sender = "@alice:ex.org"
+        evt.content = {"msgtype": "m.text", "body": "* bullet point"}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_event = AsyncMock(return_value=evt)
+
+        resolved = await self.adapter._resolve_event_context("!room:ex.org", "$msg")
+
+        assert resolved == _MatrixEventContext("@alice:ex.org", "* bullet point")
+
+    @pytest.mark.asyncio
     async def test_hung_get_event_times_out_and_degrades(self):
         """A homeserver that never answers the event lookup must not stall
         message handling: the fetch is bounded and resolves to nothing."""

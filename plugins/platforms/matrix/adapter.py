@@ -3881,6 +3881,21 @@ class MatrixAdapter(BasePlatformAdapter):
         if not sender and isinstance(evt, dict):
             sender = str(evt.get("sender", "") or "")
         body = self._event_body(evt).strip()
+
+        content = _matrix_content_dict(evt)
+
+        # A fetched edit carries the stale original (or a "* "-prefixed
+        # fallback) in body and the current text in m.new_content. Live
+        # edits refresh the cache via _apply_edit_to_cache; this covers a
+        # target that is fetched after it was edited.
+        new_content = content.get("m.new_content")
+        if isinstance(new_content, dict):
+            new_body = new_content.get("body")
+            if isinstance(new_body, str) and new_body.strip():
+                body = new_body.strip()
+            if body.startswith("* "):
+                body = body[2:].strip()
+
         # A fetched parent may itself be a legacy reply; keep only its own
         # text. The stripper preserves a fallback-only body (right for an
         # inbound message, which must not vanish), but here it means the
@@ -3890,7 +3905,6 @@ class MatrixAdapter(BasePlatformAdapter):
         body = "" if (quoted is not None and clean == body) else clean
         body = body.strip()
 
-        content = _matrix_content_dict(evt)
         msgtype = str(content.get("msgtype", "") or "")
 
         if msgtype == "m.image":

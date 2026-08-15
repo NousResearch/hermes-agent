@@ -4200,8 +4200,23 @@ class PluginManager:
         if not path.is_dir():
             return manifests
 
-        for child in sorted(path.iterdir()):
-            if not child.is_dir():
+        try:
+            children = sorted(path.iterdir())
+        except OSError as exc:
+            logger.warning("Failed to scan plugin directory %s: %s", path, exc)
+            return manifests
+
+        for child in children:
+            # Cache/dunder dirs (__pycache__, __MACOSX__, …) are never
+            # plugins. Walking them can raise PermissionError and take
+            # down every subsequent tool call (#86996).
+            if child.name.startswith("__") and child.name.endswith("__"):
+                continue
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if not is_dir:
                 continue
             if depth == 0 and skip_names and child.name in skip_names:
                 continue

@@ -324,6 +324,113 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
         _time.sleep(0.5)
 
 
+# --- Wedged-gateway detection + bounded escalation (#81642) -----------------
+#
+# A gateway whose asyncio loop is stalled (e.g. an in-loop compression pass,
+# #72707) cannot process SIGTERM/SIGUSR1 shutdown: the drain wait then burns
+# the full drain budget (180s by default), warns "still running after 180.0s
+# — restart may fail", and `hermes update` can deadlock behind it.  The loop
+# publishes a liveness signal precisely for this case: an asyncio task
+# rewrites ``state/gateway.heartbeat`` every 30s (#66892), so a frozen loop
+# stops refreshing the file while a busy-but-alive loop keeps refreshing it.
+#
+# ``probe_gateway_loop_liveness`` reads that signal (a local stat + JSON read,
+# instant — far inside the 10s query tier of the subprocess timeout doc) and
+# classifies the gateway BEFORE any drain wait begins:
+#
+# - ``alive``   — heartbeat is fresh: the loop is dispatching (possibly busy).
+#                 Callers must take the normal graceful-drain path, which
+#                 honours the in-flight cron drain floor (#86684).
+# - ``wedged``  — heartbeat belongs to this PID but has gone stale well past
+#                 several missed beats: the loop is provably dead.  Draining
+#                 is pointless (nothing can run the drain), so callers may
+#                 escalate immediately via ``_escalate_wedged_gateway``.
+# - ``unknown`` — no heartbeat / unreadable / PID mismatch (older gateway,
+#                 still starting up, stale file from a previous process).
+#                 Treated like ``alive``: never escalate on ambiguity.
+#
+# The distinction matters: only a *provably dead* loop may bypass the cron
+# drain floor.  A merely busy gateway still answers the probe (fresh file)
+# and keeps its full drain budget.
+
+GATEWAY_LOOP_ALIVE = "alive"
+GATEWAY_LOOP_WEDGED = "wedged"
+GATEWAY_LOOP_UNKNOWN = "unknown"
+
+# Heartbeat cadence is 30s (gateway.shutdown_watchdog.DEFAULT_HEARTBEAT_INTERVAL_S).
+# Three missed beats is decisive without false-positiving on one slow write.
+DEFAULT_LOOP_LIVENESS_STALE_AFTER_S = 90.0
+
+
+def probe_gateway_loop_liveness(
+    pid: int,
+    *,
+    stale_after: float = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S,
+    home: Path | None = None,
+) -> str:
+    """Classify a gateway PID's event loop as alive / wedged / unknown.
+
+    Reads the loop-liveness heartbeat file the gateway rewrites every 30s
+    while its loop is dispatching.  Never raises; any ambiguity (missing
+    file, unreadable JSON, PID mismatch) returns ``GATEWAY_LOOP_UNKNOWN``
+    so callers default to the safe graceful-drain path.
+    """
+    try:
+        stale_budget = max(float(stale_after), 0.0)
+    except (TypeError, ValueError):
+        stale_budget = DEFAULT_LOOP_LIVENESS_STALE_AFTER_S
+    try:
+        from gateway.shutdown_watchdog import get_loop_heartbeat_path
+
+        path = get_loop_heartbeat_path(home)
+        mtime = path.stat().st_mtime
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        heartbeat_pid = int(payload.get("pid", 0))
+    except Exception:
+        return GATEWAY_LOOP_UNKNOWN
+    if heartbeat_pid <= 0 or int(pid) <= 0 or heartbeat_pid != int(pid):
+        # No heartbeat for THIS process — old gateway version, still starting
+        # up, or a stale file from a previous PID.  Not evidence of a wedge.
+        return GATEWAY_LOOP_UNKNOWN
+    age = time.time() - mtime
+    if age > stale_budget:
+        return GATEWAY_LOOP_WEDGED
+    return GATEWAY_LOOP_ALIVE
+
+
+def _escalate_wedged_gateway(
+    pid: int,
+    *,
+    term_grace: float = 5.0,
+    kill_wait: float = 5.0,
+) -> bool:
+    """Bounded stop for a gateway whose loop is provably dead (#81642).
+
+    SIGTERM first (the process may still have a live signal handler thread
+    even with a dead loop), a short grace, then SIGKILL.  Total worst case is
+    ``term_grace + kill_wait`` (~10s by default) — never the 180s drain
+    budget, which only makes sense when a loop exists to run the drain.
+
+    Callers MUST have classified the gateway as ``GATEWAY_LOOP_WEDGED``
+    before calling this: escalating a merely busy gateway would bypass the
+    in-flight cron drain floor (#86684) and SIGKILL live work.
+
+    Returns True once the PID has left the process table.
+    """
+    try:
+        terminate_pid(pid, force=False)
+    except (ProcessLookupError, PermissionError, OSError):
+        return _wait_for_pid_exit(pid, 1.0)
+    if _wait_for_pid_exit(pid, max(float(term_grace), 0.0)):
+        return True
+    try:
+        terminate_pid(pid, force=True)
+        print(f"⚠ Gateway PID {pid} unresponsive to SIGTERM; sent SIGKILL")
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    return _wait_for_pid_exit(pid, max(float(kill_wait), 0.0))
+
+
 def _get_ancestor_pids() -> set[int]:
     """Return the set of PIDs in the current process's ancestor chain.
 
@@ -3674,6 +3781,23 @@ def systemd_restart(system: bool = False):
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
+    if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+        # Health probe says the event loop is provably dead (#81642): SIGUSR1
+        # can never drain it, so the graceful wait below would burn the full
+        # budget. Bounded escalation (SIGTERM grace → SIGKILL, ~10s) then let
+        # systemd relaunch the unit. A busy-but-alive gateway (fresh
+        # heartbeat) never takes this path — its in-flight work, including
+        # the #86684 cron drain floor, keeps the full graceful budget.
+        print(
+            f"⚠ Gateway PID {pid} event loop is unresponsive — "
+            "skipping graceful drain and forcing a bounded stop..."
+        )
+        _escalate_wedged_gateway(pid)
+        svc = get_service_name()
+        _run_systemctl(["reset-failed", svc], system=system, check=False, timeout=30)
+        _run_systemctl(["restart", svc], system=system, check=False, timeout=90)
+        _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+        return
     if pid is not None:
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
@@ -4826,6 +4950,20 @@ def launchd_restart():
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
             return
+        if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+            # Health probe says the event loop is provably dead (#81642):
+            # the gateway cannot process a graceful shutdown, so waiting the
+            # full drain budget only stalls the restart (and `hermes update`
+            # behind it) for 180s. Bounded escalation instead: SIGTERM grace
+            # → SIGKILL → proceed, ~10s worst case. Never taken for a
+            # busy-but-alive gateway — a fresh heartbeat keeps the drain path
+            # (and the #86684 cron drain floor) fully intact.
+            print(
+                f"⚠ Gateway PID {pid} event loop is unresponsive — "
+                "skipping drain and forcing a bounded stop..."
+            )
+            _escalate_wedged_gateway(pid)
+            pid = None
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway

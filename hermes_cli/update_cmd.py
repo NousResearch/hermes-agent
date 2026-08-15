@@ -5348,8 +5348,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…"
             )
             try:
-                _run_migrate_config_fresh(interactive=False, quiet=True)
+                _mig_results = _run_migrate_config_fresh(
+                    interactive=False, quiet=True
+                )
                 print("  ✓ Config format updated (no new settings to configure)")
+                # quiet=True also mutes migration steps that RESET or REMOVE an
+                # existing setting (e.g. the v33→v34 personality reset from
+                # #81946, which records its note only in the results dict).
+                # Re-surface those notes so an unattended update never silently
+                # changes user configuration (#86656). In this branch
+                # missing_config is empty, so config_added can only contain
+                # migration-step mutations, not missing-key listings.
+                for _note in _mig_results.get("config_added") or []:
+                    print(f"  ℹ {_note}")
+                for _warn in _mig_results.get("warnings") or []:
+                    print(f"  ⚠️  {_warn}")
             except Exception as _mig_err:
                 print(f"  ⚠️  Config format update failed: {_mig_err}")
                 print("     Run 'hermes config migrate' to retry.")

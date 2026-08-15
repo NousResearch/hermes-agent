@@ -1652,6 +1652,9 @@ def run_conversation(
     # Reset alongside the failure flag so a lock-contention diagnosis from a
     # previous turn can never leak into this turn's user-facing explanation.
     agent._last_persistence_error_cause = None
+    # Per-turn diagnostic: a failed compression-tip adoption in a previous
+    # turn's flush must not be reported against this turn.
+    agent._compression_adoption_failed = False
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0

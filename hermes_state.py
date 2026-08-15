@@ -1495,6 +1495,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 PERSISTENCE_ERROR_CAUSES = (
     "locked",
     "compression",
+    "compression_closed",
     "turn_lease",
     "disk",
     "unknown",
@@ -1515,6 +1516,10 @@ def classify_persistence_error(exc_or_str) -> str:
       database write lock); transient, retry-later guidance applies.
     * ``"compression"`` — a live compression lease refused the transcript
       write; the database itself is healthy and unlocked.
+    * ``"compression_closed"`` — the write targeted a session already
+      rotated (closed) by compression and no live continuation was adopted;
+      the store is healthy — the client must refresh/adopt the new session
+      id, so disk-space advice would be a misdiagnosis.
     * ``"turn_lease"`` — a presented session-turn-lease holder no longer
       owns the conversation (expired, released, or reclaimed); fail-fast
       fencing, not a storage fault.
@@ -1532,11 +1537,15 @@ def classify_persistence_error(exc_or_str) -> str:
     # survived RPC wrapping).
     if isinstance(exc_or_str, SessionTurnLeaseLostError):
         return "turn_lease"
+    if isinstance(exc_or_str, CompressionSessionClosedError):
+        return "compression_closed"
     if isinstance(exc_or_str, CompressionSessionBusyError):
         return "compression"
     text = str(exc_or_str).lower()
     if "turn lease" in text:
         return "turn_lease"
+    if "closed by compression" in text:
+        return "compression_closed"
     if "being compressed" in text or "compression lease" in text:
         return "compression"
     if (

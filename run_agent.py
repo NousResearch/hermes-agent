@@ -2013,6 +2013,7 @@ class AIAgent:
         self,
         messages: List[Dict],
         conversation_history: Optional[List[Dict]] = None,
+        _adoption_budget: int = 1,
     ):
         """Persist any un-flushed messages to the SQLite session store.
 
@@ -2317,9 +2318,64 @@ class AIAgent:
             # before it is swallowed into a bare ``False`` — classify it here
             # so the turn-end explanation can distinguish lock contention
             # ("storage was busy, send it again") from disk-full/read-only.
-            from hermes_state import classify_persistence_error
+            from hermes_state import (
+                CompressionSessionClosedError,
+                classify_persistence_error,
+            )
 
             self._last_persistence_error_cause = classify_persistence_error(e)
+            if isinstance(e, CompressionSessionClosedError):
+                # Compression race: another path rotated this session while
+                # this turn was still writing against it. The store resolves
+                # the continuation chain transitively via the canonical API
+                # ``get_compression_tip`` (bounded walk, excludes branch/
+                # delegate/tool children, prefers live children over stale
+                # closed siblings such as ``ws_orphan_reap``). Adopt the tip
+                # ONLY when it is a different row AND still live, and retry
+                # the flush exactly once (adoption budget) — a second
+                # closed-parent write must fail closed, never loop. The tip
+                # walk returns the input id when no continuation exists, so
+                # ``tip == session_id`` means fail closed.
+                if _adoption_budget > 0:
+                    old_id = self.session_id
+                    tip = None
+                    try:
+                        tip = self._session_db.get_compression_tip(old_id)
+                    except Exception as tip_exc:
+                        logger.warning(
+                            "compression tip lookup failed for %s: %s",
+                            old_id,
+                            tip_exc,
+                        )
+                    if tip and tip != old_id:
+                        tip_row = None
+                        try:
+                            tip_row = self._session_db.get_session(tip)
+                        except Exception:
+                            tip_row = None
+                        if tip_row is not None and tip_row.get("ended_at") is None:
+                            logger.warning(
+                                "Adopted live compression tip %s for closed "
+                                "session %s; retrying flush once",
+                                tip,
+                                old_id,
+                            )
+                            self.session_id = tip
+                            self._flushed_db_message_ids = set()
+                            self._last_flushed_db_idx = 0
+                            self._compression_adoption_failed = False
+                            return self._flush_messages_to_session_db_unlocked(
+                                messages,
+                                conversation_history,
+                                _adoption_budget=0,
+                            )
+                # No live tip (or budget exhausted): fail closed — never guess
+                # a target session. The per-turn diagnostic flag lets the
+                # turn-completion explanation name compression rotation
+                # instead of the historical (misleading) full-disk advice.
+                self._compression_adoption_failed = True
+                logger.warning("Session DB append_message failed: %s", e)
+                return False
             logger.warning("Session DB append_message failed: %s", e)
             return False
 
@@ -3735,6 +3791,15 @@ class AIAgent:
                     + "the turn was stopped because another process was "
                     "compressing this session. Your message should already be "
                     "saved — please send it again after compression completes."
+                )
+            if cause == "compression_closed":
+                return (
+                    prefix
+                    + "the turn was stopped because this session was rotated "
+                    "by context compression and its live continuation could "
+                    "not be adopted. The storage itself is healthy — refresh "
+                    "the client (or start a new turn) so it picks up the new "
+                    "session id, then send your message again."
                 )
             if cause == "turn_lease":
                 return (

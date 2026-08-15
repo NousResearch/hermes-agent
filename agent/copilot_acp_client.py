@@ -74,6 +74,35 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _acp_supported(command: str, args: list[str]) -> bool:
+    """Return True iff ``command`` accepts the ACP args we'd pass.
+
+    Different CLI versions support different transports. The GitHub
+    Copilot CLI (`@github/copilot`, late 2025+) ships with ``--acp``;
+    older releases (and Claude Code v2.x as of Aug 2026) do not.
+    Spawning a CLI that doesn't recognize the flag silently exits
+    with code 1 and ``error: unknown option '--acp'`` on stderr,
+    after which every delegate_task call hangs the parent for
+    ``child_timeout_seconds`` (default 600s) waiting for stdout
+    that never arrives.
+
+    This probe fires once per ACP prompt, runs in ~50ms, and
+    short-circuits to a clear error before any spawn happens.
+    """
+    try:
+        probe = subprocess.run(
+            [command, "--help"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    if probe.returncode != 0:
+        return False
+    # Match ``--acp`` as a flag in the help text; tolerate spacing and
+    # variants like ``[--acp]``.
+    return bool(re.search(r"(?:^|\s)--acp(?:\s|=|\]|\b)", probe.stdout))
+
+
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
     home = os.environ.get("HOME", "").strip()
@@ -502,6 +531,25 @@ class CopilotACPClient:
         return completion
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        # Fast-fail when the CLI doesn't support the ACP args we'd pass.
+        # Without this guard, a CLI like Claude Code v2.x exits with
+        # ``error: unknown option '--acp'`` immediately, then the parent
+        # ACP loop waits the full ``child_timeout_seconds`` (default 600s)
+        # for stdout that never arrives. The probe costs ~50ms and turns
+        # a 600s silent hang into a 280ms clear error.
+        if not _acp_supported(self._acp_command, self._acp_args):
+            preview = " ".join(self._acp_args[:3]) if self._acp_args else "(none)"
+            raise RuntimeError(
+                f"ACP transport not supported by '{self._acp_command}': "
+                f"`{preview}` is rejected as an unknown option. "
+                f"This usually means the CLI is an older release (e.g. "
+                f"Claude Code v2.x) or a different tool than expected. "
+                f"Either install a CLI that ships with --acp support "
+                f"(e.g. `@github/copilot` late 2025+), or set "
+                f"HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS "
+                f"to a working pair."
+            )
+
         try:
             # Hide the console the CLI child would otherwise flash on Windows
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.

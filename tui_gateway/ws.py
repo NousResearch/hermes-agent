@@ -12,6 +12,7 @@ import logging
 import socket
 import threading
 import time
+import uuid
 from typing import Any
 
 from tui_gateway import server
@@ -89,6 +90,10 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
         self.auth_identity = auth_identity
         self._closed = False
+        # Opaque per-connection id, minted at accept. Announced to this client as gateway.ready's ``origin``
+        # and stamped onto the session event frames of turns this client starts, so a mirrored client can
+        # tell its own turn from a peer's. Never reused across connections.
+        self.transport_id = uuid.uuid4().hex
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
         self._token_lock = threading.Lock()
@@ -268,11 +273,16 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
         # polls to backstops. replay_epoch lets reconnecting clients detect a backend restart and reset
-        # their per-session seq watermarks (event_replay).
+        # their per-session seq watermarks (event_replay). session_mirroring: this backend fans a session's
+        # events out to every attached client instead of rebinding the session to the newest one, so a
+        # client may resume or activate a session someone else is driving without stealing it. origin: this
+        # connection's opaque id — a session event carrying the same origin belongs to a turn THIS client
+        # started.
         ready_ok = await transport.write_async({
             "jsonrpc": "2.0", "method": "event",
             "params": {"type": "gateway.ready", "payload": {
                 "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
+                "session_mirroring": True, "origin": transport.transport_id,
             }},
         })
         if ready_ok:

@@ -745,6 +745,14 @@ def write_json(obj: dict) -> bool:
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+    # Multi-client fan-out: tell every mirrored client WHICH client started the turn this frame belongs to —
+    # its own connection's ``origin`` (announced in gateway.ready), a peer's, or "auto_continue" for the
+    # crash-recovery kickoff. Stamped here, at frame creation, so it costs one dict read and every emitter
+    # gets it for free. Purely additive: the key is omitted whenever the origin is unknown, which is always
+    # the case for a stdio TUI and for a session-less broadcast, so no frame changes shape for a
+    # single-client deployment.
+    if sid and (origin := str((_sessions.get(sid) or {}).get("turn_origin") or "")):
+        params["origin"] = origin
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
@@ -769,6 +777,15 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+
+
+def _transport_origin(transport) -> str:
+    """The opaque per-connection id of *transport*, or ``""`` when it has none.
+
+    Set by ``tui_gateway.ws`` on each accepted WebSocket. stdio and test doubles
+    have none, which is why ``origin`` is omitted rather than emitted empty.
+    """
+    return str(getattr(transport, "transport_id", "") or "")
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:

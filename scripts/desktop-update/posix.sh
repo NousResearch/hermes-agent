@@ -426,12 +426,18 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   # EXIT: that would publish a false failure and relaunch Hermes while the
   # re-parented orchestrator is only just starting.
   trap - EXIT HUP INT QUIT TERM
+  # --daemonized must precede ORIGINAL_ARGS, not follow it: ORIGINAL_ARGS may
+  # contain a `--` separator (Linux relaunch args), and anything appended
+  # after that point is swallowed into RELAUNCH_ARGS instead of being parsed
+  # as a flag. Appending here previously left HANDOFF_DAEMONIZED unset on
+  # every re-exec, causing this block to re-fire forever (self-exec loop,
+  # unbounded argv growth) whenever relaunch args were present.
   /usr/bin/nohup /usr/bin/python3 -c '
 import os, sys
 env = os.environ.copy()
 os.setsid()
-os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:], "--daemonized"], env)
-' "$SCRIPT_DIR/posix.sh" "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
+' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
   exit 0
 fi
 

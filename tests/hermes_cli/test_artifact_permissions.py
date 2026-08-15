@@ -46,13 +46,27 @@ def test_secure_artifact_dir_keeps_managed_group_access(
     os.chmod(parent, 0o2770)
     leaf = parent / "artifacts"
 
-    old_umask = os.umask(0o007)
+    old_umask = os.umask(0o022)
     try:
         config.secure_artifact_dir(leaf)
     finally:
         os.umask(old_umask)
 
-    assert _mode(leaf) & 0o777 == 0o770
+    assert _mode(leaf) == 0o770
+
+
+@posix_only
+def test_secure_artifact_dir_preserves_pre_existing_managed_leaf_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    leaf = tmp_path / "artifacts"
+    leaf.mkdir()
+    os.chmod(leaf, 0o750)
+
+    config.secure_artifact_dir(leaf)
+
+    assert _mode(leaf) == 0o750
 
 
 def test_artifact_file_mode_is_owner_only_when_unmanaged(

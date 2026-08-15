@@ -833,12 +833,20 @@ def artifact_file_mode() -> int:
 def secure_artifact_dir(path: str | Path) -> None:
     """Create an artifact leaf privately without changing existing modes.
 
-    Managed installs retain their group-sharing umask. POSIX modes are
-    advisory on Windows, where ACLs provide at-rest protection.
+    Only the leaf is controlled; intermediate parents created by
+    ``parents=True`` retain ordinary umask-derived modes. A fresh managed leaf
+    is created no wider than the umask permits, then set to exactly ``0o770``.
+    POSIX modes are advisory on Windows, where ACLs protect data at rest.
     """
     path = Path(path)
     if is_managed():
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, mode=0o770)
+        except FileExistsError:
+            if not path.is_dir():
+                raise
+        else:
+            os.chmod(path, 0o770)
     else:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
 

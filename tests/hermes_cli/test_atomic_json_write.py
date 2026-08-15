@@ -141,7 +141,7 @@ def test_open_private_append_uses_managed_group_writable_mode(
     monkeypatch.setenv("HERMES_MANAGED", "nixos")
     target = tmp_path / "artifact.jsonl"
 
-    old_umask = os.umask(0o007)
+    old_umask = os.umask(0o022)
     try:
         with utils.open_private_append(
             target, mode=config.artifact_file_mode()

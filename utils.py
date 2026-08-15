@@ -349,13 +349,25 @@ def open_private_append(
     encoding: str = "utf-8",
     mode: int = 0o600,
 ):
-    """Append text, applying ``mode`` only when creating the inode.
+    """Append text, applying exact ``mode`` only to a newly created inode.
 
-    Existing files keep their permissions. POSIX modes are advisory on
-    Windows, where ACLs provide at-rest protection.
+    Exclusive creation distinguishes a new inode from an existing one before
+    ``fchmod``; an existing file is reopened without creation and keeps its
+    permissions. The new inode may begin more restrictive due to umask, but is
+    never wider than ``mode``. POSIX modes are advisory on Windows.
     """
     def _opener(target: str, flags: int) -> int:
-        return os.open(target, flags, mode)
+        try:
+            fd = os.open(target, flags | os.O_CREAT | os.O_EXCL, mode)
+        except FileExistsError:
+            return os.open(target, flags & ~(os.O_CREAT | os.O_EXCL))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
 
     return open(Path(path), "a", encoding=encoding, opener=_opener)
 

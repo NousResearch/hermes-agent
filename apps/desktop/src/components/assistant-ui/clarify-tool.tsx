@@ -536,6 +536,24 @@ function ClarifyToolSinglePending({
     setActiveIndex(index => Math.min(index, choices.length))
   }, [choices.length])
 
+  // Claim keyboard ownership when the card becomes interactive: move focus
+  // onto the panel container (tabIndex=-1) so the global handler below sees a
+  // neutral focus target instead of the composer's contenteditable/input —
+  // otherwise Arrow keys and letter shortcuts are swallowed by the composer
+  // and a pure-keyboard user can't drive the choices at all. Only when the
+  // card actually owns choices; a free-text-only clarify keeps composer focus.
+  const panelRef = useRef<HTMLFormElement | null>(null)
+  const claimedFocus = useRef(false)
+
+  useEffect(() => {
+    if (!ready || !hasChoices || submitting || claimedFocus.current) {
+      return
+    }
+
+    claimedFocus.current = true
+    panelRef.current?.focus()
+  }, [hasChoices, ready, submitting])
+
   const moveActive = useCallback(
     (delta: number) => {
       const itemCount = choices.length + 1
@@ -733,7 +751,11 @@ function ClarifyToolSinglePending({
       className="my-1.5 grid gap-4"
       data-clarify-choices={hasChoices ? choices.length : undefined}
       onSubmit={handleSubmit}
-      ref={formRef}
+      ref={(el) => {
+        formRef.current = el
+        panelRef.current = el
+      }}
+      tabIndex={-1}
     >
       <ClarifyShell className="grid gap-2">
         <div className="flex items-start gap-2">

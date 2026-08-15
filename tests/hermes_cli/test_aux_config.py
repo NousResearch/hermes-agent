@@ -73,7 +73,85 @@ def test_save_aux_choice_persists_to_config_yaml(tmp_path, monkeypatch):
     assert v["provider"] == "openrouter"
     assert v["model"] == "google/gemini-2.5-flash"
     assert v["base_url"] == ""
-    assert v["api_key"] == ""
+    assert not v.get("api_key")
+    assert not v.get("key_env")
+
+
+def test_aux_flow_custom_endpoint_persists_key_env_not_secret(tmp_path, monkeypatch):
+    """CLI auxiliary custom setup must not write the API key into config.yaml."""
+    from pathlib import Path
+
+    from hermes_cli.config import get_env_value, load_config
+    from hermes_cli.main import _aux_flow_custom_endpoint
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    answers = iter(["http://127.0.0.1:11434/v1", "gemma"])
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(answers))
+    monkeypatch.setattr(
+        "hermes_cli.secret_prompt.masked_secret_prompt",
+        lambda *_a, **_k: "super-secret-aux-key",
+    )
+
+    _aux_flow_custom_endpoint("vision", {})
+
+    cfg = load_config()
+    slot = cfg["auxiliary"]["vision"]
+    dumped = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "super-secret-aux-key" not in dumped
+    assert not slot.get("api_key")
+    assert not slot.get("api")
+    assert str(slot.get("key_env") or "").startswith("HERMES_CUSTOM_")
+    assert get_env_value(slot["key_env"]) == "super-secret-aux-key"
+    assert slot["provider"] == "custom"
+    assert slot["base_url"] == "http://127.0.0.1:11434/v1"
+    assert slot["model"] == "gemma"
+
+
+def test_aux_flow_custom_rotation_without_key_clears_key_env(tmp_path, monkeypatch):
+    """A→B without a replacement key must not keep the previous key_env."""
+    from pathlib import Path
+
+    from hermes_cli.config import load_config
+    from hermes_cli.main import _aux_flow_custom_endpoint, _save_aux_choice
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    _save_aux_choice(
+        "vision",
+        provider="custom",
+        model="gemma",
+        base_url="http://127.0.0.1:11434/v1",
+        key_env="HERMES_CUSTOM_127_0_0_1_11434_API_KEY",
+    )
+
+    answers = iter(["http://evil.example:8080/v1", "gemma"])
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: next(answers))
+    monkeypatch.setattr(
+        "hermes_cli.secret_prompt.masked_secret_prompt",
+        lambda *_a, **_k: "",
+    )
+
+    _aux_flow_custom_endpoint(
+        "vision",
+        {
+            "provider": "custom",
+            "model": "gemma",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "key_env": "HERMES_CUSTOM_127_0_0_1_11434_API_KEY",
+        },
+    )
+
+    slot = load_config()["auxiliary"]["vision"]
+    assert slot["base_url"] == "http://evil.example:8080/v1"
+    assert not slot.get("key_env")
+    assert not slot.get("api_key")
 
 
 

@@ -4169,10 +4169,11 @@ def _save_aux_choice(
     model: str = "",
     base_url: str = "",
     api_key: str = "",
+    key_env: str = "",
 ) -> None:
     """Persist an auxiliary task's provider/model to config.yaml.
 
-    Only writes the four routing fields — timeout, download_timeout, and any
+    Only writes the routing fields — timeout, download_timeout, and any
     other task-specific settings are preserved untouched. The main model
     config (``model.default``/``model.provider``) is never modified.
 
@@ -4180,6 +4181,8 @@ def _save_aux_choice(
     section (consumed by ``tools/delegate_tool.py``), not ``auxiliary.*``.
     There, "auto" (inherit the parent agent) is stored as an empty provider —
     the literal string "auto" would be resolved as a provider name.
+    Custom-endpoint secrets go in ``.env`` via ``key_env``. ``api_key`` is
+    accepted only as a legacy empty placeholder for built-in/auto slots.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -4208,7 +4211,19 @@ def _save_aux_choice(
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
+    if key_env:
+        entry["key_env"] = key_env
+        entry.pop("api_key", None)
+        entry.pop("api", None)
+        entry.pop("api_key_env", None)
+    else:
+        entry.pop("key_env", None)
+        entry.pop("api_key_env", None)
+        if api_key:
+            entry["api_key"] = api_key
+        else:
+            entry.pop("api_key", None)
+            entry.pop("api", None)
     save_config(cfg)
 
 
@@ -4507,12 +4522,24 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
         print()
         return
 
+    from hermes_cli.config import custom_endpoint_identity, custom_endpoint_key_env, save_env_value
+
+    key_env = ""
+    if api_key:
+        key_env = custom_endpoint_key_env(custom_endpoint_identity(url))
+        save_env_value(key_env, api_key)
+    else:
+        prev = current_base_url.rstrip("/")
+        same_endpoint = bool(prev) and prev == url.rstrip("/")
+        if same_endpoint:
+            key_env = str(task_cfg.get("key_env") or "").strip()
+
     _save_aux_choice(
         task,
         provider="custom",
         model=model,
         base_url=url,
-        api_key=api_key,
+        key_env=key_env,
     )
     short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
     print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))

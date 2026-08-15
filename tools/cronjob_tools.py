@@ -968,9 +968,18 @@ def _try_dispatch_background_run(
     try:
         from cron.executions import recover_interrupted_executions
 
-        recover_interrupted_executions()
-    except Exception:
-        pass  # best-effort self-heal; a failure here must not block dispatch
+        _reclaimed = recover_interrupted_executions()
+        if _reclaimed:
+            logger.warning(
+                "Reclaimed %d stale cron execution(s) from dead owner(s) "
+                "before dispatching job '%s'",
+                _reclaimed,
+                job_name,
+            )
+    except Exception as _reap_exc:
+        # Best-effort self-heal; a failure here must not block dispatch —
+        # but stay diagnosable (mirrors the scheduler tick's reap handling).
+        logger.debug("Stale execution reclaim failed: %s", _reap_exc)
 
     # ---- routing capture (on THIS thread; contextvars don't cross the pool) ----
     # Resolved BEFORE the claim: with no routable session there is no durable

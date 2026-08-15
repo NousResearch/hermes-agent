@@ -4856,6 +4856,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
+        # `--provider <custom>` without `-m` must use that entry's
+        # default_model. Otherwise the global model.default is sent to the
+        # custom endpoint and the compressor inherits the wrong context
+        # length (#86978). Explicit `-m` still wins.
+        if not model and provider:
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+
+                _named_custom = _get_named_custom_provider(provider)
+            except Exception:
+                _named_custom = None
+            _provider_default = str((_named_custom or {}).get("model") or "").strip()
+            if _provider_default:
+                self.model = _provider_default
+                self._model_is_default = False
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"

@@ -417,6 +417,11 @@ _WHATSAPP_BARE_PHONE_RE = re.compile(
     r"(?![A-Za-z0-9])"
 )
 
+# Web/transport URLs whose path/query digits must stay intact. The bare
+# wa_id matcher otherwise rewrites numeric OAuth, magic-link, and
+# pre-signed URL values (issue #80076 review).
+_WEB_URL_SPAN_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s<>\"']+")
+
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
@@ -780,6 +785,20 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
+def _redact_bare_wa_id_outside_urls(text: str, repl) -> str:
+    """Mask bare Cloud wa_id values, leaving navigable URL bytes unchanged."""
+    if "://" not in text:
+        return _WHATSAPP_BARE_PHONE_RE.sub(repl, text)
+    parts = []
+    last = 0
+    for match in _WEB_URL_SPAN_RE.finditer(text):
+        parts.append(_WHATSAPP_BARE_PHONE_RE.sub(repl, text[last:match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(_WHATSAPP_BARE_PHONE_RE.sub(repl, text[last:]))
+    return "".join(parts)
+
+
 def redact_sensitive_text(
     text: str,
     *,
@@ -1020,7 +1039,7 @@ def redact_sensitive_text(
     # or other code-review evidence. File content still needs PII redaction;
     # ``file_read=True`` is therefore an explicit exception to code_file=True.
     if not code_file or file_read:
-        text = _WHATSAPP_BARE_PHONE_RE.sub(_redact_phone, text)
+        text = _redact_bare_wa_id_outside_urls(text, _redact_phone)
 
     return text
 

@@ -57,3 +57,20 @@ def test_redacts_bare_wa_id_in_file_content():
     text = "sender_id=15551234567"
     result = redact_sensitive_text(text, force=True, file_read=True)
     assert "15551234567" not in result
+
+
+def test_preserves_numeric_url_query_and_path():
+    text = (
+        "open https://example.com/?id=15551234567 and "
+        "https://cdn.example.com/15551234567/receipt then call 15551234567"
+    )
+    result = redact_sensitive_text(text)
+    assert "https://example.com/?id=15551234567" in result
+    assert "https://cdn.example.com/15551234567/receipt" in result
+    assert "call 1555****4567" in result
+
+
+def test_preserves_numeric_url_in_file_read():
+    text = "callback=https://oauth.example.com/cb?state=15551234567"
+    result = redact_sensitive_text(text, force=True, file_read=True)
+    assert result == text

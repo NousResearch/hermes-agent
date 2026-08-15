@@ -2924,6 +2924,7 @@ function execText(command, args) {
 async function processStartMarker(pid) {
   if (process.platform === 'linux') {
     const stat = await fs.promises.readFile(`/proc/${pid}/stat`, 'utf8')
+
     const fields = stat
       .slice(stat.lastIndexOf(')') + 1)
       .trim()
@@ -7121,7 +7122,9 @@ async function discoverCloudAgents(org?: string) {
       // A 401 means the portal session lapsed (and silent renewal could not
       // recover it) — surface it as a re-login, not a generic failure.
       if (error && error.statusCode === 401) {
-        const err = new Error('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.') as any
+        const err = new Error(
+          'Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.'
+        ) as any
         err.needsCloudLogin = true
         err.cause = error
         throw err

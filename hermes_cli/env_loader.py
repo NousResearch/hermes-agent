@@ -517,7 +517,15 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    # A fresh ``hermes update`` retry may have completed a deferred dependency
+    # install before importing this module.  Do not remap native secret-source
+    # dependencies in that same updater process or the self-lock preflight will
+    # recreate the marker and exit 2 again.  Dotenv and managed env still load;
+    # only external source resolution is unnecessary for the updater.
+    from hermes_cli import _early_recovery
+
+    if not _early_recovery._should_skip_external_secret_sources():
+        _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.yaml is the documented source of truth for terminal.* settings,

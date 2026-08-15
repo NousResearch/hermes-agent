@@ -488,12 +488,14 @@ def test_core_marker_from_dead_updater_is_recovered_on_update_retry(
     calls = []
     monkeypatch.setattr(ir, "run_core_install", lambda project_root: calls.append(project_root))
     monkeypatch.setattr(er, "_marker_owner_is_live", lambda _marker: False, raising=False)
+    monkeypatch.setattr(er, "_UPDATE_RETRY_RECOVERED", False)
     import hermes_cli._install_repair  # noqa: F401
 
     er.recover_if_needed(project_root=root, argv=["update"])
 
     assert calls == [root]
     assert not core_marker.exists()
+    assert er._should_skip_external_secret_sources() is True
 
 
 def test_core_marker_owned_by_live_updater_is_not_recovered(

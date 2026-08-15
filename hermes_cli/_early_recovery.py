@@ -56,6 +56,19 @@ LAZY_REFRESH_REPAIR_PACKAGES: dict[str, str] = {
     "jwt": "PyJWT",
 }
 
+# Set only when this process successfully finishes a deferred core install for
+# an ``update`` invocation.  The normal CLI import that follows must not resolve
+# external secret sources: a configured source can map cryptography._rust and
+# immediately recreate the self-lock marker this fresh process just consumed.
+# Process-local state is intentional so child processes do not inherit the
+# bootstrap exception.
+_UPDATE_RETRY_RECOVERED = False
+
+
+def _should_skip_external_secret_sources() -> bool:
+    """Whether this updater already completed its deferred native install."""
+    return _UPDATE_RETRY_RECOVERED
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -352,6 +365,8 @@ def recover_if_needed(
     Never raises: on any failure the import of main.py proceeds and surfaces
     the real error.
     """
+    global _UPDATE_RETRY_RECOVERED
+
     try:
         args = sys.argv[1:] if argv is None else argv
         root = _project_root() if project_root is None else project_root
@@ -384,7 +399,9 @@ def recover_if_needed(
         if core_marker.exists():
             if _marker_owner_is_live(core_marker):
                 return
-            _complete_pending_core_install(root, core_marker)
+            completed = _complete_pending_core_install(root, core_marker)
+            if completed and "update" in args:
+                _UPDATE_RETRY_RECOVERED = True
             return
 
         # Keep the historical update-argv exclusion for the lazy-refresh
@@ -482,7 +499,7 @@ def _release_recovery_lock(root: Path) -> None:
         pass
 
 
-def _complete_pending_core_install(root: Path, core_marker: Path) -> None:
+def _complete_pending_core_install(root: Path, core_marker: Path) -> bool:
     """Run the pending core install BEFORE main.py can import native modules.
 
     ``recover_if_needed`` invokes this when ``.update-incomplete`` exists —
@@ -498,7 +515,8 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> None:
     attempts ceiling caps automatic retries so a persistent installer
     failure does not block every launch (``hermes acp`` included).
 
-    Never raises: any failure leaves the marker for the post-import path.
+    Never raises: any failure leaves the marker for the post-import path and
+    returns ``False``.  Returns ``True`` only after the install succeeds.
     """
     try:
         from hermes_cli import _install_repair as ir
@@ -526,10 +544,10 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> None:
                 "post-import recovery path.",
                 file=sys.stderr,
             )
-            return
+            return False
 
         if not _claim_recovery_lock(root):
-            return
+            return False
 
         try:
             print(
@@ -551,7 +569,7 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> None:
                 "the current venv in the meantime.",
                 file=sys.stderr,
             )
-            return
+            return False
         finally:
             _release_recovery_lock(root)
 
@@ -563,6 +581,7 @@ def _complete_pending_core_install(root: Path, core_marker: Path) -> None:
             "  ✓ Dependency installation completed in the early pass.",
             file=sys.stderr,
         )
+        return True
     except Exception:
         # Never block launch — the marker stays for the post-import path.
-        pass
+        return False

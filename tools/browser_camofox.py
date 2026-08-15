@@ -508,11 +508,14 @@ def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict
 
 
 
-# Stale-tab recovery (#54729 follow-up + #80276):
-# - 404: tab GC'd by Camofox idle cleanup
-# - 410 Gone: tab died with a previous camofox-browser process (container restart)
-# Navigate can recreate a tab (has a target URL). Sibling ops only clear the
-# cached id so the next browser_navigate is not stuck on a dead tab_id.
+# Camofox reports a cached tab as gone with two status codes (same client
+# action — forget tab_id):
+# - 404: idle GC, or an id this server never issued
+# - 410 Gone: tab_destroyed / page_crashed / browser_restarted (camofox
+#   server.js; body includes recovery: "create_new_tab"). After a browser
+#   restart every cached tab_id is stale at once.
+# Navigate recreates a tab (has a target URL). Sibling ops only clear the
+# cached id so the next browser_navigate is not stuck.
 _STALE_TAB_STATUSES = (404, 410)
 _STALE_TAB_ERROR = (
     "Browser tab was garbage-collected by the Camofox server. "

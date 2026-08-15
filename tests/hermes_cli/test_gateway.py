@@ -771,3 +771,80 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+class TestWindowsScheduledTaskSupervisorGuard:
+    """The reaper must skip entirely when the HermesGateway scheduled task is
+    Running — Task Scheduler is a supervisor, and the task's own state is the
+    authoritative signal.
+
+    Regression guard: ``_reaper_candidate_is_supervisor_owned`` walks the
+    parent chain up to ``services.exe`` and fails open when the Task-launched
+    bootstrap has already exited (Windows does not reparent, so the chain
+    breaks). A gateway whose conhost bootstrap exited is then treated as an
+    orphan: the reaper writes the planned-stop marker, the gateway exits
+    cleanly with code 0, and the scheduler never restarts it — silently
+    killing A2A/messaging on every desktop-app launch. Querying the task
+    state closes that gap without depending on process ancestry.
+    """
+
+    def test_running_task_skips_reap(self, monkeypatch):
+        """HermesGateway is Running => reaper returns False, kills nothing."""
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "_windows_scheduled_task_running", lambda name: True)
+
+        # Guard: if the task check were bypassed, these would be reaped.
+        def _boom_find_gateway_pids(exclude_pids=None):
+            raise AssertionError("must not scan when scheduled task is Running")
+
+        monkeypatch.setattr(gateway, "find_gateway_pids", _boom_find_gateway_pids)
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
+
+        result = gateway._reap_unsupervised_gateway_orphans()
+
+        assert result is False
+        assert killed_pids == []
+
+    def test_not_running_task_still_reaps_real_orphan(self, monkeypatch):
+        """HermesGateway not Running (or missing) => reaper behaves as before
+        and still reaps a genuine orphan."""
+        orphan_pid = 99998
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "_windows_scheduled_task_running", lambda name: False)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: [
+                p for p in [orphan_pid] if p not in (exclude_pids or set())
+            ],
+        )
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("time.monotonic", lambda: 1.0)
+
+        result = gateway._reap_unsupervised_gateway_orphans()
+
+        assert result is True
+        assert orphan_pid in [pid for pid, _ in killed_pids]
+
+    def test_windows_scheduled_task_running_returns_false_off_windows(self, monkeypatch):
+        """The state helper is inert on POSIX (no subprocess spawned)."""
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+
+        def _boom_run(*_a, **_k):
+            raise AssertionError("subprocess must not run off Windows")
+
+        monkeypatch.setattr(gateway.subprocess, "run", _boom_run)
+        assert gateway._windows_scheduled_task_running("HermesGateway") is False

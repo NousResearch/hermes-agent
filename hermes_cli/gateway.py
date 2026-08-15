@@ -1705,6 +1705,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     except Exception:
         return False
 
+    # Windows Task Scheduler is a supervisor too — and the most reliable
+    # signal is the task's own state, not a parent-chain walk. A Scheduled
+    # Task gateway whose conhost bootstrap has already exited is invisible
+    # to `_reaper_candidate_is_supervisor_owned` (the parent chain breaks
+    # before services.exe, fail-open), yet it is alive and supervised.
+    # Querying the task state catches that case: if HermesGateway is
+    # Running, the reaper must not touch its process tree (#86098).
+    if is_windows() and _windows_scheduled_task_running("HermesGateway"):
+        return False
+
     from gateway.status import _pid_exists, write_planned_stop_marker
 
     own = {os.getpid()}
@@ -1935,6 +1945,51 @@ def is_macos() -> bool:
 
 def is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _windows_scheduled_task_running(task_name: str) -> bool:
+    """Return True when a Windows scheduled task with ``task_name`` is Running.
+
+    Used to treat Task Scheduler as a gateway supervisor on Windows: the
+    orphan-reap sweep must not kill a gateway that a scheduled task is
+    actively managing (it writes the planned-stop marker, the gateway exits
+    cleanly with code 0, and the scheduler never restarts it — silently
+    killing A2A/messaging on every desktop-app launch).
+
+    Best-effort: any failure (missing task, powershell unavailable, timeout)
+    returns False so the caller falls back to its existing behaviour.
+
+    Implemented with PowerShell (``Get-ScheduledTask``) instead of ``schtasks``
+    because the latter localizes its output (a Chinese Windows prints
+    ``状态: 正在运行``, not ``Status: Running``) and emits the local codepage,
+    which ``subprocess`` with ``encoding="utf-8"`` silently mangles. The
+    ``State`` property of ``Get-ScheduledTask`` is an English enum value
+    (``Running`` / ``Ready`` / ``Disabled``), stable across locales.
+    """
+    if not is_windows():
+        return False
+    try:
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            return False
+        ps_cmd = (
+            f"$t = Get-ScheduledTask -TaskName '{task_name}' "
+            "-ErrorAction SilentlyContinue; if ($t) { $t.State } else { 'MISSING' }"
+        )
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return False
+        state = (result.stdout or "").strip()
+        return state == "Running"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _windows_gateway_should_absorb_console_controls() -> bool:

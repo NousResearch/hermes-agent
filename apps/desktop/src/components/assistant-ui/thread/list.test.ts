@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement, useCallback, useLayoutEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -24,10 +24,49 @@ import {
   type ThreadCommitReceipt
 } from './list'
 
+type ResizeObserverRecord = {
+  callback: ResizeObserverCallback
+  element: Element
+  observer: TestResizeObserver
+}
+
+let resizeObserverRecords: ResizeObserverRecord[] = []
+
 class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  private readonly record: ResizeObserverRecord
+
+  constructor(callback: ResizeObserverCallback) {
+    this.record = { callback, element: document.body, observer: this }
+  }
+
+  observe(element: Element) {
+    this.record.element = element
+    resizeObserverRecords = resizeObserverRecords.filter(record => record !== this.record)
+    resizeObserverRecords.push(this.record)
+  }
+
+  unobserve() {
+    resizeObserverRecords = resizeObserverRecords.filter(record => record !== this.record)
+  }
+
+  disconnect() {
+    resizeObserverRecords = resizeObserverRecords.filter(record => record !== this.record)
+  }
+}
+
+/** Deliver a synthetic content resize to every observer watching `element`,
+ *  the way the real ResizeObserver would after a layout change. The delivery
+ *  stays inside act: the library's resize callback updates React state. */
+function fireContentResize(element: Element, height: number) {
+  act(() => {
+    const entry = { contentRect: { height } } as ResizeObserverEntry
+
+    for (const record of [...resizeObserverRecords]) {
+      if (record.element === element) {
+        record.callback([entry], record.observer)
+      }
+    }
+  })
 }
 
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
@@ -42,7 +81,10 @@ Element.prototype.animate = function animate() {
   return { cancel: () => {}, finished: Promise.resolve() } as unknown as Animation
 }
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  resizeObserverRecords = []
+})
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
@@ -605,5 +647,190 @@ describe('Thread leaf commit receipt', () => {
       expect(matching.every(observation => observation.settledDomPresent)).toBe(true)
       expect(matching[0]).toEqual({ revision: 11, settledDomPresent: true })
     })
+  })
+})
+
+describe('thread viewport shrink re-anchor', () => {
+  // The packaged GUI failure: after the reveal settled at the bottom
+  // (scrollHeight 7082 / clientHeight 730), a delayed content-visibility
+  // re-measurement collapsed content ABOVE the viewport. The browser left
+  // scrollTop ~32.67px short of the new true bottom (3659.33 vs 3691) while
+  // the surface still reported following=true — and the rAF-based correction
+  // painted exactly one visible frame at the gap before recovering.
+  // use-stick-to-bottom's negative-resize branch only re-asserts the lock; it
+  // trusts the browser's scrollTop clamp, so nothing else closes the gap.
+  // The owner (this list) must re-anchor a strictly-following viewport to the
+  // true bottom SYNCHRONOUSLY in the same ResizeObserver delivery that
+  // observes the collapse — no rAF hop — and must leave an escaped reader
+  // untouched. The composed content ref must also survive ordinary rerenders
+  // (a streamed update re-renders this list) without detaching its observers
+  // or resetting the height baseline.
+  const VIEWPORT = 'aui_thread-viewport'
+  const CONTENT = 'aui_thread-content'
+  const SCROLL_HEIGHT = 7082
+  const SHRUNK_SCROLL_HEIGHT = 4422
+  const CLIENT_HEIGHT = 730
+  const SHRUNK_BOTTOM = SHRUNK_SCROLL_HEIGHT - CLIENT_HEIGHT - 1
+
+  function setScrollGeometry(viewport: HTMLElement, scrollHeight: number) {
+    Object.defineProperty(viewport, 'scrollHeight', { value: scrollHeight, configurable: true, writable: true })
+    Object.defineProperty(viewport, 'clientHeight', { value: CLIENT_HEIGHT, configurable: true, writable: true })
+  }
+
+  async function renderSettledThread(onCommitReceipt: (receipt: ThreadCommitReceipt) => void = vi.fn()) {
+    const { rerender } = render(
+      createElement(LeafReceiptHarness, {
+        message: receiptAssistant('Settled answer'),
+        // Revision 0 (a fresh session, not a resumed authority publication)
+        // keeps the resume-anchor restore disarmed so its 250ms
+        // MutationObserver cannot race the test's geometry install.
+        onCommitReceipt,
+        revision: 0
+      })
+    )
+
+    const viewport = document.querySelector(`[data-slot="${VIEWPORT}"]`) as HTMLElement
+    const content = document.querySelector(`[data-slot="${CONTENT}"]`) as HTMLElement
+
+    expect(viewport).toBeTruthy()
+    expect(content).toBeTruthy()
+
+    // Track scrollTop writes so the test can wait the mount backfill ramp OUT
+    // instead of racing it. Every ramp step commits and re-pins scrollTop
+    // through the anchor/restore effect, and a stale anchor applied after the
+    // test's geometry change would move an escaped reader. jsdom's scrollTop
+    // is a plain data property; a closure-backed accessor preserves it.
+    let backing = viewport.scrollTop as number
+    let writeCount = 0
+    let lastWriteAt = 0
+    Object.defineProperty(viewport, 'scrollTop', {
+      configurable: true,
+      get: () => backing,
+      set(value: number) {
+        writeCount += 1
+        lastWriteAt = Date.now()
+        backing = value
+      }
+    })
+
+    // Wait for the runtime to actually publish the message (assistant-ui
+    // fills the thread asynchronously) so the mount settle loop has run
+    // against the real content. The waits stay inside act — every timer/rAF
+    // in the settle chain fires React updates.
+    await screen.findByText('Settled answer')
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    })
+    expect(viewport.dataset.following).toBe('true')
+
+    // Wait until the render-budget backfill ramp has provably finished: it
+    // must have written at least once, then gone quiet for a window several
+    // times the inter-step gap (slow jsdom transition renders spread the
+    // 20→600 steps ~150ms apart). Only then is no anchor/restore re-pin
+    // pending that could clobber a later geometry change.
+    await waitFor(() => expect(writeCount).toBeGreaterThan(0), { timeout: 5000 })
+    await waitFor(() => expect(Date.now() - lastWriteAt).toBeGreaterThan(400), { timeout: 15000, interval: 100 })
+
+    setScrollGeometry(viewport, SCROLL_HEIGHT)
+    viewport.scrollTop = SCROLL_HEIGHT - CLIENT_HEIGHT
+
+    return { content, rerender, viewport }
+  }
+
+  it('corrects a following viewport to the true bottom synchronously when content height collapses after reveal', async () => {
+    const { content, viewport } = await renderSettledThread()
+
+    fireContentResize(content, SCROLL_HEIGHT)
+    // Let the library's own baseline-resize tick run against the settled
+    // geometry (it writes nothing at the bottom) before the collapse lands.
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+
+    // The delayed remeasurement collapses content above the viewport; the
+    // position lands ~32.67px short of the new true bottom while still
+    // following (packaged GUI: scrollTop 3659.33 vs 3691).
+    setScrollGeometry(viewport, SHRUNK_SCROLL_HEIGHT)
+    viewport.scrollTop = SHRUNK_SCROLL_HEIGHT - CLIENT_HEIGHT - 32.67
+    fireContentResize(content, SHRUNK_SCROLL_HEIGHT)
+
+    // No waitFor, no timer, no rAF: the ResizeObserver delivery that observes
+    // the collapse must already have the true bottom painted. The library's
+    // rAF scrollToBottom path is exactly one frame too late for this gate.
+    expect(viewport.scrollTop).toBe(SHRUNK_BOTTOM)
+    expect(viewport.dataset.following).toBe('true')
+  })
+
+  it('keeps the composed observer and its height baseline across an ordinary rerender', async () => {
+    const onCommitReceipt = vi.fn()
+    const { content, rerender, viewport } = await renderSettledThread(onCommitReceipt)
+
+    fireContentResize(content, SCROLL_HEIGHT)
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+
+    const contentObservers = () =>
+      resizeObserverRecords.filter(record => record.element === content).map(record => record.observer)
+    const before = contentObservers()
+
+    // An ordinary same-session update (a streamed message landing) re-renders
+    // this list. The composed content ref must keep the SAME observers — an
+    // inline ref function is a new identity every render, so React detaches
+    // (null) and reattaches (node) it, recreating both observers and
+    // resetting the height baseline.
+    rerender(
+      createElement(LeafReceiptHarness, {
+        message: receiptAssistant('Second settled answer'),
+        onCommitReceipt,
+        revision: 0
+      })
+    )
+    await screen.findByText('Second settled answer')
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+
+    expect(contentObservers()).toEqual(before)
+
+    // The pre-rerender baseline must survive: this collapse still reads as a
+    // shrink against it and corrects synchronously to the true bottom.
+    setScrollGeometry(viewport, SHRUNK_SCROLL_HEIGHT)
+    viewport.scrollTop = SHRUNK_SCROLL_HEIGHT - CLIENT_HEIGHT - 32.67
+    fireContentResize(content, SHRUNK_SCROLL_HEIGHT)
+
+    expect(viewport.scrollTop).toBe(SHRUNK_BOTTOM)
+  })
+
+  it('leaves an escaped reader untouched when content height collapses', async () => {
+    const { content, viewport } = await renderSettledThread()
+
+    fireContentResize(content, SCROLL_HEIGHT)
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+
+    // Seed the library's last-scroll observation at the bottom, then scroll
+    // up so the lock escapes (strict following turns off).
+    viewport.scrollTop = SCROLL_HEIGHT - CLIENT_HEIGHT
+    await act(async () => {
+      viewport.dispatchEvent(new Event('scroll'))
+      await new Promise(resolve => setTimeout(resolve, 5))
+    })
+    viewport.scrollTop = 3000
+    await act(async () => {
+      viewport.dispatchEvent(new Event('scroll'))
+      await new Promise(resolve => setTimeout(resolve, 5))
+    })
+    await waitFor(() => expect(viewport.dataset.following).toBe('false'))
+
+    // A collapse while reading earlier content must not move the position.
+    setScrollGeometry(viewport, SHRUNK_SCROLL_HEIGHT)
+    fireContentResize(content, SHRUNK_SCROLL_HEIGHT)
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+
+    expect(viewport.scrollTop).toBe(3000)
   })
 })

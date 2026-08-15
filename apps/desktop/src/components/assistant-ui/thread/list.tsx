@@ -518,11 +518,72 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // spring can't tell live-token growth from a session-switch bulk relayout, and
   // chasing the latter reads as the view scrolling to random spots before
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll, state } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
     targetScrollTop: resolveThreadScrollTarget
   })
+
+  // use-stick-to-bottom's negative-resize branch only re-asserts the lock — it
+  // trusts the browser's scrollTop clamp to keep a shrink anchored. That trust
+  // fails for delayed content-visibility re-measurement after the reveal
+  // settle: content ABOVE the viewport collapses, scrollTop stays in range (no
+  // clamp fires) and the surface keeps following a bottom that moved up — a
+  // persistent offset (packaged GUI: a 32.3px gap that never recovered). Watch
+  // the content height and re-anchor a strictly-following viewport to the true
+  // bottom on any shrink.
+  //
+  // The correction must be SYNCHRONOUS: ResizeObserver callbacks run after
+  // layout but before paint, so a direct assignment lands in the same frame
+  // the collapse paints. `scrollToBottom('instant')` re-enters the library's
+  // rAF loop and leaks exactly one painted frame at the stale offset
+  // (packaged GUI: one sampled frame at bottomGap 32.67, the next recovered).
+  // `state.scrollTop` is the library's own synchronous scrollTop setter — the
+  // same assignment its instant path performs, minus the rAF hop — and
+  // `state.calculatedTargetScrollTop` routes through the shared
+  // resolveThreadScrollTarget resolver, so the single scroll owner and its
+  // target semantics are preserved. An escaped reader (or one mid-edit) has
+  // `state.isAtBottom` off and is left exactly where they are; growth
+  // (streaming) is followed by the library's positive-resize path.
+  //
+  // The ref is ONE stable useCallback composing the library's contentRef with
+  // our observer: an inline ref function would be a new identity on every
+  // render, and React would detach (null) and reattach (node) on each one —
+  // disconnecting both observers and resetting the height baseline, so a
+  // shrink arriving after any ordinary re-render would never be detected.
+  const shrinkReanchorObserverRef = useRef<ResizeObserver | null>(null)
+  const threadContentRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      contentRef(node)
+      shrinkReanchorObserverRef.current?.disconnect()
+      shrinkReanchorObserverRef.current = null
+
+      if (!node) {
+        return
+      }
+
+      let previousHeight: number | undefined
+      const observer = new ResizeObserver(entries => {
+        const height = entries[0]?.contentRect.height
+
+        if (height === undefined) {
+          return
+        }
+
+        const shrunk = previousHeight !== undefined && height < previousHeight
+
+        previousHeight = height
+
+        if (shrunk && state.isAtBottom) {
+          state.scrollTop = state.calculatedTargetScrollTop
+        }
+      })
+
+      observer.observe(node)
+      shrinkReanchorObserverRef.current = observer
+    },
+    [contentRef, state]
+  )
 
   const { olderAvailable, expandWindow } = useTranscriptWindow()
 
@@ -1053,7 +1114,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             <div
               className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
               data-slot="aui_thread-content"
-              ref={contentRef as React.RefCallback<HTMLDivElement>}
+              ref={threadContentRef}
             >
               {(hiddenCount > 0 || olderAvailable) && (
                 <button

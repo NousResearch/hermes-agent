@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ThreadMessage } from '@assistant-ui/react'
+import { atom } from 'nanostores'
 import { Profiler, type ProfilerOnRenderCallback, useState } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { commitReceiptContentSignature, type ThreadCommitReceipt } from '@/components/assistant-ui/thread/list'
@@ -26,9 +27,13 @@ import {
 } from '@/store/session'
 
 import type { RevealExpectation } from './index'
+import { type SessionView, SessionViewProvider } from './session-view'
 
 const threadRenderCount = vi.hoisted(() => ({ current: 0 }))
 const revealTrace = vi.hoisted(() => ({ counter: 0, sequence: [] as TraceEvent[] }))
+// Lets a test hold back Thread receipts so a stale pre-switch receipt can be
+// proven incapable of revealing a switched-to session.
+const receiptGate = vi.hoisted(() => ({ suppressed: false }))
 
 type TraceEvent =
   | { at: number; hidden: boolean; kind: 'commit'; messageCount: number; revision: number }
@@ -49,7 +54,7 @@ vi.mock('@/components/assistant-ui/thread', async () => {
       const committedMessages = messages.filter(message => message.metadata?.isOptimistic !== true)
 
       useLayoutEffect(() => {
-        if (!props.onCommitReceipt) {
+        if (!props.onCommitReceipt || receiptGate.suppressed) {
           return
         }
 
@@ -122,6 +127,7 @@ describe('ChatView render isolation', () => {
     threadRenderCount.current = 0
     revealTrace.counter = 0
     revealTrace.sequence.length = 0
+    receiptGate.suppressed = false
     $activeSessionId.set('runtime-1')
     $awaitingResponse.set(false)
     $busy.set(false)
@@ -139,6 +145,7 @@ describe('ChatView render isolation', () => {
 
   afterEach(() => {
     cleanup()
+    receiptGate.suppressed = false
     vi.restoreAllMocks()
     $activeSessionId.set(null)
     $awaitingResponse.set(false)
@@ -437,6 +444,316 @@ describe('ChatView render isolation', () => {
       hidden: true
     })
     rerender(harness(true))
+    expect([...revealTrace.sequence].reverse().find(event => event.kind === 'commit')).toMatchObject({
+      kind: 'commit',
+      hidden: false
+    })
+  })
+
+  it('hides the first commit of a session switched into a visible primary pane until its own receipt is accepted', () => {
+    // All three sessions carry the SAME transcript bytes and revision, so only
+    // the runtime/stored identity (plus the timing of the receipt) tells them
+    // apart — a stale receipt captured for the previous session must never
+    // reveal the switched-to one.
+    const identicalMessages = [assistantMessage('session-msg-1', 'Identical historical answer')]
+    const sessionState = (stored: string) => ({
+      ...createClientSessionState(stored, identicalMessages),
+      resumePublicationRevision: 7
+    })
+    $activeSessionId.set('runtime-A')
+    $selectedStoredSessionId.set('stored-A')
+    $sessionStates.set({ 'runtime-A': sessionState('stored-A') })
+    $sessions.set([
+      { id: 'stored-A', message_count: 1, title: 'Chat A' } as never,
+      { id: 'stored-B', message_count: 1, title: 'Chat B' } as never
+    ])
+
+    const props = chatProps()
+    const onRender: ProfilerOnRenderCallback = () => {
+      const thread = document.querySelector<HTMLElement>('[data-testid="thread"]')
+
+      if (thread) {
+        revealTrace.sequence.push({
+          at: revealTrace.counter++,
+          kind: 'commit',
+          hidden: Boolean(thread.closest('[data-pane-hidden]')),
+          messageCount: Number(thread.dataset.messageCount),
+          revision: Number(thread.dataset.revision)
+        })
+      }
+    }
+
+    function SwitchControls() {
+      const navigate = useNavigate()
+
+      return (
+        <>
+          <button onClick={() => navigate('/stored-B')} type="button">
+            switch to B
+          </button>
+          <button onClick={() => navigate('/stored-C')} type="button">
+            switch to C
+          </button>
+          <button onClick={() => navigate('/stored-D')} type="button">
+            switch to D
+          </button>
+          <button onClick={() => navigate('/stored-D2')} type="button">
+            switch to D2
+          </button>
+        </>
+      )
+    }
+
+    function SessionSwitchHarness({ visible }: { visible: boolean }) {
+      return (
+        <PaneVisibleContext.Provider value={visible}>
+          <Profiler id="chat-session-switch" onRender={onRender}>
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+              <MemoryRouter initialEntries={['/stored-A']}>
+                <SwitchControls />
+                <ChatView {...props} />
+              </MemoryRouter>
+            </QueryClientProvider>
+          </Profiler>
+        </PaneVisibleContext.Provider>
+      )
+    }
+
+    const harness = (visible: boolean) => <SessionSwitchHarness visible={visible} />
+    const { rerender } = render(harness(true))
+
+    const mountedCommits = revealTrace.sequence.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> => event.kind === 'commit'
+    )
+    expect(mountedCommits.some(commit => !commit.hidden)).toBe(true)
+
+    // The pane stays visible the whole time; only the routed/stored/runtime
+    // identity moves from A to B. A real sidebar click lands the ROUTE first,
+    // with the store and runtime still bound to A — that very first
+    // route-only frame must already be hidden, before any of B's state or
+    // runtime exists.
+    const switchAt = revealTrace.counter
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'switch to B' }))
+    })
+
+    const routeOnlyCommits = revealTrace.sequence.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> => event.kind === 'commit' && event.at >= switchAt
+    )
+    expect(routeOnlyCommits.length).toBeGreaterThan(0)
+    expect(routeOnlyCommits.at(-1)).toMatchObject({ hidden: true })
+
+    act(() => {
+      $sessionStates.set({ 'runtime-A': sessionState('stored-A'), 'runtime-B': sessionState('stored-B') })
+      $activeSessionId.set('runtime-B')
+      $selectedStoredSessionId.set('stored-B')
+    })
+
+    const postSwitch = revealTrace.sequence.filter(event => event.at >= switchAt)
+    const bCommits = postSwitch.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> =>
+        event.kind === 'commit' && event.messageCount === 1 && event.revision === 7
+    )
+    const bReceipts = postSwitch.filter(
+      (event): event is Extract<TraceEvent, { kind: 'receipt' }> => event.kind === 'receipt'
+    )
+
+    // The first commit of B's transcript must be hidden...
+    expect(bCommits.length).toBeGreaterThan(0)
+    expect(bCommits[0]).toMatchObject({ hidden: true })
+    // ...and only a complete receipt for the current session may reveal it.
+    expect(bReceipts.length).toBeGreaterThan(0)
+    const firstVisibleB = bCommits.find(commit => !commit.hidden)
+    expect(firstVisibleB?.at ?? -1).toBeGreaterThan(bReceipts[0].at)
+
+    // A receipt captured while arming at B must not reveal C later: hide the
+    // pane (a B receipt is recorded and accepted), switch to byte-identical C
+    // with receipts suppressed, then reveal again.
+    rerender(harness(false))
+    receiptGate.suppressed = true
+    const hiddenSwitchAt = revealTrace.counter
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'switch to C' }))
+      $sessionStates.set({
+        'runtime-A': sessionState('stored-A'),
+        'runtime-B': sessionState('stored-B'),
+        'runtime-C': sessionState('stored-C')
+      })
+      $activeSessionId.set('runtime-C')
+      $selectedStoredSessionId.set('stored-C')
+    })
+
+    rerender(harness(true))
+
+    const hiddenSwitchCommits = revealTrace.sequence.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> =>
+        event.kind === 'commit' && event.at >= hiddenSwitchAt && event.messageCount === 1 && event.revision === 7
+    )
+    expect(hiddenSwitchCommits.length).toBeGreaterThan(0)
+    // With receipts held back, C must still be hidden: the identity switch
+    // cleared the recorded receipt, so nothing pre-switch can reveal it.
+    expect(hiddenSwitchCommits.at(-1)).toMatchObject({ hidden: true })
+
+    receiptGate.suppressed = false
+    act(() => {
+      // Republish C's slice with a fresh messages array (same content) so the
+      // boundary re-renders and the unsuppressed Thread leaf re-fires its
+      // receipt for C. A same-reference publish is a computed no-op here.
+      $sessionStates.set({
+        'runtime-A': sessionState('stored-A'),
+        'runtime-B': sessionState('stored-B'),
+        'runtime-C': { ...sessionState('stored-C'), messages: [...identicalMessages] }
+      })
+    })
+
+    expect([...revealTrace.sequence].reverse().find(event => event.kind === 'commit')).toMatchObject({
+      kind: 'commit',
+      hidden: false
+    })
+
+    // A real sidebar click can land the route AND the stored selection in one
+    // batch while the active runtime and its session state still belong to
+    // the previous conversation. In that commit routeSessionMismatch is
+    // false, so hiding must key off the runtime still being bound to the old
+    // conversation — the first D commit must already be hidden.
+    const bothTogetherAt = revealTrace.counter
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'switch to D' }))
+      $selectedStoredSessionId.set('stored-D')
+    })
+
+    const bothTogetherCommits = revealTrace.sequence.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> => event.kind === 'commit' && event.at >= bothTogetherAt
+    )
+    expect(bothTogetherCommits.length).toBeGreaterThan(0)
+    expect(bothTogetherCommits.at(-1)).toMatchObject({ hidden: true })
+
+    // D's runtime binds with its own transcript; only then does a receipt
+    // reveal the surface.
+    act(() => {
+      $sessionStates.set({
+        'runtime-A': sessionState('stored-A'),
+        'runtime-B': sessionState('stored-B'),
+        'runtime-C': sessionState('stored-C'),
+        'runtime-D': sessionState('stored-D')
+      })
+      $activeSessionId.set('runtime-D')
+    })
+
+    expect([...revealTrace.sequence].reverse().find(event => event.kind === 'commit')).toMatchObject({
+      kind: 'commit',
+      hidden: false
+    })
+
+    // Auto-compression rotates the stored tip AND the route within one
+    // lineage while the runtime keeps its binding — the state slice rotates
+    // in place. The surface must stay visible even while the new tip row is
+    // still missing from the session list (the lineage key falls back to the
+    // raw tip id and changes).
+    const compressionAt = revealTrace.counter
+
+    act(() => {
+      $sessionStates.set({
+        'runtime-A': sessionState('stored-A'),
+        'runtime-B': sessionState('stored-B'),
+        'runtime-C': sessionState('stored-C'),
+        'runtime-D': { ...sessionState('stored-D'), storedSessionId: 'stored-D2' }
+      })
+      $selectedStoredSessionId.set('stored-D2')
+      fireEvent.click(screen.getByRole('button', { name: 'switch to D2' }))
+    })
+
+    const compressionCommits = revealTrace.sequence.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> => event.kind === 'commit' && event.at >= compressionAt
+    )
+    expect(compressionCommits.length).toBeGreaterThan(0)
+    expect(compressionCommits.at(-1)).toMatchObject({ hidden: false })
+
+    // The new tip row arrives with its lineage root: the lineage key moves
+    // onto the root without re-hiding the surface.
+    const rowArrivalAt = revealTrace.counter
+
+    act(() => {
+      $sessions.set([
+        { id: 'stored-A', message_count: 1, title: 'Chat A' } as never,
+        { id: 'stored-B', message_count: 1, title: 'Chat B' } as never,
+        { id: 'stored-D2', _lineage_root_id: 'stored-D', message_count: 1, title: 'Chat D' } as never
+      ])
+    })
+
+    const rowArrivalCommits = revealTrace.sequence.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> => event.kind === 'commit' && event.at >= rowArrivalAt
+    )
+    expect(rowArrivalCommits.length).toBeGreaterThan(0)
+    expect(rowArrivalCommits.at(-1)).toMatchObject({ hidden: false })
+  })
+
+  it('reveals a hidden tile from its own receipt while the primary is mid-switch and unbound', () => {
+    // Put the GLOBAL primary atoms into the route+selection/runtime-lag
+    // state: the primary's runtime is still bound to A while the selection
+    // already names B, so the primary binding discriminator is false.
+    $activeSessionId.set('runtime-A')
+    $selectedStoredSessionId.set('stored-B')
+    $sessionStates.set({
+      'runtime-A': { ...createClientSessionState('stored-A', [assistantMessage('assistant-1', 'Primary answer')]) }
+    })
+
+    const tileMessages = [assistantMessage('tile-msg-1', 'Tile answer')]
+    const tileView: SessionView = {
+      kind: 'tile',
+      $awaitingResponse: atom(false),
+      $busy: atom(false),
+      $cwd: atom('/work'),
+      $fast: atom(false),
+      $lastVisibleIsUser: atom(false),
+      $messages: atom<ChatMessage[]>(tileMessages),
+      $messagesEmpty: atom(false),
+      $model: atom('test-model'),
+      $provider: atom('test-provider'),
+      $reasoningEffort: atom(''),
+      $resumePublicationRevision: atom(7),
+      $runtimeId: atom('runtime-tile'),
+      $storedId: atom('stored-tile')
+    }
+
+    const props = chatProps()
+    const onRender: ProfilerOnRenderCallback = () => {
+      const thread = document.querySelector<HTMLElement>('[data-testid="thread"]')
+
+      if (thread) {
+        revealTrace.sequence.push({
+          at: revealTrace.counter++,
+          kind: 'commit',
+          hidden: Boolean(thread.closest('[data-pane-hidden]')),
+          messageCount: Number(thread.dataset.messageCount),
+          revision: Number(thread.dataset.revision)
+        })
+      }
+    }
+
+    const harness = (visible: boolean) => (
+      <SessionViewProvider value={tileView}>
+        <PaneVisibleContext.Provider value={visible}>
+          <Profiler id="chat-tile-reveal" onRender={onRender}>
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+              <MemoryRouter initialEntries={['/stored-1']}>
+                <ChatView {...props} />
+              </MemoryRouter>
+            </QueryClientProvider>
+          </Profiler>
+        </PaneVisibleContext.Provider>
+      </SessionViewProvider>
+    )
+
+    // Mount the tile hidden so its reveal gate arms, then reveal it. The
+    // tile holds its own transcript and revision — its own receipt is valid —
+    // so the primary's unbound state must not keep it hidden.
+    const { rerender } = render(harness(false))
+    rerender(harness(true))
+
     expect([...revealTrace.sequence].reverse().find(event => event.kind === 'commit')).toMatchObject({
       kind: 'commit',
       hidden: false

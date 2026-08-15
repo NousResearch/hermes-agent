@@ -6,7 +6,7 @@ import {
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { atom, type ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 import type * as React from 'react'
 import {
   memo,
@@ -47,18 +47,22 @@ import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
+  $activeSessionId,
   $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
   $introSeed,
   $resumeExhaustedSessionId,
+  $selectedStoredSessionId,
   $sessions,
+  idsShareLineage,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -199,6 +203,53 @@ interface ChatRuntimeBoundaryProps {
 
 const NO_MESSAGES: ChatMessage[] = []
 const ZERO_RESUME_PUBLICATION_REVISION = atom(0)
+
+/**
+ * Whether the primary surface's selected conversation is the conversation its
+ * active runtime is actually bound to.
+ *
+ * This is the mechanical discriminator between a true session switch and a
+ * same-lineage compression rotation at the moment the route and stored
+ * selection move together (routeSessionMismatch is false there):
+ *
+ * - A sidebar click can land route + $selectedStoredSessionId on B in one
+ *   batch while $activeSessionId and its $sessionStates slice still belong to
+ *   A — the slice's storedSessionId is still A's, so this is false.
+ * - Auto-compression rotates the active runtime's stored id IN PLACE (its
+ *   $sessionStates slice is published with the new tip id) BEFORE the
+ *   selection/route follow it — the slice's storedSessionId already equals
+ *   the rotated selection, so this stays true, even while the new tip row is
+ *   still missing from the session list.
+ *
+ * Lineage-aware (idsShareLineage), so a root/tip-equivalent selection counts
+ * as bound. The derived value only flips at binding edges, so the streaming
+ * delta churn of $sessionStates cannot re-render ChatView through it.
+ */
+const $primaryRuntimeBoundToSelection = computed(
+  [$sessionStates, $activeSessionId, $selectedStoredSessionId, $sessions],
+  (states, runtimeId, selectedStoredSessionId, sessions) => {
+    if (!runtimeId) {
+      // A fresh draft has no runtime; it is bound to a null selection.
+      return selectedStoredSessionId === null
+    }
+
+    const runtimeStoredId = states[runtimeId]?.storedSessionId ?? null
+
+    if (runtimeStoredId === selectedStoredSessionId) {
+      return true
+    }
+
+    if (!runtimeStoredId || !selectedStoredSessionId) {
+      return false
+    }
+
+    return idsShareLineage(runtimeStoredId, selectedStoredSessionId, sessions)
+  }
+)
+
+/** Stand-in binding value for surfaces with no global selection: a tile is
+ * never gated by — and must not subscribe to — the primary's binding edges. */
+const $alwaysBoundToSelection = atom(true)
 
 /**
  * The view's $messages, live only while this surface is the VISIBLE tab.
@@ -439,6 +490,15 @@ export const ChatView = memo(function ChatView({
   const resumePublicationRevision = useResumePublicationRevisionWhileVisible(
     view.$resumePublicationRevision ?? ZERO_RESUME_PUBLICATION_REVISION
   )
+  // Whether the active runtime is bound to the selected conversation. That
+  // is a PRIMARY-surface fact (see $primaryRuntimeBoundToSelection): tiles
+  // own no global selection and must neither be gated by nor re-render on
+  // the primary's binding edges, so a tile reads the constant stand-in —
+  // its own receipt always counts as bound. The hook stays unconditional and
+  // `isPrimary` is constant for the life of a mounted surface, so the store
+  // argument never switches. The derived value only flips at binding edges,
+  // so streaming churn never reaches here either.
+  const runtimeBoundToSelection = useStore(isPrimary ? $primaryRuntimeBoundToSelection : $alwaysBoundToSelection)
 
   // Stable handlers keep the memo'd Thread out of unrelated parent renders;
   // render-assigned refs provide the current visibility/revision/expectation.
@@ -446,12 +506,18 @@ export const ChatView = memo(function ChatView({
   paneVisibleRef.current = paneVisible
   const resumeRevisionRef = useRef(resumePublicationRevision)
   resumeRevisionRef.current = resumePublicationRevision
+  const runtimeBoundToSelectionRef = useRef(runtimeBoundToSelection)
+  runtimeBoundToSelectionRef.current = runtimeBoundToSelection
   const revealExpectationRef = useRef<RevealExpectation>({
     chainSignature: '',
     headMessage: null,
     contentSignature: '[]'
   })
   const lastCommitReceiptRef = useRef<ThreadCommitReceipt | null>(null)
+  // While the route names a session the store hasn't bound yet, the thread is
+  // deliberately blanked (suppressMessages). A receipt for that blank surface
+  // must not unlock the reveal gate for the session that is still loading.
+  const routeSessionMismatchRef = useRef(false)
 
   const handleRevealExpectationChange = useCallback((expectation: RevealExpectation) => {
     revealExpectationRef.current = expectation
@@ -460,6 +526,8 @@ export const ChatView = memo(function ChatView({
   const handleCommitReceipt = useCallback((receipt: ThreadCommitReceipt) => {
     if (
       !paneVisibleRef.current ||
+      routeSessionMismatchRef.current ||
+      !runtimeBoundToSelectionRef.current ||
       !revealMatchesExpectation(receipt, revealExpectationRef.current, resumeRevisionRef.current)
     ) {
       return
@@ -473,7 +541,7 @@ export const ChatView = memo(function ChatView({
   // visibility round-trip. Revalidate its last receipt; a hidden publication
   // changes the revision/signature and therefore still requires a fresh one.
   useLayoutEffect(() => {
-    if (!paneVisible) {
+    if (!paneVisible || routeSessionMismatchRef.current || !runtimeBoundToSelectionRef.current) {
       return
     }
 
@@ -562,6 +630,53 @@ export const ChatView = memo(function ChatView({
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
   const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
+  routeSessionMismatchRef.current = routeSessionMismatch
+
+  // `runtimeRevealReady` initializes from pane visibility once, and a visible
+  // primary pane switching sessions never toggles visibility — so without a
+  // session-identity reset the incoming transcript publishes with no reveal
+  // receipt armed. Two identity signals arm the gate, render-synchronously,
+  // before the incoming transcript can paint:
+  //
+  // - The route lineage key (queueSessionKey: route-first, resolved to the
+  //   stable lineage root). It changes on the FIRST frame of a switch — the
+  //   route already names B while the store and runtime still belong to A —
+  //   which is exactly the frame the live defect publishes. It arms only
+  //   when the surface has genuinely left its conversation: either the
+  //   route and the store selection disagree (route-only frame), or both
+  //   moved together while the active runtime is still bound to the old
+  //   conversation (runtimeBoundToSelection is false). Auto-compression
+  //   rotates the runtime's stored id IN PLACE before the selection/route
+  //   follow it, so the runtime is already bound to the rotated selection —
+  //   even while the new tip row is missing from the session list and the
+  //   lineage key transiently falls back to the raw tip id — and the
+  //   surface must NOT re-hide.
+  // - The runtime id. It changes exactly when the primary surface's
+  //   conversation rebinds (a true A→B switch lands, or a draft↔session
+  //   transition) and never during compression or streaming. Tiles patch
+  //   their own runtime binding on resume, which is not a surface identity
+  //   change, so both arms are primary-only.
+  //
+  // Either arm clears the recorded receipt so a receipt captured for the
+  // previous session cannot reveal the next one, even when both transcripts
+  // have identical revision, chain, and content bytes.
+  const routeLineageRevealKey = isPrimary ? queueSessionKey : null
+  const routeLineageRevealKeyRef = useRef<string | null>(routeLineageRevealKey)
+  const runtimeRevealKeyRef = useRef<string | null>(activeSessionId)
+  const lineageRevealChanged = routeLineageRevealKeyRef.current !== routeLineageRevealKey
+  const runtimeRevealChanged = isPrimary && runtimeRevealKeyRef.current !== activeSessionId
+
+  if (lineageRevealChanged || runtimeRevealChanged) {
+    routeLineageRevealKeyRef.current = routeLineageRevealKey
+    runtimeRevealKeyRef.current = activeSessionId
+
+    const switchedSurface = lineageRevealChanged && (routeSessionMismatch || !runtimeBoundToSelection)
+
+    if (switchedSurface || runtimeRevealChanged) {
+      lastCommitReceiptRef.current = null
+      setRuntimeRevealReady(false)
+    }
+  }
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.

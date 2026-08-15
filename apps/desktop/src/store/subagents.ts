@@ -56,7 +56,7 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : u
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
 
 const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
-  if (v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued') {
+  if (v === 'completed' || v === 'failed' || v === 'interrupted') {
     return v
   }
 
@@ -69,14 +69,14 @@ const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
   }
 
   // Fail closed on completion: a subagent.complete event is terminal by
-  // definition, so an unrecognized status must render as a failure rather
-  // than leave a dead row spinning as 'running' forever. Live events keep
-  // the lenient 'running' fallback.
+  // definition, so an unrecognized (or still-active 'queued'/'running')
+  // status must render as a failure rather than leave a dead row spinning
+  // as 'running' forever. Live events keep the lenient fallback.
   if (terminalEvent) {
     return 'failed'
   }
 
-  return 'running'
+  return v === 'queued' ? v : 'running'
 }
 
 const compact = (text: string, max = PREVIEW_MAX) => {

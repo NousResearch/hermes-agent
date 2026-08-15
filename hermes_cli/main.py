@@ -9918,7 +9918,7 @@ def cmd_update(args):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if install_method in {"nix", "nixos"}:
+    if install_method in {"nix", "nixos", "apt"}:
         print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 

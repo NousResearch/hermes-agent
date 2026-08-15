@@ -2541,7 +2541,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if method in {"nix", "nixos"}:
+    if method in {"nix", "nixos", "apt"}:
         print(recommended_update_command_for_method(method))
         sys.exit(1)
 

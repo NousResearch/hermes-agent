@@ -3394,7 +3394,7 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            identifier=f"official/{skill_dir.resolve().relative_to(self._optional_dir.resolve()).as_posix()}",
             trust_level="builtin",
         )
 
@@ -3999,7 +3999,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(_skills_dir())),
+        install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
         scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),

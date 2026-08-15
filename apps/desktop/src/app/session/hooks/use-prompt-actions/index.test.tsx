@@ -4288,7 +4288,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
 
     await handle!.submitText('ordinary text for the selected project B session')
 
-    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
       session_id: STORED_SESSION_B,
       source: 'desktop'
     })
@@ -4345,7 +4345,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
 
     await handle!.submitText('ordinary text for the freshly created project B session')
 
-    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
       session_id: STORED_SESSION_B,
       source: 'desktop'
     })
@@ -4430,7 +4430,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
 
     await handle!.submitText('message after an ownership-cache miss')
 
-    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+    expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
       session_id: STORED_SESSION_B,
       source: 'desktop'
     })

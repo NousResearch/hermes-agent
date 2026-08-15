@@ -118,6 +118,34 @@ class TestBranchCommandCLI:
 
         assert cli_instance._resumed is True
 
+    def test_branch_here_flag_stripped_on_cli(self, cli_instance, session_db):
+        """CLI always branches in-place; --here must not become the title."""
+        from cli import HermesCLI
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch --here alt path")
+
+        title = session_db.get_session_title(cli_instance.session_id)
+        assert title == "alt path"
+        assert cli_instance.session_id != "20260403_120000_abc123"
+
+    def test_branch_rotates_hermes_session_id_env_and_context(self, cli_instance, session_db):
+        """Branching must update process-local session-id readers too."""
+        from cli import HermesCLI
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+        old_session_id = cli_instance.session_id
+        os.environ["HERMES_SESSION_ID"] = old_session_id
+        _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+        try:
+            HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+            assert cli_instance.session_id != old_session_id
+            assert os.environ["HERMES_SESSION_ID"] == cli_instance.session_id
+            assert get_session_env("HERMES_SESSION_ID") == cli_instance.session_id
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
     def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
         """The /branch command must notify memory providers of the rotation.

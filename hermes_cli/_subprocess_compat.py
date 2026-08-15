@@ -162,6 +162,16 @@ def windows_batch_command(
             placeholders.append('""')
             continue
         key = f"{prefix}_{index}"
+        # The placeholder is expanded inside a quoted command-line token. The
+        # native argv parser used by Node/Python treats a backslash immediately
+        # before that closing quote as an escape, so double only the trailing
+        # run for transport. Interior backslashes remain literal.
+        trailing_backslashes = len(value) - len(value.rstrip("\\"))
+        if trailing_backslashes:
+            value = (
+                value[:-trailing_backslashes]
+                + "\\" * (trailing_backslashes * 2)
+            )
         env[key] = value
         # The outer shell removes the carets without expanding the variable.
         # The inner /V:OFF shell then expands it while delayed expansion is off.

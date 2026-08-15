@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import subprocess
+import sys
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
@@ -50,16 +52,21 @@ def test_install_npm_passes_extras_to_npm_command(tmp_path, monkeypatch):
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(install_mod, "find_node_executable", lambda c: "/usr/bin/npm" if c == "npm" else None)
 
-    install_mod._install_npm("typescript-language-server", "typescript-language-server",
-                             extra_pkgs=["typescript"])
+    extras = install_mod.INSTALL_RECIPES["typescript-language-server"]["extra_pkgs"]
+    assert extras == ["typescript@6"]
+    install_mod._install_npm(
+        "typescript-language-server",
+        "typescript-language-server",
+        extra_pkgs=extras,
+    )
 
     cmd = captured["cmd"]
     assert "typescript-language-server" in cmd
-    assert "typescript" in cmd
+    assert "typescript@6" in cmd
     # Both must come AFTER the npm flags, in install-target position
     install_idx = cmd.index("install")
     assert cmd.index("typescript-language-server") > install_idx
-    assert cmd.index("typescript") > install_idx
+    assert cmd.index("typescript@6") > install_idx
 
 
 def test_install_npm_works_without_extras(tmp_path, monkeypatch):
@@ -130,6 +137,91 @@ def test_existing_binary_prefers_canonical_npm_wrapper(tmp_path, monkeypatch):
     monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
 
     assert install_mod._existing_binary("pyright-langserver") == str(canonical)
+
+
+def test_existing_binary_prefers_hermes_wrapper_over_canonical_npm(
+    tmp_path, monkeypatch
+):
+    """A generated wrapper must survive process restart and stay preferred."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    staged = install_mod.hermes_lsp_bin_dir()
+    generated = staged / "pyright-langserver.hermes.cmd"
+    generated.write_text("@echo off\n")
+    npm_bin = staged.parent / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    canonical = npm_bin / "pyright-langserver.cmd"
+    canonical.write_text("@echo off\n")
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+
+    assert install_mod._existing_binary("pyright-langserver") == str(generated)
+
+
+def test_auto_install_upgrades_preexisting_canonical_npm_wrapper(
+    tmp_path, monkeypatch
+):
+    """Existing managed packages gain a safe wrapper without npm reinstall."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    staging = install_mod.hermes_lsp_bin_dir().parent
+    npm_bin = staging / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    (npm_bin / "pyright-langserver.cmd").write_text("@echo off\n")
+    package_dir = staging / "node_modules" / "pyright"
+    package_dir.mkdir()
+    (package_dir / "package.json").write_text(
+        json.dumps({"bin": {"pyright-langserver": "langserver.index.js"}}),
+        encoding="utf-8",
+    )
+    (package_dir / "langserver.index.js").write_text("// fixture\n")
+
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        install_mod,
+        "find_node_executable",
+        lambda name: r"C:\Program Files\nodejs\node.exe" if name == "node" else None,
+    )
+    monkeypatch.setattr(
+        install_mod,
+        "_install_npm",
+        lambda *_args, **_kwargs: pytest.fail("existing package was reinstalled"),
+    )
+
+    resolved = install_mod._do_install("pyright")
+
+    expected = staging / "bin" / "pyright-langserver.hermes.cmd"
+    assert resolved == str(expected)
+    assert expected.exists()
+
+
+def test_auto_install_ignores_orphaned_generated_and_staged_npm_wrappers(
+    tmp_path, monkeypatch
+):
+    """Orphaned generated or copied wrappers must not suppress repair."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.lsp import install as install_mod
+
+    orphan = install_mod.hermes_lsp_bin_dir() / "pyright-langserver.hermes.cmd"
+    orphan.write_text("@echo off\n")
+    stale_copy = install_mod.hermes_lsp_bin_dir() / "pyright-langserver.cmd"
+    stale_copy.write_text("@echo off\n")
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(install_mod, "find_node_executable", lambda _name: None)
+    monkeypatch.setattr(install_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        install_mod,
+        "_install_npm",
+        lambda *_args, **_kwargs: "reinstalled-wrapper.cmd",
+    )
+
+    assert install_mod._do_install("pyright") == "reinstalled-wrapper.cmd"
 
 
 def test_existing_binary_rejects_posix_only_shim_on_windows(tmp_path, monkeypatch):
@@ -316,8 +408,10 @@ def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path, argument):
     assert result.stdout.splitlines() == [f'READY ["{argument}"]']
 
 
-def test_install_npm_uses_native_windows_wrapper_in_place(tmp_path, monkeypatch):
-    """npm repair should use .cmd where its relative package path stays valid."""
+def test_install_npm_generates_location_independent_windows_wrapper(
+    tmp_path, monkeypatch
+):
+    """Managed npm bins use a Hermes wrapper instead of npm's fragile shim."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from agent.lsp import install as install_mod
@@ -328,20 +422,50 @@ def test_install_npm_uses_native_windows_wrapper_in_place(tmp_path, monkeypatch)
         npm_bin.mkdir(parents=True, exist_ok=True)
         (npm_bin / "pyright-langserver").write_text("#!/bin/sh\nexit 0\n")
         (npm_bin / "pyright-langserver.cmd").write_text("@echo off\n")
+        package_dir = npm_bin.parent / "pyright"
+        package_dir.mkdir()
+        (package_dir / "package.json").write_text(
+            json.dumps({"bin": {"pyright-langserver": "langserver.index.js"}})
+        )
+        (package_dir / "langserver.index.js").write_text("// fixture\n")
         return MagicMock(returncode=0, stderr="")
 
     monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
     monkeypatch.setattr(
         install_mod,
         "find_node_executable",
-        lambda name: "C:\\Program Files\\nodejs\\npm.cmd" if name == "npm" else None,
+        lambda name: {
+            "npm": "C:\\Program Files\\nodejs\\npm.cmd",
+            "node": "C:\\Program Files\\nodejs\\node.exe",
+        }.get(name),
     )
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
 
     resolved = install_mod._install_npm("pyright", "pyright-langserver")
 
-    assert resolved == str(npm_bin / "pyright-langserver.cmd")
-    assert not (install_mod.hermes_lsp_bin_dir() / "pyright-langserver.cmd").exists()
+    wrapper = install_mod.hermes_lsp_bin_dir() / "pyright-langserver.hermes.cmd"
+    assert resolved == str(wrapper)
+    content = wrapper.read_text(encoding="ascii")
+    assert "setlocal DisableDelayedExpansion" in content
+    assert 'set "dp0=%~dp0"' in content
+    assert "langserver.index.js" in content
+    assert (npm_bin / "pyright-langserver.cmd").exists()
+
+
+def test_npm_bin_script_rejects_non_object_package_metadata(tmp_path):
+    """Malformed-but-valid JSON metadata falls back instead of raising."""
+    from agent.lsp import install as install_mod
+
+    package_dir = tmp_path / "node_modules" / "fixture-package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text("[]", encoding="utf-8")
+
+    assert (
+        install_mod._npm_bin_script(
+            tmp_path, "fixture-package", "fixture-language-server"
+        )
+        is None
+    )
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
 def test_install_npm_handles_metacharacters_in_hermes_home(tmp_path, monkeypatch):
@@ -365,18 +489,129 @@ def test_install_npm_handles_metacharacters_in_hermes_home(tmp_path, monkeypatch
                 'set "prefix=%~3"',
                 r'if not exist "%prefix%\node_modules\.bin" mkdir "%prefix%\node_modules\.bin"',
                 r'> "%prefix%\node_modules\.bin\pyright-langserver.cmd" echo @echo off',
+                r'if not exist "%prefix%\node_modules\fake-package" mkdir "%prefix%\node_modules\fake-package"',
+                r'> "%prefix%\node_modules\fake-package\package.json" echo {"bin":{"pyright-langserver":"server.js"}}',
+                r'> "%prefix%\node_modules\fake-package\server.js" echo // fixture',
                 "exit /b 0",
             ]
         )
         + os.linesep
     )
     monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        install_mod,
+        "find_node_executable",
+        lambda name: str(fake_npm)
+        if name == "npm"
+        else r"C:\Program Files\nodejs\node.exe",
+    )
 
     resolved = install_mod._install_npm("fake-package", "pyright-langserver")
 
-    expected = home / "lsp" / "node_modules" / ".bin" / "pyright-langserver.cmd"
+    expected = home / "lsp" / "bin" / "pyright-langserver.hermes.cmd"
     assert resolved == str(expected)
     assert expected.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+def test_generated_npm_wrapper_keeps_managed_node_and_home_relative(
+    tmp_path, monkeypatch
+):
+    """Managed Node and package paths must not bake HERMES_HOME into the shim."""
+    home = tmp_path / "home-ünicode&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent.lsp import install as install_mod
+
+    staging = install_mod.hermes_lsp_bin_dir().parent
+    package_dir = staging / "node_modules" / "fixture-package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        json.dumps({"bin": {"fixture-server": "capture.js"}}),
+        encoding="utf-8",
+    )
+    (package_dir / "capture.js").write_text("// fixture\n", encoding="utf-8")
+    managed_node = home / "node" / "node.exe"
+    managed_node.parent.mkdir(parents=True)
+    managed_node.write_bytes(b"MZ")
+    monkeypatch.setattr(
+        install_mod,
+        "find_node_executable",
+        lambda name: str(managed_node) if name == "node" else None,
+    )
+
+    wrapper = install_mod._write_windows_node_wrapper(
+        staging, "fixture-package", "fixture-server"
+    )
+    assert wrapper is not None
+    content = wrapper.read_text(encoding="ascii")
+    assert str(home) not in content
+    assert "%dp0%" in content
+    assert "node.exe" in content
+    assert "capture.js" in content
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "hello&%UNEXPANDED%!UNEXPANDED!()^caret|pipe<in>out",
+        "trailing\\",
+        "double-trailing\\\\",
+    ],
+)
+def test_generated_npm_wrapper_survives_real_metacharacter_home(
+    tmp_path, monkeypatch, argument
+):
+    """Exercise the generated wrapper through shell=True, exactly as LSP does."""
+    home = tmp_path / "home&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("UNEXPANDED", "wrong")
+
+    from agent.lsp import install as install_mod
+    from hermes_cli._subprocess_compat import windows_batch_command, windows_hide_flags
+
+    staging = install_mod.hermes_lsp_bin_dir().parent
+    package_dir = staging / "node_modules" / "fixture-package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        json.dumps({"bin": {"fixture-server": "capture.py"}}),
+        encoding="utf-8",
+    )
+    (package_dir / "capture.py").write_text(
+        "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        install_mod,
+        "find_node_executable",
+        lambda name: sys.executable if name == "node" else None,
+    )
+
+    wrapper = install_mod._write_windows_node_wrapper(
+        staging, "fixture-package", "fixture-server"
+    )
+    assert wrapper is not None
+
+    env = dict(os.environ)
+    command_line = windows_batch_command(
+        [str(wrapper), argument, ""], env, prefix="HERMES_LSP_E2E"
+    )
+    result = subprocess.run(
+        command_line,
+        shell=True,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        creationflags=windows_hide_flags(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [argument, ""]
 
 
 def test_install_npm_uses_managed_resolver_off_windows(tmp_path, monkeypatch):

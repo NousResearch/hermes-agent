@@ -1,9 +1,10 @@
 """Auto-installation of LSP server binaries.
 
 Tries to install missing servers using whatever package manager is
-appropriate.  All installs go under ``<HERMES_HOME>/lsp/`` so we don't
-pollute the user's global toolchain.  Standalone binaries are staged in
-``bin/``; location-dependent npm wrappers stay in ``node_modules/.bin``.
+appropriate. All installs go under ``<HERMES_HOME>/lsp/`` so we don't
+pollute the user's global toolchain. Standalone binaries and Hermes-owned
+Windows npm launchers are staged in ``bin/``; package payloads and npm's
+canonical wrappers remain under ``node_modules/``.
 
 Strategies:
 
@@ -26,6 +27,7 @@ hadn't enabled LSP at all.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -61,7 +63,10 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
         # (tsserver) to be importable from the same node_modules tree;
         # otherwise initialize() fails with "Could not find a valid
         # TypeScript installation".  Install them together.
-        "extra_pkgs": ["typescript"],
+        # typescript-language-server 5.x loads lib/tsserver.js. TypeScript 7
+        # replaced that layout with the native compiler and no longer ships
+        # tsserver.js, so an unbounded ``typescript`` install cannot initialize.
+        "extra_pkgs": ["typescript@6"],
     },
     "@vue/language-server": {
         "strategy": "npm",
@@ -116,6 +121,7 @@ _install_locks: Dict[str, threading.Lock] = {}
 _install_results: Dict[str, Optional[str]] = {}
 _install_lock_meta = threading.Lock()
 _WINDOWS_WRAPPER_SUFFIXES = (".exe", ".com", ".cmd", ".bat")
+_HERMES_NPM_WRAPPER_TAG = ".hermes"
 
 
 def _is_windows() -> bool:
@@ -167,15 +173,26 @@ def _native_binary_candidates(base: Path) -> list[Path]:
     return candidates
 
 
-def _existing_binary(name: str) -> Optional[str]:
+def _existing_binary(
+    name: str,
+    *,
+    include_generated: bool = True,
+    include_staged: bool = True,
+) -> Optional[str]:
     """Probe Hermes install locations + PATH for a binary named ``name``."""
-    bases = [hermes_lsp_bin_dir() / name]
+    bases = [hermes_lsp_bin_dir() / name] if include_staged else []
     if _is_windows():
+        # Hermes-generated wrappers avoid npm's own unquoted ``SET dp0=%~dp0``
+        # prologue, which breaks when HERMES_HOME contains cmd metacharacters.
+        # Prefer them over both the canonical npm shim and stale pre-fix copies.
+        generated = hermes_lsp_bin_dir() / f"{name}{_HERMES_NPM_WRAPPER_TAG}"
         # npm .cmd launchers use paths relative to node_modules/.bin. Moving
         # or copying them into lsp/bin breaks those paths, so prefer the
-        # canonical npm location and execute the wrapper in place.
+        # canonical npm location only when no generated wrapper is available.
         npm_bin = hermes_lsp_bin_dir().parent / "node_modules" / ".bin" / name
         bases.insert(0, npm_bin)
+        if include_generated:
+            bases.insert(0, generated)
     for base in bases:
         for staged in _native_binary_candidates(base):
             if (
@@ -248,8 +265,27 @@ def _do_install(pkg: str) -> Optional[str]:
     strategy = recipe.get("strategy", "manual")
     bin_name = recipe.get("bin", pkg)
 
-    # Check if already present (shutil.which or staging dir)
-    existing = _existing_binary(bin_name)
+    # Upgrade existing npm installations in place. npm's own .cmd wrapper uses
+    # an unquoted ``SET dp0=%~dp0`` and fails when HERMES_HOME contains cmd
+    # metacharacters, so merely finding that canonical wrapper is not enough.
+    # Regenerate our relative launcher before accepting an existing npm bin.
+    if strategy == "npm" and _is_windows():
+        generated = _write_windows_node_wrapper(
+            hermes_lsp_bin_dir().parent,
+            recipe.get("pkg", pkg),
+            bin_name,
+        )
+        if generated is not None:
+            return str(generated)
+        # A tagged wrapper whose package/script disappeared is stale. Ignore it
+        # so auto-install can repair the package instead of returning a dead path.
+        existing = _existing_binary(
+            bin_name,
+            include_generated=False,
+            include_staged=False,
+        )
+    else:
+        existing = _existing_binary(bin_name)
     if existing:
         return existing
 
@@ -272,6 +308,105 @@ def _do_install(pkg: str) -> Optional[str]:
     return None
 
 
+def _npm_bin_script(staging: Path, pkg: str, bin_name: str) -> Optional[Path]:
+    """Resolve an installed npm package's executable JavaScript entry point."""
+    package_dir = staging / "node_modules" / Path(*pkg.split("/"))
+    package_json = package_dir / "package.json"
+    try:
+        metadata = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(metadata, dict):
+        return None
+
+    bin_spec = metadata.get("bin")
+    if isinstance(bin_spec, str):
+        entry = bin_spec
+    elif isinstance(bin_spec, dict):
+        entry = bin_spec.get(bin_name)
+    else:
+        return None
+    if not isinstance(entry, str) or not entry:
+        return None
+
+    try:
+        script = (package_dir / entry).resolve()
+        script.relative_to(package_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return script if script.is_file() else None
+
+
+def _batch_static_literal(value: str) -> Optional[str]:
+    """Escape static text embedded in an ASCII Windows batch launcher."""
+    if any(char in value for char in ('"', "\r", "\n", "\0")):
+        return None
+    # Percent signs in a batch file must be doubled. Delayed expansion is
+    # disabled by the generated launcher, so literal exclamation marks survive.
+    return value.replace("%", "%%")
+
+
+def _write_windows_node_wrapper(
+    staging: Path, pkg: str, bin_name: str
+) -> Optional[Path]:
+    """Create a location-independent wrapper for an installed npm binary.
+
+    npm's Windows shim computes its package root with the unquoted command
+    ``SET dp0=%~dp0``. If HERMES_HOME contains ``&`` (or another cmd
+    metacharacter), cmd.exe reparses the expanded path and the shim jumps into
+    the wrong command. The Hermes wrapper uses a quoted assignment, disables
+    delayed expansion, and launches the package's JS entry through node.
+
+    Paths under HERMES_HOME are expressed relative to ``%dp0%``. That keeps the
+    wrapper ASCII even when the user's home directory contains Unicode, while
+    quoted variable expansion preserves cmd metacharacters in the real path.
+    """
+    node = find_node_executable("node")
+    script = _npm_bin_script(staging, pkg, bin_name)
+    if not node or script is None:
+        return None
+
+    wrapper = hermes_lsp_bin_dir() / f"{bin_name}{_HERMES_NPM_WRAPPER_TAG}.cmd"
+    home = staging.parent
+    try:
+        node_path = Path(node).resolve()
+        node_path.relative_to(home.resolve())
+    except (OSError, ValueError):
+        node_ref = _batch_static_literal(str(node))
+    else:
+        node_rel = _batch_static_literal(os.path.relpath(node_path, wrapper.parent))
+        node_ref = f"%dp0%{node_rel}" if node_rel is not None else None
+
+    script_rel = _batch_static_literal(os.path.relpath(script, wrapper.parent))
+    if node_ref is None or script_rel is None:
+        return None
+    script_ref = f"%dp0%{script_rel}"
+    content = (
+        "@echo off\r\n"
+        "setlocal DisableDelayedExpansion\r\n"
+        'set "dp0=%~dp0"\r\n'
+        f'"{node_ref}" "{script_ref}" %*\r\n'
+    )
+    temp_wrapper = wrapper.with_name(
+        f".{wrapper.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        # The dynamic home path lives in %dp0%; only package-relative paths and
+        # (for system Node) its resolved executable remain static. Refuse a
+        # non-ASCII static path rather than writing a code-page-fragile script.
+        content.encode("ascii")
+        temp_wrapper.write_text(content, encoding="ascii", newline="")
+        os.replace(temp_wrapper, wrapper)
+    except (OSError, UnicodeError):
+        try:
+            temp_wrapper.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    return wrapper
+
+
 def _install_npm(
     pkg: str,
     bin_name: str,
@@ -280,9 +415,10 @@ def _install_npm(
     """Install an npm package into our staging dir.
 
     Uses ``npm install --prefix`` so the binaries land in
-    ``<staging>/node_modules/.bin/<bin_name>``.  POSIX launchers are
-    symlinked into our stable bin directory; Windows npm wrappers execute
-    in place because their package paths are relative to ``.bin``.
+    ``<staging>/node_modules/.bin/<bin_name>``. POSIX launchers are
+    symlinked into our stable bin directory. On Windows, Hermes writes a
+    location-independent wrapper that invokes the package's JavaScript entry
+    through node; npm's canonical wrapper remains untouched as a fallback.
 
     ``extra_pkgs`` is a list of sibling packages to install in the
     same ``node_modules`` tree.  Used for LSP servers with runtime
@@ -349,6 +485,10 @@ def _install_npm(
 
     # Find the bin
     nm_bin = staging / "node_modules" / ".bin" / bin_name
+    if _is_windows():
+        generated = _write_windows_node_wrapper(staging, pkg, bin_name)
+        if generated is not None:
+            return str(generated)
     for c in _native_binary_candidates(nm_bin):
         if c.exists() and (not _is_windows() or _is_windows_launchable(c)):
             if _is_windows():

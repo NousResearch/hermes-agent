@@ -32,6 +32,14 @@ export function setSessionProviderWait(sessionId: string | null | undefined, tex
   $providerWaitSessions.set({ ...sessions, [key]: nextText })
 }
 
+export function clearSessionProviderWait(sessionId: string | null | undefined): void {
+  setSessionProviderWait(sessionId, '')
+}
+
+export function clearAllProviderWaits(): void {
+  $providerWaitSessions.set({})
+}
+
 /** Only the core's explained wait/reconnect frames belong in Desktop's status
  * row. Generic kawaii spinner rewrites remain presentation noise. */
 export function providerWaitText(text: string): string {

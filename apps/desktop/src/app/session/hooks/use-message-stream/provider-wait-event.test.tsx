@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $providerWaitSessions } from '@/store/provider-wait'
+import { clearAllSessionStates, dropSessionState } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -78,4 +79,20 @@ describe('provider wait visibility', () => {
       expect($providerWaitSessions.get()).toEqual({})
     }
   )
+
+  it('clears the wait when its runtime session is dropped', () => {
+    emit('thinking.delta', { text: '⏳ waiting on local-model — 30s with no output yet' })
+
+    dropSessionState(SID)
+
+    expect($providerWaitSessions.get()).toEqual({})
+  })
+
+  it('clears every wait when gateway session state is reset', () => {
+    emit('thinking.delta', { text: '⏳ waiting on local-model — 30s with no output yet' })
+
+    clearAllSessionStates()
+
+    expect($providerWaitSessions.get()).toEqual({})
+  })
 })

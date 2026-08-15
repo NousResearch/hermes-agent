@@ -672,6 +672,18 @@ class MemoryManager:
             return True
         return "messages" in signature.parameters
 
+    @staticmethod
+    def _provider_sync_accepts_title(provider: MemoryProvider) -> bool:
+        """Return whether sync_turn accepts a session_title keyword."""
+        try:
+            signature = inspect.signature(provider.sync_turn)
+        except (TypeError, ValueError):
+            return True
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return True
+        return "session_title" in signature.parameters
+
     def sync_all(
         self,
         user_content: str,
@@ -679,6 +691,7 @@ class MemoryManager:
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        session_title: str = "",
     ) -> None:
         """Sync a completed turn to all providers.
 
@@ -709,12 +722,35 @@ class MemoryManager:
         def _run() -> None:
             for provider in providers:
                 try:
-                    if messages is not None and self._provider_sync_accepts_messages(provider):
+                    accepts_messages = (
+                        messages is not None
+                        and self._provider_sync_accepts_messages(provider)
+                    )
+                    accepts_title = (
+                        session_title
+                        and self._provider_sync_accepts_title(provider)
+                    )
+                    if accepts_messages and accepts_title:
                         provider.sync_turn(
                             user_content,
                             assistant_content,
                             session_id=session_id,
                             messages=messages,
+                            session_title=session_title,
+                        )
+                    elif accepts_messages:
+                        provider.sync_turn(
+                            user_content,
+                            assistant_content,
+                            session_id=session_id,
+                            messages=messages,
+                        )
+                    elif accepts_title:
+                        provider.sync_turn(
+                            user_content,
+                            assistant_content,
+                            session_id=session_id,
+                            session_title=session_title,
                         )
                     else:
                         provider.sync_turn(

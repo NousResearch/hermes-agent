@@ -811,6 +811,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
         self._session_id = ""
+        self._session_title = ""
         self._parent_session_id = ""
         self._document_id = ""
 
@@ -2017,6 +2018,20 @@ class HindsightMemoryProvider(MemoryProvider):
             metadata["agent_identity"] = self._agent_identity
         return metadata
 
+    def _lineage_tags(self, session_title: str = "") -> list[str]:
+        """Lineage tags for the next retain, including the human-readable
+        session title when one is known (#86824)."""
+        tags: list[str] = []
+        if self._session_id:
+            tags.append(f"session:{self._session_id}")
+        if self._parent_session_id:
+            tags.append(f"parent:{self._parent_session_id}")
+        if session_title:
+            self._session_title = str(session_title).strip()
+            if self._session_title:
+                tags.append(f"title:{self._session_title}")
+        return tags
+
     def _build_retain_kwargs(
         self,
         content: str,
@@ -2048,7 +2063,14 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        session_title: str = "",
+    ) -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
         The actual aretain_batch runs on a single long-lived writer thread
@@ -2095,11 +2117,7 @@ class HindsightMemoryProvider(MemoryProvider):
                      sum(len(t) for t in turns_to_retain))
         content = "[" + ",".join(turns_to_retain) + "]"
 
-        lineage_tags: list[str] = []
-        if self._session_id:
-            lineage_tags.append(f"session:{self._session_id}")
-        if self._parent_session_id:
-            lineage_tags.append(f"parent:{self._parent_session_id}")
+        lineage_tags = self._lineage_tags(session_title)
 
         # Snapshot the state needed for the retain. The writer may run after
         # _session_turns / _turn_index are mutated by a later sync_turn().

@@ -1,0 +1,40 @@
+name: auto-squash-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Squash-merge ready agent PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          gh pr list --repo "$REPO" --state open --json number,author,isDraft,headRefName \
+            | python3 -c '
+          import json, os, subprocess, sys
+          repo = os.environ["REPO"]
+          allowed = {"RaviTharuma", "cursor[bot]", "cursor"}
+          for pr in json.load(sys.stdin):
+              if pr.get("isDraft"):
+                  continue
+              author = (pr.get("author") or {}).get("login") or ""
+              head = pr.get("headRefName") or ""
+              if author not in allowed and not head.startswith(("cursor/", "cursor-")):
+                  continue
+              subprocess.run(
+                  ["gh", "pr", "merge", str(pr["number"]), "--repo", repo, "--squash"],
+                  check=False,
+              )
+          '

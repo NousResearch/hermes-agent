@@ -65,6 +65,29 @@ class TestBrowserCleanup:
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
 
+    def test_cleanup_shared_cdp_closes_only_pinned_tab_before_session(self):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-cdp"] = {
+            "session_name": "sess-cdp",
+            "bb_session_id": None,
+            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/shared",
+        }
+
+        with (
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch(
+                "tools.browser_tool._run_browser_command",
+                return_value={"success": True},
+            ) as mock_run,
+            patch("tools.browser_tool.os.path.exists", return_value=False),
+        ):
+            browser_tool.cleanup_browser("task-cdp")
+
+        assert mock_run.call_args_list == [
+            (("task-cdp", "tab", ["close"]), {"timeout": 10}),
+            (("task-cdp", "close", []), {"timeout": 10}),
+        ]
+
 
     def test_emergency_cleanup_clears_all_tracking_state(self):
         browser_tool = self.browser_tool

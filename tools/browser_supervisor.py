@@ -287,12 +287,12 @@ class SupervisorSnapshot:
 
 
 class CDPSupervisor:
-    """One supervisor per (task_id, cdp_url) pair.
+    """One supervisor per (task_id, cdp_url, target_id) binding.
 
     Lifecycle:
       * ``start()`` — kicked off by ``SupervisorRegistry.get_or_start``; spawns
         a daemon thread running its own asyncio loop, connects the WebSocket,
-        attaches to the first page target, enables domains, starts
+        attaches to ``target_id`` when provided (otherwise the first page), enables domains, starts
         auto-attaching to child targets.
       * ``snapshot()`` — sync, thread-safe, called from tool handlers.
       * ``respond_to_dialog(action, ...)`` — sync bridge; schedules a coroutine
@@ -308,6 +308,7 @@ class CDPSupervisor:
         task_id: str,
         cdp_url: str,
         *,
+        target_id: Optional[str] = None,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
     ) -> None:
@@ -318,6 +319,7 @@ class CDPSupervisor:
             )
         self.task_id = task_id
         self.cdp_url = cdp_url
+        self.target_id = target_id
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
 
@@ -739,10 +741,19 @@ class CDPSupervisor:
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find a page target, attach flattened session, enable domains, install dialog bridge."""
+        """Attach the requested page (or first page), enable domains, install dialog bridge."""
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        page_target = next(
+            (
+                t for t in targets
+                if t.get("type") == "page"
+                and (self.target_id is None or t.get("targetId") == self.target_id)
+            ),
+            None,
+        )
+        if self.target_id is not None and page_target is None:
+            raise RuntimeError(f"Requested CDP page target is unavailable: {self.target_id}")
         if page_target is None:
             created = await self._cdp("Target.createTarget", {"url": "about:blank"})
             target_id = created["result"]["targetId"]
@@ -1443,11 +1454,12 @@ class _SupervisorRegistry:
         task_id: str,
         cdp_url: str,
         *,
+        target_id: Optional[str] = None,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
         start_timeout: float = 15.0,
     ) -> CDPSupervisor:
-        """Idempotently ensure a supervisor is running for ``(task_id, cdp_url)``.
+        """Ensure a supervisor runs for ``(task_id, cdp_url, target_id)``.
 
         If a supervisor exists for this task but was bound to a different
         ``cdp_url``, the old one is stopped and a fresh one is started.
@@ -1455,7 +1467,7 @@ class _SupervisorRegistry:
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
-                if existing.cdp_url == cdp_url:
+                if existing.cdp_url == cdp_url and existing.target_id == target_id:
                     thread_ok = existing._thread is not None and existing._thread.is_alive()
                     loop_ok = existing._loop is not None and existing._loop.is_running()
                     if thread_ok and loop_ok:
@@ -1469,6 +1481,7 @@ class _SupervisorRegistry:
         supervisor = CDPSupervisor(
             task_id=task_id,
             cdp_url=cdp_url,
+            target_id=target_id,
             dialog_policy=dialog_policy,
             dialog_timeout_s=dialog_timeout_s,
         )
@@ -1476,7 +1489,11 @@ class _SupervisorRegistry:
         with self._lock:
             # Guard against a concurrent get_or_start from another thread.
             already = self._by_task.get(task_id)
-            if already is not None and already.cdp_url == cdp_url:
+            if (
+                already is not None
+                and already.cdp_url == cdp_url
+                and already.target_id == target_id
+            ):
                 supervisor.stop()
                 return already
             self._by_task[task_id] = supervisor

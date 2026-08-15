@@ -188,3 +188,52 @@ def test_high_level_console_does_not_mask_structured_tab_gone(monkeypatch):
     result = json.loads(browser_tool.browser_console(task_id="task-a"))
 
     assert result == TAB_GONE_RESULT
+
+
+def test_fixed_cdp_supervisor_waits_for_pinned_target(monkeypatch):
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    start = MagicMock()
+    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get_or_start", start)
+
+    browser_tool._ensure_cdp_supervisor("task-a")
+
+    start.assert_not_called()
+
+
+def test_fixed_cdp_supervisor_receives_pinned_target(monkeypatch):
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    start = MagicMock()
+    monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(browser_tool, "_get_dialog_policy_config", lambda: ("must_respond", 300.0))
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get_or_start", start)
+
+    browser_tool._ensure_cdp_supervisor("task-a", target_id="TARGET-A")
+
+    start.assert_called_once_with(
+        task_id="task-a",
+        cdp_url="ws://shared",
+        target_id="TARGET-A",
+        dialog_policy="must_respond",
+        dialog_timeout_s=300.0,
+    )
+
+
+def test_pinned_cdp_target_id_uses_agent_browser_active_page(monkeypatch):
+    monkeypatch.setattr(
+        browser_tool,
+        "_run_browser_command",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "data": {
+                "tabs": [
+                    {"active": False, "type": "page", "targetId": "OTHER"},
+                    {"active": True, "type": "page", "targetId": "TARGET-A"},
+                ]
+            },
+        },
+    )
+
+    assert browser_tool._pinned_cdp_target_id("task-a") == "TARGET-A"

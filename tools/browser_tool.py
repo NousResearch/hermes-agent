@@ -609,7 +609,7 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
-def _ensure_cdp_supervisor(task_id: str) -> None:
+def _ensure_cdp_supervisor(task_id: str, target_id: Optional[str] = None) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent — delegates to ``SupervisorRegistry.get_or_start`` which skips
@@ -629,6 +629,11 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     ``pending_dialogs`` / ``frame_tree`` fields in snapshots.
     """
     cdp_url = _get_cdp_override()
+    # A fixed CDP endpoint can already contain unrelated user/task pages. Do
+    # not let the supervisor attach to the endpoint's first page before
+    # agent-browser has created and pinned this task's own target.
+    if cdp_url and target_id is None:
+        return
     if not cdp_url:
         # Fallback: active session may carry a per-session CDP URL from a
         # cloud provider (Browserbase sets this).
@@ -646,6 +651,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
         SUPERVISOR_REGISTRY.get_or_start(
             task_id=task_id,
             cdp_url=cdp_url,
+            target_id=target_id,
             dialog_policy=policy,
             dialog_timeout_s=timeout_s,
         )
@@ -665,6 +671,20 @@ def _stop_cdp_supervisor(task_id: str) -> None:
         SUPERVISOR_REGISTRY.stop(task_id)
     except Exception as exc:
         logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
+
+
+def _pinned_cdp_target_id(task_id: str) -> Optional[str]:
+    """Return agent-browser's active pinned page target for ``task_id``."""
+    result = _run_browser_command(task_id, "tab", ["list"], timeout=10)
+    if not result.get("success"):
+        return None
+    tabs = result.get("data", {}).get("tabs", [])
+    for tab in tabs if isinstance(tabs, list) else []:
+        if isinstance(tab, dict) and tab.get("active") and tab.get("type") == "page":
+            target_id = str(tab.get("targetId") or "").strip()
+            if target_id:
+                return target_id
+    return None
 
 
 # ============================================================================
@@ -3442,6 +3462,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title = data.get("title", "")
         final_url = data.get("url", url)
 
+        # Bind dialog/frame/eval supervision to the same target that
+        # agent-browser pinned. Without this, a shared CDP endpoint's
+        # supervisor attaches to the first unrelated page and browser_console
+        # can read or mutate another task's tab.
+        if session_info.get("cdp_url"):
+            pinned_target_id = _pinned_cdp_target_id(nav_session_key)
+            if pinned_target_id:
+                _ensure_cdp_supervisor(nav_session_key, target_id=pinned_target_id)
+
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
@@ -4279,7 +4308,22 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
             # through to the subprocess path (which would just re-run and
             # produce the same exception, but slower).
             err = sup_result.get("error") or "evaluate_runtime failed"
-            if "supervisor" not in err.lower():
+            err_lower = err.lower()
+            session_lost = any(
+                marker in err_lower
+                for marker in (
+                    "session with given id not found",
+                    "no session with given id",
+                    "target closed",
+                    "target is closing",
+                )
+            )
+            if session_lost:
+                # The pinned page was closed after the supervisor attached.
+                # Drop the stale WS session and ask agent-browser, which owns
+                # the pin and returns the structured ``tab_gone`` result.
+                _stop_cdp_supervisor(effective_task_id)
+            elif "supervisor" not in err_lower:
                 # Real JS-side error — return it.
                 return json.dumps({"success": False, "error": err}, ensure_ascii=False)
             # Supervisor-side failure (loop down, no session) — fall through.
@@ -4993,6 +5037,13 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             )
         else:
             try:
+                # ``agent-browser close`` disconnects the named session but
+                # does not close its page in an externally-owned shared CDP
+                # browser. Close the pinned tab first so completed tasks do
+                # not leak pages; pinning makes this fail closed if the target
+                # was already removed.
+                if session_info.get("cdp_url"):
+                    _run_browser_command(task_id, "tab", ["close"], timeout=10)
                 _run_browser_command(task_id, "close", [], timeout=10)
                 logger.debug(
                     "agent-browser close command completed for task %s",

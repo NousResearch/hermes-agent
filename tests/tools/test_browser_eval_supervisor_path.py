@@ -84,6 +84,38 @@ class TestBrowserEvalSupervisorPath:
         # result_type reflects the parsed Python type, not the raw JS type.
         assert out["result_type"] == "dict"
 
+    def test_closed_supervisor_session_falls_back_to_structured_tab_gone(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        sup = MagicMock()
+        sup.evaluate_runtime.return_value = {
+            "ok": False,
+            "error": (
+                "RuntimeError: CDP error on id=10: "
+                "{'code': -32001, 'message': 'Session with given id not found.'}"
+            ),
+        }
+        _patch_supervisor(monkeypatch, sup)
+        stop = MagicMock()
+        monkeypatch.setattr(bt, "_stop_cdp_supervisor", stop)
+        monkeypatch.setattr(
+            bt,
+            "_run_browser_command",
+            lambda *a, **kw: {
+                "success": False,
+                "error": "Pinned tab is no longer available",
+                "code": "tab_gone",
+                "data": {"targetId": "TARGET-A"},
+            },
+        )
+
+        out = json.loads(bt._browser_eval("location.href"))
+
+        assert out["success"] is False
+        assert out["code"] == "tab_gone"
+        assert out["data"] == {"targetId": "TARGET-A"}
+        stop.assert_called_once_with("test-task")
+
 
     def test_subprocess_reference_chain_error_becomes_guidance(self, monkeypatch):
         """The CLI subprocess can't retry with returnByValue=False, so the

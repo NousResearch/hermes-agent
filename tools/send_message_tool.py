@@ -205,7 +205,10 @@ def _slack_dm_chat_id(pconfig, chat_id):
     if not dm_target.startswith(("user:", "user_name:")):
         return chat_id, None
     from model_tools import _run_async
-    return _run_async(_resolve_slack_user_target(pconfig.token, dm_target))
+    # Honor a custom Slack Web API base URL (config.yaml → PlatformConfig.extra)
+    # so DM resolution hits the same endpoint as the rest of the Slack integration.
+    return _run_async(_resolve_slack_user_target(
+        pconfig.token, dm_target, getattr(pconfig, "extra", None)))
 
 
 def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):

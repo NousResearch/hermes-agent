@@ -138,10 +138,12 @@ function SidebarSessionRowImpl({
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
+
   const details = sessionRowDetails(session, {
     messageCount: fmt.messageCount,
     toolCallCount: fmt.toolCallCount
   })
+
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
   // Opt-in row metadata from the sidebar's filter menu. Read from the store

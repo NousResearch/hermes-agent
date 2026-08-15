@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import ast
 import logging
 import os
 import re
@@ -471,12 +472,34 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return global_disabled
 
 
+def parse_config_string_list(value) -> List[str]:
+    """Normalize a config value that may hold a JSON-array string into a list.
+
+    ``hermes config set`` and JSON-mode editor saves store lists as quoted
+    JSON strings (``'["a","b"]'`` or the Python-literal ``"['a']"``). Treating
+    such a string as a single name makes a curated disabled list silently
+    filter nothing (#86661); parsing it restores the intended list. A scalar
+    string still means one name (#13026).
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = ast.literal_eval(stripped)
+            except (ValueError, SyntaxError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        return [value]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item) for item in value]
+    return []
+
+
 def _normalize_string_set(values) -> Set[str]:
-    if values is None:
-        return set()
-    if isinstance(values, str):
-        values = [values]
-    return {str(v).strip() for v in values if str(v).strip()}
+    return {name.strip() for name in parse_config_string_list(values) if name.strip()}
 
 
 # ── External skills directories ──────────────────────────────────────────

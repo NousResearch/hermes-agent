@@ -338,7 +338,9 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     else:
         disabled = ["cronjob", "messaging", "clarify", "memory"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    from agent.skill_utils import parse_config_string_list
+
+    user_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:

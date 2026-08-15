@@ -1054,6 +1054,36 @@ def test_agent_disabled_toolsets_still_wins():
 
 
 @_requires_recently_shipped
+def test_agent_disabled_toolsets_json_array_string_form_still_wins():
+    """#86661: the suppression list may arrive as a JSON-array string (e.g.
+    `hermes config set agent.disabled_toolsets '["memory"]'`). It must be
+    parsed, not treated as one dead toolset name that filters nothing."""
+    config = _saved_list_from_before()
+    import json as _json
+
+    config["agent"] = {
+        "disabled_toolsets": _json.dumps(sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_python_literal_string_form_still_wins():
+    """Single-quoted Python-literal form (as written by some config editors)
+    must resolve the same way as the JSON form."""
+    config = _saved_list_from_before()
+    quoted = ", ".join(repr(ts) for ts in sorted(_RECENTLY_SHIPPED_TOOLSETS))
+    config["agent"] = {"disabled_toolsets": f"[{quoted}]"}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small
     composite (hermes-acp, hermes-webhook) that never carried the toolset."""

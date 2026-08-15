@@ -4933,7 +4933,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
-        self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
+        from agent.skill_utils import parse_config_string_list
+
+        self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # Validate each toolset — MCP server names are resolved via

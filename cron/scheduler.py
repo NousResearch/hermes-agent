@@ -957,6 +957,12 @@ def mark_running_jobs_interrupted(
                 "leaving persisted state untouched",
                 job_id,
             )
+            # Still report the interruption to the caller: the gateway
+            # shutdown path uses the returned IDs to send the
+            # interrupted-cron notice while adapters are still connected
+            # (#82232). The in-memory interrupt flag WAS recorded above —
+            # only the persisted last_status write is skipped here.
+            marked.append(job_id)
             continue
         try:
             with use_cron_store(profile_home):

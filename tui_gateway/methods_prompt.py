@@ -582,8 +582,12 @@ def _(rid, params: dict) -> dict:
                     # #82756). Soft-archiving keeps them on disk (active=0) and
                     # in the FTS index, so a mis-aimed cut is recoverable
                     # instead of terminal. The live transcript is unchanged.
+                    # Fall back to session id when session_key is NULL — CLI-origin
+                    # sessions created before the session_key default fix have no
+                    # key, and replace_messages(None) triggers an FK violation.
+                    truncation_key = session.get("session_key") or sid
                     db.replace_messages(
-                        session["session_key"],
+                        truncation_key,
                         truncated,
                         active_only=True,
                         archive_dropped=True,

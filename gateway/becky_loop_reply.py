@@ -50,7 +50,7 @@ class _ReplyProvider(Protocol):
 
 
 class AsyncAuxiliaryReplyProvider:
-    """Use Hermes's fixed auxiliary path without tools or provider details."""
+    """Parse one provider object; LoopReplyGenerator is the required safe boundary."""
 
     async def complete(
         self,
@@ -141,7 +141,7 @@ class LoopReplyGenerator:
                 timeout=_remaining_timeout(deadline),
                 max_tokens=_REPLY_MAX_TOKENS,
             )
-            return self._validate_model_result(raw)
+            return self._validate_model_result(raw, hidden_values)
         except (_ReplyValidationError, ReplyUnavailable):
             raise
         except _ConversationTooLarge:
@@ -170,7 +170,9 @@ class LoopReplyGenerator:
         ]
 
     @staticmethod
-    def _validate_model_result(raw: dict[str, Any]) -> str:
+    def _validate_model_result(
+        raw: dict[str, Any], hidden_values: set[str] | None = None
+    ) -> str:
         try:
             if not isinstance(raw, dict) or set(raw) != {"answer"}:
                 raise _ReplyValidationError()
@@ -178,20 +180,28 @@ class LoopReplyGenerator:
             if not isinstance(answer, str):
                 raise _ReplyValidationError()
             answer = answer.strip()
-            if (
-                not answer
-                or len(answer) > _REPLY_MAX_CHARS
-                or "```" in answer
-                or _TOOL_ENVELOPE_MARKER_PATTERN.search(answer)
-                or _is_json_value(answer)
-                or _contains_json_structure(answer)
-            ):
+            if _is_forbidden_answer_text(answer):
+                raise _ReplyValidationError()
+            answer = _safe_public_text(answer, hidden_values or set())
+            answer = answer.strip()
+            if _is_forbidden_answer_text(answer):
                 raise _ReplyValidationError()
             return answer
         except _ReplyValidationError:
             raise
         except (KeyError, TypeError, ValueError):
             raise _ReplyValidationError() from None
+
+
+def _is_forbidden_answer_text(answer: str) -> bool:
+    return (
+        not answer
+        or len(answer) > _REPLY_MAX_CHARS
+        or "```" in answer
+        or bool(_TOOL_ENVELOPE_MARKER_PATTERN.search(answer))
+        or _is_json_value(answer)
+        or _contains_json_structure(answer)
+    )
 
 
 def _remaining_timeout(deadline: float) -> float:

@@ -291,6 +291,28 @@ def test_generator_preserves_ordinary_punctuation_in_valid_answer() -> None:
     assert LoopReplyGenerator._validate_model_result({"answer": answer}) == answer
 
 
+def test_generator_redacts_identifiers_and_secrets_from_provider_answers() -> None:
+    """The final answer boundary cannot echo private request data or tokens."""
+    session_id = "session-private"
+    secret = "sk-proj-abc123def456ghi789jkl012mno"
+    provider = _FakeReplyProvider({
+        "answer": f"I found {session_id}. Use {secret} to continue."
+    })
+
+    answer = asyncio.run(
+        LoopReplyGenerator(provider).generate(
+            row={"session_id": session_id},
+            transcript=[],
+            comment="Please check the loop.",
+            deadline=time.monotonic() + 30,
+        )
+    )
+
+    assert session_id not in answer
+    assert secret not in answer
+    assert "I found [REDACTED]." in answer
+
+
 def test_auxiliary_provider_uses_fixed_no_tools_task_and_first_assistant_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -605,6 +605,12 @@ export interface SessionResumeResponse {
     /** Mid-turn redirect corrections, oldest first. The turn's original prompt
      *  stays in `user`; these are the follow-ups typed while it ran. */
     corrections?: string[]
+    /** Parallel to `corrections`: the length of `assistant` already streamed
+     *  when each correction was accepted. Lets a resume rebuild arrival order —
+     *  the correction bubble lands after the output the user had already seen
+     *  and before the output it redirected (#73793). Omitted by older
+     *  gateways. */
+    correction_offsets?: number[]
     /** Retained failed turn: the error the terminal frame carried (the frame
      *  itself may have been lost to a disconnect). */
     error?: string

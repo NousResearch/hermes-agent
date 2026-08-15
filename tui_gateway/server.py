@@ -7516,6 +7516,13 @@ def _record_inflight_correction(session: dict, text: Any) -> None:
     corrections = list(turn.get("corrections") or [])
     corrections.append(correction)
     turn["corrections"] = corrections
+    # Arrival-order boundary: how much assistant text had already streamed
+    # when this correction was accepted. Resuming clients use it to place the
+    # correction bubble AFTER the output the user had already seen and BEFORE
+    # the output it redirected (#73793) instead of above the whole reply.
+    offsets = list(turn.get("correction_offsets") or [])
+    offsets.append(len(str(turn.get("assistant") or "")))
+    turn["correction_offsets"] = offsets
     turn["updated_at"] = time.time()
     session["inflight_turn"] = turn
 
@@ -8081,11 +8088,23 @@ def _inflight_snapshot(session: dict) -> dict | None:
         "streaming": streaming,
         "user": user,
     }
-    corrections = [c for c in (turn.get("corrections") or []) if str(c).strip()]
-    if corrections:
+    raw_corrections = turn.get("corrections") or []
+    raw_offsets = turn.get("correction_offsets") or []
+    correction_pairs = [
+        (str(c), raw_offsets[i] if i < len(raw_offsets) else None)
+        for i, c in enumerate(raw_corrections)
+        if str(c).strip()
+    ]
+    if correction_pairs:
         # Mid-turn redirects. Carried alongside the original prompt (not over
         # it) so resume can rebuild every user bubble the turn produced.
-        snapshot["corrections"] = [str(c) for c in corrections]
+        snapshot["corrections"] = [c for c, _ in correction_pairs]
+        # Assistant-text lengths at each correction boundary (parallel list).
+        # Only sent when every correction has one, so clients can trust the
+        # pairing; older in-memory turns without offsets omit the field and
+        # clients fall back to placing corrections after the assistant dump.
+        if all(isinstance(offset, int) and offset >= 0 for _, offset in correction_pairs):
+            snapshot["correction_offsets"] = [int(offset) for _, offset in correction_pairs]  # type: ignore[arg-type]
     if error:
         # Retained failed turn (see _fail_inflight_turn): carry the error
         # semantics so a resuming client can rebuild the failed-turn bubble

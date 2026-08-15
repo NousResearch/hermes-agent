@@ -9819,6 +9819,47 @@ def test_session_redirect_records_correction_without_erasing_prompt():
     assert snapshot["corrections"] == ["hurry up", "and the worktree ones"]
 
 
+def test_inflight_snapshot_carries_arrival_order_offsets():
+    """Each correction records how much assistant text had already streamed.
+
+    Resuming clients rebuild ARRIVAL order from these boundaries: the
+    correction bubble lands after the output the user had already seen and
+    before the output it redirected (#73793), instead of above the whole
+    reply.
+    """
+    session = {}
+    server._start_inflight_turn(session, "remove the session counts")
+    server._append_inflight_delta(session, "Moving.")
+    server._record_inflight_correction(session, "hurry up")
+    server._append_inflight_delta(session, "Still.")
+    server._record_inflight_correction(session, "and the worktree ones")
+    server._append_inflight_delta(session, "Done soon.")
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+
+    assert snapshot["corrections"] == ["hurry up", "and the worktree ones"]
+    assert snapshot["correction_offsets"] == [len("Moving."), len("Moving.Still.")]
+
+
+def test_inflight_snapshot_omits_offsets_when_not_fully_recorded():
+    """A pre-upgrade in-memory turn may carry corrections without offsets.
+
+    The parallel list is only sent when every correction has one, so clients
+    can trust the pairing and older snapshots degrade to the no-offset path.
+    """
+    session = {}
+    server._start_inflight_turn(session, "prompt")
+    turn = session["inflight_turn"]
+    turn["corrections"] = ["legacy correction"]
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+
+    assert snapshot["corrections"] == ["legacy correction"]
+    assert "correction_offsets" not in snapshot
+
+
 def test_inflight_snapshot_omits_corrections_when_none_recorded():
     session = {}
     server._start_inflight_turn(session, "just the prompt")

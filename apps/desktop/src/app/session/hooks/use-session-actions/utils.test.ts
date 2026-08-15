@@ -714,6 +714,25 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  // Arrival-ordered mid-turn corrections (#73793) seal the live output BETWEEN
+  // the prompt and the correction. The sealed live-tail row must not end the
+  // optimistic run, or a refresh drops the prompt that started the turn.
+  it('keeps the whole live run when sealed live output sits between prompt and correction', () => {
+    const previous = [
+      msg('user-1000', 'user', 'remove the session counts'),
+      msg('assistant-stream-1', 'assistant', 'two screens of output', { interim: true }),
+      msg('user-2000', 'user', 'hurry up'),
+      msg('assistant-stream-2', 'assistant', 'post-redirect output', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'assistant-stream-1',
+      'user-2000',
+      'assistant-stream-2'
+    ])
+  })
+
   it('still drops optimistic rows separated from the live run by an assistant reply', () => {
     const previous = [
       msg('user-stale', 'user', 'compressed-away prompt'),
@@ -1148,8 +1167,10 @@ describe('preserveLocalPendingTurnMessages', () => {
 
 describe('appendLiveSessionProjection', () => {
   // Corrections typed while a turn ran are their own user bubbles on the same
-  // turn. Resume must rebuild the prompt AND every correction, in order.
-  it('projects mid-turn redirect corrections after the prompt that started the turn', () => {
+  // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
+  // whole dump precedes them — never the old prompt → corrections → reply
+  // order that spliced them above output the user had already read (#73793).
+  it('projects mid-turn redirect corrections after the assistant output that predates them', () => {
     const restored = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
       inflight: {
@@ -1162,10 +1183,72 @@ describe('appendLiveSessionProjection', () => {
 
     expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
       'remove the session counts',
+      'Moving.',
       'hurry up',
-      'and the worktree ones',
-      'Moving.'
+      'and the worktree ones'
     ])
+  })
+
+  // With correction_offsets the flat dump is split at each accepted-correction
+  // boundary, so every correction lands after exactly the output it followed
+  // and before the output it redirected — arrival order end to end (#73793).
+  it('interleaves corrections into the assistant dump at their arrival offsets', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up', 'and the worktree ones'],
+        correction_offsets: [7, 13],
+        assistant: 'Moving.Still.Done soon.',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'remove the session counts',
+      'Moving.',
+      'hurry up',
+      'Still.',
+      'and the worktree ones',
+      'Done soon.'
+    ])
+    expect(restored.map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant'
+    ])
+    // Only the live tail streams; sealed pre-correction segments are settled.
+    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+    expect(restored[1]).toMatchObject({ pending: false, interim: true })
+    expect(restored[3]).toMatchObject({ pending: false, interim: true })
+  })
+
+  it('keeps the live stream row even when every offset points at the dump tail', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'prompt',
+        corrections: ['nudge'],
+        correction_offsets: [4],
+        assistant: 'text',
+        streaming: true
+      }
+    })
+
+    // The whole dump precedes the correction, and the still-streaming turn
+    // keeps its (empty for now) live row at the tail so future deltas land
+    // BELOW the correction, not above it.
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'prompt',
+      'text',
+      'nudge',
+      ''
+    ])
+    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+    expect(restored.at(-1)?.role).toBe('assistant')
   })
 
   it('does not re-project a correction the transcript already persisted', () => {

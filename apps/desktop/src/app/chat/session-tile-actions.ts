@@ -34,6 +34,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
+  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -310,27 +311,20 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
-      // Match the primary composer: insert the correction before the active
-      // reply before awaiting the redirect RPC, whose completion can race us.
-      mutate(state => {
-        const message = {
+      // Match the primary composer: record the correction in arrival order —
+      // sealed already-streamed output above, correction below, post-redirect
+      // deltas below that — before awaiting the redirect RPC, whose completion
+      // can race us. The old insert-before-the-active-reply splice put the
+      // bubble above output the user had already read (#73793), and its
+      // last-assistant fallback could land it mid-thread when the stream id
+      // was missing or stale (#83151).
+      mutate(state =>
+        appendMidTurnUserMessage(state, {
           id: messageId,
           role: 'user' as const,
           parts: [textPart(text)]
-        }
-
-        const streamIndex = state.streamId ? state.messages.findIndex(candidate => candidate.id === state.streamId) : -1
-
-        const lastAssistantIndex = state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-        const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
-
-        const messages =
-          insertionIndex >= 0
-            ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
-            : [...state.messages, message]
-
-        return { ...state, messages }
-      })
+        })
+      )
 
       const discardOptimisticMessage = () =>
         mutate(state => ({

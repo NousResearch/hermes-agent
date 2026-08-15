@@ -2,7 +2,79 @@ import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 
-import { rebindSurvivorRowIds, survivorRowIdsFrom, truncateSubmitParams } from './rewind'
+import { appendMidTurnUserMessage, rebindSurvivorRowIds, survivorRowIdsFrom, truncateSubmitParams } from './rewind'
+
+const row = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+  id,
+  role,
+  parts: [textPart(text)],
+  ...extra
+})
+
+type MidTurnState = { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+
+describe('appendMidTurnUserMessage', () => {
+  // #73793: a message typed while a turn streams must land AFTER the assistant
+  // output the user had already watched arrive — never spliced above it.
+  it('appends the mid-turn message after the live assistant output, sealed in place', () => {
+    const state: MidTurnState = {
+      interimBoundaryPending: false,
+      streamId: 'assistant-stream-1',
+      messages: [
+        row('user-1', 'user', 'long task'),
+        row('assistant-stream-1', 'assistant', 'two screens of output', { pending: true })
+      ]
+    }
+
+    const next = appendMidTurnUserMessage(state, row('user-2', 'user', 'urgently'))
+
+    expect(next.messages.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1', 'user-2'])
+    // The sealed bubble stops streaming; the turn's next delta seeds a fresh
+    // bubble BELOW the correction instead of mutating the one above it.
+    expect(next.messages[1]).toMatchObject({ pending: false, interim: true })
+    expect(next.streamId).toBeNull()
+    expect(next.interimBoundaryPending).toBe(true)
+  })
+
+  // #83151: the retired insert-before splice fell back to the LAST assistant
+  // row anywhere in the transcript when the stream id was stale, landing the
+  // new prompt mid-thread. A stale/missing stream id must append at the tail.
+  it('appends at the live tail when the stream id is stale or missing', () => {
+    const state: MidTurnState = {
+      interimBoundaryPending: false,
+      streamId: 'assistant-stream-stale',
+      messages: [
+        row('user-1', 'user', 'old prompt'),
+        row('assistant-1', 'assistant', 'old committed reply'),
+        row('user-2', 'user', 'newer prompt'),
+        row('assistant-2', 'assistant', 'newer committed reply')
+      ]
+    }
+
+    const next = appendMidTurnUserMessage(state, row('user-3', 'user', 'mid-turn note'))
+
+    expect(next.messages.map(message => message.id)).toEqual(['user-1', 'assistant-1', 'user-2', 'assistant-2', 'user-3'])
+    expect(next.messages.at(-1)?.id).toBe('user-3')
+    expect(next.interimBoundaryPending).toBe(false)
+  })
+
+  it('drops an empty pending stream placeholder instead of sealing it', () => {
+    const state: MidTurnState = {
+      interimBoundaryPending: false,
+      streamId: 'assistant-stream-1',
+      messages: [
+        row('user-1', 'user', 'task'),
+        { id: 'assistant-stream-1', role: 'assistant', parts: [], pending: true }
+      ]
+    }
+
+    const next = appendMidTurnUserMessage(state, row('user-2', 'user', 'correction'))
+
+    expect(next.messages.map(message => message.id)).toEqual(['user-1', 'user-2'])
+    expect(next.streamId).toBeNull()
+    expect(next.interimBoundaryPending).toBe(false)
+  })
+})
 
 describe('truncateSubmitParams', () => {
   it('omits truncation fields when no ordinal is set', () => {

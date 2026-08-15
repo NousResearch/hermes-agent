@@ -209,6 +209,39 @@ export function finalizeInterruptedMessages(messages: ChatMessage[], streamId?: 
     .map(message => (message.pending || message.id === streamId ? { ...message, pending: false } : message))
 }
 
+/**
+ * Arrival-ordered mid-turn user insert (#73793, #83151).
+ *
+ * A message typed while a turn streams must land AFTER every assistant row the
+ * user had already watched arrive — never spliced above it. Seal the live
+ * stream bubble in place (marked interim so the terminal completion settles
+ * onto it or follows it instead of duplicating), append the new user bubble at
+ * the live tail, and clear `streamId` so the turn's next delta seeds a fresh
+ * assistant bubble BELOW the correction rather than mutating the sealed one
+ * above it. Also retires the old insert-before-the-active-reply contract whose
+ * `lastAssistantIndex` fallback could splice the bubble mid-thread when the
+ * stream id was missing or stale (#83151).
+ */
+export function appendMidTurnUserMessage<
+  State extends { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+>(state: State, message: ChatMessage): State {
+  const liveId = state.streamId
+  const sealed = finalizeInterruptedMessages(state.messages, liveId)
+  const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
+
+  const messages = [
+    ...(sealedLiveKept ? sealed.map(row => (row.id === liveId ? { ...row, interim: true } : row)) : sealed),
+    message
+  ]
+
+  return {
+    ...state,
+    messages,
+    streamId: null,
+    interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reload (regenerate)
 // ---------------------------------------------------------------------------

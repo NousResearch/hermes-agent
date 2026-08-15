@@ -49,6 +49,7 @@ import type {
 } from '../../../types'
 
 import {
+  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -282,7 +283,7 @@ export function usePromptActions({
       role: ChatMessage['role'],
       text: string,
       storedSessionId?: string | null,
-      options: { insertBeforeActiveReply?: boolean } = {}
+      options: { appendAfterActiveReply?: boolean } = {}
     ) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
@@ -305,23 +306,16 @@ export function usePromptActions({
             parts: [textPart(body)]
           }
 
-          const streamIndex =
-            options.insertBeforeActiveReply && state.streamId
-              ? state.messages.findIndex(candidate => candidate.id === state.streamId)
-              : -1
+          // Mid-turn correction: arrival order. The bubble lands after the
+          // assistant output the user had already seen (sealing the live
+          // stream so post-redirect deltas continue BELOW the correction),
+          // never spliced above it (#73793) or mid-thread via the old
+          // last-assistant fallback (#83151).
+          if (options.appendAfterActiveReply) {
+            return appendMidTurnUserMessage(state, message)
+          }
 
-          const lastAssistantIndex = options.insertBeforeActiveReply
-            ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-            : -1
-
-          const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
-
-          const messages =
-            insertionIndex >= 0
-              ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
-              : [...state.messages, message]
-
-          return { ...state, messages }
+          return { ...state, messages: [...state.messages, message] }
         },
         storedSessionId ?? selectedStoredSessionIdRef.current
       )
@@ -729,10 +723,11 @@ export function usePromptActions({
       // transcript rather than a system note that changes role after reload.
       const send = async (id: string): Promise<boolean> => {
         // Redirect aborts the model request, so the completion event can race
-        // its RPC response. Insert before the live reply *before* awaiting the
-        // gateway; appending after the response leaves the correction below a
-        // reply that the redirect has already replaced.
-        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { insertBeforeActiveReply: true })
+        // its RPC response. Record the correction *before* awaiting the
+        // gateway, in arrival order: sealed already-streamed output above,
+        // correction bubble below it, post-redirect deltas below that
+        // (#73793, #83151).
+        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { appendAfterActiveReply: true })
 
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({

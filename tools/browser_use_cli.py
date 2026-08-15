@@ -650,6 +650,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
     try:
+        # UTF-8 decode policy for #87152 lives in _run_cli_killing_process_group
+        # (subprocess.Popen text=True, encoding="utf-8", errors="replace").
         proc = _run_cli_killing_process_group(cmd, code, env, timeout)
     except subprocess.TimeoutExpired:
         return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "

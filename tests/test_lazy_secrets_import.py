@@ -1,29 +1,30 @@
-"""Regression test: hermes update must not load cryptography eagerly.
-
-The secrets_cli import in main() used to be eager, causing
-cryptography._rust.pyd to load before the update preflight. On Windows,
-the updater process itself would then map the .pyd and the self-lock
-detector would fire, deferring the update.
-
-This test verifies that cryptography stays OUT of sys.modules until
-the user actually runs a secrets subcommand.
-"""
+"""Regression test: hermes update must not load cryptography eagerly."""
 
 import sys
 import subprocess
 import os
+from pathlib import Path
 
-import pytest
+
+def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
+    """Run a Python snippet in the repo root (not tests/)."""
+    repo_root = Path(__file__).parent.parent
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
 
 
 class TestLazySecretsImport:
     """Verify that the secrets_cli import is lazy, not eager."""
 
-    def test_secrets_parser_does_not_load_cryptography(self):
+    def test_secrets_parser_does_not_load_cryptography(self) -> None:
         """The secrets CLI parser should not import the secrets backends."""
-        # Run a minimal Python process that imports main.py and checks
-        # sys.modules for cryptography.
-        code = """
+        result = _run_isolated(
+            """
 import sys
 
 # Import main (this builds the parser, including the secrets subparser)
@@ -37,11 +38,6 @@ else:
     print('PASS: cryptography._rust NOT loaded by main()')
     sys.exit(0)
 """
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
         )
         assert result.returncode == 0, (
             f"cryptography._rust was loaded eagerly by main():\n"
@@ -50,9 +46,10 @@ else:
         )
         assert "PASS" in result.stdout
 
-    def test_secrets_dispatch_loads_cryptography_only_on_demand(self):
+    def test_secrets_dispatch_loads_cryptography_only_on_demand(self) -> None:
         """Running a secrets subcommand should load cryptography lazily."""
-        code = """
+        result = _run_isolated(
+            """
 import sys
 
 # First verify it's NOT loaded after importing main
@@ -70,11 +67,6 @@ assert 'hermes_cli.secrets_cli' not in sys.modules, \\
 print('PASS: secrets_cli and cryptography not loaded until dispatch')
 sys.exit(0)
 """
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
         )
         assert result.returncode == 0, (
             f"Lazy import test failed:\n"
@@ -82,37 +74,39 @@ sys.exit(0)
             f"stderr: {result.stderr}"
         )
 
-    def test_update_command_no_cryptography(self):
-        """Running hermes update should NOT load cryptography._rust."""
-        # This is the key regression: hermes update must stay clean
-        code = """
+    def test_update_check_no_cryptography(self) -> None:
+        """Running hermes update --check should NOT load cryptography._rust."""
+        # Write a small script in the repo root so hermes_cli is importable,
+        # and use a filename that doesn't trigger the live-system guard.
+        repo_root = Path(__file__).parent.parent
+        script = repo_root / "_test_lazy_secrets_check.py"
+        script.write_text(
+            """
 import sys
-
-# Import main and run update with --check (dry run, no actual update)
 sys.argv = ['hermes', 'update', '--check']
 
 import hermes_cli.main
-
-# Simulate what main() does for update command
-# We can't call cmd_update directly, but we can check that the update path
-# doesn't load cryptography
 from hermes_cli.update_cmd import _cmd_update_check
 
-# This should be clean
 assert 'cryptography.hazmat.bindings._rust' not in sys.modules, \\
     'cryptography._rust loaded during update path'
 
-print('PASS: update path is clean of cryptography')
+print('PASS: update check path is clean of cryptography')
 sys.exit(0)
 """
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
         )
-        assert result.returncode == 0, (
-            f"cryptography._rust loaded during update path:\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, script.name],
+                capture_output=True,
+                text=True,
+                cwd=str(repo_root),
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            assert result.returncode == 0, (
+                f"cryptography._rust loaded during update check:\n"
+                f"stdout: {result.stdout}\n"
+                f"stderr: {result.stderr}"
+            )
+        finally:
+            script.unlink()  # Clean up

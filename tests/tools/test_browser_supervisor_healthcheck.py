@@ -23,7 +23,13 @@ class _FakeLoop:
         return self._running
 
 
-def _make_fake_supervisor(cdp_url: str, *, thread_alive: bool, loop_running: bool):
+def _make_fake_supervisor(
+    cdp_url: str,
+    *,
+    target_id: str | None = None,
+    thread_alive: bool,
+    loop_running: bool,
+):
     """Build a minimal stand-in for a CDPSupervisor entry in the registry.
 
     Only the attributes touched by the healthcheck (_thread, _loop, cdp_url)
@@ -45,6 +51,7 @@ def _make_fake_supervisor(cdp_url: str, *, thread_alive: bool, loop_running: boo
 
     fake = SimpleNamespace(
         cdp_url=cdp_url,
+        target_id=target_id,
         _thread=t,
         _loop=_FakeLoop(loop_running),
         stop=lambda: stop_calls.append(True),
@@ -68,9 +75,18 @@ def stub_cdp_supervisor(monkeypatch):
     created: list[SimpleNamespace] = []
 
     class _StubSupervisor:
-        def __init__(self, *, task_id, cdp_url, dialog_policy, dialog_timeout_s):
+        def __init__(
+            self,
+            *,
+            task_id,
+            cdp_url,
+            target_id,
+            dialog_policy,
+            dialog_timeout_s,
+        ):
             self.task_id = task_id
             self.cdp_url = cdp_url
+            self.target_id = target_id
             self.dialog_policy = dialog_policy
             self.dialog_timeout_s = dialog_timeout_s
             # Healthy by default — real thread, running "loop".
@@ -121,6 +137,7 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
     cdp_url = "http://h/4"
     broken = SimpleNamespace(
         cdp_url=cdp_url,
+        target_id=None,
         _thread=None,
         _loop=None,
         stop=lambda: None,
@@ -131,3 +148,74 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
     assert fresh is not broken
     assert isolated_registry._by_task["t4"] is fresh
     fresh.stop()
+
+
+def test_concurrent_different_targets_leave_one_live_supervisor(
+    isolated_registry, monkeypatch
+):
+    """A publication race must stop the displaced target supervisor."""
+    start_barrier = threading.Barrier(2)
+    created = []
+
+    class _RacingSupervisor:
+        def __init__(
+            self,
+            *,
+            task_id,
+            cdp_url,
+            target_id,
+            dialog_policy,
+            dialog_timeout_s,
+        ):
+            self.task_id = task_id
+            self.cdp_url = cdp_url
+            self.target_id = target_id
+            self.dialog_policy = dialog_policy
+            self.dialog_timeout_s = dialog_timeout_s
+            self.live = False
+            self.stop_calls = 0
+            created.append(self)
+
+        def start(self, timeout=15.0):
+            self.live = True
+            start_barrier.wait(timeout=2)
+
+        def stop(self):
+            self.stop_calls += 1
+            self.live = False
+
+    monkeypatch.setattr(bs, "CDPSupervisor", _RacingSupervisor)
+    results = []
+    errors = []
+
+    def run(target_id):
+        try:
+            results.append(
+                isolated_registry.get_or_start(
+                    task_id="race-task",
+                    cdp_url="ws://shared",
+                    target_id=target_id,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - assertion aid
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=("TARGET-A",)),
+        threading.Thread(target=run, args=("TARGET-B",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 2
+    assert len(created) == 2
+    managed = isolated_registry.get("race-task")
+    assert managed in created
+    assert managed.live is True
+    assert sum(supervisor.live for supervisor in created) == 1
+    assert sum(supervisor.stop_calls for supervisor in created) == 1
+    isolated_registry.stop("race-task")

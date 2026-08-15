@@ -725,6 +725,8 @@ _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
+_cached_pin_tab_agent_browser: Optional[str] = None
+_pin_tab_agent_browser_resolved = False
 
 # Lightpanda engine support — cached like _get_cloud_provider().
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
@@ -922,9 +924,10 @@ from hermes_constants import is_termux as _is_termux_environment
 
 
 def _browser_install_hint() -> str:
+    package = f"'{AGENT_BROWSER_NPX_SPEC}'"
     if _is_termux_environment():
-        return "npm install -g agent-browser && agent-browser install"
-    return "npm install -g agent-browser && agent-browser install --with-deps"
+        return f"npm install -g {package} && agent-browser install"
+    return f"npm install -g {package} && agent-browser install --with-deps"
 
 
 # Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
@@ -934,10 +937,42 @@ def _browser_install_hint() -> str:
 # changes.
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 
+# Ordinary local/non-CDP browsing keeps the Node-22-compatible package line.
+# Shared-CDP sessions select the separate capability package below only after
+# a Node >=24 + agent-browser >=0.34 preflight. This keeps Hermes's documented
+# Node >=22.22 floor honest instead of making every browser command inherit the
+# newer package's Node requirement.
+AGENT_BROWSER_NPX_SPEC = "agent-browser@0.26.0"
+
 # v0.34.0 is the first release with official named-session CDP tab pinning.
-# On a 0.x package, this caret range accepts 0.34.x patches but not a future
-# minor with a potentially different CLI contract.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.34.0"
+# Keep automatic acquisition exact: the package is newer than the normal
+# release-age gate, and a future patch must not inherit the scoped exception.
+AGENT_BROWSER_PIN_TAB_NPX_SPEC = "agent-browser@0.34.0"
+AGENT_BROWSER_PIN_TAB_MIN_VERSION = (0, 34, 0)
+AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR = 24
+AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS = 14
+
+
+class AgentBrowserCapabilityError(RuntimeError):
+    """The discovered CLI/runtime cannot provide strict shared-CDP pinning."""
+
+
+def _apply_agent_browser_npm_policy(
+    env: Dict[str, str], *, pin_tab_acquisition: bool = False
+) -> Dict[str, str]:
+    """Apply Hermes's npm policy to one agent-browser npx subprocess.
+
+    Ordinary acquisition keeps the repository's 14-day gate. Strict CDP
+    pinning uses the exact, clean-room-tested 0.34.0 package and temporarily
+    sets the gate to zero for that one acquisition. Otherwise an empty cache
+    cannot install the security capability until wall-clock age crosses the
+    cutoff.
+    """
+    env["npm_config_engine_strict"] = "true"
+    env["npm_config_min_release_age"] = str(
+        0 if pin_tab_acquisition else AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS
+    )
+    return env
 
 
 def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
@@ -1264,9 +1299,8 @@ def _run_chrome_fallback_command(
     # WinError 193.
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.34.0 range,
-        # not an exact pin — a compromised future 0.34.x patch must not get to
-        # run its own install-time lifecycle scripts on this machine.
+        # --ignore-scripts is retained as defense in depth even though Hermes
+        # acquires one exact, reviewed agent-browser version here.
         cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
@@ -1275,6 +1309,8 @@ def _run_chrome_fallback_command(
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = _build_browser_env()
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _apply_agent_browser_npm_policy(browser_env)
     browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
@@ -1801,10 +1837,15 @@ def _cleanup_inactive_browser_sessions():
         try:
             elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
             logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
-            cleanup_browser(task_id)
-            with _cleanup_lock:
-                if task_id in _session_last_activity:
-                    del _session_last_activity[task_id]
+            if cleanup_browser(task_id):
+                with _cleanup_lock:
+                    _session_last_activity.pop(task_id, None)
+            else:
+                # Keep ownership retryable without hammering the same failed
+                # close on every cleanup-loop tick.
+                with _cleanup_lock:
+                    if task_id in _session_last_activity:
+                        _session_last_activity[task_id] = current_time
         except Exception as e:
             logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
 
@@ -1947,6 +1988,70 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     return max(0.0, time.time() - latest)
 
 
+def _orphan_has_pinned_target(socket_dir: str, session_name: str) -> bool:
+    """Return whether an orphan directory still records an owned pinned page."""
+    target_file = Path(socket_dir) / f"{session_name}.target"
+    try:
+        payload = json.loads(target_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return payload.get("pinned") is True and bool(payload.get("targetId"))
+
+
+def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
+    """Ask the live pinned daemon to close only its recorded target.
+
+    No target discovery is performed. If the exact close cannot be confirmed,
+    return False so the caller preserves both daemon and ownership metadata for
+    a later retry instead of converting a sensitive page leak into an
+    untracked one.
+    """
+    try:
+        browser_cmd = _find_agent_browser(require_pin_tab=True)
+    except (AgentBrowserCapabilityError, FileNotFoundError):
+        return False
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        # Orphan cleanup must not download code in the background. A concrete
+        # compatible CLI can retry on a later sweep.
+        return False
+
+    env = _build_browser_env()
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
+    try:
+        result = subprocess.run(
+            [
+                browser_cmd,
+                "--session",
+                session_name,
+                "--pin-tab",
+                "--json",
+                "tab",
+                "close",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=env,
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    if not result.stdout.strip():
+        return False
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, TypeError):
+        return False
+    return bool(payload.get("success")) or payload.get("code") in {
+        "tab_gone",
+        "already_gone",
+    }
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -2047,15 +2152,30 @@ def _reap_orphaned_browser_sessions():
                 continue
 
         # owner_alive is False (dead owner) OR legacy daemon not tracked here.
+        pinned_target_owned = _orphan_has_pinned_target(socket_dir, session_name)
         pid_file = os.path.join(socket_dir, f"{session_name}.pid")
         if not os.path.isfile(pid_file):
-            # No daemon PID file — just a stale dir, remove it
+            if pinned_target_owned:
+                logger.warning(
+                    "Orphaned pinned target metadata for session %s has no daemon PID; "
+                    "retaining ownership record for manual recovery",
+                    session_name,
+                )
+                continue
+            # No daemon PID or pinned ownership — just a stale dir, remove it.
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
         try:
             daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
+            if pinned_target_owned:
+                logger.warning(
+                    "Orphaned pinned target metadata for session %s has an unreadable "
+                    "daemon PID; retaining ownership record",
+                    session_name,
+                )
+                continue
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
@@ -2063,6 +2183,13 @@ def _reap_orphaned_browser_sessions():
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
+            if pinned_target_owned:
+                logger.warning(
+                    "Pinned target owner daemon for session %s is gone; retaining "
+                    "the exact target ownership record",
+                    session_name,
+                )
+                continue
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
@@ -2075,6 +2202,16 @@ def _reap_orphaned_browser_sessions():
         # process DoS in issue #14073.
         if not _verify_reapable_browser_daemon(
                 daemon_pid, socket_dir, session_name):
+            continue
+
+        if pinned_target_owned and not _close_orphaned_pinned_target(
+            socket_dir, session_name
+        ):
+            logger.warning(
+                "Could not confirm exact pinned target close for orphaned session %s; "
+                "retaining daemon and ownership metadata for retry",
+                session_name,
+            )
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
@@ -2506,7 +2643,99 @@ def _resolve_npx_bin() -> Optional[str]:
     return None
 
 
-def _find_agent_browser(*, validate: bool = True) -> str:
+_SEMVER_TRIPLE_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?![\d-])")
+_NODE_MAJOR_RE = re.compile(r"(?m)^\s*v?(\d+)(?:\.\d+){1,2}\s*$")
+
+
+def _version_probe_env() -> Dict[str, str]:
+    env = _build_browser_env()
+    _apply_agent_browser_npm_policy(env)
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    return env
+
+
+def _probe_agent_browser_version(path: str) -> Optional[tuple[int, int, int]]:
+    """Run a concrete CLI's real ``--version`` entrypoint and parse semver."""
+    if not os.path.exists(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
+        return None
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=_version_probe_env(),
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _SEMVER_TRIPLE_RE.search(f"{result.stdout}\n{result.stderr}")
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _effective_node_major(executable: str) -> Optional[int]:
+    """Return the Node major the browser subprocess PATH would resolve."""
+    env = _version_probe_env()
+    search_parts = [str(Path(executable).parent)]
+    search_parts.extend(part for part in env.get("PATH", "").split(os.pathsep) if part)
+    search_path = os.pathsep.join(dict.fromkeys(search_parts))
+    node_bin = shutil.which("node", path=search_path)
+    if not node_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [node_bin, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=env,
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _NODE_MAJOR_RE.search(f"{result.stdout}\n{result.stderr}")
+    return int(match.group(1)) if match is not None else None
+
+
+def _pin_tab_candidate_status(
+    path: str,
+) -> tuple[bool, Optional[tuple[int, int, int]], Optional[int]]:
+    """Return compatibility plus observed CLI/Node versions for one candidate."""
+    version = _probe_agent_browser_version(path)
+    if version is None or version < AGENT_BROWSER_PIN_TAB_MIN_VERSION:
+        return False, version, None
+    node_major = _effective_node_major(path)
+    return (
+        node_major is not None and node_major >= AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR,
+        version,
+        node_major,
+    )
+
+
+def _pin_tab_capability_error(node_major: Optional[int] = None) -> str:
+    detected = f" Detected Node.js {node_major}." if node_major is not None else ""
+    return (
+        "Shared-CDP page isolation requires agent-browser >=0.34.0 and "
+        f"Node.js >={AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR}.{detected} "
+        "Hermes and ordinary non-CDP browser commands remain supported on "
+        "Node.js >=22.22. Use Node.js 24+ (Node.js 26 also qualifies) and "
+        "install agent-browser >=0.34.0, then retry."
+    )
+
+
+def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False) -> str:
     """
     Find the agent-browser CLI executable.
 
@@ -2516,18 +2745,56 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     Returns:
         Path to agent-browser executable
 
+    ``require_pin_tab`` is a fail-closed capability lookup: concrete candidates
+    must report agent-browser >=0.34.0 and resolve Node >=24; the npx fallback
+    is offered only under the same Node floor.
+
     Raises:
-        FileNotFoundError: If agent-browser is not installed
+        FileNotFoundError: If agent-browser is not installed.
+        AgentBrowserCapabilityError: If strict CDP tab pinning is unavailable.
     """
     global _cached_agent_browser, _agent_browser_resolved
+    global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+    if (
+        require_pin_tab
+        and _pin_tab_agent_browser_resolved
+        and _cached_pin_tab_agent_browser is not None
+    ):
+        return _cached_pin_tab_agent_browser
     if _agent_browser_resolved:
-        if _cached_agent_browser is None:
+        if not require_pin_tab and _cached_agent_browser is None:
             raise FileNotFoundError(
                 "agent-browser CLI not found (cached). Install it with: "
                 f"{_browser_install_hint()}\n"
                 "Or ensure npx is available in your PATH."
             )
-        return _cached_agent_browser
+        if not require_pin_tab:
+            return _cached_agent_browser
+
+    detected_node_major: Optional[int] = None
+
+    def candidate_usable(path: str) -> bool:
+        nonlocal detected_node_major
+        if require_pin_tab:
+            usable, _version, node_major = _pin_tab_candidate_status(path)
+            if node_major is not None:
+                detected_node_major = node_major
+            return usable
+        return agent_browser_runnable(path) if validate else _agent_browser_candidate_present(path)
+
+    def cache_candidate(path: str) -> str:
+        global _cached_agent_browser, _agent_browser_resolved
+        global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+        if require_pin_tab:
+            _cached_pin_tab_agent_browser = path
+            _pin_tab_agent_browser_resolved = True
+            if not _agent_browser_resolved:
+                _cached_agent_browser = path
+                _agent_browser_resolved = True
+        else:
+            _cached_agent_browser = path
+            _agent_browser_resolved = True
+        return path
 
     # Note: _agent_browser_resolved is set at each return site below
     # (not before the search) to prevent a race where a concurrent thread
@@ -2544,28 +2811,20 @@ def _find_agent_browser(*, validate: bool = True) -> str:
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and (
-        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-    ):
+    if which_result and candidate_usable(which_result):
         if not validate:
             return which_result
-        _cached_agent_browser = which_result
-        _agent_browser_resolved = True
-        return which_result
+        return cache_candidate(which_result)
 
     # Build an extended search PATH including Hermes-managed Node, macOS
     # versioned Homebrew installs, and fallback system dirs like Termux.
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and (
-            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-        ):
+        if which_result and candidate_usable(which_result):
             if not validate:
                 return which_result
-            _cached_agent_browser = which_result
-            _agent_browser_resolved = True
-            return which_result
+            return cache_candidate(which_result)
 
     # Check local node_modules/.bin/ (npm install in repo root).
     # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
@@ -2579,23 +2838,30 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and (
-            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
-        ):
+        if local_which and candidate_usable(local_which):
             if not validate:
                 return local_which
-            _cached_agent_browser = local_which
-            _agent_browser_resolved = True
-            return _cached_agent_browser
+            return cache_candidate(local_which)
 
     # Check common npx locations (also search the extended fallback PATH)
     npx_path = _resolve_npx_bin()
     if npx_path:
-        if not validate:
+        if require_pin_tab:
+            detected_node_major = _effective_node_major(npx_path)
+            if (
+                detected_node_major is not None
+                and detected_node_major >= AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR
+            ):
+                return cache_candidate(NPX_AGENT_BROWSER_SENTINEL)
+        elif not validate:
             return NPX_AGENT_BROWSER_SENTINEL
-        _cached_agent_browser = NPX_AGENT_BROWSER_SENTINEL
-        _agent_browser_resolved = True
-        return _cached_agent_browser
+        else:
+            return cache_candidate(NPX_AGENT_BROWSER_SENTINEL)
+
+    if require_pin_tab:
+        raise AgentBrowserCapabilityError(
+            _pin_tab_capability_error(detected_node_major)
+        )
 
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
@@ -2721,6 +2987,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
 
     env = _build_browser_env()
+    _apply_agent_browser_npm_policy(env)
     env["PATH"] = _merge_browser_path(env.get("PATH", ""))
 
     popen_kwargs: dict = {
@@ -2737,9 +3004,8 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
 
     cmd = [
         npx_bin,
-        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.34.0
-        # range, not an exact pin — a compromised future 0.34.x patch must
-        # not get to run its own install-time lifecycle scripts here.
+        # Defense in depth for the exact reviewed acquisition: package
+        # lifecycle scripts are not needed for this version probe/warmup.
         "--ignore-scripts",
         # --prefer-offline: once cached, repeat `hermes update`/`doctor
         # --fix` runs shouldn't hit the registry just to re-confirm
@@ -2864,6 +3130,22 @@ def _run_browser_command(
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
+    if session_info.get("cdp_url"):
+        try:
+            browser_cmd = _find_agent_browser(require_pin_tab=True)
+        except AgentBrowserCapabilityError as exc:
+            logger.warning("browser CDP command blocked: %s", exc)
+            return {
+                "success": False,
+                "error": str(exc),
+                "code": "pin_tab_unavailable",
+                "data": {
+                    "required_agent_browser": ">=0.34.0",
+                    "required_node": ">=24",
+                    "non_cdp_available": True,
+                },
+            }
+
     # Build the command with the appropriate backend flags.
     # CDP mode: the per-task named session pins one target on the shared endpoint.
     # Local mode: --session <name> launches a local headless Chromium.
@@ -2900,7 +3182,12 @@ def _run_browser_command(
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
         # --ignore-scripts: see _run_chrome_fallback_command's identical comment.
-        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+        npx_spec = (
+            AGENT_BROWSER_PIN_TAB_NPX_SPEC
+            if session_info.get("cdp_url")
+            else AGENT_BROWSER_NPX_SPEC
+        )
+        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", npx_spec]
     else:
         cmd_prefix = [browser_cmd]
 
@@ -2925,6 +3212,11 @@ def _run_browser_command(
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
         browser_env = _build_browser_env()
+        if _is_npx_agent_browser_sentinel(browser_cmd):
+            _apply_agent_browser_npm_policy(
+                browser_env,
+                pin_tab_acquisition=bool(session_info.get("cdp_url")),
+            )
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.
@@ -3548,6 +3840,19 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # without a separate browser_snapshot call.
         try:
             snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
+            if snap_result.get("code") == "tab_gone":
+                snapshot_failure = {
+                    "success": False,
+                    "error": snap_result.get(
+                        "error", "Pinned browser tab disappeared after navigation"
+                    ),
+                    "url": final_url,
+                    "title": title,
+                }
+                return json.dumps(
+                    _copy_fallback_warning(snapshot_failure, snap_result),
+                    ensure_ascii=False,
+                )
             if snap_result.get("success"):
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
@@ -4265,76 +4570,112 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
     # on the already-connected WebSocket — zero subprocess startup cost vs
-    # spawning an ``agent-browser eval`` CLI process.  Falls through to the
-    # subprocess path on any error so behaviour is unchanged when no
-    # supervisor is running (e.g. plain agent-browser without a CDP backend).
+    # spawning an ``agent-browser eval`` CLI process. The subprocess remains a
+    # compatibility path when no supervisor exists or the supervisor proves it
+    # could not dispatch. Ambiguous post-dispatch failures are never replayed.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
-        if supervisor is not None:
-            sup_result = supervisor.evaluate_runtime(expression)
-            if sup_result.get("ok"):
-                raw_result = sup_result.get("result")
-                # Match the agent-browser path: if the value is a JSON string,
-                # parse it so the model gets structured data.
-                parsed = raw_result
-                if isinstance(raw_result, str):
-                    try:
-                        parsed = json.loads(raw_result)
-                    except (json.JSONDecodeError, ValueError):
-                        pass  # keep as string
-                # Post-eval page-URL recheck: if this (or a prior) eval
-                # navigated the page to a private address, withhold the result.
-                if _eval_ssrf_guard_active(effective_task_id):
-                    _blocked_url = _current_page_private_url(effective_task_id)
-                    if _blocked_url:
-                        return json.dumps({
-                            "success": False,
-                            "error": (
-                                "Blocked: page URL targets a private or internal "
-                                f"address ({_blocked_url}). This may have been "
-                                "caused by a JavaScript navigation via "
-                                "browser_console."
-                            ),
-                        }, ensure_ascii=False)
-                response = {
-                    "success": True,
-                    "result": _redact_browser_output(parsed),
-                    "result_type": type(parsed).__name__,
-                    "method": "cdp_supervisor",
-                }
-                return json.dumps(response, ensure_ascii=False, default=str)
-            # JS exception is a real failure — surface it instead of falling
-            # through to the subprocess path (which would just re-run and
-            # produce the same exception, but slower).
-            err = sup_result.get("error") or "evaluate_runtime failed"
-            err_lower = err.lower()
-            session_lost = any(
-                marker in err_lower
-                for marker in (
-                    "session with given id not found",
-                    "no session with given id",
-                    "target closed",
-                    "target is closing",
-                )
-            )
-            if session_lost:
-                # The pinned page was closed after the supervisor attached.
-                # Drop the stale WS session and ask agent-browser, which owns
-                # the pin and returns the structured ``tab_gone`` result.
-                _stop_cdp_supervisor(effective_task_id)
-            elif "supervisor" not in err_lower:
-                # Real JS-side error — return it.
-                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
-            # Supervisor-side failure (loop down, no session) — fall through.
-            logger.debug(
-                "browser_eval: supervisor path unavailable (%s), falling back to subprocess",
-                err,
-            )
     except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
+        supervisor = None
+    except Exception as exc:  # Registry lookup happens before JS dispatch.
+        logger.debug("browser_eval: supervisor lookup failed (%s), falling back", exc)
+        supervisor = None
+
+    if supervisor is not None:
+        try:
+            sup_result = supervisor.evaluate_runtime(expression)
+        except Exception as exc:
+            # A supervisor exists, so an exception may have happened after the
+            # expression reached Chrome. Never turn an ambiguous exception into
+            # a second execution through agent-browser.
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "code": "cdp_evaluate_failed",
+                    "data": {"exception_type": type(exc).__name__},
+                },
+                ensure_ascii=False,
+            )
+
+        if sup_result.get("ok"):
+            raw_result = sup_result.get("result")
+            # Match the agent-browser path: if the value is a JSON string,
+            # parse it so the model gets structured data.
+            parsed = raw_result
+            if isinstance(raw_result, str):
+                try:
+                    parsed = json.loads(raw_result)
+                except (json.JSONDecodeError, ValueError):
+                    pass  # keep as string
+            # Post-eval page-URL recheck: if this (or a prior) eval
+            # navigated the page to a private address, withhold the result.
+            if _eval_ssrf_guard_active(effective_task_id):
+                _blocked_url = _current_page_private_url(effective_task_id)
+                if _blocked_url:
+                    return json.dumps({
+                        "success": False,
+                        "error": (
+                            "Blocked: page URL targets a private or internal "
+                            f"address ({_blocked_url}). This may have been "
+                            "caused by a JavaScript navigation via "
+                            "browser_console."
+                        ),
+                    }, ensure_ascii=False)
+            response = {
+                "success": True,
+                "result": _redact_browser_output(parsed),
+                "result_type": type(parsed).__name__,
+                "method": "cdp_supervisor",
+            }
+            return json.dumps(response, ensure_ascii=False, default=str)
+        # Replay decisions use the supervisor's structured failure kind, never
+        # page-controlled exception text. A JS exception can contain arbitrary
+        # phrases such as "Target closed" and must still execute exactly once.
+        err = sup_result.get("error") or "evaluate_runtime failed"
+        failure_kind = sup_result.get("kind")
+        failure_data = sup_result.get("data")
+        if failure_kind == "js_exception":
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": err,
+                    "code": "javascript_exception",
+                    "data": failure_data or {},
+                },
+                ensure_ascii=False,
+            )
+        if (
+            failure_kind == "cdp_protocol"
+            and isinstance(failure_data, dict)
+            and failure_data.get("session_lost") is True
+        ):
+            # The pinned page was closed after the supervisor attached. Drop
+            # the stale WS session and ask agent-browser, which owns the pin and
+            # returns the structured ``tab_gone`` result.
+            _stop_cdp_supervisor(effective_task_id)
+        elif failure_kind == "supervisor_unavailable":
+            # The expression was never dispatched, so the CLI owner is a safe
+            # compatibility fallback.
+            pass
+        else:
+            # Transport/protocol failures after dispatch are ambiguous: the
+            # page may have executed the expression before the response was
+            # lost. Surface the failure instead of replaying side effects.
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": err,
+                    "code": failure_kind or "cdp_evaluate_failed",
+                    "data": failure_data or {},
+                },
+                ensure_ascii=False,
+            )
+        logger.debug(
+            "browser_eval: supervisor path unavailable (%s), falling back to subprocess",
+            err,
+        )
 
     # --- Fallback: agent-browser CLI subprocess (original path) -------------
     result = _run_browser_command(effective_task_id, "eval", [expression])
@@ -4948,7 +5289,7 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None) -> bool:
     """
     Clean up browser session(s) for a task.
 
@@ -4980,21 +5321,27 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                 session_keys.append(sidecar_key)
         bare_task_id = task_id
 
-    for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
+    cleanup_results = {
+        session_key: _cleanup_single_browser_session(session_key)
+        for session_key in session_keys
+    }
+    failed_keys = [key for key, cleaned in cleanup_results.items() if cleaned is False]
 
     # Drop stale last-active ownership. Cleaning a bare task drops its binding;
     # cleaning a sidecar drops the binding only if that sidecar was still the
     # recorded owner. This prevents a later click/snapshot from resurrecting a
     # cleaned sidecar on about:blank while preserving a primary-session binding.
-    if _is_local_sidecar_key(task_id):
+    if failed_keys and _last_active_session_key.get(bare_task_id) not in failed_keys:
+        _last_active_session_key[bare_task_id] = failed_keys[0]
+    elif not failed_keys and _is_local_sidecar_key(task_id):
         if _last_active_session_key.get(bare_task_id) == task_id:
             _last_active_session_key.pop(bare_task_id, None)
-    else:
+    elif not failed_keys:
         _last_active_session_key.pop(bare_task_id, None)
+    return not failed_keys
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
+def _cleanup_single_browser_session(task_id: str) -> bool:
     """Internal: reap a single browser session by its exact session key."""
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
     # before the backend tears down the underlying CDP endpoint.
@@ -5036,6 +5383,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 task_id,
             )
         else:
+            tab_close_terminal = not bool(session_info.get("cdp_url"))
             try:
                 # ``agent-browser close`` disconnects the named session but
                 # does not close its page in an externally-owned shared CDP
@@ -5043,14 +5391,35 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 # not leak pages; pinning makes this fail closed if the target
                 # was already removed.
                 if session_info.get("cdp_url"):
-                    _run_browser_command(task_id, "tab", ["close"], timeout=10)
-                _run_browser_command(task_id, "close", [], timeout=10)
+                    tab_close_result = _run_browser_command(
+                        task_id, "tab", ["close"], timeout=10
+                    )
+                    tab_close_terminal = tab_close_result.get("success") or (
+                        tab_close_result.get("code") in {"tab_gone", "already_gone"}
+                    )
+                    if not tab_close_terminal:
+                        logger.warning(
+                            "Pinned browser tab close failed for task %s; "
+                            "retaining session ownership for retry: %s",
+                            task_id,
+                            tab_close_result.get("error", tab_close_result),
+                        )
+                        return False
+                close_result = _run_browser_command(task_id, "close", [], timeout=10)
+                if not close_result.get("success"):
+                    logger.warning(
+                        "agent-browser session close failed for task %s: %s",
+                        task_id,
+                        close_result.get("error", close_result),
+                    )
                 logger.debug(
                     "agent-browser close command completed for task %s",
                     task_id,
                 )
             except Exception as e:
                 logger.warning("agent-browser close failed for task %s: %s", task_id, e)
+                if not tab_close_terminal:
+                    return False
 
         # Now remove from tracking under lock
         with _cleanup_lock:
@@ -5087,6 +5456,7 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         logger.debug("Removed task %s from active sessions", task_id)
     else:
         logger.debug("No active session found for task_id: %s", task_id)
+    return True
 
 
 def cleanup_all_browsers() -> None:
@@ -5109,11 +5479,14 @@ def cleanup_all_browsers() -> None:
 
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
+    global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
+    _pin_tab_agent_browser_resolved = False
+    _cached_pin_tab_agent_browser = None
     _discover_homebrew_node_dirs.cache_clear()
     # Flip the resolved flag BEFORE nulling the cache so a concurrent
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
@@ -5274,12 +5647,15 @@ def _maybe_autoinstall_chromium() -> bool:
         "(one-time ~170MB; disable via security.allow_lazy_installs)"
     )
     try:
+        install_env = _build_browser_env()
+        if _is_npx_agent_browser_sentinel(browser_cmd):
+            _apply_agent_browser_npm_policy(install_env)
         proc = subprocess.run(
             install_cmd,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=600,
-            env=_build_browser_env(),
+            env=install_env,
         )
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning("browser: Chromium auto-install failed to start: %s", e)

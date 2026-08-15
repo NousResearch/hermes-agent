@@ -762,6 +762,78 @@ def _may_reuse_session_credential(session_base_url: str, alias_base_url: str) ->
     return scheme == "https" or hostname in _LOOPBACK_HOSTS
 
 
+class StartupModelRoute(NamedTuple):
+    """Model/provider pair resolved before an agent is constructed."""
+
+    model: str
+    provider: str = ""
+    base_url: str = ""
+
+
+def resolve_startup_model_route(
+    raw_model: str,
+    *,
+    explicit_provider: str = "",
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None,
+) -> Optional[StartupModelRoute]:
+    """Resolve aliases and configured ``provider/model`` input at startup.
+
+    ``HermesCLI`` is constructed before the interactive ``/model`` pipeline
+    runs.  Keeping this small resolver at the same boundary as
+    ``DIRECT_ALIASES`` prevents startup from attaching the configured default
+    provider to an explicitly requested model. Provider/model strings are
+    consumed only for providers present in user configuration; aggregator
+    namespaces remain untouched.
+    """
+    raw = str(raw_model or "").strip()
+    if not raw:
+        return None
+
+    _ensure_direct_aliases()
+    direct = DIRECT_ALIASES.get(raw.lower())
+    if direct is not None:
+        return StartupModelRoute(
+            model=direct.model,
+            provider=(explicit_provider or direct.provider),
+            base_url=direct.base_url,
+        )
+
+    if explicit_provider or "/" not in raw:
+        return None
+    prefix, model = (part.strip() for part in raw.split("/", 1))
+    if not prefix or not model:
+        return None
+
+    configured = {
+        str(name).strip().lower()
+        for name in (user_providers or {})
+        if str(name).strip()
+    }
+    configured.update(
+        f"custom:{entry.get('name', '').strip().lower()}"
+        for entry in (custom_providers or [])
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip()
+    )
+    try:
+        from hermes_cli.models import normalize_provider
+
+        canonical = normalize_provider(prefix)
+    except Exception:
+        canonical = prefix.lower()
+
+    if prefix.lower() in configured:
+        provider = prefix
+    elif canonical.lower() in configured:
+        provider = canonical
+    else:
+        return None
+
+    if is_aggregator(canonical):
+        return None
+    return StartupModelRoute(model=model, provider=provider)
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------

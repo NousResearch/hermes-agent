@@ -406,6 +406,20 @@ def _run_agent(
         # path and the configured provider is already correct).
         explicit_model = (model or "").strip() or env_model
         if explicit_model:
+            from hermes_cli.model_switch import resolve_startup_model_route
+
+            startup_route = resolve_startup_model_route(
+                explicit_model,
+                explicit_provider=provider or "",
+                user_providers=cfg.get("providers"),
+                custom_providers=cfg.get("custom_providers"),
+            )
+            if startup_route is not None:
+                effective_model = startup_route.model
+                if effective_provider is None:
+                    effective_provider = startup_route.provider or None
+                if startup_route.base_url:
+                    explicit_base_url_from_alias = startup_route.base_url.rstrip("/")
             # First check DIRECT_ALIASES populated from config.yaml `model_aliases:`.
             # These map a user-defined alias to (model, provider, base_url) for
             # endpoints not in any catalog (local servers, custom proxies, etc.).
@@ -446,6 +460,16 @@ def _run_agent(
                 detected = detect_provider_for_model(explicit_model, current_provider)
                 if detected:
                     effective_provider, effective_model = detected
+
+            # The startup resolver owns explicit provider/model and alias
+            # selections. Do not let the legacy catalog fallback overwrite
+            # that route later in this compatibility path.
+            if startup_route is not None:
+                effective_model = startup_route.model
+                if effective_provider is None or not (provider or "").strip():
+                    effective_provider = startup_route.provider or None
+                if startup_route.base_url:
+                    explicit_base_url_from_alias = startup_route.base_url.rstrip("/")
 
     runtime = resolve_runtime_provider(
         requested=effective_provider,

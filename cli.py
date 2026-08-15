@@ -5364,6 +5364,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # clobber an explicit override with the session's stored model.
         self._explicit_model_override = bool(model)
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        _startup_provider_override = ""
+        _startup_base_url_override = ""
+        if self.model:
+            from hermes_cli.model_switch import resolve_startup_model_route
+
+            _startup_route = resolve_startup_model_route(
+                self.model,
+                explicit_provider=provider or "",
+                user_providers=CLI_CONFIG.get("providers"),
+                custom_providers=CLI_CONFIG.get("custom_providers"),
+            )
+            if _startup_route is not None:
+                self.model = _startup_route.model
+                _startup_provider_override = _startup_route.provider
+                _startup_base_url_override = _startup_route.base_url
         # A ``moa:<preset>`` model string selects the MoA virtual provider in
         # one shot (parity with interactive ``/moa`` and the model picker). Do
         # this before provider resolution so ``-Q -m moa:<preset>`` routes
@@ -5407,6 +5422,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.requested_provider = (
             _moa_provider_override
             or provider
+            or _startup_provider_override
             or _nested_provider
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
@@ -5440,6 +5456,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.acp_args: list[str] = []
         self.base_url = (
             base_url
+            or _startup_base_url_override
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None

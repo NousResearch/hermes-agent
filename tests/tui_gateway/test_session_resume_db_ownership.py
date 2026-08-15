@@ -222,6 +222,7 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
 
     monkeypatch.setattr("hermes_state.SessionDB", _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
 
     try:
         resp = _resume(

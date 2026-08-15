@@ -178,6 +178,7 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+_TURN_SETTLE_BEFORE_CLOSE_SECONDS = 5.0
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -964,7 +965,10 @@ def _pop_session_by_id(sid: str) -> dict | None:
     the global ``_session_resume_lock``.
     """
     with _sessions_lock:
-        session = _sessions.pop(sid, None)
+        session = _sessions.get(sid)
+        if session is not None:
+            session["_closing"] = True
+            _sessions.pop(sid, None)
     if session is None:
         return None
     # The session is already out of _sessions here, so downstream teardown
@@ -980,6 +984,22 @@ def _teardown_popped_session(
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
+    run_thread = session.get("_run_thread")
+    if (
+        end_reason != "tui_shutdown"
+        and run_thread is not None
+        and run_thread is not threading.current_thread()
+    ):
+        try:
+            if run_thread.is_alive():
+                run_thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+            if run_thread.is_alive():
+                logger.warning(
+                    "session turn thread still alive after %.1fs teardown grace",
+                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                )
+        except Exception:
+            logger.debug("failed waiting for session turn thread", exc_info=True)
     _teardown_session(session, end_reason=end_reason)
     return True
 
@@ -10384,14 +10404,17 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-) -> None:
+) -> bool:
     with session["history_lock"]:
+        if session.get("_closing"):
+            session["running"] = False
+            return False
         if (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation
         ):
             session["running"] = False
-            return
+            return False
         if image_paths is None:
             images = list(session.get("attached_images", []))
             session["attached_images"] = []
@@ -11317,8 +11340,19 @@ def _run_prompt_submit(
             )
 
     run_thread = threading.Thread(target=run, daemon=True)
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    with _sessions_lock:
+        registered = _sessions.get(sid)
+        can_start = (
+            not session.get("_closing")
+            and (registered is None or registered is session)
+        )
+        if can_start:
+            session["_run_thread"] = run_thread
+            run_thread.start()
+    if not can_start:
+        with session["history_lock"]:
+            session["running"] = False
+    return can_start
 
 
 # Byte-upload attach caps. 25 MB matches Anthropic's per-image limit; 50 MB / 25

@@ -4455,6 +4455,59 @@ def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
     assert response["result"] == {"closed": True}
 
 
+def test_session_close_settles_active_turn_before_teardown(monkeypatch):
+    """Close must not tear down agent resources while their turn is unwinding."""
+    turn_started = threading.Event()
+    release_turn = threading.Event()
+    teardown_started = threading.Event()
+    response = {}
+
+    def _turn():
+        turn_started.set()
+        assert release_turn.wait(timeout=2.0)
+
+    def _teardown(_session, *, end_reason="tui_close"):
+        if end_reason == "tui_close":
+            teardown_started.set()
+
+    session = _session()
+    run_thread = threading.Thread(target=_turn)
+    session["_run_thread"] = run_thread
+    server._sessions["settle-close"] = session
+    monkeypatch.setattr(server, "_teardown_session", _teardown)
+    monkeypatch.setattr(
+        server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 1.0, raising=False
+    )
+
+    close_thread = threading.Thread(
+        target=lambda: response.update(
+            server.handle_request(
+                {
+                    "id": "close",
+                    "method": "session.close",
+                    "params": {"session_id": "settle-close"},
+                }
+            )
+        )
+    )
+    run_thread.start()
+    close_thread.start()
+    try:
+        assert turn_started.wait(timeout=1.0)
+        assert not teardown_started.wait(timeout=0.1)
+        release_turn.set()
+        close_thread.join(timeout=2.0)
+    finally:
+        release_turn.set()
+        run_thread.join(timeout=2.0)
+        close_thread.join(timeout=2.0)
+        server._sessions.pop("settle-close", None)
+
+    assert not close_thread.is_alive()
+    assert teardown_started.is_set()
+    assert response["result"] == {"closed": True}
+
+
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
     """A detached WS session past its grace window has its slash_worker closed.
 
@@ -6186,6 +6239,56 @@ class _RecordingAgent:
     def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
+
+
+def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
+    monkeypatch, tmp_path
+):
+    """A close claimed during message.start must prevent the worker from running."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
+    emit_entered = threading.Event()
+    release_emit = threading.Event()
+    dispatch_results = []
+    turns = []
+    popped = []
+    sid = "close-wins-publication"
+    session = _session(
+        session_key="close-wins-publication-key",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+
+    def _blocking_emit(event, *_args, **_kwargs):
+        if event == "message.start":
+            emit_entered.set()
+            assert release_emit.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_emit", _blocking_emit)
+    server._sessions[sid] = session
+    dispatch_thread = threading.Thread(
+        target=lambda: dispatch_results.append(
+            server._run_prompt_submit("rid", sid, session, "turn")
+        )
+    )
+
+    try:
+        dispatch_thread.start()
+        assert emit_entered.wait(timeout=1.0)
+        popped.append(server._pop_session_by_id(sid))
+        assert popped == [session]
+        release_emit.set()
+        dispatch_thread.join(timeout=2.0)
+    finally:
+        release_emit.set()
+        dispatch_thread.join(timeout=2.0)
+        run_thread = session.get("_run_thread")
+        if run_thread is not None and run_thread.is_alive():
+            run_thread.join(timeout=2.0)
+        server._sessions.pop(sid, None)
+
+    assert dispatch_results == [False]
+    assert session["running"] is False
+    assert turns == []
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])

@@ -674,6 +674,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           triggerHaptic('streamStart')
         }
 
+        // Submit→accept latency: seedOptimistic armed the clock at Enter; this
+        // event is the backend accepting the turn. Debug-only visibility into
+        // how long the arm actually took (the "no progress box for seconds"
+        // complaint) — reads the pre-update cache, costs nothing when clean.
+        const seededAt = sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt
+
+        if (typeof seededAt === 'number') {
+          console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
+        }
+
         updateSessionState(sessionId, state => {
           // If the user clicked Stop (cancelRun set interrupted=true), don't
           // let a stale message.start from a chained turn (goal follow-up,
@@ -693,12 +703,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             sawAssistantPayload: false,
             interrupted: false,
             interimBoundaryPending: false,
-            turnStartedAt: Date.now()
+            // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
+            // here would hide the submit→accept round trip from the timer.
+            // Backend-originated turns (queue drain elsewhere, goal follow-up)
+            // have no seed and arm here.
+            turnStartedAt: state.turnStartedAt ?? Date.now()
           }
         })
 
         if (isActiveEvent) {
-          setTurnStartedAt(Date.now())
+          // Belt-and-suspenders mirror of the ACTIVE session's per-session
+          // clock (the load-bearing mirror is the view-sync flush in
+          // use-session-state-cache). Mirror the seeded value, not Date.now():
+          // resetting to accept-time here would visibly snap the timer back
+          // after the submit-time seed above already started it.
+          setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {

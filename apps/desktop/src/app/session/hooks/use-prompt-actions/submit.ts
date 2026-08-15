@@ -371,7 +371,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // Fresh submit = new turn — clear any leftover interrupt flag, else
             // mutateStream/completeAssistantMessage drop every delta of this turn
             // (what made drained-after-interrupt sends go silent).
-            interrupted: false
+            interrupted: false,
+            // Arm the turn clock at send, not at the backend's message.start —
+            // the round trip (submit RPC → gateway accept → WS event) can take
+            // seconds under load, and the honest latency clock starts when the
+            // user hit Enter. message.start keeps this seed (?? Date.now()),
+            // and the settle paths clear it as before. `??` on our side too:
+            // a queued send that loses the settle race against a still-live
+            // turn must not restart that turn's clock.
+            turnStartedAt: state.turnStartedAt ?? Date.now()
           }),
           targetStoredSessionId
         )
@@ -405,7 +413,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             messages: state.messages.filter(m => m.id !== optimisticId),
             busy: false,
             awaitingResponse: false,
-            pendingBranchGroup: null
+            pendingBranchGroup: null,
+            // Retire the submit-time clock seed with the turn it belonged to —
+            // only when no live stream claimed it (a queued send aborting must
+            // not wipe a running turn's clock).
+            turnStartedAt: state.streamId || state.sawAssistantPayload ? state.turnStartedAt : null
           }),
           targetStoredSessionId
         )
@@ -762,7 +774,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             busy: false,
             awaitingResponse: false,
             pendingBranchGroup: null,
-            sawAssistantPayload: true
+            sawAssistantPayload: true,
+            // The failed submit's clock seed dies with the turn it never got.
+            turnStartedAt: null
           }),
           targetStoredSessionId
         )

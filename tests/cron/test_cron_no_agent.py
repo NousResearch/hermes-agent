@@ -259,12 +259,39 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     value can survive to fire time (the creation-time guard treats it as
     "nothing to scan"), and ``Path.expanduser()`` raises ValueError — not
     OSError — on it. The scheduler must fail the run with a report, not
-    crash with an unhandled exception."""
+    crash with an unhandled exception.
+
+    Regression (#86829): the assertion pins the *eager rejection* contract
+    — the specific "NUL byte" report is only produced by the pre-check
+    added in the fix. On Linux the legacy guard would swallow the
+    expanduser() ValueError and report a generic invalid-path message, so
+    a bare "Blocked" assertion could not tell the fixed code from the
+    unfixed code; on Windows the unfixed code crashes outright."""
     from cron.scheduler import _run_job_script
 
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
-    assert "Blocked" in output
+    assert "NUL byte" in output
+
+
+def test_run_job_script_nul_rejected_before_any_path_call(hermes_env, monkeypatch):
+    """The eager NUL check must run before ``Path(...)`` is ever constructed.
+
+    On Windows ``expanduser()`` never expands ``~user`` and never raises,
+    so without the pre-check the NUL surfaces later from ``resolve()`` /
+    ``exists()`` — outside the guard's try — and the uncaught ValueError
+    crashes the scheduler (#86829). Stubbing ``Path`` with a hard failure
+    proves the rejection happens before any pathlib call on every
+    platform, not just the ones where expanduser happens to raise."""
+    import cron.scheduler as scheduler_module
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("Path must not be touched for a NUL-bearing script path")
+
+    monkeypatch.setattr(scheduler_module, "Path", boom)
+    ok, output = scheduler_module._run_job_script("nul\x00byte.sh")
+    assert ok is False
+    assert "NUL byte" in output
 
 
 # ---------------------------------------------------------------------------

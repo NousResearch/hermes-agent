@@ -109,7 +109,17 @@ def scan_directory(
     manifests: List[PluginManifest] = []
     if not path.is_dir():
         return manifests
-    for child in sorted(path.iterdir()):
+    try:
+        children = sorted(path.iterdir())
+    except OSError as exc:
+        logger.warning("Failed to scan plugin directory %s: %s", path, exc)
+        return manifests
+    for child in children:
+        # Cache/dunder dirs (__pycache__, __MACOSX__, …) are never
+        # plugins. Walking them can raise PermissionError and take
+        # down every subsequent tool call (#86996).
+        if child.name.startswith("__") and child.name.endswith("__"):
+            continue
         try:
             if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
                 continue

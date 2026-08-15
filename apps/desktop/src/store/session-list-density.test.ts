@@ -11,10 +11,10 @@ describe('session list density preference', () => {
     window.localStorage.clear()
   })
 
-  it('defaults to comfortable and persists changes', async () => {
+  it('defaults to compact (pre-density behavior) and persists changes', async () => {
     const first = await loadStore()
 
-    expect(first.$sessionListDensity.get()).toBe('comfortable')
+    expect(first.$sessionListDensity.get()).toBe('compact')
 
     first.setSessionListDensity('detailed')
 
@@ -22,9 +22,9 @@ describe('session list density preference', () => {
     expect((await loadStore()).$sessionListDensity.get()).toBe('detailed')
   })
 
-  it('falls back to comfortable for an unknown stored value', async () => {
+  it('falls back to compact for an unknown stored value', async () => {
     window.localStorage.setItem('hermes.desktop.sessionListDensity', 'tiny')
 
-    expect((await loadStore()).$sessionListDensity.get()).toBe('comfortable')
+    expect((await loadStore()).$sessionListDensity.get()).toBe('compact')
   })
 })

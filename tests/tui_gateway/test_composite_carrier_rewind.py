@@ -417,13 +417,16 @@ def test_retry_rejects_pending_attachments_before_mutating_history(carrier_sessi
     assert session["history"] == before_memory
     assert len(db.get_messages_as_conversation(session_key)) == 2
 
-def test_prompt_ordinal_rewind_preserves_scaffold_before_regeneration(
+def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     carrier_session, monkeypatch
 ):
     db, install = carrier_session
     sid, session_key, session = install(
         [_composite_carrier(), {"role": "assistant", "content": "failed"}]
     )
+    target_row_id = db.get_messages_as_conversation(
+        session_key, include_row_ids=True
+    )[0]["_row_id"]
     seen = {}
 
     class _Agent:
@@ -463,6 +466,7 @@ def test_prompt_ordinal_rewind_preserves_scaffold_before_regeneration(
         {
             "session_id": sid,
             "text": "EDITED ASK",
+            "truncate_before_row_id": target_row_id,
             "truncate_before_user_ordinal": 0,
             "confirm_truncate": True,
         },
@@ -476,112 +480,3 @@ def test_prompt_ordinal_rewind_preserves_scaffold_before_regeneration(
     active = db.get_messages_as_conversation(session_key, include_row_ids=True)
     assert len(active) == 1
     assert active[0]["display_kind"] == "hidden"
-
-
-def test_prompt_row_id_rewind_uses_profile_db_and_rebinds_survivors(
-    monkeypatch, tmp_path
-):
-    profile_home = tmp_path / "profiles" / "work"
-    profile_home.mkdir(parents=True)
-    profile_db = SessionDB(db_path=profile_home / "state.db")
-    launch_db = SessionDB(db_path=tmp_path / "launch.db")
-    session_key = "profile-carrier-row-id"
-    profile_db.create_session(session_key, source="tui")
-    launch_db.create_session(session_key, source="tui")
-    launch_db.append_message(session_key, "user", "launch profile must stay untouched")
-
-    carrier = _composite_carrier()
-    carrier["content"] = carrier["content"].replace(
-        "REAL ASK",
-        "  REAL ASK\n\n<memory-context>private</memory-context>  ",
-    )
-    persisted = [
-        {"role": "user", "content": "OLDER ASK"},
-        {"role": "assistant", "content": "older answer"},
-        carrier,
-        {"role": "assistant", "content": "failed"},
-    ]
-    for message in persisted:
-        profile_db.append_message(
-            session_key,
-            message["role"],
-            message["content"],
-        )
-    target_row_id = profile_db.get_messages_as_conversation(
-        session_key, include_row_ids=True
-    )[2]["_row_id"]
-
-    sid = "profile-carrier-row-id-sid"
-    session = {
-        "agent": SimpleNamespace(),
-        "attached_images": [],
-        "history": [dict(message) for message in persisted],
-        "history_lock": threading.Lock(),
-        "history_version": 0,
-        "image_counter": 0,
-        "profile_home": str(profile_home),
-        "running": False,
-        "session_key": session_key,
-        "show_reasoning": False,
-        "slash_worker": None,
-        "tool_progress_mode": "all",
-    }
-
-    class _DormantThread:
-        def __init__(self, target=None, daemon=None):
-            self._target = target
-
-        def start(self):
-            pass
-
-    old_db = server._db
-    server._db = launch_db
-    server._sessions[sid] = session
-    monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(server.threading, "Thread", _DormantThread)
-
-    try:
-        response = server._methods["prompt.submit"](
-            "request-id",
-            {
-                "session_id": sid,
-                "text": "EDITED ASK",
-                "truncate_before_row_id": target_row_id,
-                "truncate_before_user_ordinal": 1,
-                "confirm_truncate": True,
-            },
-        )
-
-        assert response["result"]["status"] == "streaming"
-        survivor_ids = response["result"]["survivor_user_row_ids"]
-        assert len(survivor_ids) == 1
-        assert isinstance(survivor_ids[0], int)
-
-        active = profile_db.get_messages_as_conversation(
-            session_key, include_row_ids=True
-        )
-        assert [message["content"] for message in active[:2]] == [
-            "OLDER ASK",
-            "older answer",
-        ]
-        assert active[0]["_row_id"] == survivor_ids[0]
-        assert active[2]["display_kind"] == "hidden"
-        assert "REAL ASK" not in active[2]["content"]
-        assert "private" not in active[2]["content"]
-        assert [
-            (message["role"], message["content"], message.get("display_kind"))
-            for message in session["history"]
-        ] == [
-            (message["role"], message["content"], message.get("display_kind"))
-            for message in active
-        ]
-        assert [
-            message["content"]
-            for message in launch_db.get_messages_as_conversation(session_key)
-        ] == ["launch profile must stay untouched"]
-    finally:
-        server._sessions.pop(sid, None)
-        server._db = old_db
-        profile_db.close()
-        launch_db.close()

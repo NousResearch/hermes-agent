@@ -106,6 +106,7 @@ function Harness({
   runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefProp,
   seedMessages,
   seedStreamId,
+  seedTurnStartedAt,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
@@ -130,6 +131,7 @@ function Harness({
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   seedMessages?: unknown[]
   seedStreamId?: null | string
+  seedTurnStartedAt?: null | number
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
@@ -163,6 +165,7 @@ function Harness({
     awaitingResponse: false,
     interrupted: true,
     streamId: seedStreamId ?? null,
+    turnStartedAt: seedTurnStartedAt ?? null,
     interimBoundaryPending: false
   } as never)
 
@@ -1718,6 +1721,59 @@ describe('usePromptActions submit / queue drain semantics', () => {
       },
       1_800_000
     )
+  })
+
+  it('arms turnStartedAt at submit time instead of waiting for message.start', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const before = Date.now()
+    await handle!.submitText('arm the clock now')
+
+    // The optimistic seed carries the clock — the progress box's timer must
+    // not be hostage to the submit→gateway-accept round trip (which can take
+    // seconds under load). message.start later keeps this value (?? guard).
+    expect(seeds.length).toBeGreaterThan(0)
+    const armed = seeds[0].turnStartedAt
+
+    expect(typeof armed).toBe('number')
+    expect(armed as number).toBeGreaterThanOrEqual(before)
+    expect(armed as number).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('keeps a live turn clock when a second seed races it (?? guard)', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const preArmed = Date.now() - 12_345
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedTurnStartedAt={preArmed}
+      />
+    )
+
+    // Submit into state that already carries a live clock (queued send racing
+    // a running turn): the seed must preserve it, not restart the visible
+    // elapsed time.
+    await handle!.submitText('send racing a live clock')
+
+    expect(seeds.length).toBeGreaterThan(0)
+    expect(seeds[0].turnStartedAt).toBe(preArmed)
   })
 
   it('flags prompt.submit with interrupted:true after a voice-playback barge', async () => {

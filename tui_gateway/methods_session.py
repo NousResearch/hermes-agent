@@ -541,7 +541,7 @@ def _(rid, params: dict) -> dict:
                 # inspection/export must show what is actually stored.
                 if omit_messages:
                     raw_history = db.get_messages_as_conversation(
-                        target, repair_alternation=True
+                        target, repair_alternation=True, include_row_ids=True
                     )
                     display_history = []
                 else:
@@ -627,7 +627,7 @@ def _(rid, params: dict) -> dict:
             # display copy stays verbatim.
             if omit_messages:
                 raw_history = db.get_messages_as_conversation(
-                    target, repair_alternation=True
+                    target, repair_alternation=True, include_row_ids=True
                 )
                 display_history = []
             else:

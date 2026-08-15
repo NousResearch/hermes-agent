@@ -255,6 +255,7 @@ export function rehydrateLiveSessionStatuses(
           needsInput: false,
           streamId: null,
           turnStartedAt: null,
+          turnLive: false,
           // The turn ended without its completion events reaching us — a lost
           // `tool.complete` would otherwise leave a spinning tool row in an
           // idle session. Seal open tool parts the same way the settle path

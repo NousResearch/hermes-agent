@@ -763,6 +763,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
                     _lift_extra_headers(entry, result)
+                    # Command that PRINTS a credential, for gateways issuing
+                    # short-lived bearers instead of static keys. Propagated
+                    # raw; wrapped in a per-request token provider at
+                    # resolution.
+                    key_cmd = str(entry.get("key_cmd", "") or "").strip()
+                    if key_cmd:
+                        result["key_cmd"] = key_cmd
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -1170,6 +1177,22 @@ def _resolve_named_custom_runtime(
         _host_derived_api_key(base_url),
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
+
+    # A ``key_cmd`` credential is minted per request rather than resolved once:
+    # gateways that issue short-lived bearers would otherwise go stale
+    # mid-session and 401. Both wire clients already accept a callable api_key
+    # (the Entra ID contract) and invoke it per request. An explicit --api-key
+    # still wins — it is the one-off recovery escape hatch.
+    key_cmd = str(custom_provider.get("key_cmd", "") or "").strip()
+    if key_cmd and not has_usable_secret((explicit_api_key or "").strip()):
+        from agent.command_token_source import build_command_token_provider
+
+        token_provider = build_command_token_provider(
+            key_cmd,
+            str(custom_provider.get("name", requested_provider) or "custom"),
+        )
+        if token_provider is not None:
+            api_key = token_provider
 
     result = {
         "provider": "custom",

@@ -109,6 +109,10 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         "reload",
         "release",
     ]
+    assert db.events[2][2] == {
+        "repair_alternation": True,
+        "include_row_ids": True,
+    }
     assert any(
         kind == "lifecycle"
         and text

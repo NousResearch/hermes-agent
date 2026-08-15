@@ -547,6 +547,11 @@ export interface Translations {
       testFailed: string
       saveFailed: string
       removeFailed: string
+      updateAll: string
+      updateAllRunning: string
+      updateAllDone: string
+      updateAllFailed: string
+      updateSkippedCloud: string
       kindLocal: string
       kindRemote: string
       kindCloud: string
@@ -2453,6 +2458,7 @@ export interface Translations {
       thought: string
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
+      turnDuration: (duration: string) => string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string

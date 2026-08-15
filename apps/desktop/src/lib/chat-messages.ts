@@ -32,6 +32,10 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** Whole-turn wall-clock seconds (message.start → message.complete),
+   *  stamped by the desktop when it watched the turn run. Absent for
+   *  messages hydrated from history — the backend doesn't persist it. */
+  durationS?: number
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
@@ -71,6 +75,7 @@ export type GatewayEventPayload = {
   approval_mode?: string
   yolo?: boolean
   running?: boolean
+  turn_started_at?: number | null
   cwd?: string
   branch?: string
   terminal_backend?: string

@@ -24,6 +24,13 @@ declare global {
         connectionId?: null | string
         profile?: null | string
       }) => Promise<HermesConnection>
+      // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
+      getGatewayWsUrlFor?: (payload: {
+        connectionId?: null | string
+        profile?: null | string
+      }) => Promise<GatewayWsUrlResult>
+      // Union agent roster across every registered connection.
+      getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -133,6 +140,9 @@ declare global {
         remove: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setPrimary: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
+        // Fan out `hermes update` to every eligible registered connection;
+        // cloud entries are skipped (platform-managed), each row independent.
+        updateAll?: () => Promise<{ ok: boolean; results: DesktopConnectionUpdateResult[] }>
       }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
@@ -741,6 +751,39 @@ export interface DesktopRegistryConnectionInput {
   keyPath?: string
   remoteHermesPath?: string
   remoteProfile?: string
+}
+
+// One agent in the union roster: a profile on a registered source, with the
+// pre-computed @name-device handle for duplicate profile names.
+export interface DesktopRosterAgent {
+  connectionId: string
+  connectionKind: DesktopConnectionKind
+  connectionLabel: string
+  profile: string
+  handle: string
+}
+
+export interface DesktopAgentRoster {
+  agents: DesktopRosterAgent[]
+  sources: {
+    connectionId: string
+    label: string
+    kind: DesktopConnectionKind
+    reachable: boolean
+    error?: string
+  }[]
+}
+
+// Per-connection result row from the update fan-out.
+export interface DesktopConnectionUpdateResult {
+  connectionId: string
+  label: string
+  kind: DesktopConnectionKind
+  ok: boolean
+  skipped?: boolean
+  reason?: string
+  detail?: string
+  error?: string
 }
 
 export interface DesktopSshResolveResult {

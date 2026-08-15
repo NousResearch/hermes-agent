@@ -140,8 +140,13 @@ export function agentHandle(profile: string, connectionLabel: string, duplicated
  * log line, and touch call stays byte-identical for single-source users;
  * non-local connections get an unambiguous composite (`conn:<id>::<profile>`)
  * that cannot collide with a plain profile name (colons are invalid in
- * profile names). The single home of the composite-key rule — Electron pool
- * keying and any renderer socket registry must both derive keys here.
+ * profile names).
+ *
+ * NOTE: the renderer's socket registry uses the twin implementation in
+ * apps/shared/src/backend-scope.ts (`@hermes/shared`) — tsconfig project
+ * boundaries prevent a single physical module here. The two are pinned
+ * byte-identical by the cross-copy contract test in
+ * connection-registry.test.ts; change BOTH or that test fails.
  */
 export function backendScopeKey(connectionId: null | string | undefined, profile: null | string | undefined): string {
   const profileKey = String(profile ?? '').trim() || 'default'
@@ -157,6 +162,83 @@ export function backendScopeKey(connectionId: null | string | undefined, profile
 /** All pool keys owned by a connection share this prefix (used to stop them on remove). */
 export function backendScopePrefix(connectionId: string): string {
   return `conn:${String(connectionId).trim()}::`
+}
+
+// ── Union agent roster ──────────────────────────────────────────────────────
+
+export interface ConnectionAgents {
+  connection: RegistryConnection
+  /** Profile names enumerated from the connection, or null when unreachable /
+   * connect-on-demand (ssh not yet dialed). */
+  profiles: null | string[]
+  /** Present when profiles is null: why enumeration was skipped. */
+  error?: string
+}
+
+export interface RosterAgent {
+  connectionId: string
+  connectionKind: ConnectionKind
+  connectionLabel: string
+  profile: string
+  /** Bare profile name, or `<profile>-<label-slug>` when the profile name
+   * exists on more than one registered source (the @name-device rule). */
+  handle: string
+}
+
+/**
+ * Flatten per-connection profile enumerations into the union roster, applying
+ * the duplicate-handle rule ONCE across all sources. Pure so the disambiguation
+ * policy is testable without IPC; main.ts feeds it live enumerations.
+ */
+export function buildAgentRoster(enumerations: ConnectionAgents[]): RosterAgent[] {
+  const counts = new Map<string, number>()
+
+  for (const { profiles } of enumerations) {
+    for (const profile of profiles || []) {
+      const name = String(profile || '').trim() || 'default'
+      counts.set(name, (counts.get(name) || 0) + 1)
+    }
+  }
+
+  const roster: RosterAgent[] = []
+
+  for (const { connection, profiles } of enumerations) {
+    for (const profile of profiles || []) {
+      const name = String(profile || '').trim() || 'default'
+
+      roster.push({
+        connectionId: connection.id,
+        connectionKind: connection.kind,
+        connectionLabel: connection.label,
+        profile: name,
+        handle: agentHandle(name, connection.label, (counts.get(name) || 0) > 1)
+      })
+    }
+  }
+
+  return roster
+}
+
+// ── Fan-out update eligibility ──────────────────────────────────────────────
+
+export interface UpdateEligibility {
+  eligible: boolean
+  /** Present when not eligible: 'cloud-managed' (platform updates it). */
+  reason?: 'cloud-managed'
+}
+
+/**
+ * Whether "Update all instances" may drive this connection. Hermes Cloud
+ * instances are platform-managed — we never run `hermes update` against them.
+ * Local, remote, and ssh sources are all eligible (reachability and busy
+ * checks happen at dispatch time, not here).
+ */
+export function updateEligibility(connection: RegistryConnection): UpdateEligibility {
+  if (connection.kind === 'cloud') {
+    return { eligible: false, reason: 'cloud-managed' }
+  }
+
+  return { eligible: true }
 }
 
 /** Mint a registry-unique id from a label (slug, then -2/-3… suffixes). */

@@ -6178,6 +6178,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
+    def increment_hygiene_failure_streak(self, session_key: str) -> int:
+        """Atomically increment the session-hygiene failure streak for one chat."""
+        if not session_key:
+            return 1
+        result = []
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO gateway_hygiene_state (session_key, failure_streak)
+                   VALUES (?, 1)
+                   ON CONFLICT(session_key) DO UPDATE SET
+                       failure_streak = gateway_hygiene_state.failure_streak + 1""",
+                (session_key,),
+            )
+            row = conn.execute(
+                "SELECT failure_streak FROM gateway_hygiene_state WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            result.append(int(row[0]))
+
+        self._execute_write(_do)
+        return result[0]
+
+    def reset_hygiene_failure_streak(self, session_key: str) -> None:
+        """Clear the persisted session-hygiene failure streak for one chat."""
+        if not session_key:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM gateway_hygiene_state WHERE session_key = ?",
+                (session_key,),
+            )
+
+        self._execute_write(_do)
+
     def get_compression_ineffective_count(self, session_id: str) -> int:
         """Return the persisted ineffective-compaction strike count.
 

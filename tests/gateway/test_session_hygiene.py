@@ -1163,5 +1163,17 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
         )
         # The user turn itself still runs; only compression is skipped.
         assert runner2._run_agent.await_count == 1
+
+        # Once the first deadline expires, the next failed attempt after a
+        # restart must use rung 2 (900s), not start over at 300s (#86650).
+        db.clear_compression_failure_cooldown(session_id)
+        runner3, _adapter3, event3 = _make_cooldown_runner(
+            monkeypatch, tmp_path, AbortingCompressAgent, db, session_id
+        )
+        assert await runner3._handle_message(event3) == "ok"
+        assert AbortingCompressAgent.instances == 2
+        escalated = db.get_compression_failure_cooldown(session_id)
+        assert escalated is not None
+        assert escalated["remaining_seconds"] == pytest.approx(900, abs=5)
     finally:
         db.close()

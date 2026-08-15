@@ -13,7 +13,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from agent.conversation_loop import _restore_or_build_system_prompt
+def _restore_or_build_system_prompt(*args, **kwargs):
+    # Late-bound: resolve through sys.modules at call time. Some suite
+    # tests (test_empty_tool_name_loop_dampening) purge agent.* from
+    # sys.modules mid-run; a top-level `from ... import` here would keep
+    # calling the pre-purge module object while mock.patch targets the
+    # re-imported one, so the drift-gate patch would silently miss.
+    from agent.conversation_loop import (
+        _restore_or_build_system_prompt as _impl,
+    )
+    return _impl(*args, **kwargs)
 
 
 def _make_agent(prebuilt=None):

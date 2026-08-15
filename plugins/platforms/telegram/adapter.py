@@ -1437,22 +1437,44 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
 
         if authorized is None:
+            # Resolve through the runner's full auth chain (platform + group
+            # allowlists, pairing store, allow-all flags). Prefer the
+            # platform-bound callback registered via set_authorization_check:
+            # it routes to GatewayRunner._is_user_authorized AND survives
+            # multiplex handler wrapping, whereas the bound-handler __self__
+            # lookup is None when the primary handler is a profile closure —
+            # which silently dropped the chat allowlist and default-denied
+            # allowlisted group members under multiplex_profiles (#87132). Fall
+            # back to the bound handler for setups without a registered callback.
             runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
             auth_fn = getattr(runner, "_is_user_authorized", None)
-            if callable(auth_fn):
-                # Only make an early decision via the runner when an allowlist
-                # actually exists; otherwise unknown DMs must reach the pairing
-                # flow rather than being default-denied here.
+            has_callback = getattr(self, "_authorization_check", None) is not None
+            if has_callback or callable(auth_fn):
+                # Only make an early decision when an allowlist actually exists;
+                # otherwise unknown DMs must reach the pairing flow rather than
+                # being default-denied here.
                 if not self._telegram_auth_env_configured():
                     return True
-                try:
-                    authorized = bool(auth_fn(source))
-                except Exception:
-                    logger.debug(
-                        "[Telegram] Falling back to env-only auth for user %s",
+                decision = (
+                    self._is_sender_authorized(
                         user_id,
-                        exc_info=True,
+                        chat_type=source.chat_type,
+                        chat_id=source.chat_id,
                     )
+                    if has_callback
+                    else None
+                )
+                if decision is not None:
+                    authorized = decision
+                elif callable(auth_fn):
+                    try:
+                        authorized = bool(auth_fn(source))
+                    except Exception:
+                        logger.debug(
+                            "[Telegram] Falling back to env-only auth for user %s",
+                            user_id,
+                            exc_info=True,
+                        )
 
         if authorized is None:
             allowed_csv = _scoped_gate_env("TELEGRAM_ALLOWED_USERS").strip()

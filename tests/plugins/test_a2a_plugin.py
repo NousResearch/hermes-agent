@@ -221,6 +221,28 @@ class TestAudit:
         assert rec["status"] == 401
         assert rec["ip"] == "127.0.0.1"
 
+    def test_audit_hashes_oversized_and_non_scalar_task_ids(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit("inbound", "peer-y", "x" * 400, "ok")
+        rec = json.loads((tmp_path / "a2a_audit.jsonl").read_text().splitlines()[-1])
+        assert rec["task_id"].startswith("sha256:")
+        assert len(rec["task_id"]) < 40
+
+        security.audit("inbound", "mallory", {"id": "x" * 5000}, "untrusted")
+        rec = json.loads((tmp_path / "a2a_audit.jsonl").read_text().splitlines()[-1])
+        assert rec["task_id"].startswith("sha256:")
+
+    def test_audit_rejection_quota_caps_per_source(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security._rejection_events.clear()
+        for _ in range(security._REJECTION_PER_SOURCE + 5):
+            security.audit(
+                "inbound", None, None, "unauthorized",
+                decision="rejected_bad_token", status=401, ip="203.0.113.9",
+            )
+        lines = (tmp_path / "a2a_audit.jsonl").read_text().splitlines()
+        assert len(lines) == security._REJECTION_PER_SOURCE
+
 
 # --------------------------------------------------------------------------
 # Protocol v1.0 shapes

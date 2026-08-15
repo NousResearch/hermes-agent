@@ -806,6 +806,8 @@ export const zh: Translations = {
         '确定移除所有已启用的工具集吗？这将禁用记忆、终端、网络搜索、委派以及大多数其他工具，直到你重新启用它们。',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      disableF12Title: '禁用 F12 开发者工具',
+      disableF12Desc: '阻止 F12 打开开发者工具。Ctrl+Shift+I（Mac 上为 Cmd+Opt+I）仍然可用。',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',

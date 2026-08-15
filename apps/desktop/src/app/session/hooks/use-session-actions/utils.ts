@@ -1255,3 +1255,23 @@ export function isSessionGoneError(err: unknown): boolean {
 
   return message.includes('404') || /session not found/i.test(message)
 }
+
+/**
+ * The busy value a resume/activate response should land with (#70449).
+ *
+ * `running` in a `session.activate` / `session.resume` payload is a snapshot
+ * taken when the RPC was issued. A turn that started — or streamed — after
+ * that snapshot has already marked the runtime busy in the live cache, so a
+ * stale `running: false` must never rewind it: that is exactly how opening an
+ * in-progress chat cleared its working indicator while the agent was still
+ * going. Preserving the newer live busy is safe, because the turn's own
+ * terminal signal (running:false via session.info / the settle path) remains
+ * the only authority that ends it, and the background-sync reaper clears
+ * truly lost turns.
+ *
+ * A snapshot that says `running: true` always wins — adopting a live turn is
+ * never stale.
+ */
+export function resolveResumedBusy(snapshotRunning: boolean | null | undefined, liveBusy: boolean): boolean {
+  return Boolean(snapshotRunning) || liveBusy
+}

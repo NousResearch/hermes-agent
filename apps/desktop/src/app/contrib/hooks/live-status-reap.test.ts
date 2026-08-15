@@ -98,9 +98,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
       ...createClientSessionState('stored-tools'),
       busy: true,
       awaitingResponse: true,
-      messages: [
-        { id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never
-      ]
+      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never]
     })
 
     // Keep the runtime referenced so the settled state stays in the store

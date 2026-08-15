@@ -839,6 +839,73 @@ _LOW_SIGNAL_TOOL_RE = re.compile(
     r"(?:\"exit_code\"\s*:\s*0)?\s*\}?$"
 )
 
+# Anchor ledger (#compaction-v2, Pi/Cline file-ops-ledger convergence, adapted):
+# mechanically harvest exact identifiers from the compacted region into an
+# indexed summary section. No LLM in the loop, so nothing can be paraphrased
+# away — this is the defense for needle-facts (SHAs, ids, error strings) that
+# honest summarization at 10:1 always loses. Doubles as a query-anchor map
+# for session_search recovery.
+_LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
+_LEAN_ANCHOR_BUDGET_CHARS = 7_000
+_ANCHOR_PATTERNS: "list[tuple[str, re.Pattern[str], int]]" = [
+    ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
+    ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
+    ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
+    ("files", re.compile(r"\b[\w./-]+/[\w.-]+\.(?:py|ts|tsx|js|rs|md|yaml|yml|json|toml|sh)\b"), 80),
+    ("errors", re.compile(r"\b(?:[A-Z][a-zA-Z]*Error|Exception|ENOSPC|EACCES|SIGKILL|Traceback)\b[^\n]{0,90}"), 40),
+    ("handles", re.compile(r"@[A-Za-z0-9-]{3,30}\b"), 40),
+    ("urls", re.compile(r"https?://[^\s)\"']{10,110}"), 30),
+]
+_ANCHOR_NOISE = frozenset({
+    "@teknium", "@teknium1",  # session owner, in every transcript
+})
+
+
+def _build_anchor_index(turns: List[Dict[str, Any]]) -> str:
+    """Regex-harvest exact identifiers from the compacted region.
+
+    Deterministic and LLM-free. Per-category caps keep the section bounded;
+    within a category, most-frequent first (frequency is a decent proxy for
+    load-bearing), ties broken by last-seen order (recency).
+    """
+    text_parts: list[str] = []
+    for msg in turns:
+        c = msg.get("content")
+        if isinstance(c, str) and c:
+            text_parts.append(c)
+    text = "\n".join(text_parts)
+    if not text:
+        return ""
+    sections: list[str] = []
+    used = 0
+    for label, pattern, cap in _ANCHOR_PATTERNS:
+        counts: dict[str, int] = {}
+        last_seen: dict[str, int] = {}
+        for n, m in enumerate(pattern.finditer(text)):
+            val = m.group(0).strip().rstrip(".,;:")
+            if val.lower() in _ANCHOR_NOISE:
+                continue
+            counts[val] = counts.get(val, 0) + 1
+            last_seen[val] = n
+        if not counts:
+            continue
+        ranked = sorted(counts, key=lambda v: (-counts[v], -last_seen[v]))[:cap]
+        line = f"{label}: " + ", ".join(
+            f"{v}(x{counts[v]})" if counts[v] > 1 else v for v in ranked
+        )
+        if used + len(line) > _LEAN_ANCHOR_BUDGET_CHARS:
+            break
+        sections.append(line)
+        used += len(line)
+    if not sections:
+        return ""
+    return (
+        "\n\n" + _LEAN_ANCHOR_HEADING + "\n"
+        + "\n".join(sections)
+        + "\n(Exact identifiers from the compacted region — use these verbatim, "
+        "and as session_search query anchors to recover their full context.)"
+    )
+
 
 def _digest_worthy(role: str, content: str) -> bool:
     """Filter no-signal rows out of the digest input.
@@ -4146,6 +4213,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """
         if getattr(self, "tail_mode", "legacy") != "lean":
             return summary
+        if _LEAN_ANCHOR_HEADING not in summary:
+            summary += _redact_compaction_text(
+                _build_anchor_index(turns_to_summarize)
+            )
         if _LEAN_DIGESTS_HEADING not in summary:
             summary += _redact_compaction_text(
                 self._build_chunk_digests(turns_to_summarize)

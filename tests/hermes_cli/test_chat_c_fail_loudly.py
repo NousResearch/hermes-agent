@@ -15,8 +15,6 @@ Two behaviors are fixed here:
    deterministic "send to this named thread, making it if needed" primitive.
 """
 
-import os
-
 import pytest
 
 
@@ -159,15 +157,3 @@ class TestChatCFailLoudlyOnStderr:
             assert db.get_session_title(args.resume) == "Bot Chat"
         finally:
             db.close()
-
-
-class TestSourceGuard:
-    """Source-level guards: the fail-loudly branch must target stderr."""
-
-    def test_not_found_message_uses_stderr(self):
-        src = open(
-            os.path.join(os.path.dirname(__file__), "..", "..", "hermes_cli", "main.py"),
-            encoding="utf-8",
-        ).read()
-        assert "No session found matching '{continue_val}'." in src
-        assert "file=sys.stderr" in src

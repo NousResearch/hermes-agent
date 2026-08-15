@@ -953,6 +953,25 @@ def _try_dispatch_background_run(
     job_id = job["id"]
     job_name = str(job.get("name") or job_id)
 
+    # Reap any execution row this job (or any job) left stranded 'claimed'/
+    # 'running' by a dead owner process -- e.g. a PRIOR one-shot `hermes
+    # cron run` invocation whose dispatched runner died with the exiting
+    # process before writing a terminal status (issue #86721). The
+    # long-lived scheduler ticker already does this once at its own
+    # startup (cron/scheduler.py's self.recover_interrupted()); a one-shot
+    # CLI invocation has no equivalent "startup" moment of its own, so it
+    # never got this self-heal -- leaving a permanently-stale claim that
+    # blocked every subsequent manual run on the same job. Safe and cheap:
+    # only provably-dead owners (PID gone, or PID reused by a different
+    # process per its start time) are reaped; a genuinely live owner's row
+    # is left untouched.
+    try:
+        from cron.executions import recover_interrupted_executions
+
+        recover_interrupted_executions()
+    except Exception:
+        pass  # best-effort self-heal; a failure here must not block dispatch
+
     # ---- routing capture (on THIS thread; contextvars don't cross the pool) ----
     # Resolved BEFORE the claim: with no routable session there is no durable
     # consumer for a detached completion, so we must not claim-and-dispatch.

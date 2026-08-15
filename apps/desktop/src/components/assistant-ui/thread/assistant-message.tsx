@@ -377,31 +377,31 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
   const { t } = useI18n()
 
   return (
-  <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
-    {durationS !== undefined && (
-      <span
-        className="select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
-        data-slot="aui_turn-duration"
-        title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
+    <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
+      {durationS !== undefined && (
+        <span
+          className="select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+          data-slot="aui_turn-duration"
+          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
+        >
+          ⏱ {formatElapsed(durationS)}
+        </span>
+      )}
+      <BranchPickerPrimitive.Root
+        className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
+        hideWhenSingleBranch
       >
-        ⏱ {formatElapsed(durationS)}
-      </span>
-    )}
-    <BranchPickerPrimitive.Root
-      className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
-      hideWhenSingleBranch
-    >
-      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-        <Codicon name="chevron-left" size="0.875rem" />
-      </BranchPickerPrimitive.Previous>
-      <span className="tabular-nums">
-        <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
-      </span>
-      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
-        <Codicon name="chevron-right" size="0.875rem" />
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
-    <AssistantActionBar {...props} />
-  </div>
+        <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+          <Codicon name="chevron-left" size="0.875rem" />
+        </BranchPickerPrimitive.Previous>
+        <span className="tabular-nums">
+          <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
+        </span>
+        <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+          <Codicon name="chevron-right" size="0.875rem" />
+        </BranchPickerPrimitive.Next>
+      </BranchPickerPrimitive.Root>
+      <AssistantActionBar {...props} />
+    </div>
   )
 }

@@ -154,8 +154,7 @@ describe('session.info settles a turn that produced no assistant payload', () =>
   // latching awaitingResponse/busy until app restart — and because
   // isTargetSessionBusy reads the per-session busy flag as authoritative,
   // submitPrompt and the slash dispatcher then silently refused every send.
-  const busyFor = (sessionId: string) =>
-    isTargetSessionBusy(Object.fromEntries(sessionStates!), sessionId, false)
+  const busyFor = (sessionId: string) => isTargetSessionBusy(Object.fromEntries(sessionStates!), sessionId, false)
 
   const startTurn = (sessionId: string) =>
     act(() => handleEvent!({ payload: {}, session_id: sessionId, type: 'message.start' }))

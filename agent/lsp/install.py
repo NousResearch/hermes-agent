@@ -36,7 +36,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli._subprocess_compat import windows_batch_command, windows_hide_flags
+from hermes_cli._subprocess_compat import run_windows_batch, windows_hide_flags
 from hermes_constants import find_node_executable
 
 logger = logging.getLogger("agent.lsp.install")
@@ -450,30 +450,31 @@ def _install_npm(
             "--no-audit",
             *install_targets,
         ]
-        run_env = None
-        run_shell = False
-        run_command = command
         if _is_windows() and npm.lower().endswith((".cmd", ".bat")):
             # Batch launchers are reparsed by cmd.exe. Keep metacharacters in
-            # HERMES_HOME and package arguments inside quoted placeholders.
-            run_env = dict(os.environ)
-            run_command = windows_batch_command(
+            # HERMES_HOME and package arguments inside quoted placeholders, and
+            # own the whole child tree if the bounded install times out.
+            proc = run_windows_batch(
                 command,
-                run_env,
+                env=os.environ,
                 prefix="HERMES_LSP_INSTALL",
+                timeout=300,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
-            run_shell = True
-        proc = subprocess.run(
-            run_command,
-            check=False,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=300,
-            stdin=subprocess.DEVNULL,
-            creationflags=windows_hide_flags(),
-            env=run_env,
-            shell=run_shell,
-        )
+        else:
+            proc = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=300,
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
         if proc.returncode != 0:
             logger.warning(
                 "[install] npm install failed for %s: %s", pkg, proc.stderr.strip()[:500]

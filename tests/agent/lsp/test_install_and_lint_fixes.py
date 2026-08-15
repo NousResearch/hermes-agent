@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
@@ -200,6 +201,64 @@ def test_auto_install_upgrades_preexisting_canonical_npm_wrapper(
     assert expected.exists()
 
 
+@pytest.mark.windows_only
+def test_preexisting_canonical_tree_repairs_and_spawns_in_hostile_home(
+    tmp_path, monkeypatch
+):
+    """The normal upgrade path repairs and runs a canonical-only install."""
+    from hermes_cli._subprocess_compat import windows_batch_proxy_command
+
+    home = tmp_path / "home&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("UNEXPANDED", "wrong")
+
+    from agent.lsp import install as install_mod
+
+    staging = install_mod.hermes_lsp_bin_dir().parent
+    npm_bin = staging / "node_modules" / ".bin"
+    npm_bin.mkdir(parents=True)
+    (npm_bin / "pyright-langserver.cmd").write_text("@echo off\n")
+    package_dir = staging / "node_modules" / "pyright"
+    package_dir.mkdir()
+    (package_dir / "package.json").write_text(
+        json.dumps({"bin": {"pyright-langserver": "capture.py"}}),
+        encoding="utf-8",
+    )
+    (package_dir / "capture.py").write_text(
+        "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        install_mod,
+        "find_node_executable",
+        lambda name: sys.executable if name == "node" else None,
+    )
+    monkeypatch.setattr(
+        install_mod,
+        "_install_npm",
+        lambda *_args, **_kwargs: pytest.fail("existing package was reinstalled"),
+    )
+
+    resolved = install_mod._do_install("pyright")
+
+    expected = staging / "bin" / "pyright-langserver.hermes.cmd"
+    assert resolved == str(expected)
+    result = subprocess.run(
+        windows_batch_proxy_command([str(expected), "upgrade-ok"]),
+        shell=False,
+        env=dict(os.environ),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["upgrade-ok"]
+
+
 def test_auto_install_ignores_orphaned_generated_and_staged_npm_wrappers(
     tmp_path, monkeypatch
 ):
@@ -296,17 +355,21 @@ def test_non_windows_candidates_preserve_extensionless_launcher(monkeypatch):
     assert install_mod._native_binary_candidates(base) == [base]
 
 
-def test_windows_npm_wrapper_uses_quoted_shell_placeholders():
-    from agent.lsp.client import LSPClient
+def test_windows_batch_command_uses_explicit_autorun_disabled_shell():
+    from hermes_cli._subprocess_compat import windows_batch_command
 
     command = [r"C:\Hermes\lsp\node_modules\.bin\pyright-langserver.cmd", "--stdio"]
     env = {}
 
-    command_line = LSPClient._win_shell_command(command, env)
+    command_line = windows_batch_command(command, env, prefix="HERMES_LSP_COMMAND")
 
+    assert command_line.lower().startswith('"')
+    assert " /d " in command_line.lower()
     assert "/v:off" in command_line.lower()
-    assert '"^%HERMES_LSP_COMMAND_0^%"' in command_line
-    assert '"^%HERMES_LSP_COMMAND_1^%"' in command_line
+    assert '"%HERMES_LSP_COMMAND_0%"' in command_line
+    assert '"%HERMES_LSP_COMMAND_1%"' in command_line
+    assert "^%" not in command_line
+    assert command[0] not in command_line
     assert env["HERMES_LSP_COMMAND_0"] == command[0]
     assert env["HERMES_LSP_COMMAND_1"] == command[1]
 
@@ -315,14 +378,14 @@ def test_windows_npm_wrapper_uses_quoted_shell_placeholders():
     "argument", ['unsafe\"quote', "unsafe\rline", "unsafe\nline", "unsafe\0nul"]
 )
 def test_windows_npm_wrapper_rejects_untransportable_arguments(argument):
-    from agent.lsp.client import LSPClient
+    from hermes_cli._subprocess_compat import windows_batch_proxy_command
 
     with pytest.raises(ValueError, match="cannot contain quotes or control"):
-        LSPClient._win_shell_command([r"C:\Hermes\server.cmd", argument], {})
+        windows_batch_proxy_command([r"C:\Hermes\server.cmd", argument])
 
 
 @pytest.mark.asyncio
-async def test_spawn_routes_windows_batch_launcher_through_shell(
+async def test_spawn_routes_windows_batch_launcher_through_native_proxy(
     tmp_path, monkeypatch
 ):
     from agent.lsp import client as client_mod
@@ -333,17 +396,17 @@ async def test_spawn_routes_windows_batch_launcher_through_shell(
         stdout = None
         stderr = None
 
-    async def fake_shell(command_line, **kwargs):
-        captured["command_line"] = command_line
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
         captured["kwargs"] = kwargs
         return FakeProcess()
 
-    async def unexpected_exec(*_args, **_kwargs):
-        pytest.fail("Windows batch launcher bypassed create_subprocess_shell")
+    async def unexpected_shell(*_args, **_kwargs):
+        pytest.fail("Windows batch launcher used an implicit shell")
 
     monkeypatch.setattr(client_mod.sys, "platform", "win32")
-    monkeypatch.setattr(client_mod.asyncio, "create_subprocess_shell", fake_shell)
-    monkeypatch.setattr(client_mod.asyncio, "create_subprocess_exec", unexpected_exec)
+    monkeypatch.setattr(client_mod.asyncio, "create_subprocess_shell", unexpected_shell)
+    monkeypatch.setattr(client_mod.asyncio, "create_subprocess_exec", fake_exec)
     wrapper = tmp_path / "a&b" / "server.cmd"
     client = client_mod.LSPClient(
         server_id="test",
@@ -356,22 +419,25 @@ async def test_spawn_routes_windows_batch_launcher_through_shell(
     assert client._reader_task is not None
     await asyncio.gather(client._stderr_task, client._reader_task)
 
-    command_line = captured["command_line"]
-    assert "/v:off" in command_line.lower()
-    assert '"^%HERMES_LSP_COMMAND_0^%"' in command_line
-    assert '"^%HERMES_LSP_COMMAND_1^%"' in command_line
-    assert captured["kwargs"]["env"]["HERMES_LSP_COMMAND_0"] == str(wrapper)
-    assert captured["kwargs"]["env"]["HERMES_LSP_COMMAND_1"] == "--stdio"
+    args = captured["args"]
+    assert args[0] == sys.executable
+    assert args[1].endswith("_subprocess_compat.py")
+    assert args[2] == "--windows-batch-proxy"
+    assert list(args[-2:]) == [str(wrapper), "--stdio"]
+    assert not any(
+        key.startswith("HERMES_LSP_COMMAND_")
+        for key in captured["kwargs"]["env"]
+    )
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+@pytest.mark.windows_only
 @pytest.mark.parametrize(
     "argument",
     ["hello&%UNEXPANDED%!UNEXPANDED!()^caret|pipe<in>out", ""],
 )
 def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path, argument):
-    """Batch launchers preserve metacharacters through both cmd.exe layers."""
-    from agent.lsp.client import LSPClient
+    """The explicit /D shell preserves metacharacters without an outer shell."""
+    from hermes_cli._subprocess_compat import run_windows_batch
 
     wrapper = (
         tmp_path
@@ -384,24 +450,12 @@ def test_windows_npm_wrapper_handles_shell_metacharacters(tmp_path, argument):
     )
     env = dict(os.environ)
     env["UNEXPANDED"] = "wrong"
-    command_line = LSPClient._win_shell_command([str(wrapper), argument], env)
-    if argument:
-        assert argument not in command_line
-    else:
-        assert "HERMES_LSP_COMMAND_1" not in env
-
-    comspec = env.get("COMSPEC") or os.path.join(
-        env.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe"
-    )
-    outer_command = f'"{comspec}" /d /s /v:on /c "{command_line}"'
-    result = subprocess.run(
-        outer_command,
-        executable=comspec,
-        shell=False,
+    result = run_windows_batch(
+        [str(wrapper), argument],
         env=env,
-        check=False,
-        capture_output=True,
+        prefix="HERMES_LSP_COMMAND",
         text=True,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr
@@ -439,7 +493,7 @@ def test_install_npm_generates_location_independent_windows_wrapper(
             "node": "C:\\Program Files\\nodejs\\node.exe",
         }.get(name),
     )
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod, "run_windows_batch", fake_run)
 
     resolved = install_mod._install_npm("pyright", "pyright-langserver")
 
@@ -467,7 +521,7 @@ def test_npm_bin_script_rejects_non_object_package_metadata(tmp_path):
         is None
     )
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+@pytest.mark.windows_only
 def test_install_npm_handles_metacharacters_in_hermes_home(tmp_path, monkeypatch):
     """npm.cmd must receive the complete --prefix path through cmd.exe."""
     home = tmp_path / "home&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
@@ -513,7 +567,7 @@ def test_install_npm_handles_metacharacters_in_hermes_home(tmp_path, monkeypatch
     assert expected.exists()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+@pytest.mark.windows_only
 def test_generated_npm_wrapper_keeps_managed_node_and_home_relative(
     tmp_path, monkeypatch
 ):
@@ -551,7 +605,7 @@ def test_generated_npm_wrapper_keeps_managed_node_and_home_relative(
     assert "capture.js" in content
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+@pytest.mark.windows_only
 @pytest.mark.parametrize(
     "argument",
     [
@@ -563,13 +617,16 @@ def test_generated_npm_wrapper_keeps_managed_node_and_home_relative(
 def test_generated_npm_wrapper_survives_real_metacharacter_home(
     tmp_path, monkeypatch, argument
 ):
-    """Exercise the generated wrapper through shell=True, exactly as LSP does."""
+    """Exercise the generated wrapper through the exact native LSP proxy."""
     home = tmp_path / "home&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("UNEXPANDED", "wrong")
 
     from agent.lsp import install as install_mod
-    from hermes_cli._subprocess_compat import windows_batch_command, windows_hide_flags
+    from hermes_cli._subprocess_compat import (
+        windows_batch_proxy_command,
+        windows_hide_flags,
+    )
 
     staging = install_mod.hermes_lsp_bin_dir().parent
     package_dir = staging / "node_modules" / "fixture-package"
@@ -594,12 +651,10 @@ def test_generated_npm_wrapper_survives_real_metacharacter_home(
     assert wrapper is not None
 
     env = dict(os.environ)
-    command_line = windows_batch_command(
-        [str(wrapper), argument, ""], env, prefix="HERMES_LSP_E2E"
-    )
+    proxy_command = windows_batch_proxy_command([str(wrapper), argument, ""])
     result = subprocess.run(
-        command_line,
-        shell=True,
+        proxy_command,
+        shell=False,
         env=env,
         check=False,
         capture_output=True,
@@ -612,6 +667,119 @@ def test_generated_npm_wrapper_survives_real_metacharacter_home(
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [argument, ""]
+
+
+@pytest.mark.windows_only
+def test_run_windows_batch_timeout_kills_descendants(tmp_path):
+    """A timed-out batch operation must not leave its real child running."""
+    import psutil
+
+    from hermes_cli._subprocess_compat import run_windows_batch
+
+    root = tmp_path / "a&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
+    root.mkdir()
+    pid_file = root / "child.pid"
+    child = root / "child.py"
+    child.write_text(
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    wrapper = root / "hang.cmd"
+    wrapper.write_text(
+        "@echo off\r\n"
+        "setlocal DisableDelayedExpansion\r\n"
+        'set "dp0=%~dp0"\r\n'
+        f'"{sys.executable}" "%dp0%child.py" "%dp0%child.pid"\r\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_windows_batch(
+            [str(wrapper)],
+            timeout=1.0,
+            stdin=subprocess.DEVNULL,
+        )
+
+    assert pid_file.exists()
+    child_pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 3.0
+    while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not psutil.pid_exists(child_pid)
+
+
+@pytest.mark.windows_only
+@pytest.mark.asyncio
+async def test_lsp_cleanup_kills_batch_proxy_descendants(tmp_path):
+    """Forced LSP cleanup owns Python proxy, cmd.exe, and server descendants."""
+    import psutil
+
+    from agent.lsp.client import LSPClient
+
+    root = tmp_path / "a&b%UNEXPANDED%!UNEXPANDED!(x)^caret"
+    root.mkdir()
+    pid_file = root / "child.pid"
+    child = root / "child.py"
+    child.write_text(
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    wrapper = root / "server.cmd"
+    wrapper.write_text(
+        "@echo off\r\n"
+        "setlocal DisableDelayedExpansion\r\n"
+        'set "dp0=%~dp0"\r\n'
+        f'"{sys.executable}" "%dp0%child.py" "%dp0%child.pid"\r\n',
+        encoding="utf-8",
+    )
+    client = LSPClient(
+        server_id="cleanup-test",
+        workspace_root=str(tmp_path),
+        command=[str(wrapper)],
+    )
+
+    await client._spawn()
+    assert client._proc is not None
+    proxy_pid = client._proc.pid
+    deadline = asyncio.get_running_loop().time() + 4.0
+    while not pid_file.exists() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+    assert pid_file.exists()
+    child_pid = int(pid_file.read_text())
+    assert psutil.pid_exists(proxy_pid)
+    assert psutil.pid_exists(child_pid)
+    descendants = psutil.Process(proxy_pid).children(recursive=True)
+    cmd_children = [
+        proc
+        for proc in descendants
+        if (proc.name() or "").lower() in {"cmd", "cmd.exe"}
+    ]
+    assert len(cmd_children) == 1
+    assert "/d" in [part.lower() for part in cmd_children[0].cmdline()]
+
+    await client._cleanup_process()
+
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while (
+        (psutil.pid_exists(proxy_pid) or psutil.pid_exists(child_pid))
+        and asyncio.get_running_loop().time() < deadline
+    ):
+        await asyncio.sleep(0.05)
+    assert not psutil.pid_exists(proxy_pid)
+    assert not psutil.pid_exists(child_pid)
+    # asyncio's proactor subprocess transport keeps pipe handles open even
+    # after the process exits; close it explicitly so the loop teardown does
+    # not warn about an unclosed transport from the test's own child.
+    transport = getattr(client._proc, "_transport", None)
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:
+            pass
 
 
 def test_install_npm_uses_managed_resolver_off_windows(tmp_path, monkeypatch):

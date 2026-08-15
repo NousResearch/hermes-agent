@@ -603,28 +603,45 @@ export function isVisibleUserMessage(message: ChatMessage): boolean {
   return message.role === 'user' && !message.hidden
 }
 
+/**
+ * A user turn whose submit failed: the optimistic bubble stayed in the
+ * transcript (followed by an assistant error), but the turn never reached the
+ * gateway, so it does not exist in backend history. Every backend-facing
+ * user-turn count must skip these or every later ordinal overshoots the
+ * gateway's index and the rewind mis-aims / gets refused (#41275, #86573).
+ */
+export function isFailedUserTurn(messages: readonly ChatMessage[], index: number): boolean {
+  const next = messages[index + 1]
+
+  return next?.role === 'assistant' && Boolean(next.error)
+}
+
+/**
+ * Indices of the user turns the backend also knows about — visible AND not
+ * failed. This is the ONE ordinal space shared with the gateway: truncate
+ * ordinals, ordinal→index resolution, survivor-rowId rebinding, and durable
+ * row-id resolution all iterate exactly this list.
+ */
+export function visibleUserMessageIndices(messages: readonly ChatMessage[]): number[] {
+  const indices: number[] = []
+
+  for (let index = 0; index < messages.length; index += 1) {
+    if (isVisibleUserMessage(messages[index]) && !isFailedUserTurn(messages, index)) {
+      indices.push(index)
+    }
+  }
+
+  return indices
+}
+
 export function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
-  return messages.slice(0, end).filter(isVisibleUserMessage).length
+  return visibleUserMessageIndices(messages).filter(index => index < end).length
 }
 
 export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targetOrdinal: number): number {
-  let ordinal = 0
+  const indices = visibleUserMessageIndices(messages)
 
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-
-    if (!isVisibleUserMessage(message)) {
-      continue
-    }
-
-    if (ordinal === targetOrdinal) {
-      return index
-    }
-
-    ordinal += 1
-  }
-
-  return -1
+  return targetOrdinal >= 0 && targetOrdinal < indices.length ? indices[targetOrdinal] : -1
 }
 
 export interface SubmitTextOptions {

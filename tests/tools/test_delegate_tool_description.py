@@ -11,9 +11,7 @@ def test_top_level_description_discourages_polling_live_transcripts(monkeypatch)
 
     description = dt._build_top_level_description()
 
-    assert "do NOT poll status, transcript files, or output files" in description
-    assert "explicit user-requested live monitoring or diagnostics" in description
-    assert "not completion signals" in description
-    assert "For ordinary delegation, wait for the consolidated result" in description
+    assert "Do NOT wait or poll" in description
+    assert "live transcripts are append-only logs, not completion signals" in description
     assert "tail -f" not in description
     assert "Read or `tail -f`" not in description

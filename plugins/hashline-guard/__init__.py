@@ -31,6 +31,7 @@ verify_anchor_by_hash = _core_mod.verify_anchor_by_hash
 find_all = _core_mod.find_all
 compute_hashline = _core_mod.compute_hashline
 context_hash = _core_mod.context_hash
+raw_offsets = _core_mod.raw_offsets
 
 SCHEMA = {
     "path": {"type": "string"},
@@ -53,7 +54,10 @@ def handle_anchored_patch(args: Dict[str, Any]) -> Dict[str, Any]:
         return _tool_error(f"anchored_patch: invalid args: {exc}", code="500", details={})
 
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        # newline="" disables universal-newline translation so CRLF/CR endings
+        # survive into the raw splice below; matching/hashing use canonical text.
+        with Path(path).open("r", encoding="utf-8", errors="replace", newline="") as fh:
+            text = fh.read()
     except Exception as exc:
         logger.debug("anchored_patch read error (%s): %s", path, exc)
         return _tool_error(f"anchored_patch: read failed: {path}", code="500", details={"error": str(exc)})
@@ -72,8 +76,10 @@ def handle_anchored_patch(args: Dict[str, Any]) -> Dict[str, Any]:
     if occurrence < 0 or occurrence >= len(matches):
         return _tool_error("anchored_patch: occurrence index out of range", code="500", details={})
 
-    start = matches[occurrence][0]
-    end = matches[occurrence][1]
+    # find_all offsets are canonical (CRLF/CR -> LF). Translate to raw byte
+    # offsets before splicing, or a CRLF file is corrupted at the anchor.
+    cstart, cend = matches[occurrence][0], matches[occurrence][1]
+    start, end = raw_offsets(text, cstart, cend)
     updated = text[:start] + new_string + text[end:]
 
     try:
@@ -174,7 +180,8 @@ def on_pre_tool_call(*args: Any, **kwargs: Any) -> Optional[Dict[str, str]]:
 
     expected_hashline = args.get("expected_hashline")
     if expected_hashline is not None:
-        status, payload = verify_anchor_by_hash(text, old_string, expected_hashline)
+        window = int(args.get("window", 2))
+        status, payload = verify_anchor_by_hash(text, old_string, expected_hashline, window=window)
         if status == "ok":
             return None
         if isinstance(payload, dict) and "found" in payload and payload["found"]:

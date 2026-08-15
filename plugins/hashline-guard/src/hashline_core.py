@@ -125,5 +125,53 @@ def _canonicalize(text: str) -> str:
         return ""
     out = text.replace("\r\n", "\n").replace("\r", "\n")
     # normalize NEL/line-separator/paragraph-separator if present
-    out = out.replace("\u0085", "\n").replace("\u2028", "\n").replace("\u2029", "\n")
+    out = out.replace("\u0085", "\n").replace("\u2029", "\n").replace("\u2028", "\n")
     return out
+
+
+def raw_offsets(file_text: str, canonical_start: int, canonical_end: int) -> Tuple[int, int]:
+    """Map canonical (LF-normalized) offsets back to raw byte offsets.
+
+    ``find_all``/``compute_hashline`` match against the canonicalized (CRLF/CR ->
+    LF) text, so the offsets they return index the normalized string, which is
+    SHORTER than the raw file when it contains CRLF/CR line endings. Splicing
+    the raw file at those canonical offsets corrupts it (a ``\\r`` gets orphaned
+    before the anchor). This translates a canonical [start, end) range into the
+    equivalent raw byte range so the caller can splice the original text.
+
+    Canonicalization only removes bytes (never reorders or adds), so a single
+    left-to-right pass recording the raw index of each canonical char is exact.
+    """
+    if not file_text:
+        return 0, 0
+    can = _canonicalize(file_text)
+    if len(can) == len(file_text):
+        return canonical_start, canonical_end
+
+    # raw_index_of[i] = raw byte index of canonical char i.
+    raw_index_of: List[int] = []
+    ci = 0
+    for ri, ch in enumerate(file_text):
+        if ci < len(can) and ch == can[ci]:
+            raw_index_of.append(ri)
+            ci += 1
+
+    def _raw_start(canon_idx: int) -> int:
+        """Raw offset of the first char of the canonical match (a preserved char)."""
+        if canon_idx >= len(raw_index_of):
+            return len(file_text)
+        return raw_index_of[canon_idx]
+
+    def _raw_end(canon_idx: int) -> int:
+        """Raw exclusive end: one past the raw byte of the last preserved match char.
+
+        The last canonical match char is at canonical_end - 1 and is always a
+        preserved char (canonicalization only removes CR/separator bytes, never
+        a match char), so its raw index + 1 is the exact raw boundary.
+        """
+        if canon_idx <= 0:
+            return 0
+        last_preserved = raw_index_of[canon_idx - 1] if canon_idx - 1 < len(raw_index_of) else len(file_text)
+        return last_preserved + 1
+
+    return _raw_start(canonical_start), _raw_end(canonical_end)

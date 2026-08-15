@@ -123,9 +123,12 @@ def main() -> int:
         failures.append(f'step6 not applied on CRLF-normalized file: {res6}')
     if _bytes(TARGET) == before_step6:
         failures.append('step6 file bytes unchanged after successful patch')
-    after_step6 = TARGET.read_text(encoding='utf-8')
-    if 'B1' not in after_step6:
-        failures.append(f'step6 B1 missing after patch: {after_step6!r}')
+    # Byte-exact check: the patch must splice at the RAW offsets, preserving
+    # CRLF endings (regression for canonical-vs-raw offset corruption where a
+    # CRLF file's anchor became 'B1a' with a stray '\r').
+    expected_bytes6 = b'alpha\r\nB1\r\ngamma\r\ndelta\r\nbeta\r\nepsilon\r\n'
+    if _bytes(TARGET) != expected_bytes6:
+        failures.append(f'step6 CRLF bytes wrong: {_bytes(TARGET)!r} (expected {expected_bytes6!r})')
 
     if failures:
         print('FAILURES:')

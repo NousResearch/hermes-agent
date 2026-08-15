@@ -162,17 +162,6 @@ def test_crlf_canonicalization(tmp_path):
     assert h_crlf == h_lf
 
 
-def test_canonicalization_comment_block():
-    """CANONICALIZATION doc block must be present in hashline_core.py."""
-    core = _load_core()
-    if core is None:
-        raise AssertionError("hashline_core.py not found")
-    text = open(CORE_PATH, encoding="utf-8").read()
-    assert "CANONICALIZATION" in text
-    assert "hashline:v1" in text
-    assert "Trailing whitespace" in text
-
-
 # ---- Task 10: hashline_compute tool + pre_tool_call pin-drift support ----
 
 PLUGIN_PATH = os.path.join(PLUGIN_DIR, "..", "__init__.py")

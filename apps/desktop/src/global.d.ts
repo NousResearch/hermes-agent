@@ -696,6 +696,9 @@ export interface DesktopConnectionsRegistry {
   version: number
   // id of the connection that owns the window/primary backend.
   primary: string
+  // Whether OS-keychain-backed encryption (Electron safeStorage) is available;
+  // false drives the plain-text token opt-in on keyring-less Linux.
+  secureTokenStorage: boolean
   connections: DesktopRegistryConnection[]
 }
 

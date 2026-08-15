@@ -32,8 +32,6 @@ interface EditorState {
   authMode: 'oauth' | 'token'
   token: string
   host: string
-  user: string
-  port: string
   keyPath: string
 }
 
@@ -45,15 +43,18 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     url: conn.url || '',
     authMode: conn.authMode || 'token',
     token: '',
-    host: conn.host || '',
-    user: conn.user || '',
-    port: conn.port ? String(conn.port) : '',
+    // Reconstruct the composite the single ssh host field displays. The save
+    // payload sends ONLY this string (never separate user/port), because
+    // normalizeSshConfig gives explicit user/port fields precedence over the
+    // parsed host string — sending stored user/port alongside a retyped host
+    // would silently resurrect the old values.
+    host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || ''
   }
 }
 
 function emptyEditor(kind: DesktopConnectionKind): EditorState {
-  return { id: null, kind, label: '', url: '', authMode: 'token', token: '', host: '', user: '', port: '', keyPath: '' }
+  return { id: null, kind, label: '', url: '', authMode: 'token', token: '', host: '', keyPath: '' }
 }
 
 /**
@@ -72,6 +73,7 @@ export function ConnectionsSettings() {
   const [busyId, setBusyId] = useState<null | string>(null)
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
+  const [plainTextConfirm, setPlainTextConfirm] = useState(false)
 
   const bridge = window.hermesDesktop?.connections
 
@@ -97,46 +99,69 @@ export function ConnectionsSettings() {
     void load()
   }, [load])
 
-  const save = useCallback(async () => {
-    if (!bridge || !editor) {
-      return
-    }
-
-    setSaving(true)
-
-    try {
-      const payload: DesktopRegistryConnectionInput = {
-        kind: editor.kind,
-        label: editor.label
+  const save = useCallback(
+    async (allowPlainTextToken = false) => {
+      if (!bridge || !editor) {
+        return
       }
 
-      if (editor.id) {
-        payload.id = editor.id
-      }
+      setSaving(true)
 
-      if (editor.kind === 'remote' || editor.kind === 'cloud') {
-        payload.url = editor.url
-        payload.authMode = editor.authMode
-
-        if (editor.token.trim()) {
-          payload.token = editor.token.trim()
+      try {
+        const payload: DesktopRegistryConnectionInput = {
+          kind: editor.kind,
+          label: editor.label
         }
-      } else if (editor.kind === 'ssh') {
-        payload.host = editor.host
-        payload.user = editor.user || undefined
-        payload.port = editor.port.trim() ? Number(editor.port) : null
-        payload.keyPath = editor.keyPath || undefined
-      }
 
-      const result = await bridge.save(payload)
-      setRegistry(result.registry)
-      setEditor(null)
-    } catch (err) {
-      notifyError(err, s.saveFailed)
-    } finally {
-      setSaving(false)
-    }
-  }, [bridge, editor, s.saveFailed])
+        if (editor.id) {
+          payload.id = editor.id
+        }
+
+        if (editor.kind === 'remote' || editor.kind === 'cloud') {
+          payload.url = editor.url
+          payload.authMode = editor.authMode
+
+          if (editor.token.trim()) {
+            payload.token = editor.token.trim()
+          }
+
+          if (allowPlainTextToken) {
+            payload.allowPlainTextToken = true
+          }
+        } else if (editor.kind === 'ssh') {
+          // The composite host string (user@host:port) is the single source
+          // of truth — never send separate user/port (see editorFromConnection).
+          payload.host = editor.host
+          payload.keyPath = editor.keyPath || undefined
+        }
+
+        const result = await bridge.save(payload)
+        setRegistry(result.registry)
+        setEditor(null)
+        setPlainTextConfirm(false)
+      } catch (err) {
+        // Keyring-less machine and the user hasn't consented to plain-text
+        // storage yet: raise the same opt-in dialog Settings → Gateway uses
+        // instead of dead-ending the save.
+        if (
+          !allowPlainTextToken &&
+          registry?.secureTokenStorage === false &&
+          editor.kind === 'remote' &&
+          editor.authMode === 'token' &&
+          editor.token.trim()
+        ) {
+          setPlainTextConfirm(true)
+
+          return
+        }
+
+        notifyError(err, s.saveFailed)
+      } finally {
+        setSaving(false)
+      }
+    },
+    [bridge, editor, registry?.secureTokenStorage, s.saveFailed]
+  )
 
   const remove = useCallback(async () => {
     if (!bridge || !removeTarget) {
@@ -191,7 +216,7 @@ export function ConnectionsSettings() {
         if (reachable) {
           notify({ title: conn.label, message: s.testOk })
         } else {
-          notifyError(new Error(result.error || s.testFailed), conn.label)
+          notifyError(new Error(result.error || conn.label), s.testFailed)
         }
       } catch (err) {
         notifyError(err, s.testFailed)
@@ -216,7 +241,12 @@ export function ConnectionsSettings() {
   return (
     <SettingsContent>
       <SectionHeading icon={Globe} title={s.title} />
-      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
+      <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
+      {/* Storage-only slice: be explicit that routing consumption is staged so
+          "Make primary" isn't read as an immediate connection switch. */}
+      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {s.stagedNote}
+      </p>
 
       {!registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
@@ -293,7 +323,11 @@ export function ConnectionsSettings() {
       {editor ? (
         <div className="mt-4 space-y-3 rounded-lg border border-border/60 p-4">
           <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
-            {(['remote', 'cloud', 'ssh'] as const).map(kind => (
+            {/* Cloud creation is deliberately absent: a dialable cloud entry
+                comes from the Hermes Cloud sign-in/discovery flow (Settings →
+                Gateway), not a hand-typed URL. Migrated/discovered cloud
+                entries remain editable (kind buttons are disabled on edit). */}
+            {(editor.kind === 'cloud' ? (['cloud'] as const) : (['remote', 'ssh'] as const)).map(kind => (
               <Button
                 disabled={Boolean(editor.id)}
                 key={kind}
@@ -413,6 +447,17 @@ export function ConnectionsSettings() {
         onConfirm={() => remove()}
         open={Boolean(removeTarget)}
         title={s.removeConfirmTitle}
+      />
+
+      {/* Keyring-less opt-in: same consent flow as Settings → Gateway. */}
+      <ConfirmDialog
+        confirmLabel={t.settings.gateway.plainTextConfirmAction}
+        description={t.settings.gateway.plainTextConfirmDesc}
+        destructive
+        onClose={() => setPlainTextConfirm(false)}
+        onConfirm={() => save(true)}
+        open={plainTextConfirm}
+        title={t.settings.gateway.plainTextConfirmTitle}
       />
     </SettingsContent>
   )

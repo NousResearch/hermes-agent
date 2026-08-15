@@ -84,6 +84,7 @@ import {
   tokenPreview
 } from './connection-config'
 import {
+  mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
@@ -7590,9 +7591,21 @@ function readDesktopConnectionsRegistry() {
 
   if (mtime === null) {
     // First run on this build: import the v1 single-connection config. The v1
-    // file is NOT modified or deleted — older builds keep reading it.
+    // file is NOT modified or deleted — older builds keep reading it. The
+    // migration is deterministic over the v1 input, so even if two processes
+    // race the first run (updater relaunch, second window), both derive the
+    // same registry and the later atomic write is a no-op content-wise.
     registry = migrateV1ToRegistry(readDesktopConnectionConfig())
-    writeDesktopConnectionsRegistry(registry)
+
+    try {
+      writeDesktopConnectionsRegistry(registry)
+    } catch {
+      // Write failed (full disk, read-only userData). Keep the migrated
+      // registry in memory so list/save keep working this session instead of
+      // hard-failing every hermes:connections:* call.
+      connectionRegistryCache = registry
+      connectionRegistryCacheMtime = null
+    }
 
     return connectionRegistryCache
   }
@@ -7638,18 +7651,33 @@ function sanitizeRegistryConnection(entry) {
 }
 
 function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()) {
+  // Same keyring probe the v1 sanitize exposes: lets the Connections panel
+  // offer the plain-text opt-in on keyring-less Linux instead of failing.
+  let secureTokenStorage = false
+
+  try {
+    secureTokenStorage = Boolean(safeStorage.isEncryptionAvailable())
+  } catch {
+    secureTokenStorage = false
+  }
+
   return {
     version: registry.version,
     primary: registry.primary,
+    secureTokenStorage,
     connections: registry.connections.map(sanitizeRegistryConnection)
   }
 }
 
 /**
  * Save (create or edit) a registry connection from a renderer payload.
- * Token handling mirrors coerceDesktopConnectionConfig: an incoming plaintext
- * token is encrypted (with the same plain-text opt-in seam); an absent token
- * field inherits the stored envelope on edit.
+ * Edits merge over the stored entry (mergeConnectionInput) so fields the
+ * editor doesn't carry — cloud `org`, ssh `remoteHermesPath`/`remoteProfile` —
+ * survive a rename. Token handling mirrors coerceDesktopConnectionConfig: an
+ * incoming plaintext token is encrypted (honoring the same allowPlainTextToken
+ * opt-in seam as Settings → Gateway); an absent token field inherits the
+ * stored envelope on edit; switching auth away from 'token' clears it
+ * (normalizeConnectionInput drops tokens on non-token entries).
  */
 function saveRegistryConnection(input: any = {}) {
   const registry = readDesktopConnectionsRegistry()
@@ -7664,7 +7692,8 @@ function saveRegistryConnection(input: any = {}) {
     encryptSecret: encryptDesktopSecret
   })
 
-  const entry = normalizeConnectionInput({ ...input, token }, registry)
+  const merged = mergeConnectionInput({ ...input, token }, existing)
+  const entry = normalizeConnectionInput(merged, registry)
 
   // Token-auth remotes must actually have a token to be dialable. OAuth and
   // cloud entries authenticate via cookies/native tokens instead.
@@ -11352,12 +11381,8 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     throw new Error(`No connection with id "${String(id || '')}".`)
   }
 
-  // Reuse the existing probe stack by mapping the registry entry onto the
-  // settings-payload shape testDesktopConnectionConfig already understands.
-  if (entry.kind === 'local') {
-    return testDesktopConnectionConfig({ mode: 'local' })
-  }
-
+  // The ssh probe path in testDesktopConnectionConfig never consults v1
+  // connection state, so mapping the entry onto it is safe.
   if (entry.kind === 'ssh') {
     return testDesktopConnectionConfig({
       mode: 'ssh',
@@ -11369,13 +11394,53 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     })
   }
 
-  return testDesktopConnectionConfig({
-    mode: entry.kind,
-    remoteUrl: entry.url,
-    remoteAuthMode: entry.authMode,
-    remoteToken: decryptDesktopSecret(entry.token) || undefined,
-    cloudOrg: entry.org
-  })
+  // Remote/cloud/local probe built DIRECTLY from the registry entry. Routing
+  // through coerceDesktopConnectionConfig would use v1 connection.json as the
+  // `existing` base: an entry with a broken/absent token would inherit the v1
+  // global remote's token and send it to THIS entry's URL (cross-host
+  // credential transmission + a false "reachable"), and testing the local
+  // entry would probe whatever v1's global mode points at instead of the
+  // app-managed local backend.
+  let baseUrl
+  let token = null
+  let authMode = 'token'
+
+  if (entry.kind === 'local') {
+    const local = await startHermes()
+    baseUrl = local.baseUrl
+    token = local.token
+    authMode = normAuthMode(local.authMode)
+  } else {
+    baseUrl = normalizeRemoteBaseUrl(entry.url)
+    authMode = normAuthMode(entry.authMode)
+
+    if (authMode !== 'oauth') {
+      token = decryptDesktopSecret(entry.token)
+
+      if (!token) {
+        throw new Error('This connection has no saved session token. Edit the connection and paste one.')
+      }
+    }
+  }
+
+  const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })) as any
+
+  // Same HTTP+WS two-leg check as testDesktopConnectionConfig: HTTP alone is
+  // a false positive when the WebSocket leg is blocked.
+  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, { mintTicket: mintGatewayWsTicket })
+
+  if (wsUrl && typeof globalThis.WebSocket === 'function') {
+    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+
+    if (!probe.ok) {
+      throw new Error(
+        `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
+          'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
+      )
+    }
+  }
+
+  return { ok: true, baseUrl, version: status?.version || null }
 })
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {

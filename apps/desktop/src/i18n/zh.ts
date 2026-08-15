@@ -832,8 +832,8 @@ export const zh: Translations = {
     // v2 多连接注册表：设置 → 连接。
     connections: {
       title: '连接',
-      intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——并同时使用它们。',
-      loading: '正在加载连接…',
+      intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——全部保存在这里。',
+      stagedNote: '多来源路由正在分阶段推出：目前在此管理连接，活动连接仍在“设置 → 网关”中选择。',
       loadFailed: '无法加载连接',
       primaryPill: '主连接',
       managedPill: '本机',
@@ -844,7 +844,6 @@ export const zh: Translations = {
       removeConfirmDesc: (label: string) => `“${label}”将从本应用移除。实例本身不受影响——你可以随时重新添加。`,
       makePrimary: '设为主连接',
       testConnection: '测试',
-      testing: '测试中…',
       testOk: '可访问',
       testFailed: '连接测试失败',
       saveFailed: '无法保存连接',

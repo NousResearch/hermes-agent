@@ -626,8 +626,9 @@ export const en: Translations = {
     connections: {
       title: 'Connections',
       intro:
-        'Register every place your agents live — this device, remote gateways on your network, and Hermes Cloud instances — and use them side by side.',
-      loading: 'Loading connections…',
+        'Register every place your agents live — this device, remote gateways on your network, and Hermes Cloud instances. All of them are stored here.',
+      stagedNote:
+        'Side-by-side routing is rolling out in stages: connections are managed here today, while the active connection is still chosen in Settings → Gateway.',
       loadFailed: 'Could not load connections',
       primaryPill: 'Primary',
       managedPill: 'This device',
@@ -639,7 +640,6 @@ export const en: Translations = {
         `“${label}” will be removed from this app. The instance itself is not touched — you can add it again any time.`,
       makePrimary: 'Make primary',
       testConnection: 'Test',
-      testing: 'Testing…',
       testOk: 'Reachable',
       testFailed: 'Connection test failed',
       saveFailed: 'Could not save the connection',

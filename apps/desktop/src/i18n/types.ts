@@ -520,7 +520,7 @@ export interface Translations {
     connections: {
       title: string
       intro: string
-      loading: string
+      stagedNote: string
       loadFailed: string
       primaryPill: string
       managedPill: string
@@ -531,7 +531,6 @@ export interface Translations {
       removeConfirmDesc: (label: string) => string
       makePrimary: string
       testConnection: string
-      testing: string
       testOk: string
       testFailed: string
       saveFailed: string

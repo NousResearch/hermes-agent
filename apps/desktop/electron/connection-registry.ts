@@ -78,6 +78,33 @@ export function labelKey(label: string): string {
     .toLowerCase()
 }
 
+/**
+ * Derive a registry-unique label from a candidate: clamps to LABEL_MAX (a
+ * migrated URL host can exceed it, which would fail validation on any later
+ * edit) and suffixes " 2" / " 3" / … on collision. The single home of the
+ * label-dedup rule — normalizeRegistry and the migration both use it.
+ */
+export function uniqueLabel(candidate: string, taken: Iterable<string>): string {
+  const used = new Set([...taken].map(labelKey))
+
+  // Reserve room for a collision suffix so the suffixed form stays in-bounds.
+  const base = String(candidate || '')
+    .trim()
+    .slice(0, LABEL_MAX - 4)
+
+  if (!used.has(labelKey(base))) {
+    return base
+  }
+
+  for (let n = 2; ; n += 1) {
+    const suffixed = `${base} ${n}`
+
+    if (!used.has(labelKey(suffixed))) {
+      return suffixed
+    }
+  }
+}
+
 /** Kebab-slug of a label for ids and @handles. Never empty for a non-empty label. */
 export function labelSlug(label: string): string {
   const slug = String(label || '')
@@ -168,6 +195,15 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
     return { id: LOCAL_CONNECTION_ID, kind: 'local', label }
   }
 
+  // The reserved local id can never be claimed by a non-local entry — a
+  // crafted IPC payload ({id:'local', kind:'remote', …}) would otherwise
+  // replace the local entry via upsert and break the exactly-one-local
+  // invariant. connectionIdForLabel never mints 'local'; reject it when
+  // supplied, too.
+  if (input.id === LOCAL_CONNECTION_ID) {
+    throw new Error('The id "local" is reserved for the local connection.')
+  }
+
   const id = input.id || connectionIdForLabel(label, registry.connections.map(c => c.id))
 
   if (kind === 'ssh') {
@@ -196,7 +232,11 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
     const authMode = normAuthMode(input.authMode)
     const entry: RegistryConnection = { id, kind, label, url, authMode }
 
-    if (input.token !== undefined) {
+    // A token is only meaningful for token-auth remotes. Dropping it here is
+    // what clears the stale envelope when an entry is switched token→oauth
+    // (or is a cloud entry, which authenticates via the portal session) —
+    // otherwise dead secret material rides along on the edited entry.
+    if (input.token !== undefined && kind === 'remote' && authMode === 'token') {
       entry.token = input.token
     }
 
@@ -210,6 +250,50 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
   }
 
   throw new Error(`Unknown connection kind: ${String(kind)}`)
+}
+
+/**
+ * Merge a (possibly partial) edit payload over the stored entry so fields the
+ * editor doesn't carry survive a save. Renaming a migrated cloud entry must
+ * not drop its `org` (downstream update-fanout uses it to skip
+ * platform-managed instances), and renaming an ssh entry must not drop
+ * `remoteHermesPath`/`remoteProfile`. Only fields the payload explicitly
+ * carries (non-undefined) override; `token` is deliberately NOT merged here —
+ * the caller owns secret handling.
+ */
+export function mergeConnectionInput(input: ConnectionInput, existing?: null | RegistryConnection): ConnectionInput {
+  if (!existing || existing.kind !== input.kind) {
+    return input
+  }
+
+  const merged: ConnectionInput = { ...input }
+
+  const inherit = (field: keyof ConnectionInput & keyof RegistryConnection) => {
+    if (merged[field] === undefined && existing[field] !== undefined) {
+      ;(merged as unknown as Record<string, unknown>)[field] = existing[field]
+    }
+  }
+
+  inherit('url')
+  inherit('authMode')
+  inherit('org')
+  inherit('host')
+  inherit('keyPath')
+  inherit('remoteHermesPath')
+  inherit('remoteProfile')
+
+  // ssh user/port: the editor shows ONE composite host field (user@host:port),
+  // and normalizeSshConfig gives explicit user/port fields precedence over the
+  // parsed host string. Inheriting stored user/port alongside a NEW host string
+  // would resurrect the old values over what the user just typed — so when the
+  // payload carries a host, the host string is authoritative and stored
+  // user/port are NOT inherited.
+  if (input.host === undefined || !String(input.host).trim()) {
+    inherit('user')
+    inherit('port')
+  }
+
+  return merged
 }
 
 // ── Registry-level operations (all pure: return a new registry) ────────────
@@ -253,9 +337,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
     }
 
-    while (seenLabels.has(labelKey(label))) {
-      label = `${label} 2`
-    }
+    label = uniqueLabel(label, seenLabels)
 
     let id = kind === 'local' ? LOCAL_CONNECTION_ID : String(entry.id || '').trim()
 
@@ -348,11 +430,10 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
       return existing
     }
 
-    let label = hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway')
-
-    while (connections.some(c => labelKey(c.label) === labelKey(label))) {
-      label = `${label} 2`
-    }
+    const label = uniqueLabel(
+      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
+      connections.map(c => c.label)
+    )
 
     const entry: RegistryConnection = {
       id: connectionIdForLabel(label, connections.map(c => c.id)),
@@ -392,11 +473,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
       return existing
     }
 
-    let label = ssh.host
-
-    while (connections.some(c => labelKey(c.label) === labelKey(label))) {
-      label = `${label} 2`
-    }
+    const label = uniqueLabel(ssh.host, connections.map(c => c.label))
 
     const { mode: _mode, ...sshFields } = ssh
 

@@ -25,6 +25,7 @@ const registry: DesktopConnectionsRegistry = {
     }
   ],
   primary: 'local',
+  secureTokenStorage: true,
   version: 2
 }
 

@@ -17,12 +17,14 @@ import {
   labelKey,
   labelSlug,
   LOCAL_CONNECTION_ID,
+  mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
   REGISTRY_VERSION,
   removeConnection,
   setPrimaryConnection,
+  uniqueLabel,
   upsertConnection
 } from './connection-registry'
 
@@ -57,7 +59,95 @@ test('connectionIdForLabel suffixes on collision and never mints "local"', () =>
   assert.equal(connectionIdForLabel('Local', []), 'local-2')
 })
 
+test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
+  assert.equal(uniqueLabel('Homelab', []), 'Homelab')
+  assert.equal(uniqueLabel('Homelab', ['Homelab']), 'Homelab 2')
+  assert.equal(uniqueLabel('Homelab', ['Homelab', 'Homelab 2']), 'Homelab 3')
+  // Case-insensitive collision detection.
+  assert.equal(uniqueLabel('homelab', ['HOMELAB']), 'homelab 2')
+
+  const long = 'x'.repeat(300)
+  assert.ok(uniqueLabel(long, []).length <= 64)
+  assert.ok(uniqueLabel(long, [uniqueLabel(long, [])]).length <= 64)
+})
+
 // --- normalizeConnectionInput ---
+
+test('save rejects the reserved "local" id on non-local kinds', () => {
+  assert.throws(
+    () => normalizeConnectionInput({ id: 'local', kind: 'remote', label: 'Sneaky', url: 'http://x:1' }, emptyRegistry()),
+    /reserved/
+  )
+})
+
+test('token only persists on token-auth remotes; oauth/cloud drop it', () => {
+  const registry = emptyRegistry()
+
+  const tokenAuth = normalizeConnectionInput(
+    { kind: 'remote', label: 'A', url: 'http://a:1', authMode: 'token', token: { enc: 'x' } },
+    registry
+  )
+
+  assert.deepEqual(tokenAuth.token, { enc: 'x' })
+
+  const oauth = normalizeConnectionInput(
+    { kind: 'remote', label: 'B', url: 'http://b:1', authMode: 'oauth', token: { enc: 'x' } },
+    registry
+  )
+
+  assert.equal(oauth.token, undefined)
+
+  const cloud = normalizeConnectionInput(
+    { kind: 'cloud', label: 'C', url: 'https://c.hermes.cloud', authMode: 'oauth', token: { enc: 'x' } },
+    registry
+  )
+
+  assert.equal(cloud.token, undefined)
+})
+
+// --- mergeConnectionInput (edit inheritance) ---
+
+test('merge preserves fields the editor does not carry (org, ssh extras)', () => {
+  const cloud = { authMode: 'oauth' as const, id: 'c', kind: 'cloud' as const, label: 'Cloud', org: 'nous', url: 'https://a.cloud' }
+  const renamed = mergeConnectionInput({ id: 'c', kind: 'cloud', label: 'Renamed', url: 'https://a.cloud' }, cloud)
+
+  assert.equal(renamed.org, 'nous')
+
+  const ssh = {
+    host: 'homelab.lan',
+    id: 's',
+    keyPath: '/k/id',
+    kind: 'ssh' as const,
+    label: 'Box',
+    port: 2222,
+    remoteHermesPath: '/opt/hermes',
+    remoteProfile: 'research',
+    user: 'k'
+  }
+
+  const labelOnly = mergeConnectionInput({ id: 's', kind: 'ssh', label: 'Renamed box' }, ssh)
+
+  assert.equal(labelOnly.remoteHermesPath, '/opt/hermes')
+  assert.equal(labelOnly.remoteProfile, 'research')
+  assert.equal(labelOnly.host, 'homelab.lan')
+  assert.equal(labelOnly.user, 'k')
+  assert.equal(labelOnly.port, 2222)
+})
+
+test('merge: a supplied ssh host string beats stored user/port', () => {
+  const ssh = { host: 'spark1', id: 's', kind: 'ssh' as const, label: 'Spark', port: 2222, user: 'tek' }
+  const merged = mergeConnectionInput({ host: 'admin@newbox:2200', id: 's', kind: 'ssh', label: 'Spark' }, ssh)
+
+  // Stored user/port must NOT ride along — the host string is authoritative.
+  assert.equal(merged.user, undefined)
+  assert.equal(merged.port, undefined)
+
+  const entry = normalizeConnectionInput(merged, emptyRegistry())
+
+  assert.equal(entry.host, 'newbox')
+  assert.equal(entry.user, 'admin')
+  assert.equal(entry.port, 2200)
+})
 
 test('save rejects a missing label with a device-name message', () => {
   assert.throws(

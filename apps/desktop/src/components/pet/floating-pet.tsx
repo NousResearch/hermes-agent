@@ -186,10 +186,23 @@ export function FloatingPet() {
           }
         }
 
-        const next = await requestGateway<PetInfo>('pet.info', { profile: petProfile() })
+        // Send-once semantics (#54730): tell the gateway which spritesheet
+        // revision we already hold so an unchanged multi-MB sheet is not
+        // re-sent over the WebSocket on every backstop refresh.
+        const held = $petInfo.get()
+        const knownRevision = held.enabled && held.spritesheetBase64 ? held.spritesheetRevision : undefined
+        const next = await requestGateway<PetInfo & { spritesheetUnchanged?: boolean }>('pet.info', {
+          knownRevision,
+          profile: petProfile()
+        })
 
         if (!cancelled && next) {
           const current = $petInfo.get()
+
+          if (next.enabled && next.spritesheetUnchanged && !next.spritesheetBase64) {
+            // Gateway confirmed our held sheet is current; keep the bytes.
+            next.spritesheetBase64 = current.spritesheetBase64
+          }
 
           if (
             next.enabled &&

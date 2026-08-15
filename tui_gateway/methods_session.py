@@ -1462,7 +1462,17 @@ def _(rid, params: dict) -> dict:
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
 
-        return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
+        payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+
+        # Send-once semantics for the multi-MB spritesheet (#54730): a caller
+        # that already holds the sheet passes the revision it has, and an
+        # unchanged sheet comes back as metadata only (spritesheetUnchanged).
+        known_revision = str(params.get("knownRevision", "") or "")
+        if known_revision and known_revision == payload.get("spritesheetRevision"):
+            payload.pop("spritesheetBase64", None)
+            payload["spritesheetUnchanged"] = True
+
+        return _ok(rid, payload)
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info failed: %s", exc)
         return _ok(rid, {"enabled": False})

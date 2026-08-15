@@ -19,11 +19,46 @@
 
 import { computed } from 'nanostores'
 
-import { stableRecord } from '@/lib/stable-array'
+import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
-import { $attentionSessionIds, $draftSessionIds, $stalledSessionIds, $workingSessionIds } from './session-states'
+import {
+  $attentionSessionIds,
+  $draftSessionIds,
+  $sessionStates,
+  $stalledSessionIds,
+  $workingSessionIds
+} from './session-states'
+import { $subagentsBySession, activeSubagentCount } from './subagents'
+
+// Sessions parked in async delegation: the parent turn has ended (busy=false —
+// delegate_task(background=true) returns its handle the moment the children
+// are spawned) while those subagents keep working for minutes. Without this
+// input the sidebar row dropped to a plain idle dot mid-delegation, reading as
+// "done" while work was still running in child sessions. Same runtime→stored
+// bridge and fresh-chat fallback as $backgroundRunningSessionIds:
+// $subagentsBySession is keyed by runtime id, surfaces key on stored ids, and
+// lineageAliases covers whichever tip of the conversation a surface holds.
+let delegatingIds: readonly string[] = []
+export const $delegatingSessionIds = computed(
+  [$subagentsBySession, $sessionStates, $sessions],
+  (bySession, states, sessions) => {
+    const ids = new Set<string>()
+
+    for (const [runtimeId, items] of Object.entries(bySession)) {
+      if (activeSubagentCount(items) === 0) {
+        continue
+      }
+
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        ids.add(alias)
+      }
+    }
+
+    return (delegatingIds = stableArray(delegatingIds, [...ids]))
+  }
+)
 
 export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
@@ -63,11 +98,12 @@ export const $sessionDotStateById = computed(
     $workingSessionIds,
     $stalledSessionIds,
     $backgroundRunningSessionIds,
+    $delegatingSessionIds,
     $unreadFinishedSessionIds,
     $draftSessionIds,
     $sessions
   ],
-  (attention, working, stalled, background, unread, draft, sessions) => {
+  (attention, working, stalled, background, delegating, unread, draft, sessions) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -87,6 +123,11 @@ export const $sessionDotStateById = computed(
     claim(draft, 'draft')
     claim(unread, 'unread')
     claim(background, 'background')
+    // Async delegation: the parent turn has ended but its subagents are still
+    // running, so the session's work continues in child sessions. Same visual
+    // claim as background processes — and it yields to `working` below the
+    // moment the parent turn itself is live (synchronous orchestrator children).
+    claim(delegating, 'background')
     claim(working, 'working')
 
     // Stalled REFINES working rather than rivalling it — the turn is still

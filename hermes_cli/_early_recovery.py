@@ -109,7 +109,7 @@ def _pid_is_running(pid: int) -> bool:
         except Exception:
             return True
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # windows-footgun: ok — Windows returns above
     except ProcessLookupError:
         return False
     except PermissionError:

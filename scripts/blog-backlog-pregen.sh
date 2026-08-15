@@ -5,6 +5,13 @@
 # BLOG_DAILY_DRY_RUN=1 short-circuits before any Python invocation.
 # One post = ~3 Codex images, well under the usage cap.
 # Posts accrue as approved:false drafts + approval cards.
+#
+# Quota gate (2026-08-16): when the LLM provider (ollama weekly usage limit)
+# or Codex image cap is exhausted, the run records the reset time in
+# blog_topics/quota_state.json and exits 0 (silent — no alert spam every 12h).
+# Subsequent runs skip while the block is active, then automatically re-do the
+# backlog once the reset time passes. Failed topics stay in the queue (never
+# recorded), so the re-run picks them up naturally.
 set -euo pipefail
 
 HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
@@ -16,8 +23,33 @@ if [[ -d "$HOME/.npm-global/bin" ]]; then
 fi
 ROOT="${BLOG_CONTENT_ROOT:-/home/kensei/repos/KenseiAgent/content_engine}"
 LOG_DIR="$ROOT/output/logs"
+QUOTA_STATE="$ROOT/blog_topics/quota_state.json"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/blog-backlog-pregen-$(date +%Y%m%d-%H%M%S).log"
+
+# ── Pre-run quota gate ─────────────────────────────────────────────────────
+# If a quota block was recorded and its reset time has not yet passed, skip
+# silently. The cron ticker stays armed; the first run after reset proceeds.
+if [[ -f "$QUOTA_STATE" ]]; then
+  reset_epoch=$(python3 -c "
+import json, sys, time
+from datetime import datetime
+try:
+    d = json.load(open('$QUOTA_STATE'))
+    dt = datetime.fromisoformat(d['resets_at'].rstrip('.').replace('Z', '+00:00'))
+    print(int(dt.timestamp()))
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)
+  now_epoch=$(date +%s)
+  if [[ -n "$reset_epoch" && "$reset_epoch" -gt "$now_epoch" ]]; then
+    echo "[$(date -Is)] quota block active until $(date -d @"$reset_epoch" -Is 2>/dev/null || echo "$reset_epoch"); skipping pregen (silent)"
+    exit 0
+  fi
+  # Reset time passed — clear the block and run normally.
+  rm -f "$QUOTA_STATE"
+  echo "[$(date -Is)] quota block expired; clearing quota_state and resuming pregen"
+fi
 
 if [[ "${BLOG_DAILY_DRY_RUN:-0}" == "1" ]]; then
   echo "dry-run: would launch backlog pregen (synchronous) -> $LOG"
@@ -42,6 +74,24 @@ rc=0
   echo "[$(date -Is)] finished backlog pregen rc=$rc"
   exit "$rc"
 ) >>"$LOG" 2>&1 || rc=$?
+
+# ── Post-run quota detection ────────────────────────────────────────────────
+# If the run failed because of a provider usage cap, record the reset time and
+# exit 0. A capped run is not a pipeline defect — the topics are still queued
+# and will be picked up after the window refreshes. Alerting on it every 12h
+# is noise, not signal.
+if [[ "$rc" -ne 0 ]]; then
+  reset_ts=$(grep -oE 'limit resets at [0-9TZ:.\-]+' "$LOG" 2>/dev/null | head -1 | sed 's/limit resets at //')
+  if [[ -n "$reset_ts" ]] || grep -qE 'usage limit|usage cap|Codex usage cap|weekly usage' "$LOG" 2>/dev/null; then
+    if [[ -z "$reset_ts" ]]; then
+      # No explicit reset timestamp: default to 12h (next scheduled tick).
+      reset_ts=$(date -u -d '+12 hours' +%Y-%m-%dT%H:%M:%SZ)
+    fi
+    echo "{\"blocked_at\": \"$(date -Is)\", \"resets_at\": \"$reset_ts\", \"reason\": \"provider usage cap\", \"log\": \"$LOG\"}" > "$QUOTA_STATE"
+    echo "[$(date -Is)] quota cap detected; deferring until $reset_ts (silent exit 0)"
+    exit 0
+  fi
+fi
 
 # Synchronous — silent on success (no Discord delivery).
 # NOTE: prior version always exited 0, masking the pipeline's rc=1 from the

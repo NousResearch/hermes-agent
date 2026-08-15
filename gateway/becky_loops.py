@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,6 +27,11 @@ from gateway.becky_loop_summarizer import (
     SummaryUnavailable,
     _ConversationTooLarge,
     _SummaryValidationError,
+)
+from gateway.becky_loop_reply import (
+    AsyncAuxiliaryReplyProvider,
+    LoopReplyGenerator,
+    ReplyGenerator,
 )
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Headers, Request, Response
@@ -46,11 +51,13 @@ _READY = {
     "method": "event",
     "params": {"type": "gateway.ready", "payload": {"skin": {}}},
 }
-_METHODS = ["list", "summarize", "close", "reopen"]
+_METHODS = ["list", "summarize", "close", "reopen", "reply", "reply_retry"]
 _SAFE_REMOTE_CODES = frozenset({
     "conversation_too_large",
     "idempotency_conflict",
     "revision_conflict",
+    "reply_retry_unavailable",
+    "reply_send_failed",
     "same_topic_reopen_unsupported",
     "source_not_found",
     "successor_already_exists",
@@ -62,6 +69,7 @@ _SAFE_REMOTE_CODES = frozenset({
     "topic_already_open",
     "topic_control_unavailable",
     "topic_control_unsupported",
+    "topic_reply_unavailable",
     "topic_not_found",
     "topic_state_read_failed",
     "topic_state_write_failed",
@@ -74,6 +82,10 @@ _UUID_RE = re.compile(
 _MAX_REQUEST_BYTES = 65_536
 _MAX_RESPONSE_BYTES = 262_144
 _SUMMARY_DEADLINE_SECONDS = 30.0
+_REPLY_DEADLINE_SECONDS = 30.0
+_REPLY_ATTEMPT_TTL_SECONDS = 15 * 60.0
+_MAX_REPLY_ATTEMPTS = 256
+_MAX_REPLY_TEXT_CHARS = 2_000
 _SESSION_PAGE_SIZE = 200
 _MAX_SESSION_SCAN = 10_000
 
@@ -85,6 +97,82 @@ class BeckyLoopsConfig:
     token: str
     port: int = 9_120
     topic_control: str = "unavailable"
+    topic_reply: str = "unavailable"
+
+
+@dataclass(frozen=True)
+class TopicSendReceipt:
+    message_id: str
+
+
+class TopicSender(Protocol):
+    async def send_topic(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        text: str,
+        reply_to_message_id: str | None,
+    ) -> TopicSendReceipt: ...
+
+
+class TelegramTopicSender:
+    """Guard the existing Telegram adapter behind one private-topic seam."""
+
+    def __init__(self, adapter: Any) -> None:
+        self._adapter = adapter
+
+    async def send_topic(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        text: str,
+        reply_to_message_id: str | None,
+    ) -> TopicSendReceipt:
+        label = "Becky:" if reply_to_message_id is not None else "Cory via Becky:"
+        metadata = {
+            "thread_id": thread_id,
+            "direct_messages_topic_id": thread_id,
+            "notify": True,
+        }
+        try:
+            result = await self._adapter.send(
+                chat_id=chat_id,
+                content=f"{label} {text}",
+                reply_to=reply_to_message_id,
+                metadata=metadata,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise _TopicSendFailure() from None
+        raw_response = getattr(result, "raw_response", None)
+        if (
+            not bool(getattr(result, "success", False))
+            or not str(getattr(result, "message_id", "") or "").strip()
+            or isinstance(raw_response, dict)
+            and bool(raw_response.get("thread_fallback"))
+        ):
+            raise _TopicSendFailure()
+        return TopicSendReceipt(message_id=str(result.message_id))
+
+
+@dataclass
+class _ReplyAttempt:
+    source_ref: str
+    expected_revision: str
+    comment: str
+    thread_id: str
+    expires_at: float
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    comment_message_id: str | None = None
+    comment_sent_at: str | None = None
+    answer: str | None = None
+    answer_generated_at: str | None = None
+    answer_sent_at: str | None = None
+    state: str = "comment_pending"
+    in_progress: bool = True
 
 
 class BeckyLoopsStore(Protocol):
@@ -293,6 +381,8 @@ class BeckyLoopsBridgeServer:
         config: BeckyLoopsConfig,
         store: BeckyLoopsStore,
         summarizer: LoopSummarizer,
+        topic_sender: TopicSender | None = None,
+        reply_generator: ReplyGenerator | None = None,
     ) -> None:
         if not config.enabled:
             raise ValueError("Becky loops bridge is disabled")
@@ -305,6 +395,10 @@ class BeckyLoopsBridgeServer:
         self.config = config
         self.store = store
         self.summarizer = summarizer
+        self.topic_sender = topic_sender
+        self.reply_generator = reply_generator
+        self._reply_attempts: dict[str, _ReplyAttempt] = {}
+        self._reply_attempts_lock = asyncio.Lock()
         self._server: Server | None = None
 
     @property
@@ -423,10 +517,15 @@ class BeckyLoopsBridgeServer:
             if params:
                 return _PROTOCOL_FAILURE
             return {
-                "schema_version": "1",
+                "schema_version": "2",
                 "summary_schema_version": "1",
                 "methods": _METHODS,
                 "topic_control": "unavailable",
+                "topic_reply": (
+                    "bot_api_private_topic"
+                    if self._topic_reply_available()
+                    else "unavailable"
+                ),
                 "same_topic_reopen": False,
                 "new_session_fallback": True,
                 "max_request_bytes": _MAX_REQUEST_BYTES,
@@ -488,6 +587,73 @@ class BeckyLoopsBridgeServer:
                 transcript=transcript,
                 summary=summary,
             )
+        if method == "becky.loops.reply":
+            if not self._valid_reply_params(params):
+                return _PROTOCOL_FAILURE
+            if not self._topic_reply_available():
+                raise _RemoteFailure("topic_reply_unavailable")
+            source_ref = params["source_ref"]
+            expected_revision = params["expected_revision"]
+            comment = params["text"].strip()
+            idempotency_key = params["idempotency_key"].lower()
+            existing = await self._get_reply_attempt(idempotency_key)
+            if existing is not None:
+                if (
+                    existing.source_ref != source_ref
+                    or existing.expected_revision != expected_revision
+                    or existing.comment != comment
+                ):
+                    raise _RemoteFailure("idempotency_conflict")
+                return await self._replay_reply_attempt(existing)
+            row, transcript, current_revision = self._current_topic(
+                source_ref, expected_revision
+            )
+            attempt, created = await self._get_or_create_reply_attempt(
+                idempotency_key=idempotency_key,
+                source_ref=source_ref,
+                expected_revision=expected_revision,
+                comment=comment,
+                thread_id=str(row.get("thread_id") or ""),
+            )
+            if not created:
+                if (
+                    attempt.source_ref != source_ref
+                    or attempt.expected_revision != expected_revision
+                    or attempt.comment != comment
+                ):
+                    raise _RemoteFailure("idempotency_conflict")
+                return await self._replay_reply_attempt(attempt)
+            return await self._continue_reply_attempt(
+                attempt=attempt,
+                row=row,
+                transcript=transcript,
+                current_revision=current_revision,
+            )
+        if method == "becky.loops.reply_retry":
+            if not self._valid_reply_retry_params(params):
+                return _PROTOCOL_FAILURE
+            if not self._topic_reply_available():
+                raise _RemoteFailure("topic_reply_unavailable")
+            idempotency_key = params["idempotency_key"].lower()
+            attempt = await self._get_reply_attempt(idempotency_key)
+            if attempt is None:
+                raise _RemoteFailure("reply_retry_unavailable")
+            source_ref = params["source_ref"]
+            expected_revision = params["expected_revision"]
+            if (
+                attempt.source_ref != source_ref
+                or attempt.expected_revision != expected_revision
+            ):
+                raise _RemoteFailure("idempotency_conflict")
+            row, transcript, current_revision = self._current_topic(
+                source_ref, expected_revision
+            )
+            return await self._continue_reply_attempt(
+                attempt=attempt,
+                row=row,
+                transcript=transcript,
+                current_revision=current_revision,
+            )
         if method == "becky.loops.close":
             if not self._valid_close_params(params):
                 return _PROTOCOL_FAILURE
@@ -501,6 +667,194 @@ class BeckyLoopsBridgeServer:
     def _find_topic(self, source_ref: str) -> dict[str, Any] | None:
         rows = self.store.list_topics(self.config.chat_id)
         return next((row for row in rows if row.get("source_ref") == source_ref), None)
+
+    def _topic_reply_available(self) -> bool:
+        return bool(
+            self.config.topic_reply == "bot_api_private_topic"
+            and self.topic_sender is not None
+            and self.reply_generator is not None
+        )
+
+    def _current_topic(
+        self, source_ref: str, expected_revision: str
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+        row = self._find_topic(source_ref)
+        if row is None:
+            raise _RemoteFailure("source_not_found")
+        transcript = self.store.transcript(str(row["session_id"]))
+        revision_fn = getattr(self.store, "revision_for_topic", None)
+        current_revision = (
+            revision_fn(row, transcript)
+            if callable(revision_fn)
+            else str(row.get("revision") or "")
+        )
+        if current_revision != expected_revision:
+            raise _RemoteFailure("revision_conflict")
+        return row, transcript, current_revision
+
+    async def _get_or_create_reply_attempt(
+        self,
+        *,
+        idempotency_key: str,
+        source_ref: str,
+        expected_revision: str,
+        comment: str,
+        thread_id: str,
+    ) -> tuple[_ReplyAttempt, bool]:
+        now = asyncio.get_running_loop().time()
+        async with self._reply_attempts_lock:
+            self._purge_reply_attempts(now)
+            existing = self._reply_attempts.get(idempotency_key)
+            if existing is not None:
+                return existing, False
+            if not thread_id:
+                raise _RemoteFailure("source_not_found")
+            if len(self._reply_attempts) >= _MAX_REPLY_ATTEMPTS:
+                raise _RemoteFailure("topic_reply_unavailable")
+            attempt = _ReplyAttempt(
+                source_ref=source_ref,
+                expected_revision=expected_revision,
+                comment=comment,
+                thread_id=thread_id,
+                expires_at=now + _REPLY_ATTEMPT_TTL_SECONDS,
+            )
+            self._reply_attempts[idempotency_key] = attempt
+            return attempt, True
+
+    async def _get_reply_attempt(self, idempotency_key: str) -> _ReplyAttempt | None:
+        now = asyncio.get_running_loop().time()
+        async with self._reply_attempts_lock:
+            self._purge_reply_attempts(now)
+            return self._reply_attempts.get(idempotency_key)
+
+    def _purge_reply_attempts(self, now: float) -> None:
+        expired = [
+            key
+            for key, attempt in self._reply_attempts.items()
+            if attempt.expires_at <= now and not attempt.in_progress
+        ]
+        for key in expired:
+            self._reply_attempts.pop(key, None)
+
+    async def _replay_reply_attempt(self, attempt: _ReplyAttempt) -> dict[str, Any]:
+        async with attempt.lock:
+            if attempt.state == "send_failed":
+                raise _RemoteFailure("reply_send_failed")
+            if attempt.comment_sent_at is None:
+                raise _RemoteFailure("reply_retry_unavailable")
+            return self._reply_attempt_result(attempt)
+
+    async def _continue_reply_attempt(
+        self,
+        *,
+        attempt: _ReplyAttempt,
+        row: dict[str, Any],
+        transcript: list[dict[str, Any]],
+        current_revision: str,
+    ) -> dict[str, Any]:
+        async with attempt.lock:
+            attempt.in_progress = True
+            try:
+                if attempt.state == "answered":
+                    return self._reply_attempt_result(attempt)
+                if attempt.state == "send_failed":
+                    raise _RemoteFailure("reply_retry_unavailable")
+                if attempt.comment_message_id is None:
+                    try:
+                        receipt = await self._send_topic(
+                            thread_id=attempt.thread_id,
+                            text=attempt.comment,
+                            reply_to_message_id=None,
+                        )
+                    except asyncio.CancelledError:
+                        attempt.state = "send_failed"
+                        raise
+                    except Exception:
+                        attempt.state = "send_failed"
+                        raise _RemoteFailure("reply_send_failed") from None
+                    attempt.comment_message_id = receipt.message_id
+                    attempt.comment_sent_at = datetime.now(UTC).isoformat()
+                if attempt.answer is None:
+                    try:
+                        answer = await self._generate_reply(
+                            row=row,
+                            transcript=transcript,
+                            comment=attempt.comment,
+                        )
+                        answer = answer.strip()
+                        if not 1 <= len(answer) <= _MAX_REPLY_TEXT_CHARS:
+                            raise ValueError("reply unavailable")
+                    except asyncio.CancelledError:
+                        attempt.state = "answer_unavailable"
+                        raise
+                    except Exception:
+                        attempt.state = "answer_unavailable"
+                        return self._reply_attempt_result(attempt)
+                    attempt.answer = answer
+                    attempt.answer_generated_at = datetime.now(UTC).isoformat()
+                    attempt.state = "answer_pending"
+                try:
+                    await self._send_topic(
+                        thread_id=attempt.thread_id,
+                        text=attempt.answer,
+                        reply_to_message_id=attempt.comment_message_id,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    attempt.state = "answer_pending"
+                    return self._reply_attempt_result(attempt)
+                attempt.answer_sent_at = datetime.now(UTC).isoformat()
+                attempt.state = "answered"
+                result = self._reply_attempt_result(attempt)
+                result["revision"] = current_revision
+                return result
+            finally:
+                attempt.in_progress = False
+
+    async def _send_topic(
+        self, *, thread_id: str, text: str, reply_to_message_id: str | None
+    ) -> TopicSendReceipt:
+        if self.topic_sender is None:
+            raise _TopicSendFailure()
+        receipt = await self.topic_sender.send_topic(
+            chat_id=self.config.chat_id,
+            thread_id=thread_id,
+            text=text,
+            reply_to_message_id=reply_to_message_id,
+        )
+        if not isinstance(receipt, TopicSendReceipt) or not receipt.message_id.strip():
+            raise _TopicSendFailure()
+        return receipt
+
+    async def _generate_reply(
+        self,
+        *,
+        row: dict[str, Any],
+        transcript: list[dict[str, Any]],
+        comment: str,
+    ) -> str:
+        if self.reply_generator is None:
+            raise RuntimeError("reply unavailable")
+        return await self.reply_generator.generate(
+            row=row,
+            transcript=transcript,
+            comment=comment,
+            deadline=asyncio.get_running_loop().time() + _REPLY_DEADLINE_SECONDS,
+        )
+
+    @staticmethod
+    def _reply_attempt_result(attempt: _ReplyAttempt) -> dict[str, Any]:
+        return {
+            "schema_version": "1",
+            "source_ref": attempt.source_ref,
+            "revision": attempt.expected_revision,
+            "comment_sent_at": attempt.comment_sent_at,
+            "answer": attempt.answer,
+            "answer_generated_at": attempt.answer_generated_at,
+            "answer_sent_at": attempt.answer_sent_at,
+            "answer_state": attempt.state,
+        }
 
     def _public_index(self, row: dict[str, Any]) -> dict[str, Any]:
         hidden_values = {
@@ -588,6 +942,34 @@ class BeckyLoopsBridgeServer:
         }
 
     @staticmethod
+    def _valid_reply_params(params: dict[str, Any]) -> bool:
+        text = params.get("text")
+        return (
+            set(params)
+            == {"source_ref", "expected_revision", "text", "idempotency_key"}
+            and isinstance(params.get("source_ref"), str)
+            and _SOURCE_REF_RE.fullmatch(params["source_ref"]) is not None
+            and isinstance(params.get("expected_revision"), str)
+            and _REVISION_RE.fullmatch(params["expected_revision"]) is not None
+            and isinstance(text, str)
+            and 1 <= len(text.strip()) <= _MAX_REPLY_TEXT_CHARS
+            and isinstance(params.get("idempotency_key"), str)
+            and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
+        )
+
+    @staticmethod
+    def _valid_reply_retry_params(params: dict[str, Any]) -> bool:
+        return (
+            set(params) == {"source_ref", "expected_revision", "idempotency_key"}
+            and isinstance(params.get("source_ref"), str)
+            and _SOURCE_REF_RE.fullmatch(params["source_ref"]) is not None
+            and isinstance(params.get("expected_revision"), str)
+            and _REVISION_RE.fullmatch(params["expected_revision"]) is not None
+            and isinstance(params.get("idempotency_key"), str)
+            and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
+        )
+
+    @staticmethod
     def _valid_close_params(params: dict[str, Any]) -> bool:
         return (
             set(params) == {"source_ref", "expected_revision", "idempotency_key"}
@@ -660,6 +1042,11 @@ class _RemoteFailure(Exception):
         self.code = code
 
 
+class _TopicSendFailure(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("topic_send_failed")
+
+
 class _ProtocolFailure:
     pass
 
@@ -724,6 +1111,9 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         # No mutation adapter is installed in this deployment.  Never
         # advertise a configured-but-unimplemented control method.
         topic_control="unavailable",
+        # Task 7 installs the independent proof loader. Until then, runtime
+        # config remains read-only even if a caller injects an adapter.
+        topic_reply="unavailable",
     )
 
 
@@ -732,6 +1122,8 @@ async def start_becky_loops_bridge(
     config: BeckyLoopsConfig | None,
     db: Any,
     summarizer: LoopSummarizer | None = None,
+    topic_sender: TopicSender | None = None,
+    reply_generator: ReplyGenerator | None = None,
 ) -> BeckyLoopsBridgeServer | None:
     """Start the opt-in bridge and return its lifecycle handle."""
     if config is None or not config.enabled:
@@ -746,6 +1138,17 @@ async def start_becky_loops_bridge(
                 summarizer
                 if summarizer is not None
                 else LoopSummarizer(AsyncAuxiliarySummaryProvider())
+            ),
+            topic_sender=topic_sender,
+            reply_generator=(
+                reply_generator
+                if reply_generator is not None
+                else (
+                    LoopReplyGenerator(AsyncAuxiliaryReplyProvider())
+                    if topic_sender is not None
+                    and config.topic_reply == "bot_api_private_topic"
+                    else None
+                )
             ),
         )
         await server.start()

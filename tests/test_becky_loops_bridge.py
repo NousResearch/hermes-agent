@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 from asyncio import get_running_loop
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,11 +16,15 @@ from gateway.becky_loop_summarizer import (
     _ConversationTooLarge,
     _SummaryValidationError,
 )
+from gateway import becky_loops
+from gateway.becky_loop_reply import ReplyUnavailable
 from gateway.becky_loops import BeckyLoopsBridgeServer, BeckyLoopsConfig
 
 
 SOURCE_REF = "loop_" + "A" * 43
 REVISION = "sha256:" + "a" * 64
+IDEMPOTENCY_KEY = "8c9c8217-cc0f-463d-a430-173f1802edb2"
+SECOND_IDEMPOTENCY_KEY = "f42862c7-55d7-423e-bc4f-b00b8538f0c5"
 
 
 class FakeStore:
@@ -33,6 +39,7 @@ class FakeStore:
                 "created_at": datetime(2026, 8, 13, 20, 0, tzinfo=UTC),
                 "updated_at": datetime(2026, 8, 13, 20, 3, tzinfo=UTC),
                 "session_id": "session-1",
+                "thread_id": "20197",
             }
         ]
         self.transcripts = {
@@ -108,6 +115,116 @@ class FakeSummarizer:
         return self.result
 
 
+class FakeTopicSender:
+    def __init__(self, outcomes: list[object] | None = None) -> None:
+        self.outcomes = list(outcomes or [])
+        self.calls: list[dict[str, Any]] = []
+        self.next_message_id = 100
+
+    async def send_topic(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        text: str,
+        reply_to_message_id: str | None,
+    ) -> object:
+        self.calls.append({
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "text": text,
+            "reply_to_message_id": reply_to_message_id,
+        })
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        self.next_message_id += 1
+        return becky_loops.TopicSendReceipt(message_id=str(self.next_message_id))
+
+
+class BlockingTopicSender(FakeTopicSender):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_topic(self, **kwargs: Any) -> object:
+        self.calls.append(dict(kwargs))
+        if len(self.calls) == 1:
+            self.started.set()
+            await self.release.wait()
+        return becky_loops.TopicSendReceipt(message_id=str(400 + len(self.calls)))
+
+
+class FakeReplyGenerator:
+    def __init__(self, outcomes: list[object] | None = None) -> None:
+        self.outcomes = list(outcomes or ["Start with the insulation quote."])
+        self.calls: list[dict[str, Any]] = []
+
+    async def generate(
+        self,
+        *,
+        row: dict[str, Any],
+        transcript: list[dict[str, Any]],
+        comment: str,
+        deadline: float,
+    ) -> str:
+        self.calls.append({
+            "row": row,
+            "transcript": transcript,
+            "comment": comment,
+            "deadline": deadline,
+        })
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return str(outcome)
+
+
+class BlockingReplyGenerator(FakeReplyGenerator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def generate(self, **kwargs: Any) -> str:
+        self.calls.append(dict(kwargs))
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class FakeTelegramAdapter:
+    def __init__(self, outcomes: list[object] | None = None) -> None:
+        self.outcomes = list(outcomes or [])
+        self.calls: list[dict[str, Any]] = []
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> object:
+        self.calls.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return SimpleNamespace(
+            success=True,
+            message_id=str(900 + len(self.calls)),
+            raw_response={"thread_fallback": False},
+        )
+
+
 class ProjectionDB:
     def __init__(self) -> None:
         self.rows = [
@@ -163,13 +280,55 @@ class ProjectionDB:
         return [{"role": "user", "content": "hello", "timestamp": 1_755_104_400.0}]
 
 
-def config(*, port: int = 0) -> BeckyLoopsConfig:
+def config(*, port: int = 0, topic_reply: str = "unavailable") -> BeckyLoopsConfig:
     return BeckyLoopsConfig(
         enabled=True,
         chat_id="123456789",
         token="t" * 64,
         port=port,
         topic_control="unavailable",
+        topic_reply=topic_reply,
+    )
+
+
+def reply_params(
+    *,
+    text: str = "Can you clarify the next step?",
+    idempotency_key: str = IDEMPOTENCY_KEY,
+    revision: str = REVISION,
+) -> dict[str, str]:
+    return {
+        "source_ref": SOURCE_REF,
+        "expected_revision": revision,
+        "text": text,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def retry_params(
+    *,
+    idempotency_key: str = IDEMPOTENCY_KEY,
+    revision: str = REVISION,
+) -> dict[str, str]:
+    return {
+        "source_ref": SOURCE_REF,
+        "expected_revision": revision,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def reply_server(
+    *,
+    store: FakeStore | None = None,
+    sender: FakeTopicSender | None = None,
+    generator: FakeReplyGenerator | None = None,
+) -> BeckyLoopsBridgeServer:
+    return BeckyLoopsBridgeServer(
+        config=config(topic_reply="bot_api_private_topic"),
+        store=store or FakeStore(),
+        summarizer=FakeSummarizer(),
+        topic_sender=sender or FakeTopicSender(),
+        reply_generator=generator or FakeReplyGenerator(),
     )
 
 
@@ -202,10 +361,18 @@ async def test_bridge_auth_ready_capabilities_and_list() -> None:
             }
             capabilities = await rpc(ws, 1, "becky.loops.capabilities", {})
             assert capabilities["result"] == {
-                "schema_version": "1",
+                "schema_version": "2",
                 "summary_schema_version": "1",
-                "methods": ["list", "summarize", "close", "reopen"],
+                "methods": [
+                    "list",
+                    "summarize",
+                    "close",
+                    "reopen",
+                    "reply",
+                    "reply_retry",
+                ],
                 "topic_control": "unavailable",
+                "topic_reply": "unavailable",
                 "same_topic_reopen": False,
                 "new_session_fallback": True,
                 "max_request_bytes": 65_536,
@@ -216,6 +383,619 @@ async def test_bridge_auth_ready_capabilities_and_list() -> None:
             assert "session_id" not in listed["result"]["loops"][0]
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_bridge_advertises_reply_only_with_proven_injected_sender() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+
+    assert capabilities["topic_control"] == "unavailable"
+    assert capabilities["topic_reply"] == "bot_api_private_topic"
+
+
+@pytest.mark.asyncio
+async def test_bridge_keeps_reply_unavailable_when_sender_is_missing() -> None:
+    server = BeckyLoopsBridgeServer(
+        config=config(topic_reply="bot_api_private_topic"),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        reply_generator=FakeReplyGenerator(),
+    )
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    assert capabilities["topic_reply"] == "unavailable"
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32000, "message": "topic_reply_unavailable"},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {**reply_params(), "extra": True},
+        {key: value for key, value in reply_params().items() if key != "text"},
+        {**reply_params(), "source_ref": "loop_bad"},
+        {**reply_params(), "expected_revision": "SHA256:" + "a" * 64},
+        {**reply_params(), "text": ""},
+        {**reply_params(), "text": " "},
+        {**reply_params(), "text": "x" * 2_001},
+        {**reply_params(), "idempotency_key": "not-a-uuid"},
+    ],
+)
+async def test_bridge_reply_requires_exact_bounded_params(
+    params: dict[str, object],
+) -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": params,
+        })
+    )
+
+    assert response["error"] == {"code": -32600, "message": "protocol"}
+    assert sender.calls == []
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {**retry_params(), "extra": True},
+        {key: value for key, value in retry_params().items() if key != "source_ref"},
+        {**retry_params(), "expected_revision": "sha256:ABC"},
+        {**retry_params(), "idempotency_key": "not-a-uuid"},
+    ],
+)
+async def test_bridge_reply_retry_requires_exact_params(
+    params: dict[str, object],
+) -> None:
+    server = reply_server()
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply_retry",
+            "params": params,
+        })
+    )
+
+    assert response["error"] == {"code": -32600, "message": "protocol"}
+
+
+@pytest.mark.asyncio
+async def test_bridge_rechecks_revision_before_reply_send_or_generation() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(store=RacingStore(), sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    assert response["error"] == {"code": -32000, "message": "revision_conflict"}
+    assert sender.calls == []
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_sends_comment_then_answer_with_internal_anchor() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator(["Start with the insulation quote."])
+    server = reply_server(sender=sender, generator=generator)
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    assert response["result"] == {
+        "schema_version": "1",
+        "source_ref": SOURCE_REF,
+        "revision": REVISION,
+        "comment_sent_at": response["result"]["comment_sent_at"],
+        "answer": "Start with the insulation quote.",
+        "answer_generated_at": response["result"]["answer_generated_at"],
+        "answer_sent_at": response["result"]["answer_sent_at"],
+        "answer_state": "answered",
+    }
+    assert sender.calls == [
+        {
+            "chat_id": "123456789",
+            "thread_id": "20197",
+            "text": "Can you clarify the next step?",
+            "reply_to_message_id": None,
+        },
+        {
+            "chat_id": "123456789",
+            "thread_id": "20197",
+            "text": "Start with the insulation quote.",
+            "reply_to_message_id": "101",
+        },
+    ]
+    assert len(generator.calls) == 1
+    assert generator.calls[0]["comment"] == "Can you clarify the next step?"
+    assert "message_id" not in json.dumps(response)
+    assert "thread_id" not in json.dumps(response)
+
+
+@pytest.mark.asyncio
+async def test_telegram_topic_sender_adds_labels_and_exact_private_topic_metadata() -> (
+    None
+):
+    adapter = FakeTelegramAdapter()
+    sender = becky_loops.TelegramTopicSender(adapter)
+
+    comment = await sender.send_topic(
+        chat_id="123456789",
+        thread_id="20197",
+        text="Can you clarify the next step?",
+        reply_to_message_id=None,
+    )
+    answer = await sender.send_topic(
+        chat_id="123456789",
+        thread_id="20197",
+        text="Start with the insulation quote.",
+        reply_to_message_id=comment.message_id,
+    )
+
+    assert answer.message_id == "902"
+    assert adapter.calls == [
+        {
+            "chat_id": "123456789",
+            "content": "Cory via Becky: Can you clarify the next step?",
+            "reply_to": None,
+            "metadata": {
+                "thread_id": "20197",
+                "direct_messages_topic_id": "20197",
+                "notify": True,
+            },
+        },
+        {
+            "chat_id": "123456789",
+            "content": "Becky: Start with the insulation quote.",
+            "reply_to": "901",
+            "metadata": {
+                "thread_id": "20197",
+                "direct_messages_topic_id": "20197",
+                "notify": True,
+            },
+        },
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        SimpleNamespace(success=False, message_id="private-id", error="secret"),
+        SimpleNamespace(success=True, message_id=None, raw_response={}),
+        SimpleNamespace(
+            success=True,
+            message_id="private-id",
+            raw_response={"thread_fallback": True},
+        ),
+    ],
+)
+async def test_telegram_topic_sender_fails_closed_without_returning_adapter_details(
+    outcome: object,
+) -> None:
+    sender = becky_loops.TelegramTopicSender(FakeTelegramAdapter([outcome]))
+
+    with pytest.raises(Exception) as caught:
+        await sender.send_topic(
+            chat_id="123456789",
+            thread_id="20197",
+            text="Comment",
+            reply_to_message_id=None,
+        )
+
+    assert "private-id" not in str(caught.value)
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_bridge_duplicate_reply_replays_result_without_external_calls() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    first = await server._dispatch(request)
+    second = await server._dispatch(request)
+
+    assert second == first
+    assert len(sender.calls) == 2
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_duplicate_reply_replays_after_transcript_revision_changes() -> (
+    None
+):
+    store = FakeStore()
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    server = reply_server(store=store, sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+    first = await server._dispatch(request)
+    store.rows[0]["revision"] = "sha256:" + "b" * 64
+
+    replay = await server._dispatch(request)
+
+    assert replay == first
+    assert len(sender.calls) == 2
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_same_key_with_different_reply_payload() -> None:
+    sender = FakeTopicSender()
+    server = reply_server(sender=sender)
+    await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.reply",
+            "params": reply_params(text="Different comment"),
+        })
+    )
+
+    assert response["error"] == {"code": -32000, "message": "idempotency_conflict"}
+    assert len(sender.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_bridge_retries_generated_answer_without_resending_comment() -> None:
+    sender = FakeTopicSender([
+        becky_loops.TopicSendReceipt(message_id="301"),
+        RuntimeError("answer delivery failed"),
+        becky_loops.TopicSendReceipt(message_id="302"),
+    ])
+    generator = FakeReplyGenerator(["Retained normalized answer."])
+    server = reply_server(sender=sender, generator=generator)
+
+    first = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+    retried = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.reply_retry",
+            "params": retry_params(),
+        })
+    )
+
+    assert first["result"]["answer_state"] == "answer_pending"
+    assert first["result"]["answer"] == "Retained normalized answer."
+    assert first["result"]["answer_sent_at"] is None
+    assert retried["result"]["answer_state"] == "answered"
+    assert [call["text"] for call in sender.calls] == [
+        "Can you clarify the next step?",
+        "Retained normalized answer.",
+        "Retained normalized answer.",
+    ]
+    assert [call["reply_to_message_id"] for call in sender.calls] == [
+        None,
+        "301",
+        "301",
+    ]
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_rechecks_revision_before_retry_send_or_generation() -> None:
+    store = FakeStore()
+    sender = FakeTopicSender([
+        becky_loops.TopicSendReceipt(message_id="301"),
+        RuntimeError("answer delivery failed"),
+    ])
+    generator = FakeReplyGenerator(["Retained normalized answer."])
+    server = reply_server(store=store, sender=sender, generator=generator)
+    await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+    store.rows[0]["revision"] = "sha256:" + "b" * 64
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.reply_retry",
+            "params": retry_params(),
+        })
+    )
+
+    assert response["error"] == {"code": -32000, "message": "revision_conflict"}
+    assert len(sender.calls) == 2
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_retries_generation_without_resending_comment() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator([
+        ReplyUnavailable(),
+        "Generated after retry.",
+    ])
+    server = reply_server(sender=sender, generator=generator)
+
+    first = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+    retried = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.reply_retry",
+            "params": retry_params(),
+        })
+    )
+
+    assert first["result"]["answer_state"] == "answer_unavailable"
+    assert first["result"]["answer"] is None
+    assert retried["result"]["answer_state"] == "answered"
+    assert [call["text"] for call in sender.calls] == [
+        "Can you clarify the next step?",
+        "Generated after retry.",
+    ]
+    assert len(generator.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_bridge_generation_cancellation_replays_answer_unavailable() -> None:
+    sender = FakeTopicSender()
+    generator = BlockingReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+    first_task = asyncio.create_task(server._dispatch(request))
+    await generator.started.wait()
+    first_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_task
+
+    replay = await server._dispatch(request)
+
+    assert replay["result"]["answer_state"] == "answer_unavailable"
+    assert replay["result"]["answer"] is None
+    assert len(sender.calls) == 1
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_comment_send_failure_is_safe_and_idempotent() -> None:
+    private_error = "Telegram message 987654 failed in topic 20197"
+    sender = FakeTopicSender([RuntimeError(private_error)])
+    generator = FakeReplyGenerator()
+    server = reply_server(sender=sender, generator=generator)
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+
+    first = await server._dispatch(request)
+    second = await server._dispatch(request)
+
+    assert (
+        first
+        == second
+        == {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32000, "message": "reply_send_failed"},
+        }
+    )
+    assert private_error not in json.dumps(first)
+    assert len(sender.calls) == 1
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_unknown_retry_after_restart_fails_closed() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    restarted_server = reply_server(sender=sender, generator=generator)
+
+    response = await restarted_server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply_retry",
+            "params": retry_params(),
+        })
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32000, "message": "reply_retry_unavailable"},
+    }
+    assert sender.calls == []
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bridge_attempts_expire_and_retry_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(becky_loops, "_REPLY_ATTEMPT_TTL_SECONDS", 0.0)
+    server = reply_server()
+    await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.reply_retry",
+            "params": retry_params(),
+        })
+    )
+
+    assert response["error"] == {
+        "code": -32000,
+        "message": "reply_retry_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_bridge_attempt_map_rejects_new_key_without_evicting_stored_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(becky_loops, "_MAX_REPLY_ATTEMPTS", 1)
+    sender = FakeTopicSender()
+    server = reply_server(sender=sender)
+    first_request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.reply",
+        "params": reply_params(),
+    })
+    first = await server._dispatch(first_request)
+    second = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "becky.loops.reply",
+            "params": reply_params(idempotency_key=SECOND_IDEMPOTENCY_KEY),
+        })
+    )
+    replay = await server._dispatch(first_request)
+
+    assert second["error"] == {
+        "code": -32000,
+        "message": "topic_reply_unavailable",
+    }
+    assert replay == first
+    assert len(sender.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_bridge_attempt_bound_never_evicts_an_in_flight_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(becky_loops, "_MAX_REPLY_ATTEMPTS", 1)
+    sender = BlockingTopicSender()
+    server = reply_server(sender=sender)
+    first_task = asyncio.create_task(
+        server._dispatch(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "becky.loops.reply",
+                "params": reply_params(),
+            })
+        )
+    )
+    await sender.started.wait()
+
+    try:
+        second = await server._dispatch(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "becky.loops.reply",
+                "params": reply_params(idempotency_key=SECOND_IDEMPOTENCY_KEY),
+            })
+        )
+    finally:
+        sender.release.set()
+    first = await first_task
+    replay = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(),
+        })
+    )
+
+    assert second["error"] == {
+        "code": -32000,
+        "message": "topic_reply_unavailable",
+    }
+    assert first == replay
+    assert len(sender.calls) == 2
 
 
 @pytest.mark.asyncio

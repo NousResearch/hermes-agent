@@ -3848,11 +3848,61 @@ class MatrixAdapter(BasePlatformAdapter):
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
-        for room_id in invites:
+        for room_id, invited_room in invites.items():
             if room_id in self._joined_rooms:
                 continue
-            logger.info("Matrix: reconciling pending invite for %s", room_id)
-            self._schedule_invite_join(str(room_id))
+            # A pending invite reconciled here (e.g. after a gateway
+            # restart) never fires _on_invite, so the DM signal must be
+            # read from the stripped invite state instead. Without it, a
+            # direct invite joined via reconciliation is never recorded in
+            # m.direct and gets misclassified as a group.
+            is_direct, inviter = self._extract_invite_dm_signal(invited_room)
+            logger.info(
+                "Matrix: reconciling pending invite for %s (is_direct=%s)",
+                room_id,
+                is_direct,
+            )
+            self._schedule_invite_join(
+                str(room_id),
+                is_direct=is_direct and bool(inviter),
+                inviter=inviter,
+            )
+
+    def _extract_invite_dm_signal(self, invited_room: Any) -> tuple[bool, str]:
+        """Read the is_direct flag and inviter from a room's invite_state.
+
+        The stripped ``m.room.member`` event for our own user carries the
+        ``is_direct`` flag from the original invite; its sender is the
+        inviter. Returns ``(False, "")`` when the signal is absent.
+        """
+        if not isinstance(invited_room, dict):
+            return False, ""
+
+        invite_state = invited_room.get("invite_state", {})
+        if not isinstance(invite_state, dict):
+            return False, ""
+
+        events = invite_state.get("events", [])
+        if not isinstance(events, list):
+            return False, ""
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "m.room.member":
+                continue
+            if self._user_id and event.get("state_key") != self._user_id:
+                continue
+
+            content = event.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            if content.get("membership") != "invite":
+                continue
+
+            return bool(content.get("is_direct")), str(event.get("sender", ""))
+
+        return False, ""
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)

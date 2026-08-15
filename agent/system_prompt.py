@@ -52,7 +52,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
-from agent.runtime_cwd import resolve_context_cwd
+from agent.runtime_cwd import is_context_file_cwd_scoped, resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from pathlib import Path
 from utils import is_truthy_value
@@ -881,27 +881,31 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if system_message is not None:
         context_parts.append(system_message)
 
+    _context_cwd = None
+    _context_marker_cwd = ""
     if not agent.skip_context_files:
-        # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
-        # CLI), None lets build_context_files_prompt fall back to the launch
-        # dir — the user's real cwd there, but the install dir for the gateway
-        # daemon, which is why the gateway sets TERMINAL_CWD.
+        # Multiplex gateways provide a profile-specific context directory that
+        # is independent of the shared execution cwd. Standalone CLI/TUI runs
+        # still use TERMINAL_CWD when configured, or fall back to the launch
+        # directory when it is absent.
         #
         # allow_install_tree_fallback: for cli/tui the launch dir IS the
         # user's shell cwd, so an in-tree fallback is a deliberate choice
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
-        context_cwd = resolve_context_cwd()
+        _context_cwd = resolve_context_cwd()
         if getattr(agent, "_context_cwd_is_launch_artifact", False):
             # Desktop session creation pins the backend launch directory so
             # tools have a deterministic cwd even when the user picked no
             # workspace. Preserve that tool routing, but let context discovery
             # see it as the fallback it really is. The install-tree guard can
             # then reject Hermes's bundled contributor AGENTS.md (#97448).
-            context_cwd = None
+            _context_cwd = None
+        if is_context_file_cwd_scoped():
+            _context_marker_cwd = str(_context_cwd or "")
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=context_cwd, skip_soul=_soul_loaded,
+            cwd=_context_cwd, skip_soul=_soul_loaded,
             context_length=_ctx_len,
             allow_install_tree_fallback=agent.platform in ("cli", "tui"),
             home_override=_agent_home(agent))
@@ -1024,6 +1028,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nProvider: {agent.provider}"
     if agent.platform:
         timestamp_line += f"\nPlatform: {agent.platform}"
+    if _context_marker_cwd:
+        timestamp_line += f"\nContext files directory: {_context_marker_cwd}"
     volatile_parts.append(timestamp_line)
 
     return {

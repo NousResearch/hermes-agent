@@ -2618,27 +2618,31 @@ def _profile_runtime_scope(
     *,
     hydrate_secrets: bool = True,
 ):
-    """Scope config/skills/memory AND credentials to a profile for one turn.
+    """Scope profile state, credentials, and instruction discovery for one turn.
 
-    Combines the two seams the multiplexer needs:
+    Combines the three seams the multiplexer needs:
       1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
-         skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
-         it propagates into the agent worker thread via ``copy_context()``.
+         skills, memory, SOUL, sessions) to the profile's home.
       2. ``set_secret_scope`` — installs the profile's ``.env`` secrets as the
-         authoritative credential source, so ``get_secret`` reads this profile's
-         keys and never the process-global ``os.environ`` (which in a
-         multiplexer may hold another profile's values).
+         authoritative credential source.
+      3. ``set_context_file_cwd`` — discovers AGENTS.md and related instruction
+         files from the routed profile home without changing the shared
+         execution cwd used by tools and subprocesses.
 
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
-    ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
-    from inheriting cross-profile secrets.
+    All three are context-local and propagate into the agent worker thread via
+    ``copy_context()``. Only the multiplexed inbound path enters this scope, so
+    single-profile gateways are unchanged. Loading the profile's ``.env`` here
+    does not mutate ``os.environ``; subprocesses cannot inherit another
+    profile's credentials.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import (
         set_secret_scope,
         reset_secret_scope,
+    )
+    from agent.runtime_cwd import (
+        reset_context_file_cwd,
+        set_context_file_cwd,
     )
 
     home_token = set_hermes_home_override(str(profile_home))
@@ -2660,9 +2664,17 @@ def _profile_runtime_scope(
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     with install_and_reset_profile_terminal_scope(Path(profile_home)):
+        # Per-turn context-file cwd (fourth seam of the profile boundary): pins
+        # instruction discovery (AGENTS.md, etc.) to the routed profile home
+        # without changing the agent's execution cwd.
+        context_cwd_token = set_context_file_cwd(str(profile_home))
         try:
             yield
         finally:
+            # Every seam unwinds even when the turn raises: a leaked secret
+            # scope or HERMES_HOME override would hand the next routed turn
+            # another profile's credentials and home.
+            reset_context_file_cwd(context_cwd_token)
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)
 

@@ -110,6 +110,40 @@ class TestContextFileCwd:
 
         assert "chosen workspace instructions" in context
 
+    def test_profile_context_directory_is_recorded_in_prompt_tail(
+        self, monkeypatch, tmp_path
+    ):
+        # Build the prompt through a CALL-TIME import of agent.system_prompt so the
+        # writer (_profile_runtime_scope) and the reader share one agent.runtime_cwd.
+        # Several suites in tests/agent delete every `agent.*` entry from sys.modules
+        # (test_empty_tool_name_loop_dampening, test_verification_stop_caching,
+        # test_vision_routing_31179); the module-level binding used by the helpers
+        # below would otherwise read a superseded module's ContextVars, and the scope
+        # would look unset only in a full-directory run.
+        import importlib
+
+        from gateway.run import _profile_runtime_scope
+
+        system_prompt = importlib.import_module("agent.system_prompt")
+
+        execution_cwd = tmp_path / "shared-workdir"
+        execution_cwd.mkdir()
+        profile_home = tmp_path / "profiles" / "beta"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("TERMINAL_CWD", str(execution_cwd))
+
+        with _profile_runtime_scope(profile_home):
+            with (
+                patch("run_agent.load_soul_md", return_value=""),
+                patch("run_agent.build_environment_hints", return_value=""),
+                patch("run_agent.build_context_files_prompt", return_value=""),
+            ):
+                parts = system_prompt.build_system_prompt_parts(
+                    _make_agent(platform="discord")
+                )
+
+        assert f"Context files directory: {profile_home}" in parts["volatile"]
+
 
 def _stable_prompt(agent):
     with (

@@ -640,9 +640,14 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
         if session.get("_client_gone_interrupt_requested"):
             return _err(ctx.rid, 4009, "session disconnect interrupt settling")
         _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+        caller = current_transport() or _stdio_transport
+        # Read BEFORE the attach below: "watching" means somebody ELSE was already on this session when we
+        # arrived, i.e. this client joined a stream in progress rather than taking the session over.
+        watching = _session_has_live_transport(session, excluding=caller)
         payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                        transport=current_transport() or _stdio_transport)
+                                        transport=caller)
         payload["resumed"] = ctx.target
+        payload["watching"] = watching
         if ctx.defer_history:
             payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
                            message_count=int(session.get("resume_message_count") or payload["message_count"]))
@@ -662,10 +667,14 @@ def _resume_response(
         messages = ctx.messages(display)
     if message_count is None:
         message_count = len(count_source) if ctx.omit_messages else len(messages)
+    # Every path that reaches here REGISTERED the live session for this caller — lazy child-watch, deferred,
+    # cold and eager alike — so nobody else was streaming it when the caller arrived. A resume that found a
+    # session already live returns through _resume_reuse_live instead, which computes ``watching`` for real.
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
                "info": info, "inflight": None, "running": running, "session_key": ctx.target,
-               "started_at": record["created_at"] if started_at is None else started_at, "status": status}
+               "started_at": record["created_at"] if started_at is None else started_at, "status": status,
+               "watching": False}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
     return _ok(ctx.rid, _attach_todo_state(payload, record))
@@ -897,9 +906,15 @@ def _(rid, params: dict, session: dict) -> dict:
 
     _live_session_payload ATTACHES this caller to the session rather than rebinding it, so activating a
     session someone else is already streaming mirrors it instead of stealing it."""
-    return _ok(rid, _live_session_payload(
-        str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
-        omit_messages=is_truthy_value(params.get("omit_messages", False))))
+    caller = current_transport() or _stdio_transport
+    # Read before the attach, same contract as session.resume: True means this client joined a session
+    # another client is already streaming.
+    watching = _session_has_live_transport(session, excluding=caller)
+    payload = _live_session_payload(
+        str(params.get("session_id") or ""), session, touch=True, transport=caller,
+        omit_messages=is_truthy_value(params.get("omit_messages", False)))
+    payload["watching"] = watching
+    return _ok(rid, payload)
 
 
 @method("session.delete")

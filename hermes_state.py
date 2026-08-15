@@ -7822,6 +7822,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
+    def get_dominant_session_model_route(
+        self, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the main-loop model route that served most API calls.
+
+        ``sessions`` is a legacy aggregate row and can hold model/provider fields
+        written by different route changes. ``session_model_usage`` keeps the
+        coherent per-call tuple, so persisted status and billing reads should use
+        its dominant main-loop route when one is available.
+        """
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                """SELECT model, billing_provider, billing_base_url, billing_mode,
+                          api_call_count
+                     FROM session_model_usage
+                    WHERE session_id = ?
+                      AND task = ''
+                      AND model <> 'unknown'
+                      AND billing_provider <> ''
+                    ORDER BY api_call_count DESC,
+                             (input_tokens + output_tokens + cache_read_tokens +
+                              cache_write_tokens + reasoning_tokens) DESC,
+                             last_seen DESC
+                    LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

@@ -2291,6 +2291,25 @@ class MatrixAdapter(BasePlatformAdapter):
             # direct invite joined via reconciliation is never recorded in
             # m.direct and gets misclassified as a group.
             is_direct, inviter = self._extract_invite_dm_signal(invited_room)
+            # The inviter allowlist gate from _on_invite applies here too.
+            # Without it, an invite from an arbitrary federated user that
+            # arrives while the gateway is down would be auto-joined on
+            # restart, bypassing the gate. An inviter missing from the
+            # stripped invite state fails closed, like an empty sender in
+            # _on_invite.
+            if not self._is_authorized_user(inviter):
+                logger.warning(
+                    "Matrix: rejecting invite to %s from unauthorized user %s",
+                    room_id,
+                    inviter,
+                )
+                continue
+            if is_direct and not inviter:
+                logger.warning(
+                    "Matrix: joining direct invite to %s without recording it "
+                    "in m.direct because the invite state has no inviter",
+                    room_id,
+                )
             logger.info(
                 "Matrix: reconciling pending invite for %s (is_direct=%s)",
                 room_id,
@@ -2309,6 +2328,9 @@ class MatrixAdapter(BasePlatformAdapter):
         ``is_direct`` flag from the original invite; its sender is the
         inviter. Returns ``(False, "")`` when the signal is absent.
         """
+        if not self._user_id:
+            return False, ""
+
         if not isinstance(invited_room, dict):
             return False, ""
 
@@ -2325,7 +2347,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 continue
             if event.get("type") != "m.room.member":
                 continue
-            if self._user_id and event.get("state_key") != self._user_id:
+            if event.get("state_key") != self._user_id:
                 continue
 
             content = event.get("content", {})

@@ -656,6 +656,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'desktop.repo_scan_enabled',
       'desktop.repo_scan_roots',
       'desktop.repo_scan_exclude_paths',
+      'desktop.markdown_linkify_paths',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',

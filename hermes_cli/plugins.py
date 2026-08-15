@@ -4211,7 +4211,10 @@ class PluginManager:
             # plugins. Walking them can raise PermissionError and take
             # down every subsequent tool call (#86996).
             if child.name.startswith("__") and child.name.endswith("__"):
+                logger.debug("Skipping dunder plugin path %s", child)
                 continue
+            # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
+            # and test doubles can still raise. Fail closed per child.
             try:
                 is_dir = child.is_dir()
             except OSError:

@@ -575,49 +575,48 @@ def _(rid, params: dict) -> dict:
             # new exchange is appended on top of the "undone" turns — durable
             # zombie history on resume, and the edit/regenerate never sticks.
             # Fail closed: refuse the turn and leave memory/DB unchanged.
-            with _session_db(session) as db:
-                if db is not None:
-                    try:
-                        # active_only=True: replace only the live (active=1) rows.
-                        # In-place compaction (#38763) keeps the pre-compaction
-                        # transcript as active=0/compacted=1 rows under this same
-                        # session key; a bare replace_messages() would DELETE that
-                        # durable archive on every edit/regenerate — the same bug
-                        # class #80216 fixed for /retry. On an uncompacted session
-                        # all rows are active=1, so this is behaviorally identical
-                        # to the full replace.
-                        # archive_dropped: a rewind overwrites turns the user may
-                        # not have meant to drop, and this write is the last step
-                        # before they are gone — three reported incidents ended
-                        # here with nothing to restore from (#70516, #80763,
-                        # #82756). Soft-archiving keeps them on disk (active=0) and
-                        # in the FTS index, so a mis-aimed cut is recoverable
-                        # instead of terminal. The live transcript is unchanged.
-                        # Fall back to session id when session_key is NULL — CLI-origin
-                        # sessions created before the session_key default fix have no
-                        # key, and replace_messages(None) triggers an FK violation.
-                        truncation_key = session.get("session_key") or sid
-                        db.replace_messages(
-                            truncation_key,
-                            truncated,
-                            active_only=True,
-                            archive_dropped=True,
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "prompt.submit: replace_messages failed for session %s "
-                            "(ordinal=%d); refusing turn so memory and DB stay "
-                            "aligned: %s",
-                            sid,
-                            ordinal,
-                            exc,
-                            exc_info=True,
-                        )
-                        return _err(
-                            rid,
-                            5008,
-                            f"failed to persist history truncation: {exc}",
-                        )
+            if (db := _get_db()) is not None:
+                try:
+                    # active_only=True: replace only the live (active=1) rows.
+                    # In-place compaction (#38763) keeps the pre-compaction
+                    # transcript as active=0/compacted=1 rows under this same
+                    # session key; a bare replace_messages() would DELETE that
+                    # durable archive on every edit/regenerate — the same bug
+                    # class #80216 fixed for /retry. On an uncompacted session
+                    # all rows are active=1, so this is behaviorally identical
+                    # to the full replace.
+                    # archive_dropped: a rewind overwrites turns the user may
+                    # not have meant to drop, and this write is the last step
+                    # before they are gone — three reported incidents ended
+                    # here with nothing to restore from (#70516, #80763,
+                    # #82756). Soft-archiving keeps them on disk (active=0) and
+                    # in the FTS index, so a mis-aimed cut is recoverable
+                    # instead of terminal. The live transcript is unchanged.
+                    # Fall back to session id when session_key is NULL — CLI-origin
+                    # sessions created before the session_key default fix have no
+                    # key, and replace_messages(None) triggers an FK violation.
+                    truncation_key = session.get("session_key") or sid
+                    db.replace_messages(
+                        truncation_key,
+                        truncated,
+                        active_only=True,
+                        archive_dropped=True,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "prompt.submit: replace_messages failed for session %s "
+                        "(ordinal=%d); refusing turn so memory and DB stay "
+                        "aligned: %s",
+                        sid,
+                        ordinal,
+                        exc,
+                        exc_info=True,
+                    )
+                    return _err(
+                        rid,
+                        5008,
+                        f"failed to persist history truncation: {exc}",
+                    )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if db is not None:

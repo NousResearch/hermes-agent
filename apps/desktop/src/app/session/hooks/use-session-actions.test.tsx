@@ -1753,7 +1753,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
   })
 
-  it('paints the bounded latest transcript before deferred resume finishes', async () => {
+  it('paints the bounded latest transcript after the deferred resume acknowledgement', async () => {
     const latestPage = Array.from({ length: 500 }, (_, index) => ({
       content: `message-${index}`,
       role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
@@ -1786,9 +1786,17 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     const resumePromise = resume!('stored-A', true)
 
-    await waitFor(() => expect($messages.get()).toHaveLength(500))
-    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect($messages.get()).toHaveLength(0)
+    expect(requestGatewayMock).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({
+        defer_history: true,
+        omit_messages: true,
+        session_id: 'stored-A'
+      })
+    )
 
     deferredResume.resolve({
       session_id: 'rt-A',

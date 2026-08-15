@@ -1080,6 +1080,7 @@ export function useSessionActions({
           prefetchApplied = true
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
+
         const currentMessages = $messages.get()
 
         // Keep the local snapshot when resume would only reshuffle runtime

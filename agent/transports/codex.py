@@ -78,6 +78,90 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
+def _deepseek_native_web_search_enabled() -> bool:
+    """True only when the user explicitly selected DeepSeek web search.
+
+    Unlike xAI's collision workaround, DeepSeek native search is opt-in because
+    it can consume substantial server-side tokens. Merely having a DeepSeek API
+    key must not make the plugin registry auto-select this server-side tool.
+    """
+    try:
+        from agent.web_search_registry import (
+            _read_config_key,
+            get_active_search_provider,
+        )
+
+        configured = (
+            _read_config_key("web", "search_backend")
+            or _read_config_key("web", "backend")
+            or ""
+        ).strip().lower()
+        if configured != "deepseek":
+            return False
+
+        # Require the marker plugin to be enabled and registered as well.
+        # Explicit registry resolution intentionally returns registered
+        # providers even when their local ``is_available`` probe is false;
+        # this marker never executes a local request.
+        provider = get_active_search_provider()
+        return getattr(provider, "name", None) == "deepseek"
+    except Exception:
+        return False
+
+
+def _sanitize_deepseek_responses_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove unsupported DeepSeek Responses fields after user overrides."""
+    for key in (
+        "background",
+        "context_management",
+        "conversation",
+        "include",
+        "metadata",
+        "previous_response_id",
+        "prompt",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "service_tier",
+        "stream_options",
+        "truncation",
+    ):
+        kwargs.pop(key, None)
+
+    reasoning = kwargs.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort:
+            kwargs["reasoning"] = {"effort": effort}
+        else:
+            kwargs.pop("reasoning", None)
+
+    extra_body = kwargs.get("extra_body")
+    if isinstance(extra_body, dict):
+        cleaned = dict(extra_body)
+        for key in (
+            "background",
+            "context_management",
+            "conversation",
+            "include",
+            "metadata",
+            "previous_response_id",
+            "prompt",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "safety_identifier",
+            "service_tier",
+            "stream_options",
+            "truncation",
+        ):
+            cleaned.pop(key, None)
+        if cleaned:
+            kwargs["extra_body"] = cleaned
+        else:
+            kwargs.pop("extra_body", None)
+    return kwargs
+
+
 def _rename_client_web_search_for_xai(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Rename client ``web_search`` → alias so xAI won't hijack it server-side."""
     rewritten: List[Dict[str, Any]] = []
@@ -361,6 +445,7 @@ class ResponsesApiTransport(ProviderTransport):
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
+            is_deepseek_responses: bool — DeepSeek Responses backend
             github_reasoning_extra: dict | None — Copilot reasoning params
         """
         from agent.codex_responses_adapter import (
@@ -382,6 +467,12 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_deepseek_responses = params.get("is_deepseek_responses") is True
+        deepseek_native_web_search = False
+        if is_deepseek_responses:
+            from hermes_cli.providers import deepseek_supports_native_web_search
+
+            deepseek_native_web_search = deepseek_supports_native_web_search(model)
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -438,6 +529,12 @@ class ResponsesApiTransport(ProviderTransport):
             if not is_grok_46_family(model):
                 _effort_clamp["xhigh"] = "high"
             _effort_clamp.update({"max": "high", "ultra": "high"})
+        elif is_deepseek_responses:
+            # DeepSeek V4 Responses exposes none/low/high/max. Normalize
+            # Hermes/OpenAI aliases to DeepSeek's documented wire values.
+            _effort_clamp.update(
+                {"medium": "high", "xhigh": "high", "ultra": "max"}
+            )
         if (params.get("provider") or "").strip().lower() == "actual":
             # Actual Computer relays to SGLang/vLLM backends that accept only
             # none/low/medium/high/max for reasoning effort — a forwarded
@@ -483,6 +580,37 @@ class ResponsesApiTransport(ProviderTransport):
                     response_tools = filtered
                 else:
                     response_tools = _rename_client_web_search_for_xai(response_tools)
+
+        # DeepSeek native search is an explicit 1:1 replacement. It is never
+        # added unless Hermes already exposed its web_search function, and a
+        # configured Firecrawl/Tavily/etc. backend remains client-dispatched.
+        if (
+            is_deepseek_responses
+            and deepseek_native_web_search
+            and response_tools
+            and _deepseek_native_web_search_enabled()
+        ):
+            has_client_web_search = any(
+                isinstance(t, dict)
+                and t.get("type") == "function"
+                and t.get("name") == "web_search"
+                for t in response_tools
+            )
+            if has_client_web_search:
+                response_tools = [
+                    t
+                    for t in response_tools
+                    if not (
+                        isinstance(t, dict)
+                        and t.get("type") == "function"
+                        and t.get("name") == "web_search"
+                    )
+                ]
+                if not any(
+                    isinstance(t, dict) and t.get("type") == "web_search"
+                    for t in response_tools
+                ):
+                    response_tools.append({"type": "web_search"})
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -535,7 +663,12 @@ class ResponsesApiTransport(ProviderTransport):
         ) or _cache_scope
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
-        if not is_github_responses and not is_xai_responses and cache_key:
+        if (
+            not is_github_responses
+            and not is_xai_responses
+            and not is_deepseek_responses
+            and cache_key
+        ):
             kwargs["prompt_cache_key"] = cache_key
 
         cache_retention = _default_prompt_cache_retention_for_request(
@@ -563,7 +696,9 @@ class ResponsesApiTransport(ProviderTransport):
             if grok_supports_reasoning_effort(model):
                 kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
-            if is_github_responses:
+            if is_deepseek_responses:
+                kwargs["reasoning"] = {"effort": reasoning_effort}
+            elif is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
@@ -572,12 +707,24 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )
-        elif not is_github_responses and not is_xai_responses:
+        elif (
+            not is_github_responses
+            and not is_xai_responses
+            and not is_deepseek_responses
+        ):
             kwargs["include"] = []
+        elif is_deepseek_responses:
+            # DeepSeek thinking is enabled by default. Omitting ``reasoning``
+            # therefore does not honor reasoning.enabled=false; ``none`` is
+            # the provider's explicit Responses API disable value.
+            kwargs["reasoning"] = {"effort": "none"}
 
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        if is_deepseek_responses:
+            kwargs = _sanitize_deepseek_responses_kwargs(kwargs)
 
         if "prompt_cache_key" in kwargs:
             bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])

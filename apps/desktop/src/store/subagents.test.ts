@@ -303,4 +303,19 @@ describe('subagent store', () => {
       expect(activeSubagentCount(items)).toBe(0)
     }
   )
+
+  // Folded in from PR #80045 (#80018): a late progress event must not revive
+  // the spinner after a terminal completion — the row stays settled.
+  it('does not regress to running when a late running event arrives after timeout', () => {
+    upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'late1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { goal: 'task', status: 'timeout', subagent_id: 'late1', summary: 'Timed out', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+    upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'late1', task_index: 0, text: 'late' })
+
+    expect(listFor('s1')[0]?.status).toBe('failed')
+  })
 })

@@ -327,6 +327,7 @@ def _generate_command_tts(
             "format": _get_command_tts_output_format(config, str(output)),
             "voice": str(config.get("voice", "")), "model": str(config.get("model", "")),
             "speed": str(config.get("speed", tts_config.get("speed", ""))),
+            "instructions": str(tts_config.get("instructions") or ""),
         }
         command = render_command_template(command_template, placeholders)
         try:

@@ -60,12 +60,15 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
     cfg = tts_config if isinstance(tts_config, dict) else {}
     voice, model, speed = cfg.get("voice"), cfg.get("model"), cfg.get("speed")
     fmt = cfg.get("output_format", DEFAULT_COMMAND_TTS_OUTPUT_FORMAT)
+    from tools.tts_tool_instructions import _tts_instructions_channel
+    instructions = _tts_instructions_channel(cfg)
+    extra = {"instructions": instructions} if instructions else {}
     logger.info("Generating speech with plugin TTS provider '%s'...", key)
     written = plugin_provider.synthesize(
         text, output_path, voice=voice if isinstance(voice, str) and voice else None,
         model=model if isinstance(model, str) and model else None,
         speed=float(speed) if isinstance(speed, (int, float)) else None,
-        format=str(fmt).lower() if fmt else "mp3")
+        format=str(fmt).lower() if fmt else "mp3", **extra)
     return written if isinstance(written, str) and written else output_path
 
 

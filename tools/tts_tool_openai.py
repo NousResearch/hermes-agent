@@ -101,6 +101,9 @@ def _generate_openai_tts(
     and skip the managed-gateway resolution; otherwise the OpenAI auth chain and ``tts.openai``
     (speed falling back to ``tts.speed``) apply. ``instructions`` is forwarded only when truthy
     so ``tts-1`` and strict OpenAI-compatible servers that reject unknown kwargs are unaffected."""
+    if instructions is None:
+        from tools.tts_tool_instructions import _tts_instructions_channel
+        instructions = _tts_instructions_channel(tts_config)
     fallback_base: Optional[str] = None
     is_managed = False
     explicit_base_url = base_url is not None

@@ -135,12 +135,21 @@ def _assert_keepalive_tight(instances):
         assert limits.max_connections is not None and limits.max_connections > 0
 
 
+def _assert_updates_pool_never_reuses(instance):
+    """The long-poll pool must not reuse server-closed connections (#87057)."""
+    limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_keepalive_connections == 0
+    assert limits.max_connections == 512
+
+
 def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     """The proxy path the #31599 reporter hit must wire tuned limits."""
     instances = _drive_connect(monkeypatch, proxy_url="http://127.0.0.1:9/")
     # Both the general request pool and the get_updates pool are built here.
     assert len(instances) >= 2
-    _assert_keepalive_tight(instances)
+    _assert_keepalive_tight(instances[:1])
+    _assert_updates_pool_never_reuses(instances[1])
     # Sanity: the proxy was actually threaded through (we're on the proxy branch).
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
 
@@ -156,7 +165,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
     )
 
     assert len(instances) >= 2
-    for instance in instances:
+    for index, instance in enumerate(instances):
         transport = instance.kwargs["httpx_kwargs"]["transport"]
         assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
         limits = transport._transport_kwargs["limits"]
@@ -172,6 +181,10 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
             and opt[2] == 1
             for opt in sock_opts
         )
+        if index == 0:
+            assert limits.max_keepalive_connections >= 1
+        else:
+            assert limits.max_keepalive_connections == 0
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())

@@ -4594,8 +4594,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     max_keepalive_connections=_base_limits.max_keepalive_connections,
                     keepalive_expiry=_base_limits.keepalive_expiry,
                 )
+                # A long-poll request is continuously active, so keepalive
+                # expiry cannot protect it from a server-side connection close.
+                # Never hand getUpdates a pooled socket from a previous poll;
+                # ordinary Bot API requests retain the shared reusable pool.
+                _updates_limits = _httpx.Limits(
+                    max_connections=request_kwargs["connection_pool_size"],
+                    max_keepalive_connections=0,
+                    keepalive_expiry=_base_limits.keepalive_expiry,
+                )
             else:  # pragma: no cover — httpx always present alongside PTB
                 _pool_limits = None
+                _updates_limits = None
 
             def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
                 """Merge tuned keepalive limits into httpx client kwargs.
@@ -4673,6 +4683,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
                 _transport_kwargs["socket_options"] = tcp_keepalive_socket_options()
+                _updates_transport_kwargs = dict(_transport_kwargs)
+                if _updates_limits is not None:
+                    _updates_transport_kwargs["limits"] = _updates_limits
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={
@@ -4685,7 +4698,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            **_updates_transport_kwargs,
                         )
                     },
                 )
@@ -4695,14 +4709,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
                 )
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs={"limits": _updates_limits},
                 )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
                 request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
                 get_updates_request = HTTPXRequest(
-                    **request_kwargs, httpx_kwargs=_with_limits()
+                    **request_kwargs, httpx_kwargs={"limits": _updates_limits}
                 )
 
             get_updates_request = self._instrument_polling_request(get_updates_request)

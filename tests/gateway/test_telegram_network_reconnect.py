@@ -1026,6 +1026,7 @@ async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatc
 
         async def aclose(self):
             # Simulate httpcore cleanup that absorbs cancellation for a while.
+            # The detached cleanup must not stay registered forever.
             for _ in range(20):
                 try:
                     await asyncio.sleep(0.01)
@@ -1046,6 +1047,7 @@ async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatc
             await asyncio.Event().wait()
 
         async def initialize(self):
+            # Mirrors PTB: initialize() does nothing while is_closed is false.
             if self._client.is_closed:
                 self._client = self._build_client()
 

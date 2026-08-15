@@ -1707,11 +1707,12 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
 
     # Windows Task Scheduler is a supervisor too — and the most reliable
     # signal is the task's own state, not a parent-chain walk. A Scheduled
-    # Task gateway whose conhost bootstrap has already exited is invisible
-    # to `_reaper_candidate_is_supervisor_owned` (the parent chain breaks
-    # before services.exe, fail-open), yet it is alive and supervised.
-    # Querying the task state catches that case: if HermesGateway is
-    # Running, the reaper must not touch its process tree (#86098).
+    # Task gateway whose conhost/VBS bootstrap has already exited is
+    # invisible to `_reaper_candidate_is_supervisor_owned` (the parent
+    # chain breaks before services.exe, fail-open), yet it is alive and
+    # supervised. After that launcher exits the task is typically Ready,
+    # not Running — treating only Running as supervised still kills the
+    # detached gateway on every desktop serve start (#86098, #87001).
     if is_windows():
         try:
             # The install-time task name is profile-aware (Hermes_Gateway /
@@ -1722,7 +1723,7 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
             _task_name = get_task_name()
         except Exception:
             _task_name = "Hermes_Gateway"
-        if _windows_scheduled_task_running(_task_name):
+        if _windows_scheduled_task_supervises(_task_name):
             return False
 
     from gateway.status import _pid_exists, write_planned_stop_marker
@@ -1957,31 +1958,29 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def _windows_scheduled_task_running(task_name: str) -> bool:
-    """Return True when a Windows scheduled task with ``task_name`` is Running.
+# Task Scheduler states that mean "this profile still has an official
+# supervisor". Ready is the steady state after the VBS/cmd launcher
+# exits and leaves the detached gateway running (#87001). Queued is a
+# rare in-between. Disabled / MISSING are not supervisors.
+_WINDOWS_TASK_SUPERVISOR_STATES = frozenset({"Running", "Ready", "Queued"})
 
-    Used to treat Task Scheduler as a gateway supervisor on Windows: the
-    orphan-reap sweep must not kill a gateway that a scheduled task is
-    actively managing (it writes the planned-stop marker, the gateway exits
-    cleanly with code 0, and the scheduler never restarts it — silently
-    killing A2A/messaging on every desktop-app launch).
 
-    Best-effort: any failure (missing task, powershell unavailable, timeout)
-    returns False so the caller falls back to its existing behaviour.
+def _windows_scheduled_task_state(task_name: str) -> str | None:
+    """Return the English ``Get-ScheduledTask`` State, or None on failure.
 
-    Implemented with PowerShell (``Get-ScheduledTask``) instead of ``schtasks``
-    because the latter localizes its output (a Chinese Windows prints
-    ``状态: 正在运行``, not ``Status: Running``) and emits the local codepage,
-    which ``subprocess`` with ``encoding="utf-8"`` silently mangles. The
-    ``State`` property of ``Get-ScheduledTask`` is an English enum value
-    (``Running`` / ``Ready`` / ``Disabled``), stable across locales.
+    Implemented with PowerShell instead of ``schtasks`` because the latter
+    localizes its output (a Chinese Windows prints ``状态: 正在运行``, not
+    ``Status: Running``) and emits the local codepage, which ``subprocess``
+    with ``encoding="utf-8"`` silently mangles. The ``State`` property is
+    an English enum value (``Running`` / ``Ready`` / ``Disabled``), stable
+    across locales.
     """
     if not is_windows():
-        return False
+        return None
     try:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
-            return False
+            return None
         ps_cmd = (
             f"$t = Get-ScheduledTask -TaskName '{task_name}' "
             "-ErrorAction SilentlyContinue; if ($t) { $t.State } else { 'MISSING' }"
@@ -1995,11 +1994,40 @@ def _windows_scheduled_task_running(task_name: str) -> bool:
             timeout=10,
         )
         if result.returncode != 0:
-            return False
+            return None
         state = (result.stdout or "").strip()
-        return state == "Running"
+        return state or None
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None
+
+
+def _windows_scheduled_task_running(task_name: str) -> bool:
+    """Return True when a Windows scheduled task with ``task_name`` is Running.
+
+    Narrow helper kept for callers that need the in-flight state. The
+    orphan-reaper uses ``_windows_scheduled_task_supervises`` instead —
+    Ready is the normal post-launch state for a detached gateway.
+    """
+    return _windows_scheduled_task_state(task_name) == "Running"
+
+
+def _windows_scheduled_task_supervises(task_name: str) -> bool:
+    """Return True when Task Scheduler still owns this profile's gateway.
+
+    Used to treat Task Scheduler as a gateway supervisor on Windows: the
+    orphan-reap sweep must not kill a gateway that a scheduled task
+    launched and left detached. After the bootstrap exits the task is
+    Ready, not Running; a Running-only check still writes the planned-stop
+    marker, the gateway exits cleanly with code 0, and the scheduler never
+    restarts it — silently killing A2A/messaging on every desktop-app
+    launch (#86098, #87001).
+
+    Best-effort: any failure (missing task, powershell unavailable, timeout)
+    returns False so the caller falls back to pidfile / parent-chain
+    exclusions.
+    """
+    state = _windows_scheduled_task_state(task_name)
+    return state in _WINDOWS_TASK_SUPERVISOR_STATES
 
 
 def _windows_gateway_should_absorb_console_controls() -> bool:

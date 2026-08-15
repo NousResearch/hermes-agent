@@ -154,9 +154,16 @@ export const INTERNAL_ARG_PREFIXES = [
   '--log-file=',
   '--disable-gpu-sandbox',
   '--lang=',
-  '--inspect',
+
   '--remote-debugging-port='
 ]
+
+/** Node/V8 debug flags: --inspect, --inspect=PORT, --inspect-brk,
+ *  --inspect-brk=PORT, --inspect-wait, --inspect-wait=PORT.
+ *  Kept as a helper so future variants can be added in one place. */
+function isDebugFlag(arg: string): boolean {
+  return /^--inspect(-brk|-wait)?(=|$)/.test(arg)
+}
 
 /** Filter Electron internals from process.argv.slice(1) so the relaunched
  * app replays only user/launcher intent (deep links, app flags). */
@@ -170,6 +177,9 @@ export function collectRelaunchArgs(argv: unknown): string[] {
       return false
     }
 
+    if (isDebugFlag(arg)) {
+      return false
+    }
     return !INTERNAL_ARG_PREFIXES.some(prefix =>
       prefix.endsWith('=') ? arg.startsWith(prefix) : arg === prefix || arg.startsWith(prefix + '=')
     )

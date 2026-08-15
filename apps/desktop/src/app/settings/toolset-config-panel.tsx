@@ -60,7 +60,6 @@ const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
  */
 function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
   try {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- stable per instance: router presence never changes for a mounted component's lifetime
     return useNavigate()
   } catch {
     return null

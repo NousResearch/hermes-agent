@@ -12019,12 +12019,7 @@ ipcMain.handle('hermes:connections:update-all', async () => {
 
         const descriptor: any = await ensureRegistryBackend(connection.id, null)
 
-        const body: any = await postJsonForBackend(
-          descriptor,
-          '/api/hermes/update',
-          {},
-          { timeoutMs: 15_000 }
-        )
+        const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
 
         if (body?.ok === false) {
           // The backend refused (docker/nix/externally-managed installs) —

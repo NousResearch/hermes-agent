@@ -17,7 +17,6 @@ interface DeepLinkHighlightOptions {
 // try/catch never changes the hook count between renders (rules-of-hooks safe).
 function useOptionalSearchParams(): ReturnType<typeof useSearchParams> {
   try {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- stable per instance: router presence never changes for a mounted component's lifetime
     return useSearchParams()
   } catch {
     return [new URLSearchParams(), () => undefined]

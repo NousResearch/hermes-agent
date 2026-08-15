@@ -50,7 +50,11 @@ def _get_flush_dir():
         managed = False
 
     if managed:
-        flush_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            flush_dir.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            if not flush_dir.is_dir():
+                raise
         return flush_dir
 
     flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

@@ -21,7 +21,7 @@ class TestDeprecatedCwdWarning:
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={})
+        warn_deprecated_cwd_env_vars()
 
         assert capsys.readouterr().err == ""
 
@@ -38,7 +38,7 @@ class TestDeprecatedCwdWarning:
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={})
+        warn_deprecated_cwd_env_vars()
 
         captured = capsys.readouterr()
         assert "MESSAGING_CWD" in captured.err
@@ -49,11 +49,16 @@ class TestDeprecatedCwdWarning:
     def test_dotenv_terminal_cwd_warns_with_explicit_config(
         self, monkeypatch, tmp_path, capsys
     ):
-        _write_env(monkeypatch, tmp_path, "TERMINAL_CWD=/legacy/path\n")
+        hermes_home = _write_env(
+            monkeypatch, tmp_path, "TERMINAL_CWD=/legacy/path\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            "terminal:\n  cwd: /current/path\n", encoding="utf-8"
+        )
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={"terminal": {"cwd": "/current/path"}})
+        warn_deprecated_cwd_env_vars()
 
         assert "TERMINAL_CWD=/legacy/path" in capsys.readouterr().err
 
@@ -69,7 +74,7 @@ class TestDeprecatedCwdWarning:
 
         from hermes_cli.config import warn_deprecated_cwd_env_vars
 
-        warn_deprecated_cwd_env_vars(config={})
+        warn_deprecated_cwd_env_vars()
 
         assert capsys.readouterr().err == ""
 
@@ -81,6 +86,6 @@ class TestDeprecatedCwdWarning:
 
         monkeypatch.setattr(config_module, "load_env", raise_read_error)
 
-        config_module.warn_deprecated_cwd_env_vars(config={})
+        config_module.warn_deprecated_cwd_env_vars()
 
         assert capsys.readouterr().err == ""

@@ -3106,6 +3106,42 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
         pass
 
 
+def _windows_cron_bootstrap_argv(
+    python_exe: str,
+    env_overlay: dict[str, str],
+    script_path: str,
+) -> list[str]:
+    """Bootstrap a cron script under the base interpreter with ``.pth`` support.
+
+    The uv-venv overlay mode runs the base ``python.exe`` (to avoid the
+    launcher re-execing a console interpreter and flashing a window) and
+    re-attaches the venv via ``PYTHONPATH``.  But ``PYTHONPATH`` entries are
+    plain ``sys.path`` additions — Python's site initialization never
+    processes ``.pth`` files for them (only ``site.addsitedir()`` does) — so
+    editable installs (``pip install -e``, ``__editable__*.pth`` links) are
+    invisible to cron script jobs.
+
+    Bootstrap with ``site.addsitedir()`` on the venv ``site-packages``, then
+    exec the script as ``__main__``.  ``runpy.run_path`` keeps ``__file__``
+    correct; ``sys.path[0]`` is set to the script's directory to preserve the
+    ``python script.py`` import semantics.  Falls back to a plain invocation
+    if the venv layout is unresolvable — the pre-existing PYTHONPATH
+    behaviour is strictly better than failing to run at all.
+    """
+    site_packages = Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
+    if not site_packages.is_dir():
+        return [python_exe, script_path]
+    bootstrap = (
+        "import os, runpy, site, sys;"
+        f"site.addsitedir({str(site_packages)!r});"
+        "script = sys.argv[1];"
+        "sys.argv = [script] + sys.argv[2:];"
+        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
+        "runpy.run_path(script, run_name='__main__')"
+    )
+    return [python_exe, "-c", bootstrap, script_path]
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -3207,7 +3243,13 @@ def _run_job_script(
         env_overlay: dict[str, str] = {}
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-        argv = [python_exe, str(path)]
+        if env_overlay:
+            # Overlay mode (Windows uv venv): PYTHONPATH alone cannot make
+            # editable installs importable — .pth processing needs
+            # site.addsitedir() (see _windows_cron_bootstrap_argv).
+            argv = _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path))
+        else:
+            argv = [python_exe, str(path)]
 
     try:
         from tools.environments.local import build_subprocess_env

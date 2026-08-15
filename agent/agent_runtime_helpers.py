@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.message_sanitization import _FULL_ARGS_LOG_BOUND
+from agent.message_sanitization import _FULL_ARGS_LOG_BOUND, deterministic_call_id
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
@@ -3574,8 +3574,8 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             dropped_empty_tool_calls,
         )
 
-    # --- Repair tool_calls whose function.name is empty/missing ---
-    # Some providers (and partially-streamed responses) emit a tool_call with
+    # --- Repair tool_calls whose function.name or id is empty/missing ---
+    # 1. Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters
     # silently DROP such function_call items while still emitting the matching
     # function_call_output, producing the gateway's HTTP 400
@@ -3590,41 +3590,116 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # sentinel so the call and its result stay PAIRED — the adapter no longer
     # drops the function_call, so there is no orphaned output and no 400, while
     # the result content the model needs is preserved.
+    # 2. Some models/proxies (or incomplete turns) emit a tool_call with empty or
+    # missing id (""). Downstream pairing and strict endpoints (Gemini/Antigravity)
+    # require a non-empty call_id; otherwise stub injection skips it and the request
+    # ends with an unanswered model turn, triggering HTTP 400/300 "Requests ending
+    # with a model turn". Assign a deterministic id.
     _EMPTY_NAME_SENTINEL = "invalid_tool_call"
     for msg in messages:
-        if msg.get("role") != "assistant":
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         tcs = msg.get("tool_calls") or []
         if not tcs:
             continue
-        for tc in tcs:
+        for idx, tc in enumerate(tcs):
             if isinstance(tc, dict):
                 fn = tc.get("function")
                 name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
             else:
                 fn = getattr(tc, "function", None)
                 name = getattr(fn, "name", None) if fn else None
-            if isinstance(name, str) and name.strip():
-                continue
-            _ra().logger.warning(
-                "Pre-call sanitizer: repairing tool_call with empty "
-                "function.name -> %r (id=%s)",
-                _EMPTY_NAME_SENTINEL,
-                _ra().AIAgent._get_tool_call_id_static(tc),
-            )
-            if isinstance(fn, dict):
-                fn["name"] = _EMPTY_NAME_SENTINEL
-            elif fn is not None and hasattr(fn, "name"):
-                try:
-                    fn.name = _EMPTY_NAME_SENTINEL
-                except Exception:
-                    pass
-            elif isinstance(tc, dict):
-                tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+            if not (isinstance(name, str) and name.strip()):
+                _ra().logger.warning(
+                    "Pre-call sanitizer: repairing tool_call with empty "
+                    "function.name -> %r (id=%s)",
+                    _EMPTY_NAME_SENTINEL,
+                    _ra().AIAgent._get_tool_call_id_static(tc),
+                )
+                if isinstance(fn, dict):
+                    fn["name"] = _EMPTY_NAME_SENTINEL
+                elif fn is not None and hasattr(fn, "name"):
+                    try:
+                        fn.name = _EMPTY_NAME_SENTINEL
+                    except Exception:
+                        pass
+                elif isinstance(tc, dict):
+                    tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+                name = _EMPTY_NAME_SENTINEL
+
+            cid = _ra().AIAgent._get_tool_call_id_static(tc)
+            if not cid:
+                if isinstance(tc, dict):
+                    raw_args = fn.get("arguments", "{}") if isinstance(fn, dict) else getattr(fn, "arguments", "{}") or "{}"
+                else:
+                    raw_args = getattr(fn, "arguments", "{}") if fn else "{}"
+                raw_args_str = raw_args if isinstance(raw_args, str) else "{}"
+                generated_id = deterministic_call_id(name or _EMPTY_NAME_SENTINEL, raw_args_str, idx)
+                _ra().logger.warning(
+                    "Pre-call sanitizer: repairing tool_call with empty/missing "
+                    "id -> %r (name=%s)",
+                    generated_id,
+                    name,
+                )
+                if isinstance(tc, dict):
+                    tc["id"] = generated_id
+                    tc["call_id"] = generated_id
+                else:
+                    try:
+                        tc.id = generated_id
+                    except Exception:
+                        pass
+                    if hasattr(tc, "call_id"):
+                        try:
+                            tc.call_id = generated_id
+                        except Exception:
+                            pass
+                    # If assignment had no effect (e.g. read-only/frozen object), replace with plain dict
+                    if _ra().AIAgent._get_tool_call_id_static(tc) != generated_id:
+                        if isinstance(tcs, list):
+                            tcs[idx] = {
+                                "id": generated_id,
+                                "type": "function",
+                                "function": {"name": name or _EMPTY_NAME_SENTINEL, "arguments": raw_args_str},
+                            }
+
+    # --- Repair role="tool" messages with empty/missing tool_call_id ---
+    # Pair tool messages having empty tool_call_id with unmatched tool_calls from
+    # the immediately preceding assistant turn.
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        cid = (msg.get("tool_call_id") or "").strip()
+        if not cid:
+            for prev_idx in range(i - 1, -1, -1):
+                prev_msg = messages[prev_idx]
+                if not isinstance(prev_msg, dict):
+                    continue
+                if prev_msg.get("role") == "assistant" and prev_msg.get("tool_calls"):
+                    claimed_ids = {
+                        (m.get("tool_call_id") or "").strip()
+                        for m in messages[prev_idx + 1:i]
+                        if isinstance(m, dict) and m.get("role") == "tool" and (m.get("tool_call_id") or "").strip()
+                    }
+                    for tc in prev_msg["tool_calls"]:
+                        tc_id = _ra().AIAgent._get_tool_call_id_static(tc)
+                        if tc_id and tc_id not in claimed_ids:
+                            msg["tool_call_id"] = tc_id
+                            if not (msg.get("name") or "").strip():
+                                msg["name"] = _ra().AIAgent._get_tool_call_name_static(tc) or "unknown"
+                            _ra().logger.debug(
+                                "Pre-call sanitizer: paired empty tool_call_id with call %s (%s)",
+                                tc_id,
+                                msg.get("name"),
+                            )
+                            break
+                    break
+                elif prev_msg.get("role") != "tool":
+                    break
 
     surviving_call_ids: set = set()
     for msg in messages:
-        if msg.get("role") == "assistant":
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
                 cid = _ra().AIAgent._get_tool_call_id_static(tc)
                 if cid:
@@ -3632,7 +3707,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
     result_call_ids: set = set()
     for msg in messages:
-        if msg.get("role") == "tool":
+        if isinstance(msg, dict) and msg.get("role") == "tool":
             cid = (msg.get("tool_call_id") or "").strip()
             if cid:
                 result_call_ids.add(cid)
@@ -3642,26 +3717,26 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     if orphaned_results:
         messages = [
             m for m in messages
-            if not (m.get("role") == "tool" and (m.get("tool_call_id") or "").strip() in orphaned_results)
+            if not (isinstance(m, dict) and m.get("role") == "tool" and (m.get("tool_call_id") or "").strip() in orphaned_results)
         ]
         _ra().logger.debug(
             "Pre-call sanitizer: removed %d orphaned tool result(s)",
             len(orphaned_results),
         )
 
-    # 2. Inject stub results for calls whose result was dropped
+    # 2. Inject stub results for calls whose result was dropped / missing
     missing_results = surviving_call_ids - result_call_ids
     if missing_results:
         patched: List[Dict[str, Any]] = []
         for msg in messages:
             patched.append(msg)
-            if msg.get("role") == "assistant":
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
                     cid = _ra().AIAgent._get_tool_call_id_static(tc)
                     if cid in missing_results:
                         patched.append({
                             "role": "tool",
-                            "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                            "name": _ra().AIAgent._get_tool_call_name_static(tc) or "unknown",
                             "content": "[Result unavailable — see context summary above]",
                             "tool_call_id": cid,
                         })
@@ -3684,6 +3759,9 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     deduped: List[Dict[str, Any]] = []
     removed_dupes = 0
     for msg in messages:
+        if not isinstance(msg, dict):
+            deduped.append(msg)
+            continue
         role = msg.get("role")
         if role == "assistant" and msg.get("tool_calls"):
             kept_tcs = []
@@ -3696,8 +3774,9 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     seen_assistant_call_ids.add(cid)
                 kept_tcs.append(tc)
             if kept_tcs:
-                msg = {**msg, "tool_calls": kept_tcs}
-            elif len(kept_tcs) != len(msg.get("tool_calls") or []):
+                if len(kept_tcs) != len(msg.get("tool_calls") or []):
+                    msg = {**msg, "tool_calls": kept_tcs}
+            else:
                 msg = {k: v for k, v in msg.items() if k != "tool_calls"}
             deduped.append(msg)
         elif role == "tool":
@@ -3716,6 +3795,10 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # 4. Final safety pass: heal any empty assistant messages created by dedup
+    messages = repair_empty_non_final_messages(messages)
+
     return messages
 
 

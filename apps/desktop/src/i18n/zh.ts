@@ -453,6 +453,11 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      sessionDensityTitle: '会话列表密度',
+      sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
+      sessionDensityCompact: '紧凑',
+      sessionDensityComfortable: '舒适',
+      sessionDensityDetailed: '详细',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -2199,6 +2204,8 @@ export const zh: Translations = {
     loading: '加载中…',
     loadMore: '加载更多',
     loadCount: step => `再加载 ${step} 个`,
+    messageCount: count => `${count} 条消息`,
+    toolCallCount: count => `${count} 次工具调用`,
     row: {
       pin: '置顶',
       unpin: '取消置顶',

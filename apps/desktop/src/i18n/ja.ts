@@ -322,6 +322,11 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      sessionDensityTitle: 'セッションリストの密度',
+      sessionDensityDesc: 'サイドバーのセッションタイトルの下に表示する情報量を選びます。',
+      sessionDensityCompact: 'コンパクト',
+      sessionDensityComfortable: '標準',
+      sessionDensityDetailed: '詳細',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',
@@ -1787,6 +1792,8 @@ export const ja = defineLocale({
     loading: '読み込み中…',
     loadMore: 'さらに読み込む',
     loadCount: step => `さらに ${step} 件を読み込む`,
+    messageCount: count => `${count} 件のメッセージ`,
+    toolCallCount: count => `${count} 件のツール呼び出し`,
     row: {
       pin: 'ピン留め',
       unpin: 'ピン留めを解除',

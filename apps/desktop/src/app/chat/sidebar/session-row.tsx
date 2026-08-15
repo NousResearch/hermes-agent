@@ -28,6 +28,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { $sessionListDensity } from '@/store/session-list-density'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -43,6 +44,7 @@ import {
   SidebarRowShell
 } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { sessionRowDetails } from './session-row-details'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -134,6 +136,12 @@ function SidebarSessionRowImpl({
   const r = t.sidebar.row
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
+  const density = useStore($sessionListDensity)
+  const fmt = t.sidebar
+  const details = sessionRowDetails(session, {
+    messageCount: fmt.messageCount,
+    toolCallCount: fmt.toolCallCount
+  })
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
   // Opt-in row metadata from the sidebar's filter menu. Read from the store
@@ -311,6 +319,10 @@ function SidebarSessionRowImpl({
         className={cn(
           'group row-hover relative',
           card && SIDEBAR_ROW_CARD_MIN_H,
+          // Density-aware minimum heights for the inline (non-card) row: the
+          // metadata / preview lines below need the extra rows (#68119).
+          !card && density !== 'compact' && 'min-h-[2.75rem]',
+          !card && density === 'detailed' && 'min-h-[3.875rem]',
           isSelected && 'bg-(--ui-row-active-background)',
           liveTurn && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
@@ -438,15 +450,30 @@ function SidebarSessionRowImpl({
                 <>
                   {leadNode}
                   {handoffBadge}
-                  <OverflowTip label={title}>
-                    <SidebarRowLabel
-                      className="hover-marquee flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                      onPointerEnter={armMarquee}
-                      onPointerLeave={disarmMarquee}
-                    >
-                      <span className="hover-marquee-inner">{title}</span>
-                    </SidebarRowLabel>
-                  </OverflowTip>
+                  <span className="min-w-0 flex-1 self-center">
+                    <OverflowTip label={title}>
+                      <SidebarRowLabel
+                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                        onPointerEnter={armMarquee}
+                        onPointerLeave={disarmMarquee}
+                      >
+                        <span className="hover-marquee-inner">{title}</span>
+                      </SidebarRowLabel>
+                    </OverflowTip>
+                    {/* Session-list density (#68119): comfortable adds one
+                        deterministic metadata line; detailed adds the initial
+                        request preview. Compact keeps today's one-line row. */}
+                    {density !== 'compact' && details.metadata && (
+                      <span className="mt-0.5 block truncate text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+                        {details.metadata}
+                      </span>
+                    )}
+                    {density === 'detailed' && details.preview && (
+                      <span className="mt-1 block truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                        {details.preview}
+                      </span>
+                    )}
+                  </span>
                 </>
               )
             }

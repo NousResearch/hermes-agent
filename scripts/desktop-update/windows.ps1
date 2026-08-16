@@ -1513,10 +1513,9 @@ try {
         # One retry for update-boundary failures. Most exit-2 safety refusals
         # remain terminal, but self-lock deferral also uses exit 2 and writes
         # .update-incomplete after the code swap. That marker is only a retry
-        # signal here: early recovery skips argv containing "update", so this
-        # fresh process must finish dependency sync without holding the locked
-        # native modules (lazy imports on the swapped checkout), then continue
-        # the remaining Desktop/skills stages of the full update pipeline.
+        # signal here: the fresh process's early-recovery pass finishes core
+        # dependency sync before native modules load, then `update` continues
+        # the remaining Desktop/skills stages of the full pipeline.
         Write-HandoffLog "first attempt left retryable update state; retrying once in a fresh process"
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"

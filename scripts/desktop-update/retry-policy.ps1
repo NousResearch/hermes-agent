@@ -9,9 +9,8 @@ function Test-HermesUpdateShouldRetry {
 
     # Exit 2 is shared by non-retryable safety refusals and the self-lock
     # deferral. Only the latter writes this marker. The handoff treats it as a
-    # retry signal for one fresh-process attempt; early recovery does not run
-    # while argv contains "update".
+    # retry signal for one fresh-process attempt, whose early-recovery pass
+    # completes core dependencies before native modules load.
     $deferredInstallMarker = Join-Path $InstallRoot ".update-incomplete"
     return Test-Path -LiteralPath $deferredInstallMarker
 }
-

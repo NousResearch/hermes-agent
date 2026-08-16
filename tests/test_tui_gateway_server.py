@@ -853,6 +853,36 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     assert server._completion_cwd({}) == str(stale)
 
 
+def test_completion_cwd_cross_profile_placeholder_falls_back_to_profile_home(
+    monkeypatch, tmp_path
+):
+    """Issue #87584: a pooled backend rebinding to a profile with a
+    placeholder terminal.cwd must land new sessions in that profile's OWN
+    home — not the launch profile's configured cwd, and not its process env."""
+    profile_home = tmp_path / "home-beta"
+    profile_home.mkdir()
+    # beta's config: placeholder cwd — _configured_cwd_from_cfg returns None.
+    _write_profile_cfg(profile_home, ".")
+
+    launch_workspace = tmp_path / "launch-repo"
+    launch_workspace.mkdir()
+    stale_env = tmp_path / "stale-env"
+    stale_env.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale_env))
+    # The LAUNCH profile has an explicit workspace — the pre-fix leak source.
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_workspace)}}
+    )
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+
+    assert server._completion_cwd({"profile": "beta"}) == str(profile_home)
+
+    # Launch-profile resolution is untouched: no profile param still honors
+    # the launch config over the stale env.
+    assert server._completion_cwd({}) == str(launch_workspace)
+
+
 def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_path):
     """Dashboard /chat's launch-profile in-memory gateway must honor config.
 

@@ -1099,7 +1099,19 @@ export const zh: Translations = {
       unsavedConnect: '未保存 — 保存 mcp.json 以连接。',
       enableTool: tool => `启用 ${tool}`,
       disableTool: tool => `禁用 ${tool}`,
-      noOutput: '暂无输出。'
+      noOutput: '暂无输出。',
+      deepLinkTitle: '添加 MCP 服务器？',
+      deepLinkDescription: '一个链接请求将此 MCP 服务器添加到 Hermes。请检查下方的完整配置——它来自该链接，而非 Hermes。',
+      deepLinkStdioWarning: '此服务器会使用下方所示命令在你的电脑上运行本地进程。仅在信任其来源时继续。',
+      deepLinkConfirm: '添加服务器',
+      deepLinkNameInvalid: '名称须为 1-64 个字母、数字、点、连字符或下划线。',
+      deepLinkNameConflict: name => `已存在名为 ${name} 的服务器——请改用其他名称或取消。`,
+      deepLinkErrorTitle: 'MCP 安装链接已拒绝',
+      deepLinkErrorName: '链接中的服务器名称缺失或无效。',
+      deepLinkErrorConfig: '链接中的配置不是有效的 base64 编码 JSON。',
+      deepLinkErrorShape: '配置必须是包含字符串 `url` 或 `command` 字段的 JSON 对象。',
+      deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
+      deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
     },
     model: {
       loading: '正在加载模型配置...',

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { openFolderAsProject } from '@/store/projects'
 import {
@@ -187,10 +188,22 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer.
+  // hermes:// deep links -> a reviewable /blueprint command in the composer,
+  // or (hermes://mcp/install) a pending MCP install awaiting explicit
+  // confirmation in McpInstallDeepLinkDialog. Never auto-installs.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      if (!payload) {
+        return
+      }
+
+      if (payload.kind === 'mcp' && payload.name === 'install') {
+        requestMcpInstallFromDeepLink(payload.params || {})
+
+        return
+      }
+
+      if (payload.kind !== 'blueprint' || !payload.name) {
         return
       }
 

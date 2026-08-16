@@ -422,8 +422,38 @@ class MaxAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """MAX does not support typing indicators."""
-        pass
+        """Send a typing indicator via POST /chats/{chatId}/actions.
+
+        MAX supports ``typing_on`` (and other sending_* actions). The
+        indicator lives ~5-6s, and the gateway's ``_keep_typing`` loop calls
+        this every ~2s, so the bubble stays visible while the agent works.
+
+        Note: MAX expects the numeric chat id. For dialogs we forward the
+        ``chat_id`` we received from updates (recipient.chat_id — a numeric
+        dialog id); if metadata carries a ``user_id`` we still use chat_id
+        because the actions endpoint is keyed by chat, not user.
+        """
+        if self._http_client is None or not chat_id:
+            return
+        try:
+            resp = await self._http_client.post(
+                f"{API_SCHEME}://{API_HOST}/chats/{chat_id}/actions",
+                content=json.dumps({"action": "typing_on"}).encode("utf-8"),
+                headers={
+                    "Authorization": self._token,
+                    "Content-Type": "application/json",
+                },
+                timeout=5.0,
+            )
+            if resp.status_code >= 400:
+                logger.debug(
+                    "[%s] send_typing HTTP %d: %s",
+                    self.name,
+                    resp.status_code,
+                    resp.text[:150],
+                )
+        except Exception as e:
+            logger.debug("[%s] send_typing error: %s", self.name, e)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a MAX chat."""

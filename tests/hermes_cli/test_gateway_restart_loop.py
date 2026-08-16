@@ -676,6 +676,83 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
+    def test_quoted_absolute_path_to_existing_dir_not_blocked(self, tmp_path):
+        """#86010: shlex splits `Path("/abs/dir")` on the `(` punctuation,
+        leaving the quoted absolute path as a standalone segment that the
+        referenced-script walk treats as an executable token. It resolves to
+        an existing DIRECTORY, and `_read_referenced_script` failed closed on
+        it (non-regular file) — hard-blocking innocent Python cron scripts
+        and terminal payloads with ``hermes cron create`` / the terminal
+        tool. A directory can never be a shell script, so it must be treated
+        as nothing to scan, not as unsafe."""
+        from cron.lifecycle_guard import (
+            check_gateway_lifecycle,
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        script_text = (
+            "from pathlib import Path\n"
+            f'VAULT = Path("{vault}")\n'
+            'print("hi")\n'
+        )
+        # Terminal-tool surface: the walk must not flag the directory token.
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            script_text, cwd=str(tmp_path)
+        ) is False
+        # Cron surface: a script (even a non-.py one, which still gets the
+        # full walk) containing the pattern must be accepted.
+        for name in ("digest.py", "digest.sh"):
+            script = tmp_path / name
+            script.write_text(script_text, encoding="utf-8")
+            check_gateway_lifecycle("clean prompt", str(script))
+
+    def test_quoted_absolute_path_split_and_glob_tokens_not_blocked(self, tmp_path):
+        """#86010: the same false positive class for `path.split("/")` and
+        `glob.glob(VAULT + "/*.md")` — parenthesized calls that shlex splits
+        into standalone `/`-bearing tokens."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        for line in (
+            'items = path.split("/")\n',
+            'files = glob.glob(VAULT + "/*.md")\n',
+            "VAULT = Path.home()\n",
+        ):
+            assert contains_gateway_lifecycle_command_or_referenced_script(
+                line, cwd=str(tmp_path)
+            ) is False
+
+    def test_directory_reference_read_is_nothing_to_scan(self, tmp_path):
+        """#86010 unit contract: `_read_referenced_script` on an existing
+        directory returns (None, False) — a directory can never be a shell
+        script — while a real script that invokes a lifecycle command still
+        fails closed through the walk."""
+        from cron.lifecycle_guard import (
+            _read_referenced_script,
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        text, unsafe = _read_referenced_script(vault)
+        assert text is None
+        assert unsafe is False
+        # Remote fallback on a directory path stays benign: the callback
+        # yields no text, so nothing is scanned and nothing is blocked.
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            "bash /nonexistent/dir/helper.sh",
+            cwd=str(tmp_path),
+            read_remote_script=lambda _path: None,
+        )
+        assert result is False
+        # Control: a real script invoking a lifecycle command is still
+        # blocked — the directory exemption must not weaken the walk.
+        evil = tmp_path / "evil.sh"
+        evil.write_text("hermes gateway stop\n", encoding="utf-8")
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            str(evil), cwd=str(tmp_path)
+        ) is True
+
     def test_absolute_path_binary_does_not_crash_guard(self):
         """#76762: a terminal command invoking a binary by absolute path
         (e.g. /usr/bin/python3) must not crash the guard with
@@ -1206,8 +1283,13 @@ class TestLifecycleGuardNeverRaises:
 
     def test_directory_and_dev_null_fail_closed_not_crash(self, tmp_path):
         # Non-regular files are suspicious (fail closed = blocked), but the
-        # important contract is: verdict, not exception.
-        assert self._scan(f"bash {tmp_path}") is True
+        # important contract is: verdict, not exception. Since #86010 a
+        # DIRECTORY is exempt from the fail-closed branch — a directory can
+        # never be a shell script, and Python sources routinely produce
+        # directory-shaped tokens (`Path("/abs/dir")` after `(` splits off
+        # the quoted path) — while other non-regular files (/dev/null is a
+        # character device) still fail closed.
+        assert self._scan(f"bash {tmp_path}") is False
         assert self._scan("bash /dev/null") is True
 
     def test_magic_prefix_binaries_skipped_without_full_read(self, tmp_path):
@@ -1236,8 +1318,13 @@ class TestLifecycleGuardNeverRaises:
         )
         binary = tmp_path / "prog"
         binary.write_bytes(b"\x7fELF" + bytes(128))
-        for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh"):
+        for value in (
+            "nul\x00byte.sh",
+            str(binary),
+            "/nonexistent/x.sh",
+            str(tmp_path),  # directory: never a script (#86010)
+        ):
             check_gateway_lifecycle("clean prompt", value)  # must not raise
-        for value in ("/dev/null", str(tmp_path)):
+        for value in ("/dev/null",):  # char device: still fails closed
             with pytest.raises(GatewayLifecycleBlocked):
                 check_gateway_lifecycle("clean prompt", value)

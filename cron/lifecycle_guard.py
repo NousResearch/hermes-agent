@@ -439,6 +439,17 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     try:
         metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            # A directory can never be a shell script. Python sources
+            # routinely produce directory-shaped tokens: shlex splits
+            # `Path("/tmp/x")` on the `(` punctuation, leaving the quoted
+            # absolute path as a standalone segment that the referenced-
+            # script walk treats as an executable (#86010). Failing closed
+            # on it blocked innocent cron/terminal commands; treat it as
+            # nothing to scan instead. The remote fallback stays safe: for
+            # a directory the callback returns None (or a read error),
+            # which sanitizes to "nothing to scan" and is skipped.
+            return None, False
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
         # Sniff a small prefix first: files that are clearly compiled

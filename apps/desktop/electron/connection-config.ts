@@ -446,9 +446,23 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
  * serving backend is not already scoped to that profile.
  */
 function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}) {
+  if (!resolveProfileBackendRoute(profile, opts).scopePath) {
+    return path
+  }
+
+  return pathWithProfileScope(path, profile)
+}
+
+/**
+ * Unconditionally scope a REST path to a profile via `?profile=`. Used by the
+ * global-remote route above and by registry `sharedRemote` connections (one
+ * gateway host serving every profile, scoped per request). An explicit
+ * `?profile=` already on the path wins; an empty profile is a no-op.
+ */
+function pathWithProfileScope(path, profile) {
   const scopedProfile = connectionScopeKey(profile)
 
-  if (!resolveProfileBackendRoute(profile, opts).scopePath) {
+  if (!scopedProfile) {
     return path
   }
 
@@ -473,6 +487,23 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
   parsed.searchParams.set('profile', scopedProfile)
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
+/**
+ * Registry connection a REST request is explicitly pinned to, or null for the
+ * legacy profile-routed path. `''`/`'local'` mean the local pool — callers
+ * only detour through the registry for a genuinely non-local connection, so
+ * single-source users keep the byte-identical v1 route.
+ */
+function apiRequestRegistryConnectionId(request): null | string {
+  const raw = request && typeof request === 'object' ? (request as { connectionId?: unknown }).connectionId : ''
+  const id = String(raw ?? '').trim()
+
+  if (!id || id === 'local') {
+    return null
+  }
+
+  return id
 }
 
 function tokenPreview(value) {
@@ -588,6 +619,7 @@ function cookiesHavePrivyAccessToken(cookies) {
 }
 
 export {
+  apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -607,6 +639,7 @@ export {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  pathWithProfileScope,
   PRIVY_ACCESS_COOKIE_VARIANTS,
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,

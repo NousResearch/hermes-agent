@@ -284,6 +284,15 @@ export function setApiRequestConnection(connectionId: null | string): void {
   _apiConnectionId = connectionId || null
 }
 
+// Registry connection scope for a REST request. A registered remote gateway
+// owns its own state.db — cron jobs and their run sessions live THERE — so
+// requests for gateway-owned data must carry the connection id for the main
+// process to route them to that host (hermes:api's registry branch). Null /
+// 'local' resolves to no tag, keeping single-source users byte-identical.
+function connectionScoped(): { connectionId?: string } {
+  return _apiConnectionId ? { connectionId: _apiConnectionId } : {}
+}
+
 /** Registry connection id that connection-scoped WS calls should target
  *  (null → the local pool). Read-only twin of setApiRequestConnection. */
 export function getApiRequestConnection(): null | string {
@@ -1545,6 +1554,7 @@ export function getCronJobs(profile?: string): Promise<CronJob[]> {
 
   return window.hermesDesktop.api<CronJob[]>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs${suffix}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -1553,6 +1563,7 @@ export function getCronJobs(profile?: string): Promise<CronJob[]> {
 export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
 }
@@ -1560,6 +1571,7 @@ export function getCronJob(jobId: string): Promise<CronJob> {
 export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
   const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
   })
 
@@ -1572,6 +1584,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
 export async function getCronDeliveryTargets(): Promise<CronDeliveryTarget[]> {
   const { targets } = await window.hermesDesktop.api<{ targets: CronDeliveryTarget[] }>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: '/api/cron/delivery-targets'
   })
 
@@ -1581,6 +1594,7 @@ export async function getCronDeliveryTargets(): Promise<CronDeliveryTarget[]> {
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: '/api/cron/jobs',
     method: 'POST',
     body
@@ -1590,6 +1604,7 @@ export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
 export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'PUT',
     body: { updates }
@@ -1599,6 +1614,7 @@ export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<C
 export function pauseCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/pause`,
     method: 'POST'
   })
@@ -1607,6 +1623,7 @@ export function pauseCronJob(jobId: string): Promise<CronJob> {
 export function resumeCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/resume`,
     method: 'POST'
   })
@@ -1615,6 +1632,7 @@ export function resumeCronJob(jobId: string): Promise<CronJob> {
 export function triggerCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
     method: 'POST',
     timeoutMs: CRON_TRIGGER_REQUEST_TIMEOUT_MS
@@ -1624,6 +1642,7 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
 export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
   })
@@ -1643,6 +1662,7 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 export function getAutomationBlueprints(): Promise<{ blueprints: AutomationBlueprint[] }> {
   return window.hermesDesktop.api<{ blueprints: AutomationBlueprint[] }>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: '/api/cron/blueprints',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -1654,6 +1674,7 @@ export function instantiateAutomationBlueprint(
 ): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     ...profileScoped(),
+    ...connectionScoped(),
     path: `/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`,
     method: 'POST',
     body

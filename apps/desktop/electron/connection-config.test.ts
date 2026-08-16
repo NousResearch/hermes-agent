@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -33,6 +34,7 @@ import {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  pathWithProfileScope,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
@@ -277,6 +279,37 @@ test('resolveProfileBackendRoute only tags a descriptor when the backend is shar
     assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
     assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
   }
+})
+
+// --- registry-pinned REST routing (cron run history on remote gateways, #87882) ---
+
+test('apiRequestRegistryConnectionId extracts a genuinely non-local connection id', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'gw-tailscale', path: '/api/cron/jobs' }), 'gw-tailscale')
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: '  gw-1  ', path: '/x' }), 'gw-1')
+})
+
+test('apiRequestRegistryConnectionId resolves null for the legacy/local routes', () => {
+  assert.equal(apiRequestRegistryConnectionId({ path: '/api/cron/jobs' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: '', path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: null, path: '/x' }), null)
+  assert.equal(apiRequestRegistryConnectionId(null), null)
+  assert.equal(apiRequestRegistryConnectionId(undefined), null)
+})
+
+test('pathWithProfileScope scopes shared-remote requests to the profile unconditionally', () => {
+  // A sharedRemote registry gateway serves every profile from one host; the
+  // run-history read must land on the profile that owns the job's sessions.
+  assert.equal(
+    pathWithProfileScope('/api/cron/jobs/job-1/runs?limit=20', 'research'),
+    '/api/cron/jobs/job-1/runs?limit=20&profile=research'
+  )
+})
+
+test('pathWithProfileScope keeps an explicit profile query and no-ops on empty profile', () => {
+  assert.equal(pathWithProfileScope('/api/cron/jobs?profile=all', 'research'), '/api/cron/jobs?profile=all')
+  assert.equal(pathWithProfileScope('/api/cron/jobs', ''), '/api/cron/jobs')
+  assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
 // --- pathWithGlobalRemoteProfile ---

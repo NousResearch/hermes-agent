@@ -56,6 +56,7 @@ import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
+  apiRequestRegistryConnectionId,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -73,6 +74,7 @@ import {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  pathWithProfileScope,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
@@ -12316,6 +12318,41 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
   return fetchJson(url, descriptor.token, opts)
 }
 
+// Any-method REST call against a resolved backend descriptor — the descriptor
+// analogue of the hermes:api handler's own auth split: OAuth backends prefer a
+// native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
+// partition; token/local descriptors use the static session-token header.
+async function fetchJsonForBackend(
+  descriptor,
+  path,
+  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
+) {
+  const url = `${descriptor.baseUrl}${path}`
+
+  if (descriptor.authMode === 'oauth') {
+    // The OAuth cookie path rides electron.net with JSON headers; multipart
+    // isn't wired there. Fail loudly rather than corrupting the upload.
+    if (opts.upload) {
+      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+    }
+
+    const nativeAt = await ensureNativeAccessToken(descriptor.baseUrl).catch(() => null)
+
+    if (nativeAt) {
+      return fetchJson(url, null, { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs, bearer: nativeAt })
+    }
+
+    return fetchJsonViaOauthSession(url, { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs })
+  }
+
+  return fetchJson(url, descriptor.token, {
+    method: opts.method,
+    body: opts.body,
+    upload: opts.upload,
+    timeoutMs: opts.timeoutMs
+  })
+}
+
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
 ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:
@@ -12724,6 +12761,29 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {
+  // Registry-pinned request (request.connectionId): the renderer is working
+  // against a REGISTERED gateway connection, so the data — cron jobs and their
+  // run sessions included — lives in THAT host's state.db, not any local
+  // profile's. Resolve the backend through the registry (same pool the job
+  // list and WS traffic use) instead of the legacy profile route; a shared
+  // remote/cloud host serves every profile via ?profile=, so scope the path.
+  // '' / 'local' fall through to the byte-identical v1 route below (#87882).
+  const registryConnectionId = apiRequestRegistryConnectionId(request)
+
+  if (registryConnectionId) {
+    const connection: any = await ensureRegistryBackend(registryConnectionId, request?.profile)
+    const requestPath = connection.sharedRemote
+      ? pathWithProfileScope(request.path, request?.profile)
+      : request.path
+
+    return fetchJsonForBackend(connection, requestPath, {
+      method: request?.method,
+      body: request?.body,
+      upload: request?.upload,
+      timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    })
+  }
+
   // Remote-profile session requests would otherwise hit the local primary off
   // each profile's on-disk state.db — fine for local profiles, but a remote
   // profile's sessions live on its remote host, so the UI's IDs 404 (or mutations

@@ -73,11 +73,17 @@ EXCLUDED_DIRS = {
     "__pycache__",
     "build",
     "dist",
+    "out",
+    ".docusaurus",
+    ".next",
+    ".turbo",
+    ".cache",
     ".tox",
     ".mypy_cache",
     ".pytest_cache",
     "site-packages",
     "website/build",
+    "website/dist",
     "optional-skills",  # external skills
 }
 

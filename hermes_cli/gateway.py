@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -2968,6 +2969,23 @@ def _bundled_resource_env_pairs() -> list[tuple[str, str]]:
     return pairs
 
 
+def _systemd_env_value_escape(value: str) -> str:
+    """Escape a value for a double-quoted systemd ``Environment=`` directive.
+
+    systemd unescapes C-style sequences inside the quotes and expands ``%``
+    specifiers, so a bundled path containing ``"``, ``\\`` or ``%`` would
+    otherwise truncate the value or be silently rewritten — breaking the
+    supervised gateway this propagation is meant to fix. Escape backslash and
+    quote for the quoting layer, then double ``%`` to defeat specifier
+    expansion. Ordinary paths (no special chars) are returned unchanged.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+    )
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2976,7 +2994,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # Propagate the wrapper's bundled-resource pointers (empty → no-op). Rendered
     # as extra ``Environment=`` lines appended after HERMES_HOME below.
     bundled_env_block = "".join(
-        f'\nEnvironment="{name}={value}"'
+        f'\nEnvironment="{name}={_systemd_env_value_escape(value)}"'
         for name, value in _bundled_resource_env_pairs()
     )
 
@@ -4258,7 +4276,7 @@ def generate_launchd_plist() -> str:
     # wrapper) can still find bundled plugins/skills/locales. Empty → no-op. See
     # #85357. Rendered as extra <key>/<string> pairs inside EnvironmentVariables.
     bundled_env_xml = "".join(
-        f"\n        <key>{name}</key>\n        <string>{value}</string>"
+        f"\n        <key>{name}</key>\n        <string>{_xml_escape(value)}</string>"
         for name, value in _bundled_resource_env_pairs()
     )
 

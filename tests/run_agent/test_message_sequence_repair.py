@@ -1388,3 +1388,77 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
     assert out[5]["content"] == "real result"
 
 
+
+
+# ── Bridged tool_call: wire-visible response name must echo the call name ──
+# Google matches functionResponse.name against functionCall.name and rejects a
+# mismatch with HTTP 400 INVALID_ARGUMENT. #72089 fixed this for the native
+# Gemini adapter; requests reaching Gemini through an OpenAI-compatible
+# gateway (OpenRouter, Vertex/LiteLLM proxies) skip that translation, so the
+# chokepoint sanitizer has to hold the same invariant.
+
+
+def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
+    """A tool_search-bridged result must go on the wire as ``tool_call``.
+
+    The executor labels the result with the unwrapped internal tool name for
+    dispatch/hooks/logging; Gemini sees that as a functionResponse whose name
+    does not match its functionCall and 400s.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "file an issue"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {
+                             "name": "tool_call",
+                             "arguments": ('{"name": "mcp__github__create_issue",'
+                                           ' "arguments": {"title": "Bug"}}'),
+                         }}]},
+        {"role": "tool", "name": "mcp__github__create_issue",
+         "tool_name": "mcp__github__create_issue",
+         "tool_call_id": "call_1", "content": '{"number": 123}'},
+    ]
+    out = sanitize_api_messages(list(messages))
+    result = [m for m in out if m.get("role") == "tool"][0]
+    assert result["name"] == "tool_call"
+    # The internal name stays available for the session DB / UI, and the
+    # caller's own message objects are untouched (per-call copy only).
+    assert result["tool_name"] == "mcp__github__create_issue"
+    assert messages[2]["name"] == "mcp__github__create_issue"
+
+
+def test_sanitize_leaves_matching_and_unpaired_tool_result_names_alone():
+    """Directly-called tools already agree; an unpaired name is left as-is."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{}"}}]},
+        {"role": "tool", "name": "get_weather",
+         "tool_call_id": "call_1", "content": "sunny"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["name"] for m in out if m.get("role") == "tool"] == ["get_weather"]
+
+
+def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
+    """A result with no ``name`` is already valid — the id pairs it.
+
+    Adding the field would make clean transcripts non-identical on the wire
+    and needlessly perturb prompt caching.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert out == messages

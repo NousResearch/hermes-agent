@@ -393,6 +393,39 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     )
 
 
+def _attach_to_session_notice(job: Dict[str, Any]) -> Optional[str]:
+    """Return a warning when a job's attach_to_session flag cannot take effect.
+
+    ``attach_to_session`` makes a cron delivery continuable by attaching the
+    brief to the origin session — it only applies when the job actually
+    delivers somewhere. A local-only job (``deliver='local'``, or no reachable
+    delivery channel) has no session to attach the delivery to, so the flag is
+    inert. Surface that explicitly (fail-closed, #84802) instead of silently
+    accepting a value that can never apply.
+
+    Returns ``None`` when the flag is off, or when the job resolves to a real
+    delivery target.
+    """
+    if not job.get("attach_to_session"):
+        return None
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+
+        if _resolve_delivery_targets(job):
+            return None  # Will deliver somewhere — the flag can apply.
+    except Exception:
+        # If resolution can't be evaluated, fall back to the origin signal.
+        if job.get("origin"):
+            return None
+    return (
+        "Note: attach_to_session has no effect on this job because it is "
+        "local-only (no delivery target) — there is no session to attach the "
+        "delivery to. Set deliver to a gateway-connected platform (e.g. "
+        "deliver='origin' or deliver='telegram') to enable the continuable "
+        "delivery behavior."
+    )
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -658,6 +691,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("attach_to_session") is not None:
+        result["attach_to_session"] = bool(job["attach_to_session"])
     return result
 
 
@@ -1262,6 +1297,9 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
+            _attach_notice = _attach_to_session_notice(job)
+            if _attach_notice:
+                _create_message = f"{_create_message} {_attach_notice}"
             return json.dumps(
                 {
                     "success": True,
@@ -1546,7 +1584,12 @@ def cronjob(
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            response: Dict[str, Any] = {"success": True, "job": _format_job(updated)}
+            if attach_to_session:
+                _attach_notice = _attach_to_session_notice(updated)
+                if _attach_notice:
+                    response["warning"] = _attach_notice
+            return json.dumps(response, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -1725,8 +1768,12 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+<<<<<<< Updated upstream
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+=======
+        attach_to_session=args.get("attach_to_session"),
+>>>>>>> Stashed changes
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

@@ -44,6 +44,18 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
 ])
 
+
+def _resolve_sandbox_tools(enabled_tools: Optional[List[str]]) -> frozenset:
+    """Tri-state sandbox capability grant (#84271).
+
+    ``None`` keeps the legacy default (every sandbox tool). An explicit list,
+    including empty, is the exact intersection with ``SANDBOX_ALLOWED_TOOLS``
+    — empty or non-overlapping means deny-all.
+    """
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
+
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50

@@ -58,6 +58,7 @@ from tools.code_execution_tool import (
     _TOOL_DOC_LINES,
     _execute_remote,
     _format_interrupted_output,
+    _resolve_sandbox_tools,
 )
 from tools.registry import registry
 
@@ -789,6 +790,28 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             ))
         self.assertEqual(result["status"], "success", msg=result)
         self.assertIn("mock output for: echo hi", result["output"])
+
+
+class TestResolveSandboxTools(unittest.TestCase):
+    """Shared helper used by both the local UDS and remote file-RPC paths."""
+
+    def test_none_is_legacy_default(self):
+        self.assertEqual(_resolve_sandbox_tools(None), SANDBOX_ALLOWED_TOOLS)
+
+    def test_empty_list_is_deny_all(self):
+        self.assertEqual(_resolve_sandbox_tools([]), frozenset())
+
+    def test_nonoverlapping_is_deny_all(self):
+        self.assertEqual(
+            _resolve_sandbox_tools(["vision_analyze", "browser_snapshot"]),
+            frozenset(),
+        )
+
+    def test_intersection_keeps_only_sandbox_tools(self):
+        self.assertEqual(
+            _resolve_sandbox_tools(["terminal", "vision_analyze"]),
+            frozenset(["terminal"]),
+        )
 
 
 # ---------------------------------------------------------------------------

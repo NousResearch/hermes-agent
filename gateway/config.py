@@ -811,6 +811,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     _impl(config)
 
 
+def is_email_send_only(extra: dict | None) -> bool:
+    """Return whether Email config explicitly selects outbound-only mode."""
+    extra = extra or {}
+    mode = str(extra.get("mode") or extra.get("delivery_mode") or "").strip().lower()
+    return mode in {
+        "send_only", "send-only", "smtp_only", "smtp-only",
+        "outbound_only", "outbound-only",
+    } or bool(extra.get("send_only", False))
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).

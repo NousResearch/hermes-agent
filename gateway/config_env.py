@@ -22,6 +22,7 @@ from gateway.config import (
     _getenv_str,
     _has_usable_api_server_key,
     SHARED_LISTENER_MIRROR_PLATFORMS,
+    is_email_send_only,
 )
 from utils import is_truthy_value
 
@@ -304,6 +305,25 @@ def _sms_api_key(config: GatewayConfig, sms_config: PlatformConfig) -> None:
     sms_config.api_key = getenv("TWILIO_AUTH_TOKEN")
 
 
+def _email(config: GatewayConfig) -> None:
+    """Enable Email from env only when its resolved mode has enough credentials."""
+    existing = config.platforms.get(Platform.EMAIL)
+    send_only = is_email_send_only(existing.extra if existing else None)
+    address = getenv("EMAIL_ADDRESS")
+    password = getenv("EMAIL_PASSWORD")
+    smtp_host = getenv("EMAIL_SMTP_HOST")
+    imap_host = getenv("EMAIL_IMAP_HOST")
+    if not (address and password and smtp_host and (send_only or imap_host)):
+        return
+    email_config = _enable_from_env(config, Platform.EMAIL)
+    email_config.extra.update({
+        "address": address,
+        "smtp_host": smtp_host,
+    })
+    if imap_host:
+        email_config.extra["imap_host"] = imap_host
+
+
 def _api_server(config: GatewayConfig) -> None:
     """Require a usable key: an unauthenticated adapter refuses to start and the reconnect watcher would spin."""
     key = getenv("API_SERVER_KEY")
@@ -550,10 +570,7 @@ _ENV_STEPS: tuple = (
     ),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
     _Cred(Platform.HOMEASSISTANT, ("HASS_TOKEN",), token="HASS_TOKEN", optional=(("url", "HASS_URL"),)),
-    _Cred(
-        Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
-        fixed=(("address", "EMAIL_ADDRESS"), ("imap_host", "EMAIL_IMAP_HOST"), ("smtp_host", "EMAIL_SMTP_HOST")),
-    ),
+    _email,
     _Home(Platform.EMAIL, "EMAIL_HOME_ADDRESS"),
     _Cred(Platform.SMS, ("TWILIO_ACCOUNT_SID",), then=_sms_api_key),
     _Home(Platform.SMS, "SMS_HOME_CHANNEL"),

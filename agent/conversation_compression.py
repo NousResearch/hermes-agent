@@ -3483,6 +3483,23 @@ def compress_context(
                         and 0 <= current_idx <= len(messages)
                         else None
                     )
+                    # Foreign-tail ceiling (#75316): the flush below writes OUR
+                    # OWN input transcript to the parent — those rows are
+                    # already represented in the compacted handoff and must
+                    # not be cloned into the child. Everything at or below
+                    # this MAX(id) but above the start-watermark is a foreign
+                    # concurrent append; everything above it is our flush.
+                    try:
+                        _foreign_tail_ceiling = (
+                            agent._session_db.get_active_message_watermark(
+                                agent.session_id
+                            )
+                        )
+                    except Exception:
+                        # Without a trustworthy ceiling the clone could
+                        # duplicate the handoff — fall back to historical
+                        # behavior (no tail preservation this rotation).
+                        _foreign_tail_ceiling = None
                     try:
                         agent._flush_messages_to_session_db(
                             messages,
@@ -3524,7 +3541,12 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
-                        watermark=_commit_watermark,
+                        watermark=(
+                            _commit_watermark
+                            if _foreign_tail_ceiling is not None
+                            else None
+                        ),
+                        watermark_ceiling=_foreign_tail_ceiling,
                     )
                     agent.session_id = new_session_id
                     try:

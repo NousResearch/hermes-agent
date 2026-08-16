@@ -5591,6 +5591,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         compression_lock_holder: str = None,
         require_compression_lease: bool = True,
         watermark: Optional[int] = None,
+        watermark_ceiling: Optional[int] = None,
     ) -> None:
         """Atomically close a parent and publish its durable compression child.
 
@@ -5605,6 +5606,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         same pure-SQL column clone as :meth:`archive_and_compact`, with the
         session id rewritten — so a mid-compression append survives rotation
         instead of stranding in the closed parent.
+
+        *watermark_ceiling* bounds the clone from above: the rotation path
+        flushes its OWN un-persisted input transcript to the parent right
+        before publishing (#47202), and those rows are already represented in
+        the compacted handoff — cloning them would duplicate the transcript.
+        The caller captures ``MAX(id)`` immediately BEFORE that flush; only
+        rows in ``(watermark, watermark_ceiling]`` are foreign concurrent
+        tail. ``None`` = unbounded (no internal flush happened).
         """
         def _do(conn):
             lock_row = conn.execute(
@@ -5674,13 +5683,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             if watermark is not None:
                 # Clone the parent's concurrent tail (rows landed after the
-                # watermark) into the child, after the handoff. Column-exact
-                # except id/session_id; originals stay in the (closed) parent
-                # for lineage recovery.
+                # watermark, at or below the ceiling — see docstring) into the
+                # child, after the handoff. Column-exact except id/session_id;
+                # originals stay in the (closed) parent for lineage recovery.
+                _ceiling_clause = ""
+                _params: list = [parent_session_id, int(watermark)]
+                if watermark_ceiling is not None:
+                    _ceiling_clause = " AND id <= ?"
+                    _params.append(int(watermark_ceiling))
                 tail_rows = conn.execute(
                     "SELECT id, tool_calls FROM messages "
-                    "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-                    (parent_session_id, int(watermark)),
+                    "WHERE session_id = ? AND active = 1 AND id > ?"
+                    f"{_ceiling_clause} ORDER BY id",
+                    _params,
                 ).fetchall()
                 if tail_rows:
                     tail_ids = [int(r["id"]) for r in tail_rows]

@@ -67,6 +67,7 @@
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
     "check:test:desktop:platforms": "npm run test:desktop:platforms",
+    "check:test:plugins": "node --test src/plugins/*/tests/*.test.mjs",
     "check:test:ui:shard-1of3": "node scripts/run-ui-shard.mjs",
     "check:test:ui:shard-2of3": "node scripts/run-ui-shard.mjs",
     "check:test:ui:shard-3of3": "node scripts/run-ui-shard.mjs",

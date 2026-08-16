@@ -32,7 +32,7 @@ import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
 import { createPluginContext, type HermesPlugin } from './plugin'
-import { dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
+import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
   /** Root-level default-enable CAP: `false` ships the plugin opt-in (inventory
@@ -140,6 +140,17 @@ export async function loadRuntimePlugin(
 
     if (!plugin?.id || typeof plugin.register !== 'function') {
       throw new Error(`${origin} has no valid default HermesPlugin export`)
+    }
+
+    // A disk/runtime copy of a plugin that now ships BUNDLED (e.g. a
+    // standalone install of hermes-bots predating its adoption in-tree) must
+    // not register a second time: contributions would double up and the two
+    // copies would fight over storage. The bundled copy wins; the disk copy
+    // is skipped quietly so stale installs keep working after an app update.
+    if ($pluginRecords.get()[plugin.id]?.kind === 'bundled') {
+      console.info(`[plugins] ${origin} skipped — "${plugin.id}" already ships bundled with the app`)
+
+      return null
     }
 
     const record = {

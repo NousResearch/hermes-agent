@@ -131,6 +131,7 @@ def test_build_single_file_when_small(monkeypatch, tmp_path):
 def test_build_splits_per_platform_and_chunks_over_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "SIZE_CAP", 80_000)  # budget = 40_000
+    monkeypatch.setattr(brb, "idea_cards", lambda: [])  # isolate from real backlog
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [_item("a", "Alpha", BLOG_GROUP, pane_bytes=20_000)])
     monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({
         X_GROUP: [_item(f"x{i}", f"X{i}", X_GROUP, pane_bytes=20_000) for i in range(6)],
@@ -177,10 +178,11 @@ def test_main_prints_summary_and_media_lines(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(brb.database, "list_article_approvals", lambda status: [])
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [_item("a", "Alpha", BLOG_GROUP)])
     monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
-    monkeypatch.setattr(brb, "idea_cards", lambda: [])
+    monkeypatch.setattr(brb, "idea_cards", lambda: [{"id": "idea-1", "title": "Idea One", "group": brb.IDEAS_GROUP, "pane": "<p>idea</p>"}])
     main()
     out = capsys.readouterr().out
     assert "awaiting review" in out
+    assert "+ 1 idea concepts" in out  # ideas counted in the text summary, not just the HTML
     media = [ln for ln in out.splitlines() if ln.startswith("MEDIA:")]
     assert len(media) == 1
     assert media[0].endswith(".html")

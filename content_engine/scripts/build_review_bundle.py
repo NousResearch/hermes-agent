@@ -583,12 +583,13 @@ def main() -> None:
     pending_articles = database.list_article_approvals(status="pending")
     x_n = sum(str(row.get("platform", "")).lower() in {"x", "twitter"} for row in pending_articles)
     linkedin_n = sum(str(row.get("platform", "")).lower() == "linkedin" for row in pending_articles)
+    nideas = len(idea_cards())
     if not outputs:
         print("[SILENT]")
         return
     print(
         f"{blog_n} blog posts + {x_n} X/Twitter articles + {linkedin_n} LinkedIn articles awaiting review "
-        f"(total {blog_n + x_n + linkedin_n})"
+        f"+ {nideas} idea concepts (total {blog_n + x_n + linkedin_n})"
     )
     for path in outputs:
         print(f"MEDIA:{path}")

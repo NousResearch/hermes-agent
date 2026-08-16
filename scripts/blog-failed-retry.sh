@@ -29,6 +29,17 @@ if [[ -d "$HOME/.npm-global/bin" ]]; then
   export PATH="$HOME/.npm-global/bin:$PATH"
 fi
 
+# Load API keys from the Hermes env (same pattern as blog-backlog-pregen.sh).
+# Without this the art-director LLM chain runs with empty keys: commandcode
+# 401/403, ollama 429 (quota), and gemini 400 "Please pass a valid API key" —
+# so every retry dies at the art brief even when a provider (gemini) is live.
+HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+if [[ -f "$HERMES_HOME_DIR/.env" ]]; then
+  set -a
+  . "$HERMES_HOME_DIR/.env" 2>/dev/null || true
+  set +a
+fi
+
 ROOT=${BLOG_RETRY_ENGINE_ROOT:-/home/kensei/repos/KenseiAgent/content_engine}
 LOG_DIR=$ROOT/output/logs
 STATUS=$LOG_DIR/blog-failed-retry-status.json

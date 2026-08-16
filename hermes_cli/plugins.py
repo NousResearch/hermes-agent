@@ -6141,6 +6141,29 @@ def resolve_pre_tool_block(
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
+    return _resolve_block_from_details(
+        details, tool_name,
+        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+    )
+
+
+def _resolve_block_from_details(
+    details: "_PreToolCallDirective",
+    tool_name: str,
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+    session_id: str = "",
+) -> Optional[str]:
+    """Resolve a fetched directive to a final block message (or ``None``).
+
+    Shared by :func:`resolve_pre_tool_block` and
+    :func:`_dispatch_pre_tool_call_hooks` so the security-critical
+    fail-closed approval logic lives in exactly ONE place: ``block``
+    blocks with its message; an ``approve`` directive whose gate errors,
+    denies, or times out is fail-closed to a block; anything else
+    proceeds.
+    """
     if details.action == "block":
         return details.message
     if details.action == "approve":
@@ -6198,9 +6221,11 @@ def _dispatch_pre_tool_call_hooks(
 
     Returns a ``(block_message, modified_args)`` tuple:
     - ``block_message`` — the first block/approve directive's resolved message
-      (or ``None`` when the call may proceed).  Uses the same approval-gate
-      logic as :func:`resolve_pre_tool_block`.
-    - ``modified_args`` — merged args from the first ``modify`` directive
+      (or ``None`` when the call may proceed).  Shares the exact fail-closed
+      approval-gate logic of :func:`resolve_pre_tool_block` via
+      :func:`_resolve_block_from_details`, including the observability
+      context set around the human-approval gate.
+    - ``modified_args`` — merged args from ``modify`` directives
       (or ``None`` when no hook requested modification).
 
     This is the single invocation point for ``pre_tool_call`` hooks.
@@ -6215,25 +6240,10 @@ def _dispatch_pre_tool_call_hooks(
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
-    block_msg: Optional[str] = None
-    if details.action == "block":
-        block_msg = details.message
-    elif details.action == "approve":
-        try:
-            from tools.approval import request_tool_approval
-            result = request_tool_approval(
-                tool_name,
-                details.message or "",
-                rule_key=details.rule_key or tool_name,
-            )
-        except Exception:
-            block_msg = f"BLOCKED: plugin approval gate failed for {tool_name}"
-        else:
-            if not result.get("approved"):
-                block_msg = str(
-                    result.get("message")
-                    or f"BLOCKED: plugin approval required for {tool_name}"
-                )
+    block_msg = _resolve_block_from_details(
+        details, tool_name,
+        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+    )
     return (block_msg, details.modified_args)
 
 

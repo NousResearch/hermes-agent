@@ -148,6 +148,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`social-har-api-connectivity`](/docs/user-guide/skills/bundled/social-media/social-media-social-har-api-connectivity) | Connect a social platform's API by driving Chrome to capture the login + network traffic — the user logs in, the agent captures the session (authorized use only). | `social-media/social-har-api-connectivity` |
 | [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: post, search, DM, media, v2 API. | `social-media/xurl` |
 
 ## software-development

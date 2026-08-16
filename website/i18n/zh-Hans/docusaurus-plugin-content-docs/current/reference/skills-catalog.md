@@ -156,7 +156,8 @@ Hermes 在执行 `hermes update` 时也会同步内置技能，但同步清单�
 ## social-media
 
 | 技能 | 描述 | 路径 |
-|-------|-------------|------|
+|------|------|------|
+| [`social-har-api-connectivity`](/user-guide/skills/bundled/social-media/social-media-social-har-api-connectivity) | 通过驱动 Chrome 捕获登录流程和网络流量来连接社交平台 API — 用户登录，代理捕获会话（仅授权使用）。 | `social-media/social-har-api-connectivity` |
 | [`xurl`](/user-guide/skills/bundled/social-media/social-media-xurl) | 通过 xurl CLI 操作 X/Twitter：发帖、搜索、私信、媒体、v2 API。 | `social-media/xurl` |
 
 ## software-development

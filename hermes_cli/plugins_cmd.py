@@ -679,6 +679,21 @@ def _resolve_index_name(identifier: str, console) -> tuple[str, Optional[str]]:
             for c in candidates:
                 console.print(f"  {c.name}  →  {c.install_identifier}")
             _fail(console, "Re-run with the exact name or the owner/repo identifier.")
+        if source == "seed":
+            # A "seed" source means the published index wasn't reachable
+            # (not published yet, offline, or blocked) and no cache was
+            # available, so bare-name resolution fell back to the bundled
+            # seed. Saying "not found in the community index" here is
+            # misleading — the index was never consulted. Point the user at
+            # the owner/repo form, which works regardless (#87565).
+            _fail(console, (
+                f"[red]Error:[/red] Plugin '{identifier}' isn't in the bundled "
+                "plugin seed, and the community index couldn't be fetched (it "
+                "may not be published yet, or you're offline), so bare-name "
+                "resolution is limited to the seed right now.\n"
+                "Install it directly with an `owner/repo` identifier "
+                "(e.g. `hermes plugins install owner/repo`), or run "
+                "`hermes plugins search <term>` to browse the seed."))
         _fail(console, (
             f"[red]Error:[/red] Plugin '{identifier}' was not found in the "
             f"community index ({source}). Use `hermes plugins search <term>` to "

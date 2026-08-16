@@ -1,21 +1,21 @@
 /**
- * P6B1 N2 — native kanban task-completion notification (TEMPORARY POC).
+ * Native kanban task-completion notification.
  *
- * LOCAL_PATCH_UNTIL_UPSTREAM: no maintained exact-fit OSS exists and the SDK
+ * No maintained exact-fit OSS exists and the SDK
  * has no kanban event door, so this module rides the kanban plugin's EXISTING
  * /events socket (api.ts onEventsFrame). No new WebSocket, no new process,
  * no DB, no auth, no persistence — cursor is an in-memory per-board high-water
  * mark. Reuses native completion finality: kind == 'completed' events written
  * by kanban_db.complete_task (payload: summary + artifacts).
  *
- * Cursor contract (P6B1 §6): first observation of a board baselines
+ * Cursor contract: first observation of a board baselines
  * seen[board] = GET /board latest_event_id (MAX task_events.id for that
  * board). Events id <= seen are historical/replay — never notified, no
  * cursor change. id > seen advances cursor for EVERY kind; only 'completed'
  * emits. Reconnect replays from 0; cursor filters. Board switch never mixes
  * cursors; returning reuses prior cursor (never reset to current MAX).
  * Fail-closed: while a board's baseline is unknown, no event can be
- * classified so none is notified. Empty slug ('') suppressed (§7).
+ * classified so none is notified. Empty slug ('') suppressed.
  */
 
 import { host, type PluginRestOptions } from '@hermes/plugin-sdk'

@@ -11,7 +11,7 @@
 
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
 
-// P6B1 N2 — native completion notification (LOCAL_PATCH_UNTIL_UPSTREAM).
+// Native completion notification.
 import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
   BoardMeta,
@@ -68,7 +68,7 @@ function onEventsFrame(slug: string, data: unknown): void {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
 
-  // P6B1 N2 — completion notification (after invalidation so notify failure
+  // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
   void onKanbanEventsFrame(slug, events).catch(() => undefined)
 }

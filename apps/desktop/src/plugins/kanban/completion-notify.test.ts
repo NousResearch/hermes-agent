@@ -1,5 +1,5 @@
 /**
- * P6B1 N2 — focused tests for the completion-notify POC.
+ * Focused tests for the completion-notify module.
  *
  * Each test starts from a FRESH module instance (vi.resetModules + dynamic
  * import) so the in-memory per-board cursor and rest binding match a fresh

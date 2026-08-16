@@ -142,7 +142,7 @@ Each provider renders the value in its own native way:
 | Plugin providers | `instructions=...` keyword via `synthesize(**extra)` |
 | Edge, Mistral, NeuTTS, KittenTTS, Piper | Ignored because these engines have no style input |
 
-Providers that honour the request report `instructions_applied: true` in the tool result. Inline renderings (the xAI wrap and ElevenLabs prefix) are applied to every chunk, and their length is budgeted into the chunking cap so long-form splitting keeps each rendered chunk within the provider request limit.
+Providers report `instructions_applied: true` only when Hermes can confirm that the request was applied. Forwarding instructions to a plugin or auxiliary rewrite does not make that guarantee. Hermes budgets the xAI and ElevenLabs inline syntax and Gemini's composed prompt around each transcript chunk so every provider request stays within its limit.
 
 ### Gemini Persona Prompts
 

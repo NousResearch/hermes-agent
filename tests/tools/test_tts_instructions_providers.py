@@ -24,6 +24,7 @@ from tools.tts_tool_instructions import (
     _elevenlabs_supports_instruction_tags,
     _resolve_tts_instructions,
     _sanitize_tts_instructions,
+    _tts_instructions_applied,
     _tts_instructions_overhead,
 )
 from tools.tts_tool_openai import _generate_openai_tts
@@ -573,6 +574,72 @@ class TestInstructionsOverhead:
             assert payload["text"].endswith("</whisper>")
             # Wrapped chunk still fits the provider cap.
             assert len(payload["text"]) <= 60
+
+    def test_gemini_chunks_fit_the_composed_prompt_limit(
+        self, tmp_path, monkeypatch
+    ):
+        prompts = []
+        max_prompt_length = 280
+
+        def fake_single(text, output_path, **kwargs):
+            prompt = _compose_gemini_tts_prompt(
+                text,
+                kwargs["tts_config"]["gemini"],
+                persona_prompt="",
+                instructions=kwargs["instructions"],
+            )
+            prompts.append(prompt)
+            if len(prompt) > max_prompt_length:
+                return json.dumps({"success": False, "error": "prompt too long"})
+            with open(output_path, "wb") as handle:
+                handle.write(b"audio")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "gemini",
+                "voice_compatible": False,
+                "instructions_applied": True,
+            })
+
+        monkeypatch.setattr(
+            "tools.tts_tool._load_tts_config",
+            lambda: {
+                "provider": "gemini",
+                "instructions": "excited",
+                "gemini": {"max_text_length": max_prompt_length},
+            },
+        )
+        monkeypatch.setattr("tools.tts_tool._text_to_speech_single", fake_single)
+        monkeypatch.setattr(
+            "tools.tts_tool._build_audio_delivery_files",
+            lambda paths, *_args, **_kwargs: (paths, False),
+        )
+
+        from tools.tts_tool import text_to_speech_tool
+
+        result = json.loads(
+            text_to_speech_tool(
+                "A sentence with enough words to require several chunks. " * 4,
+                str(tmp_path / "out.mp3"),
+            )
+        )
+
+        assert result["success"] is True
+        assert len(prompts) > 1
+        assert all(len(prompt) <= max_prompt_length for prompt in prompts)
+
+
+class TestInstructionsApplied:
+    def test_xai_auxiliary_direction_is_not_reported_as_applied(self):
+        assert not _tts_instructions_applied(
+            "xai",
+            "gravelly narrator",
+            {"xai": {"auto_speech_tags": True}},
+        )
+
+    def test_plugin_forwarding_is_not_reported_as_applied(self, monkeypatch):
+        monkeypatch.setattr("agent.tts_registry.get_provider", lambda _name: object())
+        assert not _tts_instructions_applied("myplugin", "excited", {})
 
 
 # ---------------------------------------------------------------------------

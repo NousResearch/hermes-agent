@@ -50,7 +50,7 @@ from tools.tts_tool_plugins import (
     _plugin_provider_is_voice_compatible)
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
 from tools.tts_tool_instructions import (
-    _resolve_tts_instructions, _tts_instructions_applied, _tts_instructions_overhead,
+    _resolve_tts_instructions, _tts_instructions_applied, _tts_text_chunk_limit,
 )
 
 
@@ -448,8 +448,8 @@ def text_to_speech_tool(
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     instructions = _resolve_tts_instructions(provider, tts_config, instructions)
     tts_config = {**tts_config, "instructions": instructions}
-    max_len = max(1, _resolve_max_text_length(provider, tts_config) -
-                  _tts_instructions_overhead(provider, instructions, tts_config))
+    max_len = _tts_text_chunk_limit(
+        provider, instructions, tts_config, _resolve_max_text_length(provider, tts_config))
     chunks = _split_text_for_tts(text, max_len)
     if not chunks:
         return tool_error("Text is required", success=False)

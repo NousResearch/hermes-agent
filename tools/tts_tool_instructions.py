@@ -75,6 +75,32 @@ def _tts_instructions_overhead(
     return 0
 
 
+def _tts_text_chunk_limit(
+    provider: Optional[str], instructions: str, tts_config: Optional[Dict[str, Any]],
+    max_length: int,
+) -> int:
+    key = (provider or "").lower().strip()
+    config = tts_config if isinstance(tts_config, dict) else {}
+    if key == "gemini":
+        from tools.tts_tool_providers import _compose_gemini_tts_prompt, _read_gemini_persona_prompt
+        section = _get_provider_section(config, "gemini")
+        persona = _read_gemini_persona_prompt(section)
+        if persona or instructions:
+            lower, upper = 0, max_length
+            while lower < upper:
+                candidate = (lower + upper + 1) // 2
+                prompt = _compose_gemini_tts_prompt(
+                    "x" * candidate, section, persona_prompt=persona,
+                    instructions=instructions,
+                )
+                if len(prompt) <= max_length:
+                    lower = candidate
+                else:
+                    upper = candidate - 1
+            return max(1, lower)
+    return max(1, max_length - _tts_instructions_overhead(provider, instructions, config))
+
+
 def _tts_instructions_applied(
     provider: Optional[str], instructions: str, tts_config: Optional[Dict[str, Any]],
     command_provider_config: Optional[Dict[str, Any]] = None,
@@ -89,19 +115,11 @@ def _tts_instructions_applied(
     if key in {"openai", "deepinfra", "gemini"}:
         return True
     if key == "xai":
-        from tools.tts_tool_providers import DEFAULT_XAI_AUTO_SPEECH_TAGS, _config_bool
-        section = _get_provider_section(config, "xai")
-        auto_tags = _config_bool(
-            section.get("auto_speech_tags", section.get("speech_tags")), DEFAULT_XAI_AUTO_SPEECH_TAGS,
-        )
-        return bool(_xai_instructions_wrap_tag(instructions)) or auto_tags
+        return bool(_xai_instructions_wrap_tag(instructions))
     if key == "elevenlabs":
         from tools.tts_tool_providers import DEFAULT_ELEVENLABS_MODEL_ID
         section = _get_provider_section(config, "elevenlabs")
         return _elevenlabs_supports_instruction_tags(str(section.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)))
     if key == "minimax":
         return instructions.lower() in _MINIMAX_TTS_EMOTIONS
-    if key and key not in BUILTIN_TTS_PROVIDERS:
-        from agent.tts_registry import get_provider
-        return get_provider(key) is not None
     return False

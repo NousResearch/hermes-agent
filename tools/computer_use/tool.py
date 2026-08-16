@@ -1501,11 +1501,26 @@ def _maybe_follow_capture(
     return json.dumps(data)
 
 
+def _bounds_unknown(bounds) -> bool:
+    """True when the AX tree reported no real geometry for an element.
+
+    KDE/Qt apps commonly report ``[0, 0, 0, 0]`` for elements that are
+    perfectly clickable by index (live QA, Aug 2026: all of kcalc's radio
+    buttons). Serializing that as a plausible-looking rect invites a model
+    to derive ``coordinate=[0, 0]`` from it and click the screen corner.
+    """
+    try:
+        return all(int(v) == 0 for v in bounds)
+    except (TypeError, ValueError):
+        return False
+
+
 def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str]:
     out: List[str] = []
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
-        out.append(f"  #{e.index} {e.role} {label!r} @ {e.bounds}"
+        where = "@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}"
+        out.append(f"  #{e.index} {e.role} {label!r} {where}"
                    + (f" [{e.app}]" if e.app else ""))
     if len(elements) > max_lines:
         out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")
@@ -1673,7 +1688,9 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
         "index": e.index,
         "role": e.role,
         "label": label,
-        "bounds": list(e.bounds),
+        # A zero rect is "geometry unknown", not a position — null it so no
+        # coordinate= is ever derived from it. The element index still works.
+        "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds),
         "app": e.app,
     }
     if truncated:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -17,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider, is_trivial_prompt
-from plugins.memory.honcho.client import spawn_context_thread
+from plugins.memory.honcho.client import _host_block, _HostLookup, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.tool_schemas import ALL_TOOL_SCHEMAS
 from tools.registry import tool_error
@@ -120,6 +121,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         # Recall cadence state (overwritten from config in initialize()).
         self._turn_count = 0
+        # Injection audit. Off unless the logging key enables it: the record holds the user's representation.
+        self._injection_log_path: Optional[str] = None
+        self._injection_log_lock = threading.Lock()
         self._query_rewrite_enabled = False
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
@@ -206,6 +210,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             self._config = cfg
             self._recall_mode = cfg.recall_mode
             self._recall_sync = getattr(cfg, "recall_sync", False)
+            # getattr: test doubles and older config objects have no raw/host.
+            raw = getattr(cfg, "raw", None) or {}
+            look = _HostLookup(_host_block(raw, getattr(cfg, "host", "") or ""), raw)
+            self._injection_log_path = self._resolve_injection_log_path(look)
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
             for name in ("injection_frequency", "context_cadence", "dialectic_cadence",
                          "dialectic_depth_levels", "reasoning_heuristic"):
@@ -378,6 +386,44 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return ""
         return _PROMPT_HEADERS.get(self._recall_mode, _PROMPT_HEADERS["hybrid"])
 
+    @staticmethod
+    def _resolve_injection_log_path(look: _HostLookup) -> Optional[str]:
+        """Where to append the injection audit, or None to keep it off.
+        The ``logging`` key and HONCHO_LOGGING were both accepted and ignored before this;
+        they now switch the audit on. HONCHO_INJECTION_LOG overrides the destination."""
+        explicit = os.environ.get("HONCHO_INJECTION_LOG")
+        if explicit:
+            return explicit
+        enabled = look.pick_set("logging")
+        if enabled is None:
+            enabled = os.environ.get("HONCHO_LOGGING", "").lower() in ("1", "true", "yes")
+        if not enabled:
+            return None
+        return os.path.join(os.path.expanduser("~"), ".honcho", "injection.log")
+
+    def _log_injection(self, reason: str, payload: str = "") -> str:
+        """Append one record of what this turn injected and why, then return ``payload`` unchanged.
+        The reason matters as much as the bytes: prefetch has several ways to return nothing
+        (cron, tools mode, session not ready, trivial prompt, fetched-but-empty) and they need
+        different fixes. The turn number says whether context arrived in time to steer the turn.
+        Never raises: an audit that can break the agent is worse than no audit."""
+        path = self._injection_log_path
+        if not path:
+            return payload
+        try:
+            record = json.dumps({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "turn": self._turn_count,
+                "session_key": self._session_key or "", "recall_mode": self._recall_mode,
+                "reason": reason, "bytes": len(payload.encode("utf-8")), "payload": payload,
+            }, ensure_ascii=False)
+            with self._injection_log_lock:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(record + "\n")
+        except Exception as e:
+            logger.debug("Honcho injection log write failed: %s", e)
+        return payload
+
     def _first_turn_wait(self, base: float) -> float:
         """Turn-1 wait budget: a short request timeout may tighten, but never expand, it."""
         request_timeout = getattr(self._config, "timeout", None)
@@ -449,7 +495,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         dialectic supplement (refreshed on dialectic_cadence), within the context budget.
         Empty in tools-only mode."""
         if self._cron_skipped or self._recall_mode == "tools":
-            return ""
+            return self._log_injection("cron-or-tools-mode")
 
         if self._recall_sync:
             from plugins.memory.honcho.recall_sync import prefetch_sync
@@ -467,12 +513,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 self._init_thread.join(timeout=max(0.0, first_turn_base_deadline - time.monotonic()))
             if not self._session_ready():
                 # A failed auth init still owes the user the one-time notice.
-                return self._pop_auth_notice()
+                return self._log_injection("session-not-ready", self._pop_auth_notice())
 
         # Trivial turns start no work, but may consume a ready pending result.
         if self._is_trivial_prompt(query):
             ready = self._consume_pending_dialectic()
-            return self._truncate_to_budget(ready) if ready else ""
+            return self._log_injection("trivial-prompt", self._truncate_to_budget(ready) if ready else "")
 
         # One-time notice, relayed by the model, that auth is dead and memory is paused.
         parts = [self._pop_auth_notice()]
@@ -483,7 +529,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # Consume only results that are already ready; later turns never wait.
         parts.append(self._consume_pending_dialectic())
         parts = [p for p in parts if p and p.strip()]
-        return self._truncate_to_budget("\n\n".join(parts)) if parts else ""
+        if not parts:
+            return self._log_injection("fetched-but-empty")
+        return self._log_injection("injected", self._truncate_to_budget("\n\n".join(parts)))
 
     def _pop_auth_notice(self) -> str:
         """One-time model-facing notice that Honcho auth expired and memory is paused."""

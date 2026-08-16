@@ -489,6 +489,11 @@ class WhatsAppBehaviorMixin:
     # messages skipped by the mention gate and attach it as channel_context on
     # the next trigger. Durable observation complements this immediate window;
     # it does not replace it.
+    #
+    # These helpers live on the shared mixin, but only the native Baileys
+    # adapter calls them (from its own message-build path). The Cloud API
+    # adapter inherits them unused, so backfill and observation are native
+    # bridge only — see docs/user-guide/messaging/whatsapp.md.
 
     _GROUP_HISTORY_DEFAULT_LIMIT = 50
 
@@ -576,6 +581,13 @@ class WhatsAppBehaviorMixin:
         watermarks = self._group_history_watermarks.setdefault(chat_id, {})
         seen_upto = watermarks.get(sender_key, 0)
         fresh = [entry for entry in entries if entry[0] > seen_upto]
+        # The watermark advances here, at render time, not after the turn is
+        # delivered. That trades a rare loss for a guaranteed no-repeat: if the
+        # caller drops the event after this point, this sender loses that window
+        # once, but the same entries can never be injected into two turns. The
+        # opposite ordering (advance on delivery) would replay the whole window
+        # on every failed build, and the durable observe path — not this RAM
+        # buffer — is what makes an ambient message survivable at all.
         watermarks[sender_key] = entries[-1][0]
         if not fresh:
             return None
@@ -590,6 +602,12 @@ class WhatsAppBehaviorMixin:
                 or sender_id.split("@", 1)[0]
                 or "unknown"
             )
+            # Bodies get the same newline collapse as names. The block is a flat
+            # list of "[name] text" lines, so an embedded newline from any
+            # sender — allowlisted or not — could otherwise forge extra lines or
+            # a second "[Recent group messages]" header. max_chars=0 keeps the
+            # body whole: the size bound here is the ring buffer, not the line.
+            text = neutralize_untrusted_inline_text(body, max_chars=0)
             trust_tag = ""
             if (
                 self._is_sender_authorized(
@@ -599,7 +617,7 @@ class WhatsAppBehaviorMixin:
             ):
                 trust_tag = "[unverified] "
                 has_unverified = True
-            lines.append(f"{trust_tag}[{name}] {body}")
+            lines.append(f"{trust_tag}[{name}] {text}")
 
         blocks = []
         if has_unverified:

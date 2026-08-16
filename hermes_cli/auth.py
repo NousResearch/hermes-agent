@@ -2184,10 +2184,21 @@ def resolve_provider(
     # live only in its secret scope, not os.environ — a bare getenv here
     # would find nothing and auto-resolution would report "No LLM provider
     # configured" for every secondary profile (same class as #86905).
+    # Catch ONLY ImportError: any other failure inside auxiliary_client must
+    # propagate — silently falling back to os.getenv would reintroduce the
+    # very fail-open this PR removes, with zero trace.
     try:
         from agent.auxiliary_client import _scoped_key_env
-    except Exception:  # pragma: no cover — defensive
-        _scoped_key_env = lambda name: os.getenv(name) or ""
+    except ImportError:
+        logger.warning(
+            "agent.auxiliary_client unavailable (%s); provider auto-detection "
+            "will read keys from the process environment only — under "
+            "multiplex, secondary profiles may report 'No LLM provider'.",
+            "import failed",
+        )
+
+        def _scoped_key_env(name: str) -> str:
+            return os.getenv(name) or ""
 
     if has_usable_secret(_scoped_key_env("OPENAI_API_KEY")) or has_usable_secret(
         _scoped_key_env("OPENROUTER_API_KEY")

@@ -5056,7 +5056,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        self._write_terminal_breadcrumb()
+        getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
@@ -9252,7 +9252,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         self.session_id = f"{timestamp_str}_{short_uuid}"
-        self._write_terminal_breadcrumb()
+        getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
@@ -12604,7 +12604,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     and self.agent.session_id != self.session_id
                 ):
                     self.session_id = self.agent.session_id
-                    self._write_terminal_breadcrumb()
+                    getattr(self, "_write_terminal_breadcrumb", lambda: None)()
                     self._pending_title = None
                     # Manual /compress replaces conversation_history with a new
                     # compressed handoff for the child session. Persist it from
@@ -15679,7 +15679,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ):
                 self._transfer_session_yolo(self.session_id, self.agent.session_id)
                 self.session_id = self.agent.session_id
-                self._write_terminal_breadcrumb()
+                getattr(self, "_write_terminal_breadcrumb", lambda: None)()
                 self._pending_title = None
 
             # Get the final response
@@ -16064,7 +16064,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_session(messages, conversation_history)
             if getattr(agent, "session_id", None):
                 self.session_id = agent.session_id
-                self._write_terminal_breadcrumb()
+                getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         try:
             if persist_lock is None:

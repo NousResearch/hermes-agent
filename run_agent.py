@@ -3865,6 +3865,15 @@ class AIAgent:
                     "database). Your message should already be saved — "
                     "please send it again in a moment."
                 )
+            if cause == "corrupt":
+                return (
+                    prefix
+                    + "the turn was stopped because the state database "
+                    "reported structural corruption (the transcript would "
+                    "have been lost on restart). Freeing disk space will "
+                    "not help — run `hermes doctor` to repair the state "
+                    "database, then send your message again."
+                )
             if cause == "disk":
                 return (
                     prefix

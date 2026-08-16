@@ -1605,8 +1605,24 @@ PERSISTENCE_ERROR_CAUSES = (
     "compression",
     "compression_closed",
     "turn_lease",
+    "corrupt",
     "disk",
     "unknown",
+)
+
+
+# Markers that mean the database FILE itself is structurally damaged.  Kept
+# as plain substrings so sqlite3.DatabaseError, wrapped RPC strings, and
+# logged message text all match the same helper.  NOTE: "database disk image
+# is malformed" contains the word "disk", so this check MUST run before the
+# disk-full/readonly bucket in classify_persistence_error — otherwise real
+# B-tree corruption gets reported to the user as "free some disk space"
+# (the misdiagnosis documented on #77386).
+_DB_CORRUPTION_MARKERS = (
+    "malformed",              # "database disk image is malformed" (SQLITE_CORRUPT)
+    "file is not a database", # SQLITE_NOTADB (also connection-level poisoning)
+    "not a database",
+    "database corruption",
 )
 
 
@@ -1631,6 +1647,10 @@ def classify_persistence_error(exc_or_str) -> str:
     * ``"turn_lease"`` — a presented session-turn-lease holder no longer
       owns the conversation (expired, released, or reclaimed); fail-fast
       fencing, not a storage fault.
+    * ``"corrupt"`` — the database file itself is structurally damaged
+      (``database disk image is malformed`` / SQLITE_NOTADB).  Distinct from
+      ``"disk"``: freeing space cannot help, the user needs the repair path
+      (``hermes doctor`` / automatic schema surgery).
     * ``"disk"``    — disk full / read-only / permission-shaped failures
       (delegates the disk-full patterns to :func:`is_disk_full_error` so the
       two classifiers can never drift apart — e.g. ENOSPC).
@@ -1656,6 +1676,12 @@ def classify_persistence_error(exc_or_str) -> str:
         return "compression_closed"
     if "being compressed" in text or "compression lease" in text:
         return "compression"
+    # Structural corruption BEFORE the lock and disk buckets: "database disk
+    # image is malformed" contains "disk" (and some wrapped corruption
+    # strings mention "locked" recovery attempts), so later buckets would
+    # steal it and misdiagnose damage as space/contention.
+    if any(marker in text for marker in _DB_CORRUPTION_MARKERS):
+        return "corrupt"
     if (
         "locked" in text
         or "busy" in text

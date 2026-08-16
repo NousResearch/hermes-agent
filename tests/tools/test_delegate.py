@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+from pathlib import Path
 import threading
 import time
 import types
@@ -142,26 +143,95 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestChildAgentContextIsolation(unittest.TestCase):
     def test_child_keeps_soul_identity_while_skipping_context_and_memory(self):
-        parent = _make_mock_parent()
+        """Build a real delegated child and render its real system prompt."""
+        from tempfile import TemporaryDirectory
 
-        with patch("run_agent.AIAgent") as MockAgent:
-            MockAgent.return_value = MagicMock()
-            _build_child_agent(
-                task_index=0,
-                goal="Inspect safely",
-                context=None,
-                toolsets=None,
-                model=None,
-                max_iterations=10,
-                parent_agent=parent,
-                task_count=1,
-                role="leaf",
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            hermes_home = root / "hermes-home"
+            workspace = root / "workspace"
+            memories = hermes_home / "memories"
+            memories.mkdir(parents=True)
+            workspace.mkdir()
+
+            soul_marker = "DELEGATED CHILD SOUL IDENTITY"
+            context_marker = "PROJECT CONTEXT MUST STAY DISABLED"
+            memory_marker = "PERSISTENT MEMORY MUST STAY DISABLED"
+            (hermes_home / "SOUL.md").write_text(soul_marker, encoding="utf-8")
+            (hermes_home / "config.yaml").write_text(
+                "memory:\n  memory_enabled: true\n", encoding="utf-8"
             )
+            (memories / "MEMORY.md").write_text(memory_marker, encoding="utf-8")
+            (workspace / "AGENTS.md").write_text(context_marker, encoding="utf-8")
 
-        kwargs = MockAgent.call_args.kwargs
-        self.assertTrue(kwargs["load_soul_identity"])
-        self.assertTrue(kwargs["skip_context_files"])
-        self.assertTrue(kwargs["skip_memory"])
+            parent = _make_mock_parent()
+            parent.enabled_toolsets = ["terminal"]
+            parent.disabled_toolsets = []
+            parent.client = None
+            parent.prefill_messages = None
+            parent._fallback_chain = None
+            parent.reasoning_config = None
+            parent.request_overrides = {}
+            parent.max_tokens = None
+            parent.acp_command = None
+            parent.acp_args = []
+            parent.session_id = None
+            parent._current_turn_id = ""
+            parent.providers_allowed = None
+            parent.providers_ignored = None
+            parent.providers_order = None
+            parent.provider_sort = None
+            parent.provider_require_parameters = False
+            parent.provider_data_collection = ""
+            parent.openrouter_min_coding_score = None
+
+            tool_defs = [{
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "terminal tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }]
+            child = None
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "HERMES_HOME": str(hermes_home),
+                        "TERMINAL_CWD": str(workspace),
+                    },
+                ),
+                patch("run_agent.get_tool_definitions", return_value=tool_defs),
+                patch("run_agent.check_toolset_requirements", return_value={}),
+                patch("run_agent.OpenAI"),
+            ):
+                try:
+                    child = _build_child_agent(
+                        task_index=0,
+                        goal="Inspect safely",
+                        context=None,
+                        toolsets=None,
+                        model=None,
+                        max_iterations=10,
+                        parent_agent=parent,
+                        task_count=1,
+                        role="leaf",
+                    )
+                    prompt = child._build_system_prompt()
+                finally:
+                    if child is not None:
+                        child.close()
+
+            self.assertIsNotNone(child)
+            child_state = vars(child)
+            self.assertTrue(child_state["load_soul_identity"])
+            self.assertTrue(child_state["skip_context_files"])
+            self.assertIsNone(child_state["_memory_store"])
+            self.assertIsNone(child_state["_memory_manager"])
+            self.assertIn(soul_marker, prompt)
+            self.assertNotIn(context_marker, prompt)
+            self.assertNotIn(memory_marker, prompt)
 
 
 class TestStripBlockedTools(unittest.TestCase):

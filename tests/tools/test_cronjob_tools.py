@@ -444,6 +444,117 @@ class TestAgentCannotSetModelPin:
         assert stored["name"] == "renamed"
 
 
+class TestRegisteredHandlerForwardsAttachToSession:
+    """#84802 — schema + cronjob() already accept attach_to_session, but the
+    registry adapter must forward it or create silently drops the field and
+    update returns "No updates provided." """
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_create_persists_attach_to_session(self):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {
+                    "action": "create",
+                    "name": "Continuable cron canary",
+                    "schedule": "1h",
+                    "repeat": 1,
+                    "deliver": "origin",
+                    "attach_to_session": True,
+                    "prompt": "Reply exactly: canary",
+                },
+            )
+        )
+        assert created["success"] is True
+        assert created.get("job", {}).get("attach_to_session") is True
+        stored = get_job(created["job_id"])
+        assert stored is not None
+        assert stored.get("attach_to_session") is True
+        listing = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
+        assert listed.get("attach_to_session") is True
+
+    def test_update_persists_attach_to_session(self):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {
+                    "action": "create",
+                    "name": "plain",
+                    "schedule": "1h",
+                    "prompt": "Reply exactly: canary",
+                },
+            )
+        )
+        assert created["success"] is True
+        assert "attach_to_session" not in (get_job(created["job_id"]) or {})
+
+        updated = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {
+                    "action": "update",
+                    "job_id": created["job_id"],
+                    "attach_to_session": True,
+                },
+            )
+        )
+        assert updated["success"] is True, updated
+        assert updated.get("job", {}).get("attach_to_session") is True
+        stored = get_job(created["job_id"])
+        assert stored is not None
+        assert stored.get("attach_to_session") is True
+
+        disabled = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {
+                    "action": "update",
+                    "job_id": created["job_id"],
+                    "attach_to_session": False,
+                },
+            )
+        )
+        assert disabled["success"] is True, disabled
+        assert disabled.get("job", {}).get("attach_to_session") is False
+        stored = get_job(created["job_id"])
+        assert stored is not None
+        assert stored.get("attach_to_session") is False
+        listing = json.loads(registry.dispatch("cronjob", {"action": "list"}))
+        listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
+        assert listed.get("attach_to_session") is False
+
+    def test_omitted_create_leaves_field_absent(self):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {
+                    "action": "create",
+                    "schedule": "1h",
+                    "prompt": "fire and forget",
+                },
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored is not None
+        assert "attach_to_session" not in stored
+
+
 class TestLocalDeliveryNotice:
     """#51568 — TUI/CLI cron jobs are local-only; surface that at create time
     so the agent doesn't promise a delivery that never happens."""

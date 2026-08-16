@@ -658,6 +658,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if isinstance(job.get("attach_to_session"), bool):
+        result["attach_to_session"] = job["attach_to_session"]
     return result
 
 
@@ -1725,6 +1727,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
         task_id=kw.get("task_id"),

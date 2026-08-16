@@ -2244,7 +2244,7 @@ def _mark_job_run_locked(
 ) -> bool:
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
@@ -2256,6 +2256,10 @@ def _mark_job_run_locked(
     the pre-dispatch configuration validation refused to run the agent
     (T1-26), so `cronjob list` distinguishes "your config is broken" from
     "the run itself failed".
+
+A delivery failure is NOT a clean "ok" run: the output never reached
+the user, so last_status becomes ``"ok (delivery failed)"`` instead of
+a plain ``"ok"`` that would hide the failure (#83993).
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -2272,7 +2276,11 @@ def _mark_job_run_locked(
                         return False
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
-                job["last_status"] = status or ("ok" if success else "error")
+                job["last_status"] = status or (
+                    "ok (delivery failed)"
+                    if (success and delivery_error)
+                    else ("ok" if success else "error")
+                )
                 job["last_error"] = error if not success else None
                 # A healthy run means the configuration validates again — drop
                 # the preflight alert-dedup marker so a FUTURE config break

@@ -480,9 +480,39 @@ class TestMarkJobRun:
         job = create_job(prompt="Report", schedule="every 1h")
         mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
         updated = get_job(job["id"])
-        assert updated["last_status"] == "ok"
+        assert updated["last_status"] == "ok (delivery failed)"
         assert updated["last_error"] is None
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+
+    def test_delivery_failure_never_hidden_under_ok(self, tmp_cron_dir):
+        """Issue #83993: delivery outcome must be visible in last_status.
+
+        A job that ran fine but whose output never reached the user (rate
+        limit, stale session, live-adapter send error falling back to a
+        standalone path with no configured channel) must NOT be recorded as
+        a plain "ok" — the user would never know the delivery failed.
+        """
+        # Job ran ok + delivery ok -> "ok"
+        ok_job = create_job(prompt="A", schedule="every 1h")
+        mark_job_run(ok_job["id"], success=True)
+        assert get_job(ok_job["id"])["last_status"] == "ok"
+
+        # Job ran ok + delivery failed -> NOT plain "ok"; status signals it
+        failed_delivery = create_job(prompt="B", schedule="every 1h")
+        mark_job_run(
+            failed_delivery["id"], success=True,
+            delivery_error="send failed: 502",
+        )
+        updated = get_job(failed_delivery["id"])
+        assert updated["last_status"] != "ok"
+        assert updated["last_status"] == "ok (delivery failed)"
+        assert updated["last_error"] is None
+        assert updated["last_delivery_error"] == "send failed: 502"
+
+        # Job failed -> "error" unchanged
+        failed_job = create_job(prompt="C", schedule="every 1h")
+        mark_job_run(failed_job["id"], success=False, error="timeout")
+        assert get_job(failed_job["id"])["last_status"] == "error"
 
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):

@@ -842,10 +842,14 @@ def _run_claimed_job(
             release_running_job(job_id)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
+        # A delivery failure (job ran, output never reached the user) must
+        # not come back as a success with no reason — surface the delivery
+        # error so the calling agent knows the output was dropped (#83993).
+        run_error = refreshed.get("last_error") or refreshed.get("last_delivery_error")
         return {
             "claimed": True,
             "success": bool(processed and ok),
-            "error": refreshed.get("last_error"),
+            "error": run_error,
         }
 
     except Exception as e:

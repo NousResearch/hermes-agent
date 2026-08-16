@@ -180,6 +180,11 @@ def cron_list(show_all: bool = False):
             last_run = job.get("last_run_at", "?")
             if last_status == "ok":
                 status_display = color("ok", Colors.GREEN)
+            elif last_status == "ok (delivery failed)":
+                # Issue #83993: the agent ran, but the output never reached
+                # the user — warn visibly instead of showing a clean "ok".
+                # The delivery error detail is printed below.
+                status_display = color("ok (delivery failed)", Colors.YELLOW)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")

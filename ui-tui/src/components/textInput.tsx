@@ -229,6 +229,32 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
   return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
 }
 
+type ReturnDecisionKey = {
+  ctrl: boolean
+  meta: boolean
+  return?: boolean
+  shift?: boolean
+  super?: boolean
+}
+
+/**
+ * Decide whether a Return keypress should insert a newline instead of
+ * submitting. An explicit modified Enter (Shift/Ctrl, or the platform action
+ * modifier) always inserts a newline. Beyond that, terminals that can't send a
+ * distinct Shift+Enter collapse a modified Enter / Ctrl+J down to a bare LF —
+ * shouldPreserveCtrlJNewline() detects that via env (SSH, Windows Terminal,
+ * Ghostty, WSL), and macOS terminals (Terminal.app, iTerm2 defaults) do it too
+ * but aren't env-detectable, so a bare LF is treated as a newline there as well.
+ * Plain Enter (CR) stays submit everywhere.
+ */
+export function shouldInsertNewlineOnReturn(key: ReturnDecisionKey, sequence = ''): boolean {
+  if (key.shift || key.ctrl || (isMac ? isActionMod(key) : key.meta)) {
+    return true
+  }
+
+  return sequence === '\n' && (isMac || shouldPreserveCtrlJNewline())
+}
+
 function prevPos(s: string, p: number) {
   const pos = snapPos(s, p)
   let prev = 0
@@ -1288,9 +1314,9 @@ export function TextInput({
         const range = selRange()
         const pending = valueForReturnSubmit(vRef.current, curRef.current, inp, range)
         const sequence = (event.keypress as { sequence?: string }).sequence
-        const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
+        const insertNewline = shouldInsertNewlineOnReturn(k, sequence ?? '')
 
-        if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
+        if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
         } else {
           cbSubmit.current?.(pending.value)

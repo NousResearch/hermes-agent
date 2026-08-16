@@ -1145,7 +1145,7 @@ class TestSenderAuthentication(unittest.TestCase):
 
 
 class TestProcessExistingFlag(unittest.TestCase):
-    """Test EMAIL_PROCESS_EXISTING env-var branching inside connect()."""
+    """Test the ``platforms.email.process_existing`` config toggle inside connect()."""
 
     _BASE_ENV = {
         "EMAIL_ADDRESS": "hermes@test.com",
@@ -1196,6 +1196,11 @@ class TestProcessExistingFlag(unittest.TestCase):
         result = asyncio.run(_run())
         return result, mock_imap
 
+    @staticmethod
+    def _search_criteria(mock_imap):
+        """Return the criteria of every ``uid('search', None, <criteria>)`` call."""
+        return [c.args[2] for c in mock_imap.uid.call_args_list if c.args[0] == "search"]
+
     # ------------------------------------------------------------------
     # Default behaviour — process_existing unset
     # ------------------------------------------------------------------
@@ -1209,8 +1214,7 @@ class TestProcessExistingFlag(unittest.TestCase):
         self.assertTrue(result)
         self.assertGreater(len(adapter._seen_uids), 0)
         # The ALL search must have been issued
-        search_calls = [c for c in mock_imap.uid.call_args_list if c.args[0] == "search"]
-        self.assertTrue(search_calls, "uid('search', None, 'ALL') should have been issued")
+        self.assertIn("ALL", self._search_criteria(mock_imap))
 
     # ------------------------------------------------------------------
     # Explicit process_existing: false — same as default
@@ -1224,14 +1228,13 @@ class TestProcessExistingFlag(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertGreater(len(adapter._seen_uids), 0)
-        search_calls = [c for c in mock_imap.uid.call_args_list if c.args[0] == "search"]
-        self.assertTrue(search_calls)
+        self.assertIn("ALL", self._search_criteria(mock_imap))
 
     # ------------------------------------------------------------------
     # process_existing: true — skip pre-fill so first poll picks them up
     # ------------------------------------------------------------------
     def test_set_true_processes_existing(self):
-        """process_existing: true leaves _seen_uids empty and skips ALL search."""
+        """process_existing: true leaves _seen_uids empty and skips the ALL pre-fill."""
         adapter = self._make_adapter({"process_existing": True})
         self.assertTrue(adapter._process_existing)
 
@@ -1239,18 +1242,46 @@ class TestProcessExistingFlag(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(len(adapter._seen_uids), 0)
-        # The ALL search must NOT have been issued
-        search_calls = [c for c in mock_imap.uid.call_args_list if c.args[0] == "search"]
-        self.assertFalse(search_calls, "uid('search', None, 'ALL') must NOT be issued when process_existing is true")
+        # The ALL search must NOT be issued — that is the pre-fill we are skipping
+        self.assertNotIn("ALL", self._search_criteria(mock_imap))
+
+    def test_set_true_counts_backlog(self):
+        """process_existing: true counts the UNSEEN backlog so the burst is logged."""
+        adapter = self._make_adapter({"process_existing": True})
+
+        with self.assertLogs("plugins.platforms.email.adapter", level="INFO") as logs:
+            result, mock_imap = self._connect_with_uids(adapter, b"7 8 9")
+
+        self.assertTrue(result)
+        # UNSEEN, not ALL: the count is reported, the UIDs are not marked seen
+        self.assertIn("UNSEEN", self._search_criteria(mock_imap))
+        self.assertEqual(len(adapter._seen_uids), 0)
+        self.assertTrue(
+            any("3 pre-existing UNSEEN message(s)" in line for line in logs.output),
+            f"backlog count missing from log output: {logs.output}",
+        )
 
     # ------------------------------------------------------------------
-    # Boolean coercion — YAML maps the config value to a real bool
+    # Value coercion — the shared truthy helper, not bool()
     # ------------------------------------------------------------------
     def test_bool_values(self):
         """True/False config values enable/disable the flag; absence defaults to False."""
         self.assertTrue(self._make_adapter({"process_existing": True})._process_existing)
         self.assertFalse(self._make_adapter({"process_existing": False})._process_existing)
         self.assertFalse(self._make_adapter({})._process_existing)
+
+    def test_string_values_are_not_blindly_truthy(self):
+        """A string-typed value is parsed, not coerced: "false"/"no"/"" stay off."""
+        for value in ("false", "False", "no", "off", "0", ""):
+            with self.subTest(value=value):
+                self.assertFalse(self._make_adapter({"process_existing": value})._process_existing)
+        for value in ("true", "TRUE", "yes", "on", "1"):
+            with self.subTest(value=value):
+                self.assertTrue(self._make_adapter({"process_existing": value})._process_existing)
+
+    def test_none_value_defaults_off(self):
+        """An explicit ``process_existing:`` with no value (YAML null) stays off."""
+        self.assertFalse(self._make_adapter({"process_existing": None})._process_existing)
 
 
 if __name__ == "__main__":

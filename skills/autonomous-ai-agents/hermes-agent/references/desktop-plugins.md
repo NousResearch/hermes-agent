@@ -55,10 +55,13 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 `jsx()` calls, not JSX syntax; the file is not compiled).
 
 - `host.state.*` — readonly reactive atoms: `activeSessionId`, `busy`,
-  `awaitingResponse`, `cwd`, `gateway`, `model`, `profile`, `viewport`.
+  `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
+  turn-busy), `model`, `profile`, `viewport`.
   `busy` is true while the focused chat is working after a send (thinking
   and streaming). `awaitingResponse` is true until the first assistant
-  payload. Read with `.get()` in handlers, `useValue(atom)` in components.
+  payload. `busyBySession` maps runtime session id → mid-turn, for rosters
+  that watch every session. Read with `.get()` in handlers,
+  `useValue(atom)` in components.
 - `host.request(method, params)` — gateway JSON-RPC (sessions, config,
   skills, cron — everything the app uses).
 - `host.onEvent(type, fn)` — live gateway events (`'*'` for all). Returns a

@@ -45,7 +45,7 @@ import {
   $gatewayState,
   $selectedStoredSessionId
 } from '@/store/session'
-import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import { $focusedSessionState, $focusedStoredSessionId, $sessionStates } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -90,6 +90,17 @@ const readViewport = (): ViewportRect => ({
   narrow: $narrowViewport.get()
 })
 
+/** Runtime session id → mid-turn. Not gateway socket state. */
+const $busyBySession = computed($sessionStates, states => {
+  const map: Record<string, boolean> = {}
+
+  for (const [id, state] of Object.entries(states)) {
+    map[id] = Boolean(state.busy)
+  }
+
+  return map
+})
+
 const $viewport = atom<ViewportRect>(readViewport())
 
 if (typeof window !== 'undefined') {
@@ -111,9 +122,11 @@ export const host = {
      * id uses the global flag.
      */
     busy: readonlyAtom<boolean>($focusedBusy),
+    /** Runtime session id → mid-turn. Not socket state; see `gateway`. */
+    busyBySession: readonlyAtom<Record<string, boolean>>($busyBySession),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
-    /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. */
+    /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */
     model: readonlyAtom<string>($currentModel),

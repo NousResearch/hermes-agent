@@ -39,7 +39,8 @@ module and never touches app internals (they are lint-fenced out of a bundled
 plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 
 - **`host.state.*`** — readonly views over the app's live state (nanostore
-  atoms): active session, cwd, gateway status, model, profile, viewport.
+  atoms): active session, per-session turn-busy, cwd, gateway socket status,
+  model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
 - **`host.request`** — the gateway JSON-RPC door: sessions, config, skills,
@@ -376,12 +377,22 @@ components.
 host.state.activeSessionId  // ReadableAtom<string | null>
 host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
 host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
+host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
 host.state.cwd              // ReadableAtom<string>
-host.state.gateway          // ReadableAtom<string>  ('idle' | 'connecting' | 'open' | …)
+host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+```
 
+`host.state.gateway` is the WebSocket connection, not whether a chat turn is
+running. A session can be mid-turn while the socket is `open`; another session
+can be idle at the same time. Disable composer or plugin actions from the
+**focused session's** turn-busy (`host.state.busyBySession[sessionId]`, or that
+session's `view.$busy`) — never from `gateway`, and never from a process-global
+busy flag.
+
+```ts
 host.notify({ kind, message, title?, detail?, action? })  // toast; returns id
 host.notifyError(error, fallbackMessage)                   // toast an error
 ctx.os.notify({ title, body?, silent? })   // native OS notification (attributed to your plugin)

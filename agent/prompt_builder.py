@@ -2030,7 +2030,7 @@ def _build_skills_system_prompt_inner(
             "and follow their instructions. Prefer the smallest sufficient set. The explicit mandatory "
             "triggers below still apply. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
+            "and proven workflows that outperform general-purpose approaches. Load a qualifying skill "
             "even if you think you could handle the task with basic tools like web_search or terminal. "
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "

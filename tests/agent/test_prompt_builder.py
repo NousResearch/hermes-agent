@@ -295,6 +295,8 @@ class TestBuildSkillsSystemPrompt:
         assert "a distinct required subtask, or a dependency" in result
         assert "Prefer the smallest sufficient set." in result
         assert "The explicit mandatory triggers below still apply." in result
+        assert "Load a qualifying skill even if you think you could handle" in result
+        assert "Load the skill even if you think you could handle" not in result
         assert "even partially relevant" not in result
         assert "context you don't need" not in result
         assert "Proceed without loading a skill when none meets that standard." in result

@@ -97,12 +97,7 @@ Make me a futuristic cityscape, landscape orientation
 
 ## 自动超分（Upscale）
 
-是否启用 FAL **Clarity Upscaler** 按模型区分：
-
-| 模型 | 超分？ | 原因 |
-|---|---|---|
-| `fal-ai/flux-2-pro` | ✓ | 历史兼容（选择器出现前的默认） |
-| 其他 | ✗ | 亚秒级模型若再超分会失去速度优势；高分辨率模型本身已足够清晰 |
+超分**默认关闭**（所有模型）。现代图像模型原生输出即为最佳质量，而可用的超分器属于*创意增强器*（扩散重绘），会细微改动内容——损伤文字渲染、人脸与细节。仅当智能体显式传入 `upscale: true` 时才会执行 FAL **Clarity Upscaler** 超分。
 
 超分启用时的主要参数：
 
@@ -121,7 +116,7 @@ Make me a futuristic cityscape, landscape orientation
 1. **模型解析** — `_resolve_fal_model()` 读取 `config.yaml` 的 `image_gen.model`，否则看 `FAL_IMAGE_MODEL` 环境变量，再否则默认 `fal-ai/flux-2/klein/9b`。  
 2. **构造请求体** — `_build_fal_payload()` 将 `aspect_ratio` 转为各模型枚举或字面量，合并默认参数与调用方覆盖，并按 `supports` 白名单过滤非法字段。  
 3. **提交** — `_submit_fal_request()` 根据凭据走直连 FAL 或 Nous 托管网关。  
-4. **超分** — 仅当模型元数据标记 `upscale: True` 时执行。  
+4. **超分** — 仅当调用显式传入 `upscale: true` 时执行；所有模型目录默认关闭。  
 5. **交付** — 最终图像 URL 返回给智能体，并发出 `MEDIA:<url>`，由各平台适配器转为原生媒体消息。  
 
 ## 调试

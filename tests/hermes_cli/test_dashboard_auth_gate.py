@@ -74,7 +74,7 @@ def test_empty_provider_login_page_shows_supported_auth_paths():
     assert "Tailscale" in html
     assert (
         'href="https://hermes-agent.nousresearch.com/docs/'
-        'user-guide/features/web-dashboard#authentication"'
+        'user-guide/features/web-dashboard#authentication-gated-mode"'
     ) in html
 
 

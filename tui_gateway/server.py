@@ -9562,7 +9562,73 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
         # this the fallthrough keys every one as ("", "async_delegation")
         # and the second completion's status update is suppressed forever.
         return (evt.get("delegation_id", ""), evt_type)
+    if evt_type == "cron_delivery":
+        # delivery_id stays stable while a busy session requeues this event,
+        # but changes for each scheduled fire of the same job.
+        return (evt.get("delivery_id", ""), evt_type)
     return (evt_sid, evt_type)
+
+
+def queue_desktop_cron_delivery(
+    *, session_key: str, job_id: str, job_name: str, content: str
+) -> bool | None:
+    """Queue a cron report for its live desktop session, if it is connected.
+
+    Cron executes on a scheduler thread, while the desktop gateway owns both
+    the WebSocket transport and the strict between-turn delivery boundary. A
+    queue event lets the existing notification poller wait for an idle session
+    instead of injecting a synthetic message into a running conversation.
+
+    Returns ``False`` when the session is not live and ``None`` on queue errors.
+    """
+    key = str(session_key or "").strip()
+    if not key:
+        return False
+
+    sid = ""
+    try:
+        from tools.process_registry import process_registry
+
+        # The enqueue must share the lookup's lock: a session teardown pops
+        # from _sessions under this same lock, so it cannot slip between a
+        # successful lookup and placing the event on the shared queue.
+        with _sessions_lock:
+            for sid, session in _sessions.items():
+                if (
+                    session.get("_finalized")
+                    or str(_session_source(session) or "").strip().lower() != "desktop"
+                ):
+                    continue
+                if str(session.get("session_key") or "") != key:
+                    continue
+                if isinstance(session.get("transport"), _DropTransport):
+                    continue
+                break
+            else:
+                return False
+
+            process_registry.completion_queue.put(
+                {
+                    "type": "cron_delivery",
+                    "delivery_id": uuid.uuid4().hex,
+                    "session_id": sid,
+                    "session_key": key,
+                    "job_id": str(job_id or ""),
+                    "job_name": str(job_name or "cron job"),
+                    "content": str(content or ""),
+                }
+            )
+        return True
+    except Exception:
+        logger.debug("Failed to queue cron delivery for desktop session %s", sid, exc_info=True)
+        return None
+
+
+def _cron_delivery_display_metadata(evt: dict) -> dict:
+    return {
+        "job_id": str(evt.get("job_id") or ""),
+        "job_name": str(evt.get("job_name") or "cron job"),
+    }
 
 
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds too so
@@ -9989,6 +10055,15 @@ def _notification_poller_loop(
                     display_kind="async_delegation_complete",
                     display_metadata=_async_delegation_display_metadata(evt),
                 )
+            elif evt.get("type") == "cron_delivery":
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    display_kind="cron_delivery",
+                    display_metadata=_cron_delivery_display_metadata(evt),
+                )
             else:
                 _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
@@ -10066,6 +10141,15 @@ def _notification_poller_loop(
                     text,
                     display_kind="async_delegation_complete",
                     display_metadata=_async_delegation_display_metadata(evt),
+                )
+            elif evt.get("type") == "cron_delivery":
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    display_kind="cron_delivery",
+                    display_metadata=_cron_delivery_display_metadata(evt),
                 )
             else:
                 _run_prompt_submit(rid, sid, session, text)

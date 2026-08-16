@@ -420,6 +420,11 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "qqbot", "yuanbao",
 })
 
+# ``desktop`` is a virtual origin, not a gateway Platform enum member. Desktop
+# chat sessions live in tui_gateway and cron reaches them through its
+# session-keyed notification queue (see _queue_desktop_cron_delivery).
+_DESKTOP_DELIVERY_PLATFORM = "desktop"
+
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
 _HOME_TARGET_ENV_VARS = {
@@ -1978,6 +1983,27 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
+        # A desktop session key is an internal return address, not a public
+        # delivery destination. Only accept an explicit desktop target when it
+        # exactly names this job's captured desktop origin.
+        if platform_key == _DESKTOP_DELIVERY_PLATFORM:
+            if (
+                not origin
+                or str(origin.get("platform") or "").lower() != _DESKTOP_DELIVERY_PLATFORM
+                or str(origin.get("chat_id") or "") != rest
+            ):
+                logger.warning(
+                    "Job '%s': ignored desktop delivery target because it does not "
+                    "match the captured desktop origin",
+                    job.get("id", "?"),
+                )
+                return None
+            return {
+                "platform": _DESKTOP_DELIVERY_PLATFORM,
+                "chat_id": rest,
+                "thread_id": None,
+            }
+
         from tools.send_message_tool import (
             prepare_send_message_platforms,
             resolve_send_target,
@@ -2127,6 +2153,43 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     targets = _resolve_delivery_targets(job)
     return targets[0] if targets else None
+
+
+def _is_desktop_delivery_target(target: dict) -> bool:
+    return str(target.get("platform") or "").lower() == _DESKTOP_DELIVERY_PLATFORM
+
+
+def _queue_desktop_cron_delivery(
+    job: dict, target: dict, content: str
+) -> Optional[bool]:
+    """Queue a report for the live desktop conversation that created ``job``.
+
+    The desktop has no gateway adapter and must not be represented as one: its
+    delivery capability belongs to the session currently connected to the TUI
+    gateway. The gateway owns turn ordering and injects the queued report only
+    between turns, preserving alternation and the conversation's cached prompt.
+
+    ``False`` means no live recipient was found; ``None`` means queueing failed.
+    """
+    session_key = str(target.get("chat_id") or "").strip()
+    if not session_key:
+        return None
+    try:
+        from tui_gateway.server import queue_desktop_cron_delivery
+
+        return queue_desktop_cron_delivery(
+            session_key=session_key,
+            job_id=str(job.get("id") or ""),
+            job_name=str(job.get("name") or job.get("id") or "cron job"),
+            content=content,
+        )
+    except Exception:
+        logger.debug(
+            "Job '%s': failed to queue desktop cron delivery",
+            job.get("id", "?"),
+            exc_info=True,
+        )
+        return None
 
 
 # Media extension sets — audio routing is centralized in gateway.platforms.base
@@ -2301,9 +2364,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.warning("Job '%s': %s", job["id"], msg)
         return msg
 
-    from tools.send_message_tool import _send_to_platform
-    from gateway.config import load_gateway_config, Platform
-
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
@@ -2346,6 +2406,44 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
 
+    # A Desktop target is a live session route, not a configured gateway
+    # platform. Queue it before loading gateway config so desktop-only users do
+    # not need to configure an unrelated messaging connector merely to receive
+    # reports in the chat that scheduled them.
+    delivery_errors = []
+    gateway_targets = []
+    for target in targets:
+        if not _is_desktop_delivery_target(target):
+            gateway_targets.append(target)
+            continue
+        desktop_delivery_queued = _queue_desktop_cron_delivery(
+            job, target, delivery_content
+        )
+        if desktop_delivery_queued is True:
+            logger.info(
+                "Job '%s': queued delivery for desktop session %s",
+                job["id"], target["chat_id"],
+            )
+        elif desktop_delivery_queued is False:
+            # The desktop origin is intentionally an active-session route. A
+            # closed or disconnected app has no recipient, while the regular
+            # cron output remains available under cron/output/.
+            logger.info(
+                "Job '%s': desktop origin %s is not active; output saved locally",
+                job["id"], target["chat_id"],
+            )
+        else:
+            logger.error(
+                "Job '%s': failed to queue desktop delivery; output saved locally",
+                job["id"],
+            )
+
+    if not gateway_targets:
+        return None
+
+    from tools.send_message_tool import _send_to_platform
+    from gateway.config import load_gateway_config, Platform
+
     try:
         config = load_gateway_config()
     except Exception as e:
@@ -2353,9 +2451,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
-    delivery_errors = []
-
-    for target in targets:
+    for target in gateway_targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")

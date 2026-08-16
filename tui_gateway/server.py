@@ -2375,6 +2375,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
             finally:
                 _clear_session_context(tokens)
 
+            # Bot Mode gate hint: the DB title lands post-first-turn
+            # (pending_title), but the system prompt builds at turn START —
+            # hand the agent its intended title so the "Bot Chat" protocol
+            # gate (agent/system_prompt.py) doesn't depend on write order.
+            _title_hint = str(current.get("pending_title") or "").strip()
+            if _title_hint:
+                agent._session_title_hint = _title_hint
+
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent

@@ -3,6 +3,7 @@
 import os
 import ntpath
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -81,7 +82,10 @@ class TestWriteToSandbox:
         assert "[ ! -L" in cmd
         assert "[ -O" in cmd
         assert "chmod 700" in cmd
+        assert "chmod -N" in cmd
+        assert "setfacl -b -k" in cmd
         assert f"-mtime +{RESULT_TTL_DAYS - 1}" in cmd
+        assert "-type f -o -type l" in cmd
         assert "rm -f" in cmd
         assert "chmod 600" in cmd
         assert "stat -c '%a'" in cmd
@@ -175,6 +179,109 @@ class TestWriteToSandbox:
         assert target.read_text(encoding="utf-8") == "replacement"
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
+    def test_checks_directory_ownership_before_acl_mutation(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+
+        _write_to_sandbox("content", "/tmp/hermes-results/private.txt", env)
+
+        cmd = env.execute.call_args[0][0]
+        ownership_check = cmd.index("[ -O /tmp/hermes-results ]")
+        directory_acl_mutation = cmd.index("chmod -N /tmp/hermes-results")
+        assert ownership_check < directory_acl_mutation
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="requires POSIX shell semantics")
+    def test_real_write_fails_when_required_acl_removal_fails(self, tmp_path):
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        chmod = fake_bin / "chmod"
+        chmod.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = -N ]; then exit 42; fi\n"
+            "exec /bin/chmod \"$@\"\n",
+            encoding="utf-8",
+        )
+        chmod.chmod(0o755)
+        setfacl = fake_bin / "setfacl"
+        setfacl.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+        setfacl.chmod(0o755)
+        class ShellEnv:
+            def execute(self, command, timeout, stdin_data):
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    input=stdin_data,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                    cwd=tmp_path,
+                    check=False,
+                )
+                return {"output": result.stdout + result.stderr, "returncode": result.returncode}
+
+        target = tmp_path / "hermes-results" / "private.txt"
+        assert _write_to_sandbox("private content", str(target), ShellEnv()) is False
+        assert not target.exists()
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS ACL semantics")
+    def test_real_write_removes_inherited_acl(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o700)
+        subprocess.run(
+            [
+                "chmod",
+                "+a",
+                "everyone allow read,write,execute,file_inherit,directory_inherit",
+                str(storage_dir),
+            ],
+            check=True,
+        )
+
+        target = storage_dir / "private.txt"
+        assert _write_to_sandbox("private content", str(target), env) is True
+
+        directory_acl = subprocess.run(
+            ["ls", "-lde", str(storage_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        file_acl = subprocess.run(
+            ["ls", "-le", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "group:everyone" not in directory_acl
+        assert "group:everyone" not in file_acl
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink semantics",
+    )
+    def test_cleanup_removes_expired_symlink_artifact_without_following_it(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o700)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("must remain", encoding="utf-8")
+        artifact = storage_dir / "expired.txt"
+        artifact.symlink_to(outside)
+        expired_at = time.time() - ((RESULT_TTL_DAYS * 24 + 1) * 60 * 60)
+        os.utime(artifact, (expired_at, expired_at), follow_symlinks=False)
+
+        target = storage_dir / "fresh.txt"
+        assert _write_to_sandbox("private content", str(target), env) is True
+
+        assert not artifact.exists()
+        assert not artifact.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "must remain"
+
     @pytest.mark.skipif(
         sys.platform.startswith("win") or not hasattr(os, "symlink"),
         reason="requires POSIX symlink semantics",
@@ -204,6 +311,58 @@ class TestWriteToSandbox:
 
         assert _expire_persisted_result_on_access(str(target), env) is True
         assert not target.exists()
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink semantics",
+    )
+    def test_access_deletes_expired_symlink_without_following_it(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        outside = tmp_path / "outside.txt"
+        outside.write_text("must remain", encoding="utf-8")
+        artifact = tmp_path / "expired.txt"
+        artifact.symlink_to(outside)
+        expired_at = time.time() - ((RESULT_TTL_DAYS * 24 + 1) * 60 * 60)
+        os.utime(artifact, (expired_at, expired_at), follow_symlinks=False)
+
+        assert _expire_persisted_result_on_access(str(artifact), env) is True
+        assert not artifact.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "must remain"
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink semantics",
+    )
+    def test_read_interface_deletes_expired_symlink_without_following_it(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        from tools.file_tools import read_file_tool
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        file_ops = ShellFileOperations(env, cwd=str(tmp_path))
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o700)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("must remain", encoding="utf-8")
+        artifact = storage_dir / "expired.txt"
+        artifact.symlink_to(outside)
+        expired_at = time.time() - ((RESULT_TTL_DAYS * 24 + 1) * 60 * 60)
+        os.utime(artifact, (expired_at, expired_at), follow_symlinks=False)
+
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch(
+                "tools.tool_result_storage._resolve_storage_dir",
+                return_value=str(storage_dir),
+            ),
+        ):
+            result = read_file_tool(str(artifact))
+
+        assert "expired after 7 days" in result
+        assert not artifact.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "must remain"
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="requires POSIX find semantics")
     def test_access_retains_recent_result(self, tmp_path):
@@ -431,7 +590,7 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         cmd = env.execute.call_args[0][0]
-        target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
+        target = cmd.split("cat > ", 1)[1].split(" &&", 1)[0]
 
         assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
         assert "/tmp/hermes-results/../" not in result

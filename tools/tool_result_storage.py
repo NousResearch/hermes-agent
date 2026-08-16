@@ -266,17 +266,30 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     # Persisted results can contain credentials or private session history.
     # Create them under a private directory with a restrictive umask, and
     # remove the target before a retry so an older permissive mode cannot
-    # survive shell redirection. Reject a symlinked or foreign-owned leaf
-    # directory before writing beneath a shared temp root. Cleanup is
-    # deliberately best-effort: a backend without a compatible `find` must
-    # still be able to persist.
+    # survive shell redirection. On systems with NFSv4-style ACLs (notably
+    # macOS), chmod alone does not revoke inherited grants, so strip those
+    # ACLs before applying and verifying the private mode. POSIX ACLs are
+    # constrained by the mode bits, and setfacl removes any residual entries
+    # where available. Reject a symlinked or foreign-owned leaf directory
+    # before writing beneath a shared temp root. Cleanup is deliberately
+    # best-effort: a backend without a compatible `find` must still persist.
     cmd = (
         "umask 077 && "
         f"[ ! -L {quoted_dir} ] && mkdir -p {quoted_dir} && "
-        f"[ -O {quoted_dir} ] && chmod 700 {quoted_dir} && "
-        f"(find {quoted_dir} -type f -name '*.txt' -mtime +{RESULT_TTL_DAYS - 1} "
+        f"[ -O {quoted_dir} ] && "
+        f"if [ \"$(uname -s 2>/dev/null)\" = Darwin ]; then "
+        f"chmod -N {quoted_dir}; "
+        "elif command -v setfacl >/dev/null 2>&1; then "
+        f"setfacl -b -k {quoted_dir}; fi && "
+        f"chmod 700 {quoted_dir} && "
+        f"(find {quoted_dir} \\( -type f -o -type l \\) "
+        f"-name '*.txt' -mtime +{RESULT_TTL_DAYS - 1} "
         "-exec rm -f {} + 2>/dev/null || true) && "
         f"rm -f {quoted_path} && cat > {quoted_path} && "
+        f"if [ \"$(uname -s 2>/dev/null)\" = Darwin ]; then "
+        f"chmod -N {quoted_path}; "
+        "elif command -v setfacl >/dev/null 2>&1; then "
+        f"setfacl -b {quoted_path}; fi && "
         f"chmod 600 {quoted_path} && "
         f"mode=$(stat -c '%a' {quoted_path} 2>/dev/null || "
         f"stat -f '%Lp' {quoted_path} 2>/dev/null) && [ \"$mode\" = 600 ]"
@@ -295,7 +308,7 @@ def _expire_persisted_result_on_access(remote_path: str, env) -> bool:
     """
     quoted_path = shlex.quote(remote_path)
     cmd = (
-        f"expired=$(find {quoted_path} -prune -type f "
+        f"expired=$(find {quoted_path} -prune \\( -type f -o -type l \\) "
         f"-mtime +{RESULT_TTL_DAYS - 1} -print -quit 2>/dev/null) && "
         "if [ -n \"$expired\" ]; then "
         f"rm -f {quoted_path} && printf '%s' expired; "

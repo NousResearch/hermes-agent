@@ -9144,6 +9144,21 @@ function sendConnectionApplied() {
   webContents.send('hermes:connection:applied')
 }
 
+// Registry lifecycle push: a connection was removed or materially edited, so
+// every window must tear down (and, for edits, re-dial) its secondary sockets
+// scoped to that connection. Without this, a removed remote/cloud source keeps
+// its renderer WebSocket open and streaming as a ghost, and an edited one
+// keeps talking to the OLD endpoint until idle-reap.
+function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'removed' | 'updated' }) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    const { webContents } = win
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('hermes:connections:changed', payload)
+    }
+  }
+}
+
 async function waitForBackendExit(child, timeoutMs = 5000) {
   if (!child || child.exitCode !== null || child.signalCode !== null) {
     return
@@ -11907,6 +11922,10 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   // Tear down anything the removed connection still had running: pooled
   // backends under its composite keys and any ssh tunnel scopes it owned.
   stopRegistryConnectionBackends(key)
+  // And the renderer side: without this push, secondaries scoped to the
+  // removed connection keep their WebSocket open (remote/cloud have no local
+  // process to kill) and stream ghost events until page reload.
+  broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })

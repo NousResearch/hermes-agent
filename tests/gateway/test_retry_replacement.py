@@ -140,6 +140,14 @@ async def test_gateway_retry_aborts_when_canonical_rewrite_fails(tmp_path, monke
     )
     before = db.get_messages(session_id, include_inactive=True)
 
+    queued = {session_id: [{"role": "user", "content": "pending append"}]}
+    failures = {session_id: 3}
+    store._dirty_transcripts = {
+        key: [dict(message) for message in messages]
+        for key, messages in queued.items()
+    }
+    store._transcript_append_failures = dict(failures)
+
     gw = GatewayRunner.__new__(GatewayRunner)
     gw.config = config
     gw.session_store = store
@@ -162,6 +170,8 @@ async def test_gateway_retry_aborts_when_canonical_rewrite_fails(tmp_path, monke
     assert session_entry.last_prompt_tokens == 111
     gw._handle_message.assert_not_awaited()
     assert db.get_messages(session_id, include_inactive=True) == before
+    assert store._dirty_transcripts == queued
+    assert store._transcript_append_failures == failures
 
 
 @pytest.mark.asyncio

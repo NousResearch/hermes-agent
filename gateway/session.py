@@ -3952,27 +3952,39 @@ class SessionStore:
         """
         if not self._db:
             return True
-        self._clear_dirty_transcript(session_id)
-        try:
-            self._db.replace_messages(
-                session_id,
-                messages,
-                active_only=active_only,
-                archive_dropped=archive_dropped,
-                expected_active_ids=expected_active_ids,
-            )
+        drain_lock = getattr(self, "_transcript_drain_lock", None)
+        if drain_lock is None:
+            # Compatibility for old in-memory/test instances created via
+            # object.__new__ before this field existed.
+            drain_lock = threading.RLock()
+            self._transcript_drain_lock = drain_lock
+        # Keep append queue mutation outside the canonical write window. A
+        # failed rewrite must retain the exact pending retry state; a successful
+        # rewrite may then discard that now-stale backlog. Using the same outer
+        # lock as append_to_transcript also prevents a concurrent append from
+        # being queued during the write and accidentally cleared afterward.
+        with drain_lock:
+            try:
+                self._db.replace_messages(
+                    session_id,
+                    messages,
+                    active_only=active_only,
+                    archive_dropped=archive_dropped,
+                    expected_active_ids=expected_active_ids,
+                )
+            except Exception as e:
+                # Durable rewinds deliberately fail closed when the loaded snapshot
+                # no longer maps byte-for-byte to the active rows. Keep the client
+                # response neutral, but retain the concrete invariant here so a
+                # rejected /retry is diagnosable without exposing transcript data.
+                logger.warning(
+                    "Refused to rewrite transcript for session %s: %s",
+                    session_id,
+                    e,
+                )
+                return False
+            self._clear_dirty_transcript(session_id)
             return True
-        except Exception as e:
-            # Durable rewinds deliberately fail closed when the loaded snapshot
-            # no longer maps byte-for-byte to the active rows. Keep the client
-            # response neutral, but retain the concrete invariant here so a
-            # rejected /retry is diagnosable without exposing transcript data.
-            logger.warning(
-                "Refused to rewrite transcript for session %s: %s",
-                session_id,
-                e,
-            )
-            return False
 
     def load_transcript(
         self,

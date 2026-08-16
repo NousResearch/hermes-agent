@@ -183,6 +183,7 @@ class TestArchiveDroppedIsRecoverable:
             ],
         )
         original = state_db.get_messages(sid)
+        original_ids = [m["id"] for m in original]
 
         retained = [
             {"role": "user", "content": "first"},
@@ -193,6 +194,7 @@ class TestArchiveDroppedIsRecoverable:
             retained,
             active_only=True,
             archive_dropped=True,
+            expected_active_ids=original_ids,
         )
 
         all_rows = state_db.get_messages(sid, include_inactive=True)
@@ -218,6 +220,7 @@ class TestArchiveDroppedIsRecoverable:
             retained,
             active_only=True,
             archive_dropped=True,
+            expected_active_ids=original_ids[:2],
         )
         repeated = state_db.get_messages(sid, include_inactive=True)
         assert [(m["id"], m["active"]) for m in repeated] == [
@@ -226,6 +229,54 @@ class TestArchiveDroppedIsRecoverable:
             (original[2]["id"], 0),
             (original[3]["id"], 0),
         ]
+
+    def test_replacement_mode_preserves_tui_row_id_recovery_contract(self, state_db):
+        """Archive-only replacement still accepts verified non-prefix live order.
+
+        TUI row-id recovery can resolve a durable target against live memory
+        whose assistant rows moved around that target. It then persists the
+        verified live prefix and returns fresh survivor ids. Prefix validation
+        belongs only to snapshot-pinned gateway retries; applying it here breaks
+        both role-shift recovery and consecutive rewind rebinding.
+        """
+        sid = "archive-tui-replacement"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "A"},
+                {"role": "assistant", "content": "reply A"},
+                {"role": "user", "content": "B"},
+                {"role": "assistant", "content": "reply B"},
+            ],
+        )
+        original = state_db.get_messages(sid)
+        replacement = [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "reply A"},
+            {"role": "assistant", "content": "reply B"},
+        ]
+
+        state_db.replace_messages(
+            sid,
+            replacement,
+            active_only=True,
+            archive_dropped=True,
+        )
+
+        active = state_db.get_messages(sid)
+        inactive = [
+            message
+            for message in state_db.get_messages(sid, include_inactive=True)
+            if not message["active"]
+        ]
+        assert [(m["role"], m["content"]) for m in active] == [
+            ("user", "A"),
+            ("assistant", "reply A"),
+            ("assistant", "reply B"),
+        ]
+        assert {m["id"] for m in active}.isdisjoint({m["id"] for m in original})
+        assert [m["id"] for m in inactive] == [m["id"] for m in original]
 
     def test_stale_snapshot_fails_closed_without_partial_rewind(self, state_db):
         sid = "archive-race"

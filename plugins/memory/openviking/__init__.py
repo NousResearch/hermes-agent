@@ -1549,10 +1549,11 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Do not let the server child inherit this process's PYTHONPATH.
-        # On a Hermes install PYTHONPATH points at the Hermes venv
-        # site-packages, so openviking-server would import aiohttp and
-        # friends from the Hermes venv instead of its own (its venv's
-        # site-packages are shadowed because PYTHONPATH precedes them) —
+        # The Hermes Desktop backend can include the Hermes venv's
+        # site-packages in PYTHONPATH. If inherited, openviking-server would
+        # import aiohttp and friends from the Hermes venv instead of its own
+        # (its venv's site-packages are shadowed because PYTHONPATH precedes
+        # them) —
         # and on Windows the loaded DLLs then lock the Hermes venv,
         # aborting `hermes update` with access-denied on .pyd files.
         # Strip PYTHONPATH so the server resolves packages from its own

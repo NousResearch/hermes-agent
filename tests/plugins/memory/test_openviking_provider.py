@@ -1748,8 +1748,8 @@ class TestOpenVikingEnvWriter:
         _write_env_vars(env, {"OPENAI_API_KEY": "new"})
 
         lines = [l for l in env.read_text(encoding="utf-8-sig").splitlines() if l]
-        # The stale value must be gone, not shadowed by an appended duplicate:
-        # .env loaders keep the first occurrence, so a duplicate silently wins.
+        # The stale value must be gone, not left as a duplicate. Hermes and
+        # python-dotenv use the last occurrence, but the file must have one value.
         assert lines.count("OPENAI_API_KEY=new") == 1
         assert not any(l.endswith("=old") for l in lines)
         assert "OTHER=1" in lines

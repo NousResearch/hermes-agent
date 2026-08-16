@@ -21048,22 +21048,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source,
                 touch_activity=not is_internal,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("post-turn session resolution failed: %s", exc)
             return
 
         # Empty interrupted/errored responses must not drive /goal, but an
         # in-flight /loop tick still needs to be released and rescheduled.
         if final_text.strip():
-            await self._post_turn_goal_continuation(
+            try:
+                await self._post_turn_goal_continuation(
+                    session_entry=session_entry,
+                    source=source,
+                    final_response=final_text,
+                )
+            except Exception as exc:
+                logger.debug("goal continuation hook failed: %s", exc)
+        try:
+            await self._post_turn_loop_completion(
                 session_entry=session_entry,
                 source=source,
                 final_response=final_text,
             )
-        await self._post_turn_loop_completion(
-            session_entry=session_entry,
-            source=source,
-            final_response=final_text,
-        )
+        except Exception as exc:
+            logger.debug("loop completion hook failed: %s", exc)
 
 
 

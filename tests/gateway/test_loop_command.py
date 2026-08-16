@@ -1,7 +1,8 @@
 """Gateway /loop command tests — dispatch, routing capture, mid-run guard."""
 
+import logging
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -163,3 +164,42 @@ async def test_empty_agent_result_releases_inflight_loop_tick(loop_env):
     assert reloaded.awaiting_response is False
     assert reloaded.status == "active"
     assert reloaded.next_due_at > time.time()
+
+
+@pytest.mark.asyncio
+async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog):
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    runner._post_turn_goal_continuation = AsyncMock(side_effect=RuntimeError("judge failed"))
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        await GatewayRunner._run_post_turn_hooks(
+            runner,
+            agent_result={"final_response": "still working"},
+            source=_make_event("wakeup").source,
+            is_internal=True,
+        )
+
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert "goal continuation hook failed: judge failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_post_turn_session_resolution_failure_is_logged(loop_env, caplog):
+    runner = _make_runner()
+    runner.session_store.get_or_create_session = Mock(side_effect=RuntimeError("store unavailable"))
+
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        await GatewayRunner._run_post_turn_hooks(
+            runner,
+            agent_result={"final_response": ""},
+            source=_make_event("wakeup").source,
+            is_internal=True,
+        )
+
+    assert "post-turn session resolution failed: store unavailable" in caplog.text

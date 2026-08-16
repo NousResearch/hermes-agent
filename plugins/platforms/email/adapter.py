@@ -24,6 +24,7 @@ import re
 import smtplib
 import socket
 import ssl
+import threading
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -179,6 +180,29 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
+def _imap_quote(value: str) -> str:
+    """Render *value* as an RFC 3501 quoted-string for an IMAP command.
+
+    ``imaplib`` concatenates command arguments verbatim, so an unquoted
+    value that contains a space or a quote is parsed by the server as
+    additional search keys rather than as one literal.
+    """
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _imap_safe_literal(value: str) -> bool:
+    """Return True when *value* can be sent as a quoted-string at all.
+
+    A quoted-string is 7-bit and cannot carry CR/LF: those would end the
+    literal and let the remainder of the value be read as a new IMAP
+    command.  Such values are refused rather than escaped — they only
+    occur in malformed headers (RFC 5322 msg-id is ASCII and unfolded).
+    """
+    if not value.isascii():
+        return False
+    return not any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -403,6 +427,17 @@ class EmailAdapter(BasePlatformAdapter):
         #   both set ........................ INBOX -> Working -> Done
         self._working_folder = extra.get("working_folder", "Hermes_Working")
         self._done_folder = extra.get("done_folder", "Hermes_Done")
+
+        # Long-lived connection for the per-message finalize MOVE, reused
+        # across a poll batch instead of reconnecting per mail. Guarded by a
+        # lock because it is touched from executor threads.
+        self._finalize_conn: Optional[imaplib.IMAP4] = None
+        self._finalize_lock = threading.Lock()
+        # Folders whose CREATE already produced a warning — one signal per
+        # folder, not one per reconnect.
+        self._folder_create_warned: set = set()
+
+        # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -481,23 +516,69 @@ class EmailAdapter(BasePlatformAdapter):
             raise
         return imap
 
-    @staticmethod
-    def _ensure_folder(imap: imaplib.IMAP4, name: str) -> None:
+    def _finalize_imap(self) -> imaplib.IMAP4:
+        """Return the long-lived connection used for finalize MOVEs.
+
+        ``_finalize_message`` runs once per processed mail, so opening a
+        fresh connection there cost a TLS handshake + LOGIN + ID round trip
+        per message: a poll batch of N messages serialised N full connects,
+        each with a 30s timeout.  The connection is cached on the adapter
+        instead and probed with a cheap ``NOOP``; a server-side idle timeout
+        (or any other breakage) simply reopens it.
+
+        Caller must hold ``_finalize_lock``.
+        """
+        imap = self._finalize_conn
+        if imap is not None:
+            try:
+                status, _ = imap.noop()
+                if status == "OK":
+                    return imap
+            except Exception:  # noqa: BLE001 — stale/broken, reopen below
+                pass
+            self._drop_finalize_conn()
+        imap = self._open_imap()
+        self._finalize_conn = imap
+        return imap
+
+    def _drop_finalize_conn(self) -> None:
+        """Close and forget the cached finalize connection."""
+        imap, self._finalize_conn = self._finalize_conn, None
+        if imap is not None:
+            _close_imap(imap)
+
+    def _ensure_folder(self, imap: imaplib.IMAP4, name: str) -> None:
         """Idempotently CREATE *name* on the IMAP server.
 
         ``IMAP CREATE`` returns ``NO`` if the folder already exists; that
         response is accepted silently — there is no portable EXISTS-check
-        across all IMAP servers.
+        across all IMAP servers.  Anything else (``imaplib`` raises on
+        ``BAD``, e.g. a read-only account that may not create folders) is
+        surfaced as a warning ONCE per folder: it is not fatal here, but it
+        is why every later MOVE will fail, so the operator needs the signal
+        at connect time rather than as a stream of move failures.
         """
         if not name:
             return
         try:
             status, _ = imap.create(name)
-            if status == "OK":
-                logger.info("[Email] Created IMAP folder %r", name)
-            # NO usually means "already exists" — that is fine.
-        except Exception as e:  # noqa: BLE001 — best-effort
-            logger.debug("[Email] CREATE %r ignored: %s", name, e)
+        except Exception as e:  # noqa: BLE001 — best-effort, never fatal
+            if name not in self._folder_create_warned:
+                self._folder_create_warned.add(name)
+                logger.warning(
+                    "[Email] Could not CREATE IMAP folder %r: %s. Moves into "
+                    "this folder will fail unless it already exists.",
+                    name,
+                    e,
+                )
+            else:
+                logger.debug("[Email] CREATE %r still failing: %s", name, e)
+            return
+        if status == "OK":
+            logger.info("[Email] Created IMAP folder %r", name)
+        else:
+            # NO — on virtually every server this is "already exists".
+            logger.debug("[Email] CREATE %r returned %s (assuming it exists)", name, status)
 
     @staticmethod
     def _imap_move(
@@ -508,11 +589,11 @@ class EmailAdapter(BasePlatformAdapter):
         """MOVE *uid* (in the currently SELECTed folder) to *dst_folder*.
 
         Tries RFC 6851 ``UID MOVE`` first; falls back to
-        ``UID COPY`` + ``UID STORE +FLAGS \\Deleted`` + ``EXPUNGE`` on servers
-        that don't advertise MOVE.  The UID-targeted ``EXPUNGE`` (RFC 4315
-        UIDPLUS) is preferred so that only the moved message is expunged; if
-        the server lacks UIDPLUS, a global ``EXPUNGE`` is used as a last
-        resort.  Returns ``True`` on apparent success.
+        ``UID COPY`` + ``UID STORE +FLAGS \\Deleted`` + ``UID EXPUNGE`` on
+        servers that don't advertise MOVE.  The fallback requires RFC 4315
+        UIDPLUS so that only the moved message is expunged — a server with
+        neither MOVE nor UIDPLUS is left alone entirely.  Returns ``True``
+        on apparent success.
         """
         # Try native MOVE first.
         try:
@@ -523,7 +604,24 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:  # noqa: BLE001 — fall through to COPY+EXPUNGE
             logger.debug("[Email] UID MOVE %s → %r raised: %s", uid, dst_folder, e)
 
-        # Fallback: COPY + flag deleted + EXPUNGE the single UID.
+        # Fallback: COPY + flag deleted + UID EXPUNGE the single UID.
+        #
+        # Only attempted with UIDPLUS. Without it the sole way to retire the
+        # source copy is a global EXPUNGE, which permanently removes EVERY
+        # \Deleted message in the folder — including mail some other client
+        # flagged and has not expunged yet. Destroying a user's unrelated
+        # mail is a far worse outcome than not moving ours, so bail out and
+        # say why; the mail stays in place and the caller reports the failed
+        # move.
+        if "UIDPLUS" not in getattr(imap, "capabilities", ()):
+            logger.warning(
+                "[Email] Cannot move UID %s → %r: server advertises neither MOVE "
+                "nor UIDPLUS, and a global EXPUNGE would delete unrelated mail. "
+                "Leaving the message in place.",
+                uid,
+                dst_folder,
+            )
+            return False
         try:
             status, _ = imap.uid("COPY", uid, dst_folder)
             if status != "OK":
@@ -532,8 +630,18 @@ class EmailAdapter(BasePlatformAdapter):
             imap.uid("STORE", uid, "+FLAGS", "(\\Deleted)")
             try:
                 imap.uid("EXPUNGE", uid)
-            except Exception:  # noqa: BLE001 — server lacks UIDPLUS
-                imap.expunge()
+            except Exception as e:  # noqa: BLE001 — UIDPLUS advertised but refused
+                # The copy did reach dst_folder, so the move itself succeeded;
+                # the source copy just stays behind flagged \Deleted until the
+                # server or another client expunges it.
+                logger.warning(
+                    "[Email] UID EXPUNGE %s in source folder failed (%s) — the "
+                    "message was copied to %r and flagged \\Deleted, but the "
+                    "source copy remains until the next expunge.",
+                    uid,
+                    e,
+                    dst_folder,
+                )
             return True
         except Exception as e:  # noqa: BLE001
             logger.error("[Email] COPY+EXPUNGE move %s → %r failed: %s", uid, dst_folder, e)
@@ -551,8 +659,23 @@ class EmailAdapter(BasePlatformAdapter):
         """
         if not message_id:
             return []
+        # The Message-ID comes straight from an external sender's header and
+        # is searched BEFORE any allowlist/auth check has run, so it is fully
+        # attacker-controlled. Quote it as one IMAP literal (and refuse the
+        # values that cannot be quoted at all) — unquoted, a Message-ID
+        # carrying spaces or quotes would be read by the server as extra
+        # search keys and could match, and therefore MOVE, unrelated mail.
+        if not _imap_safe_literal(message_id):
+            logger.warning(
+                "[Email] Refusing IMAP SEARCH for malformed Message-ID %r "
+                "(non-ASCII or control characters)",
+                message_id,
+            )
+            return []
         try:
-            status, data = imap.uid("SEARCH", None, "HEADER", "Message-ID", message_id)
+            status, data = imap.uid(
+                "SEARCH", None, "HEADER", "Message-ID", _imap_quote(message_id)
+            )
             if status != "OK" or not data or not data[0]:
                 return []
             return data[0].split()
@@ -580,31 +703,42 @@ class EmailAdapter(BasePlatformAdapter):
                 source_folder,
             )
             return
-        try:
-            imap = self._open_imap()
-            try:
-                imap.select(source_folder)
-                uids = self._search_message_id(imap, message_id)
-                if not uids:
-                    logger.warning(
-                        "[Email] Cannot find Message-ID %s in %r — skipping MOVE → %r",
+        # Serialises the shared connection. Dispatch is sequential today
+        # (_check_inbox awaits one message at a time), so this never contends;
+        # it keeps the cached handle correct if that ever changes.
+        with self._finalize_lock:
+            # Two attempts: a connection idle since the last poll can be
+            # dropped by the server between the NOOP probe and the SELECT.
+            for attempt in (1, 2):
+                try:
+                    imap = self._finalize_imap()
+                    imap.select(source_folder)
+                    uids = self._search_message_id(imap, message_id)
+                    if not uids:
+                        logger.warning(
+                            "[Email] Cannot find Message-ID %s in %r — skipping MOVE → %r",
+                            message_id,
+                            source_folder,
+                            self._done_folder,
+                        )
+                        return
+                    for uid in uids:
+                        self._imap_move(imap, uid, self._done_folder)
+                    logger.info(
+                        "[Email] Finalized %s: %r → %r",
                         message_id,
                         source_folder,
                         self._done_folder,
                     )
                     return
-                for uid in uids:
-                    self._imap_move(imap, uid, self._done_folder)
-                logger.info(
-                    "[Email] Finalized %s: %r → %r",
-                    message_id,
-                    source_folder,
-                    self._done_folder,
-                )
-            finally:
-                _close_imap(imap)
-        except Exception as e:  # noqa: BLE001
-            logger.error("[Email] Finalize MOVE failed: %s", e)
+                except Exception as e:  # noqa: BLE001
+                    self._drop_finalize_conn()
+                    if attempt == 1:
+                        logger.debug(
+                            "[Email] Finalize MOVE attempt failed (%s) — reconnecting", e
+                        )
+                        continue
+                    logger.error("[Email] Finalize MOVE failed: %s", e)
 
     # ------------------------------------------------------------------
     # End folder-lifecycle helpers
@@ -690,6 +824,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._running = False
         await cancel_task(self._poll_task)
         self._poll_task = None
+        # Release the cached finalize connection — the poll task is stopped,
+        # so nothing will reopen it.
+        with self._finalize_lock:
+            self._drop_finalize_conn()
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:

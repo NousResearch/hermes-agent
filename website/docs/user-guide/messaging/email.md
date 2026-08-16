@@ -189,6 +189,8 @@ Both folders are created automatically if they don't exist. The two settings can
 
 Mail without a `Message-ID` header is never moved into Working (it cannot be re-located there for the final move), so it stays in the INBOX.
 
+**Server requirements.** Moves use IMAP `UID MOVE` (RFC 6851), falling back to `UID COPY` + `UID EXPUNGE` (RFC 4315 UIDPLUS) on servers that lack it. A server offering neither is left untouched: the only remaining option would be a folder-wide `EXPUNGE`, which would permanently delete every message any client has flagged `\Deleted`, so Hermes logs a warning and leaves the mail where it is instead. If the account may not create folders, the `CREATE` failure is warned about once at connect time — create `working_folder` / `done_folder` by hand in that case.
+
 ---
 
 ## Access Control

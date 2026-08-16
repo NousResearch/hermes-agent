@@ -1204,11 +1204,17 @@ class TestFolderLifecycle(unittest.TestCase):
         copy_calls = [c for c in mock_imap.uid.call_args_list if c.args[0] == "COPY"]
         self.assertEqual(len(copy_calls), 0)
 
+    @staticmethod
+    def _uidplus_imap(uid_handler):
+        """A mock IMAP handle that advertises UIDPLUS (needed for the fallback)."""
+        mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "UIDPLUS")
+        mock_imap.uid.side_effect = uid_handler
+        return mock_imap
+
     def test_imap_move_falls_back_to_copy_expunge(self):
         """_imap_move should fall back to COPY+STORE+EXPUNGE when MOVE returns NO."""
         from plugins.platforms.email.adapter import EmailAdapter
-
-        mock_imap = MagicMock()
 
         def uid_handler(command, *args):
             if command == "MOVE":
@@ -1217,7 +1223,7 @@ class TestFolderLifecycle(unittest.TestCase):
                 return ("OK", [b"1"])
             return ("OK", [b""])
 
-        mock_imap.uid.side_effect = uid_handler
+        mock_imap = self._uidplus_imap(uid_handler)
 
         result = EmailAdapter._imap_move(mock_imap, b"42", "Hermes_Done")
 
@@ -1225,12 +1231,13 @@ class TestFolderLifecycle(unittest.TestCase):
         commands = [c.args[0] for c in mock_imap.uid.call_args_list]
         self.assertIn("COPY", commands)
         self.assertIn("STORE", commands)
+        self.assertIn("EXPUNGE", commands)
+        # UID EXPUNGE only — a bare EXPUNGE would hit the whole folder
+        mock_imap.expunge.assert_not_called()
 
     def test_imap_move_falls_back_when_move_raises(self):
         """_imap_move should fall back to COPY+EXPUNGE when MOVE raises an exception."""
         from plugins.platforms.email.adapter import EmailAdapter
-
-        mock_imap = MagicMock()
 
         def uid_handler(command, *args):
             if command == "MOVE":
@@ -1239,7 +1246,7 @@ class TestFolderLifecycle(unittest.TestCase):
                 return ("OK", [b"1"])
             return ("OK", [b""])
 
-        mock_imap.uid.side_effect = uid_handler
+        mock_imap = self._uidplus_imap(uid_handler)
 
         result = EmailAdapter._imap_move(mock_imap, b"7", "Hermes_Done")
 
@@ -1247,24 +1254,196 @@ class TestFolderLifecycle(unittest.TestCase):
         commands = [c.args[0] for c in mock_imap.uid.call_args_list]
         self.assertIn("COPY", commands)
 
+    def test_imap_move_refuses_fallback_without_uidplus(self):
+        """Without MOVE and without UIDPLUS, nothing is copied, deleted or expunged.
+
+        A global EXPUNGE would permanently remove every \\Deleted message in
+        the folder, including mail another client flagged. Bail out instead.
+        """
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        def uid_handler(command, *args):
+            if command == "MOVE":
+                return ("NO", [b"MOVE not supported"])
+            return ("OK", [b"1"])
+
+        mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1",)   # no UIDPLUS
+        mock_imap.uid.side_effect = uid_handler
+
+        result = EmailAdapter._imap_move(mock_imap, b"42", "Hermes_Done")
+
+        self.assertFalse(result)
+        commands = [c.args[0] for c in mock_imap.uid.call_args_list]
+        self.assertNotIn("COPY", commands)
+        self.assertNotIn("STORE", commands)
+        mock_imap.expunge.assert_not_called()
+
+    def test_imap_move_survives_uid_expunge_failure(self):
+        """A refused UID EXPUNGE still counts as moved — and never escalates to EXPUNGE."""
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        def uid_handler(command, *args):
+            if command == "MOVE":
+                return ("NO", [b"MOVE not supported"])
+            if command == "COPY":
+                return ("OK", [b"1"])
+            if command == "EXPUNGE":
+                raise Exception("UID EXPUNGE refused")
+            return ("OK", [b""])
+
+        mock_imap = self._uidplus_imap(uid_handler)
+
+        result = EmailAdapter._imap_move(mock_imap, b"42", "Hermes_Done")
+
+        # The copy reached the destination; only the source cleanup failed.
+        self.assertTrue(result)
+        mock_imap.expunge.assert_not_called()
+
+    def test_search_message_id_quotes_the_literal(self):
+        """The attacker-controlled Message-ID is passed as ONE quoted IMAP literal."""
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b"5"])
+
+        uids = EmailAdapter._search_message_id(mock_imap, '<a" OR ALL@evil>')
+
+        self.assertEqual(uids, [b"5"])
+        # Quoted, with the embedded quote escaped — not injected as extra keys
+        self.assertEqual(
+            mock_imap.uid.call_args.args,
+            ("SEARCH", None, "HEADER", "Message-ID", '"<a\\" OR ALL@evil>"'),
+        )
+
+    def test_search_message_id_refuses_control_characters(self):
+        """A Message-ID with CR/LF or non-ASCII is refused, not escaped."""
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        for bad in ("<a\r\nA001 SELECT INBOX@x>", "<a\x00@x>", "<ä@x>"):
+            with self.subTest(message_id=bad):
+                mock_imap = MagicMock()
+                self.assertEqual(EmailAdapter._search_message_id(mock_imap, bad), [])
+                mock_imap.uid.assert_not_called()
+
     def test_ensure_folder_swallows_errors(self):
         """_ensure_folder must not propagate exceptions from imap.create()."""
-        from plugins.platforms.email.adapter import EmailAdapter
+        adapter = self._make_adapter()
 
         mock_imap = MagicMock()
         mock_imap.create.side_effect = Exception("unexpected server error")
 
         # Should not raise
-        EmailAdapter._ensure_folder(mock_imap, "Hermes_Working")
+        adapter._ensure_folder(mock_imap, "Hermes_Working")
         mock_imap.create.assert_called_once_with("Hermes_Working")
+
+    def test_ensure_folder_warns_once_per_folder(self):
+        """A CREATE failure warns the operator once, then drops to debug."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.create.side_effect = Exception("permission denied")
+
+        with self.assertLogs("plugins.platforms.email.adapter", level="WARNING") as logs:
+            adapter._ensure_folder(mock_imap, "Hermes_Working")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("Hermes_Working", logs.output[0])
+
+        # Second attempt (e.g. next reconnect) must not repeat the warning
+        with self.assertLogs("plugins.platforms.email.adapter", level="DEBUG") as logs:
+            adapter._ensure_folder(mock_imap, "Hermes_Working")
+        self.assertFalse([line for line in logs.output if line.startswith("WARNING")])
+
+    def test_ensure_folder_no_warning_when_folder_exists(self):
+        """A NO response (already exists) is the normal path and stays quiet."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.create.return_value = ("NO", [b"Mailbox already exists"])
+
+        with self.assertLogs("plugins.platforms.email.adapter", level="DEBUG") as logs:
+            adapter._ensure_folder(mock_imap, "Hermes_Done")
+        self.assertFalse([line for line in logs.output if line.startswith("WARNING")])
 
     def test_ensure_folder_skips_empty_name(self):
         """_ensure_folder must do nothing when name is empty."""
-        from plugins.platforms.email.adapter import EmailAdapter
+        adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        EmailAdapter._ensure_folder(mock_imap, "")
+        adapter._ensure_folder(mock_imap, "")
         mock_imap.create.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Finalize connection reuse
+    # ------------------------------------------------------------------
+
+    def test_finalize_reuses_one_connection(self):
+        """Finalizing a batch must not reconnect per message."""
+        adapter = self._make_adapter({
+            "working_folder": "Hermes_Working",
+            "done_folder": "Hermes_Done",
+        })
+
+        mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "UIDPLUS")
+        mock_imap.noop.return_value = ("OK", [b"NOOP completed"])
+
+        def uid_handler(command, *args):
+            if command == "SEARCH":
+                return ("OK", [b"3"])
+            return ("OK", [b"1"])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap) as ctor:
+            for i in range(3):
+                adapter._finalize_message(f"<m{i}@test.com>", "Hermes_Working")
+
+        self.assertEqual(ctor.call_count, 1, "expected one IMAP connection for the batch")
+        # Subsequent calls probe the cached handle instead of reconnecting
+        self.assertEqual(mock_imap.noop.call_count, 2)
+
+    def test_finalize_reconnects_after_a_dropped_connection(self):
+        """A connection the server dropped mid-batch is reopened, not lost."""
+        adapter = self._make_adapter({
+            "working_folder": "Hermes_Working",
+            "done_folder": "Hermes_Done",
+        })
+
+        dead = MagicMock()
+        dead.capabilities = ("IMAP4REV1", "UIDPLUS")
+        dead.noop.return_value = ("OK", [b"NOOP completed"])
+        dead.select.side_effect = Exception("socket error: EOF")
+
+        live = MagicMock()
+        live.capabilities = ("IMAP4REV1", "UIDPLUS")
+        live.noop.return_value = ("OK", [b"NOOP completed"])
+        live.uid.side_effect = lambda command, *a: (
+            ("OK", [b"3"]) if command == "SEARCH" else ("OK", [b"1"])
+        )
+
+        with patch("imaplib.IMAP4_SSL", side_effect=[dead, live]) as ctor:
+            adapter._finalize_message("<m@test.com>", "Hermes_Working")
+
+        self.assertEqual(ctor.call_count, 2)
+        live.select.assert_called_once_with("Hermes_Working")
+
+    def test_disconnect_closes_finalize_connection(self):
+        """disconnect() releases the cached handle so no socket is left behind."""
+        import asyncio
+
+        adapter = self._make_adapter({
+            "working_folder": "Hermes_Working",
+            "done_folder": "Hermes_Done",
+        })
+
+        mock_imap = MagicMock()
+        adapter._finalize_conn = mock_imap
+
+        asyncio.run(adapter.disconnect())
+
+        self.assertIsNone(adapter._finalize_conn)
+        mock_imap.logout.assert_called_once()
 
     # ------------------------------------------------------------------
     # _fetch_new_messages: Working-folder move

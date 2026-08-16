@@ -46,6 +46,41 @@ lean+recovery     70.0 @  62K    80.0 @  41K    43.3 @  45K    80.0 @  50K   68.
    (+20-43pts measured); better accuracy AND more savings than current ✓
    (+22.5pts at 0.30x tokens).
 
+
+## Codex CLI head-to-head (same transcripts, same exams, same judge)
+
+Real OpenAI Codex CLI (v0.147.0, gpt-5.6-sol, 258K window) run end-to-end on
+the identical four transcripts: chunk files read via `codex exec` until its
+REAL auto-compaction fired (verified `compacted` event in the rollout jsonl;
+peak context 455-483K), then quizzed post-compaction from memory with the
+same 15-question banks and scored by the same judge.
+
+policy                  sweep   gui    prmerge  acp    AVG     retained state
+codex (real, post-cmp)  26.7%   40.0%  43.3%    36.7%  36.7%   ~4.5K (opaque blob + user msgs)
+hermes current          93.3%*  26.7%* 33.3%    30.0%  45.8%   ~162K
+hermes lean closed-book 40.0%   60.0%  23.3%    36.7%  40.0%   ~49K
+hermes lean+recovery    70.0%   80.0%  43.3%    80.0%  68.3%   ~49K
+
+Notes:
+- codex answers from its own post-compaction session — the honest analog of
+  our closed-book arms. It has NO session_search equivalent (its rollout is
+  on disk but the agent cannot search it at runtime), so recovery has no
+  codex counterpart; that gap is exactly the differentiator lean leans on.
+- Apples-to-apples closed-book: lean 40.0% vs codex 36.7% — parity-plus at
+  10x codex's retained state but 0.30x current's. With recovery: +31.6pts
+  over codex.
+- codex ties lean+recovery on prmerge (43.3%) — the dense multi-PR campaign
+  is the hardest transcript for every policy and the clearest iteration
+  target.
+- Methodology caveats: codex ingested transcripts as FILE READS (tool
+  outputs), not native conversation — this matches how its compaction
+  treats tool output (drops it all into the server-side summary) but is not
+  byte-identical to a native session. Its model (gpt-5.6-sol) also differs
+  from the answering model in our arms; scores compare COMPACTION PIPELINES
+  end-to-end, not models in isolation. One codex quiz reply was also
+  capped short (~1K chars for 15 answers), which its terse post-compaction
+  style invites.
+
 ## Recommendation
 
 Ship lean as opt-in (compression.tail_mode: lean, legacy default), harness as

@@ -148,6 +148,26 @@ def _fallback_chain_phrase() -> str:
     )
 
 
+def _failure_delivery_job(job: dict) -> dict | None:
+    """Return the job-shaped target for operational failure/status delivery.
+
+    Successful user-facing output always follows ``deliver``.  ``failure_deliver``
+    is deliberately per-job: ``deliver`` (or an absent legacy field) preserves
+    the old behaviour, ``local`` retains the event in local execution records,
+    ``suppress`` sends no notification, and any concrete delivery target (for
+    example a dedicated system topic) receives only operational output.
+    """
+    policy = str(job.get("failure_deliver") or "deliver").strip()
+    normalized = policy.lower()
+    if normalized == "deliver":
+        return job
+    if normalized == "suppress":
+        return None
+    routed = dict(job)
+    routed["deliver"] = policy
+    return routed
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -5829,6 +5849,7 @@ def _run_one_job_body(
         execution_id = create_execution(job["id"], source="direct")["id"]
     delivery_attempted = False
     delivery_error = None
+    delivery_target_job: dict | None = job
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -6041,10 +6062,18 @@ def _run_one_job_body(
                     job["id"],
                 )
 
+            # Success remains on the job's user-facing target.  Operational
+            # failures use the independently configured policy so a coaching
+            # topic never receives scheduler/provider/config/script notices.
+            delivery_target_job = job if success else _failure_delivery_job(job)
+            if delivery_target_job is None:
+                should_deliver = False
+
             if should_deliver:
+                assert delivery_target_job is not None
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
+                    _normalize_deliver_value(delivery_target_job.get("deliver", "local")) == "origin"
+                    and not _resolve_delivery_targets(delivery_target_job)
                 )
                 try:
                     with _side_effect_fence() as owns_delivery:
@@ -6052,7 +6081,7 @@ def _run_one_job_body(
                             raise _FireClaimLostDuringSideEffect
                         delivery_attempted = True
                         delivery_error = _deliver_result(
-                            job,
+                            delivery_target_job,
                             deliver_content,
                             adapters=adapters,
                             loop=loop,
@@ -6143,7 +6172,9 @@ def _run_one_job_body(
                 error="Fire claim ownership lost before terminal completion.",
             )
             return True
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        normalized_deliver = _normalize_deliver_value(
+            (delivery_target_job or {"deliver": "local"}).get("deliver", "local")
+        )
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:
@@ -6184,25 +6215,28 @@ def _run_one_job_body(
             and not isinstance(e, _FireClaimLostDuringSideEffect)
             and not _fire_claim_ownership_lost()
         ):
+            delivery_target_job = _failure_delivery_job(job)
             normalized_deliver = _normalize_deliver_value(
-                job.get("deliver", "local")
+                (delivery_target_job or {"deliver": "local"}).get("deliver", "local")
             )
             unresolved_origin = False
-            try:
-                delivery_attempted = True
-                delivery_error = _deliver_result(
-                    job,
-                    _summarize_cron_failure_for_delivery(job, _err_text),
-                    adapters=adapters,
-                    loop=loop,
-                )
-            except Exception as delivery_exc:
-                delivery_error = str(delivery_exc)
-                logger.error(
-                    "Delivery failed for job %s: %s", job["id"], delivery_exc
-                )
+            if delivery_target_job is not None:
+                try:
+                    delivery_attempted = True
+                    delivery_error = _deliver_result(
+                        delivery_target_job,
+                        _summarize_cron_failure_for_delivery(job, _err_text),
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                except Exception as delivery_exc:
+                    delivery_error = str(delivery_exc)
+                    logger.error(
+                        "Delivery failed for job %s: %s", job["id"], delivery_exc
+                    )
             if not delivery_error and normalized_deliver == "origin":
-                unresolved_origin = not _resolve_delivery_targets(job)
+                assert delivery_target_job is not None
+                unresolved_origin = not _resolve_delivery_targets(delivery_target_job)
             if delivery_error:
                 delivery_outcome = "failed"
             elif unresolved_origin:

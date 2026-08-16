@@ -1654,6 +1654,7 @@ def create_job(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
+    failure_deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
@@ -1678,7 +1679,12 @@ def create_job(
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
-        deliver: Where to deliver output ("origin", "local", "telegram", etc.)
+        deliver: Where to deliver successful output ("origin", "local", "telegram", etc.)
+        failure_deliver: Where operational failure/status output goes. ``"deliver"``
+            (the default) uses ``deliver`` for backwards compatibility;
+            ``"local"`` records it only locally; ``"suppress"`` sends no
+            failure/status notification; any concrete delivery target routes
+            failures there without changing successful delivery.
         origin: Source info where job was created (for "origin" delivery)
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
@@ -1742,6 +1748,7 @@ def create_job(
     # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
+    normalized_failure_deliver = _normalize_job_optional_text(failure_deliver)
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
@@ -1856,6 +1863,9 @@ def create_job(
         "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
+        # Absent means "deliver" for existing jobs. Keep that compatibility
+        # shape rather than rewriting every record on load.
+        "failure_deliver": normalized_failure_deliver or "deliver",
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,

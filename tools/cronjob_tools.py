@@ -634,6 +634,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
+        "failure_deliver": job.get("failure_deliver", "deliver"),
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
@@ -1149,6 +1150,7 @@ def cronjob(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
+    failure_deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
@@ -1241,6 +1243,7 @@ def cronjob(
                     deliver=_resolve_cron_context_deliver(
                         _normalize_deliver_param(deliver)
                     ),
+                    failure_deliver=_normalize_deliver_param(failure_deliver),
                     origin=_origin_from_env(),
                     skills=canonical_skills,
                     model=_normalize_optional_job_value(model),
@@ -1272,6 +1275,7 @@ def cronjob(
                     "schedule": job["schedule_display"],
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
+                    "failure_deliver": job.get("failure_deliver", "deliver"),
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
                     "message": _create_message,
@@ -1426,6 +1430,8 @@ def cronjob(
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
+            if failure_deliver is not None:
+                updates["failure_deliver"] = _normalize_deliver_param(failure_deliver)
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -1607,6 +1613,10 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "type": "string",
                 "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
             },
+            "failure_deliver": {
+                "type": "string",
+                "description": "Where operational failures/status alerts go, without changing successful deliver. Use 'deliver' (default, backward-compatible), 'local' (no chat message), 'suppress' (no failure/status notification), or a dedicated platform:chat_id:thread_id target. Set protected user-facing topics to local, suppress, or a dedicated system target; never use this to replace the successful deliver target."
+            },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1711,6 +1721,7 @@ registry.register(
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
+        failure_deliver=args.get("failure_deliver"),
         include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
         skills=args.get("skills"),

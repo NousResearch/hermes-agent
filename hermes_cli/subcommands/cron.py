@@ -38,6 +38,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--deliver",
         help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id",
     )
+    cron_create.add_argument(
+        "--failure-deliver",
+        dest="failure_deliver",
+        help="Failure/status delivery: deliver (default), local, suppress, or a dedicated platform:chat_id target.",
+    )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
         "--skill",
@@ -115,6 +120,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
+    cron_edit.add_argument(
+        "--failure-deliver",
+        dest="failure_deliver",
+        help="Failure/status delivery: deliver, local, suppress, or a dedicated platform:chat_id target.",
+    )
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
     cron_edit.add_argument(
         "--skill",

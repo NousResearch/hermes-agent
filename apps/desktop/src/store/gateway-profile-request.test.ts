@@ -50,6 +50,7 @@ const {
   configureGatewayRegistry,
   ensureGatewayForProfile,
   pruneSecondaryGateways,
+  requestGatewayForAgent,
   requestGatewayForProfile,
   setPrimaryGateway
 } = await import('./gateway')
@@ -178,5 +179,70 @@ describe('requestGatewayForProfile', () => {
 
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+  })
+})
+
+describe('requestGatewayForAgent', () => {
+  it('leases separate registry sockets for duplicate profile names without changing the active gateway', async () => {
+    const primary = makePrimary()
+    const getConnection = vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 'legacy-token' }))
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({
+      connectionId,
+      port: connectionId === 'source-a' ? 5151 : 5252,
+      profile,
+      token: `${connectionId}-token`
+    }))
+
+    const getGatewayWsUrlFor = vi.fn(async ({ connectionId, profile }) => ({
+      ok: true as const,
+      wsUrl: `ws://${connectionId}/${profile}`
+    }))
+
+    setPrimaryGateway(primary as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection,
+      getConnectionFor,
+      getGatewayWsUrlFor,
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    const [fromA, fromB] = await Promise.all([
+      requestGatewayForAgent('source-a', 'research', 'session.list', { limit: 1 }),
+      requestGatewayForAgent('source-b', 'research', 'session.list', { limit: 2 })
+    ])
+
+    expect(fromA).toEqual({ method: 'session.list', params: { limit: 1 } })
+    expect(fromB).toEqual({ method: 'session.list', params: { limit: 2 } })
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'source-a', profile: 'research' })
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'source-b', profile: 'research' })
+    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'source-a', profile: 'research' })
+    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'source-b', profile: 'research' })
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(secondaryGateways).toHaveLength(2)
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('falls back to the legacy profile path for the local registry connection', async () => {
+    const primary = makePrimary()
+    const getConnection = vi.fn(async (profile: null | string) => ({ port: 5151, profile, token: 'legacy-token' }))
+    const getConnectionFor = vi.fn()
+
+    setPrimaryGateway(primary as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection,
+      getConnectionFor,
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    await expect(requestGatewayForAgent('local', 'worker', 'profiles.list')).resolves.toEqual({
+      method: 'profiles.list',
+      params: {}
+    })
+    expect(getConnection).toHaveBeenCalledWith('worker')
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(primary)
   })
 })

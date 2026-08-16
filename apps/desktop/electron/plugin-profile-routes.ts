@@ -24,6 +24,24 @@ export interface OpaqueProfileRoute {
   targetProfile: string
 }
 
+interface RegistryProfileRouteAgent {
+  connectionId: string
+  profile: string
+}
+
+interface RegistryProfileRouteSource {
+  [field: string]: unknown
+  id: string
+  kind: 'cloud' | 'local' | 'remote' | 'ssh'
+  remoteProfile?: string
+}
+
+interface BuildRegistryProfileRoutesOptions {
+  agents: RegistryProfileRouteAgent[]
+  legacyRoutes?: OpaqueProfileRoute[]
+  sources: RegistryProfileRouteSource[]
+}
+
 interface BuildOpaqueProfileRoutesOptions {
   getProfileConfig: (profile: string) => ProfileRouteConfig | Promise<ProfileRouteConfig>
   globalConfig: ProfileRouteConfig
@@ -31,6 +49,36 @@ interface BuildOpaqueProfileRoutesOptions {
   primaryProfile: string
   profileNames: string[]
   resolveSsh: (config: ProfileRouteConfig) => Promise<EffectiveSshRoute>
+}
+
+/** Return cached local profile names only when the local roster read failed. */
+export function localRouteFallbackProfiles(
+  agents: RegistryProfileRouteAgent[],
+  localConnectionId: string,
+  profileNames: string[],
+  localEnumerationFailed: boolean
+): string[] {
+  if (!localEnumerationFailed) {
+    return []
+  }
+
+  const existing = new Set(
+    agents
+      .filter(agent => agent.connectionId === localConnectionId)
+      .map(agent => normalizeProfile(agent.profile))
+  )
+  const fallback: string[] = []
+
+  for (const raw of profileNames) {
+    const profile = normalizeProfile(raw)
+
+    if (!existing.has(profile)) {
+      existing.add(profile)
+      fallback.push(profile)
+    }
+  }
+
+  return fallback
 }
 
 function normalizeProfile(name: null | string | undefined): string {
@@ -158,4 +206,71 @@ export async function buildOpaqueProfileRoutes({
       }
     })
   )
+}
+
+/**
+ * Project the union registry roster into the narrow plugin descriptor. Registry
+ * ids and profile names are routing identities; endpoint/auth/source fields are
+ * deliberately discarded here. The local source keeps the v1 resolver's mode
+ * and targetProfile semantics because getConnectionFor(local, profile) delegates
+ * to that compatibility path.
+ */
+export function buildRegistryProfileRoutes({
+  agents,
+  legacyRoutes = [],
+  sources
+}: BuildRegistryProfileRoutesOptions): OpaqueProfileRoute[] {
+  const sourceById = new Map(sources.map(source => [source.id, source]))
+  const legacyByProfile = new Map(legacyRoutes.map(route => [route.profile, route]))
+  const seen = new Set<string>()
+  const routes: OpaqueProfileRoute[] = []
+
+  for (const agent of agents) {
+    const profile = normalizeProfile(agent.profile)
+    const source = sourceById.get(agent.connectionId)
+    const key = `${agent.connectionId}\0${profile}`
+
+    if (!source || seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+
+    if (source.kind === 'local') {
+      const legacy = legacyByProfile.get(profile)
+
+      routes.push({
+        connectionId: source.id,
+        mode: legacy?.mode ?? 'local',
+        profile,
+        targetProfile: legacy?.targetProfile ?? profile
+      })
+
+      continue
+    }
+
+    routes.push({
+      connectionId: source.id,
+      mode: 'remote',
+      profile,
+      targetProfile: source.kind === 'ssh' && source.remoteProfile ? normalizeProfile(source.remoteProfile) : profile
+    })
+  }
+
+  return routes
+}
+
+/** Add the backend profile scope only for registry remote/cloud descriptors. */
+export function registryGatewayWsUrl(
+  connection: { profile?: null | string; sharedRemote?: boolean },
+  wsUrl: string
+): string {
+  if (!connection.sharedRemote) {
+    return wsUrl
+  }
+
+  const url = new URL(wsUrl)
+  url.searchParams.set('profile', normalizeProfile(connection.profile))
+
+  return url.toString()
 }

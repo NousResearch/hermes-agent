@@ -31,8 +31,9 @@ declare global {
       }) => Promise<GatewayWsUrlResult>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
-      // Credential-free, installation-keyed route identities for Desktop
-      // plugins. Endpoint and auth material never crosses the IPC boundary.
+      // Credential-free routes across the union connection registry. The
+      // optional profile list is used only by the single-local v1 fallback;
+      // endpoint and auth material never crosses the IPC boundary.
       getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
@@ -582,6 +583,8 @@ export interface DesktopUpdateProgress {
 }
 
 export interface DesktopPluginProfileRoute {
+  // Registry source identity. Pair with profile; profile names are not unique
+  // across sources.
   connectionId: string
   mode: 'local' | 'remote'
   profile: string

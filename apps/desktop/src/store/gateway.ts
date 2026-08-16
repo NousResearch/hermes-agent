@@ -220,15 +220,17 @@ async function openSecondary(entry: Secondary): Promise<void> {
         ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
         : await desktop.getConnection(entry.profile)
 
-    const wsUrl = await resolveGatewayWsUrl(
+    const wsDeps =
       entry.connectionId && desktop.getGatewayWsUrlFor
         ? {
             getGatewayWsUrl: () =>
               desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
           }
-        : desktop,
-      conn
-    )
+        : entry.connectionId
+          ? {}
+          : desktop
+
+    const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
 
     await entry.gateway.connect(wsUrl)
 
@@ -450,6 +452,50 @@ export async function requestGatewayForProfile<T>(
     return await route.gateway.request<T>(method, routedParams)
   } finally {
     route.release()
+  }
+}
+
+/**
+ * Send a gateway RPC through one registry source without activating it. The
+ * composite (connectionId, profile) pool key prevents same-named agents on two
+ * sources from sharing a socket. Local/empty ids deliberately retain the v1
+ * profile resolver, including shared-primary request scoping.
+ */
+export async function requestGatewayForAgent<T>(
+  connectionId: null | string,
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  const key = normKey(profile)
+  const scope = backendScopeKey(connectionId, key)
+
+  if (scope === key) {
+    return requestGatewayForProfile<T>(key, method, params)
+  }
+
+  if (!window.hermesDesktop?.getConnectionFor) {
+    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+  }
+
+  const entry = g.secondaries.get(scope) ?? createSecondary(key, connectionId)
+
+  // Existing dev-HMR entries predate request leases.
+  if (!Number.isFinite(entry.activeRequests)) {
+    entry.activeRequests = 0
+  }
+
+  entry.wantOpen = true
+  entry.activeRequests += 1
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry)
+    }
+
+    return await entry.gateway.request<T>(method, params)
+  } finally {
+    entry.activeRequests = Math.max(0, entry.activeRequests - 1)
   }
 }
 

@@ -215,7 +215,14 @@ import {
   parentWatchdogEnv
 } from './parent-process-identity'
 import { selectPoolEvictions } from './pool-eviction'
-import { buildOpaqueProfileRoutes, type EffectiveSshRoute, type ProfileRouteConfig } from './plugin-profile-routes'
+import {
+  buildOpaqueProfileRoutes,
+  buildRegistryProfileRoutes,
+  type EffectiveSshRoute,
+  localRouteFallbackProfiles,
+  type ProfileRouteConfig,
+  registryGatewayWsUrl
+} from './plugin-profile-routes'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -11983,7 +11990,7 @@ ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
 ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
-  const profileNames = Array.isArray(rawProfileNames)
+  const fallbackProfileNames = Array.isArray(rawProfileNames)
     ? rawProfileNames
         .filter(name => typeof name === 'string')
         .map(name => name.trim())
@@ -11991,17 +11998,48 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
         .slice(0, 256)
     : []
 
+  const registry = readDesktopConnectionsRegistry()
+  const enumerations = await enumerateRegistryAgentSources(registry)
+  let agents = buildAgentRoster(enumerations)
+
+  // A local enumeration can fail while remote/cloud sources succeed. Preserve
+  // cached v1 profile names as explicitly-local rows so those valid routes do
+  // not disappear and duplicate names remain source-qualified.
+  const localSource = registry.connections.find(source => source.kind === 'local')
+  const localEnumeration = localSource
+    ? enumerations.find(({ connection }) => connection.id === localSource.id)
+    : undefined
+  const localFallbackProfiles = localSource
+    ? localRouteFallbackProfiles(agents, localSource.id, fallbackProfileNames, Boolean(localEnumeration?.error))
+    : []
+
+  if (localSource && localFallbackProfiles.length > 0) {
+    agents = [
+      ...agents,
+      ...localFallbackProfiles.map(profile => ({
+        connectionId: localSource.id,
+        connectionKind: localSource.kind,
+        connectionLabel: localSource.label,
+        handle: profile,
+        profile
+      }))
+    ]
+  }
+
   const config = readDesktopConnectionConfig()
   const globalConfig = (await sanitizeDesktopConnectionConfig(config, null)) as ProfileRouteConfig
+  const localProfiles = agents.filter(agent => agent.connectionId === 'local').map(agent => agent.profile)
 
-  return buildOpaqueProfileRoutes({
+  const legacyRoutes = await buildOpaqueProfileRoutes({
     getProfileConfig: async profile => (await sanitizeDesktopConnectionConfig(config, profile)) as ProfileRouteConfig,
     globalConfig,
     installationId: desktopInstallationId,
     primaryProfile: primaryProfileKey(),
-    profileNames,
+    profileNames: localProfiles,
     resolveSsh: effectiveSshRouteForPlugin
   })
+
+  return buildRegistryProfileRoutes({ agents, legacyRoutes, sources: registry.connections })
 })
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
@@ -12158,10 +12196,8 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // are SKIPPED (connect-on-demand — dialing every ssh box just to list agents
 // would spawn tunnels the user never asked for); once dialed, their pooled
 // descriptor serves the enumeration like any remote.
-ipcMain.handle('hermes:agents:roster', async () => {
-  const registry = readDesktopConnectionsRegistry()
-
-  const enumerations = await Promise.all(
+async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
+  return Promise.all(
     registry.connections.map(async connection => {
       try {
         if (
@@ -12190,6 +12226,10 @@ ipcMain.handle('hermes:agents:roster', async () => {
       }
     })
   )
+}
+
+ipcMain.handle('hermes:agents:roster', async () => {
+  const enumerations = await enumerateRegistryAgentSources()
 
   return {
     agents: buildAgentRoster(enumerations),
@@ -12214,10 +12254,10 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
     if (connection.authMode === 'oauth') {
       const ticket = await mintGatewayWsTicket(connection.baseUrl)
 
-      return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+      return registryGatewayWsUrl(connection, buildGatewayWsUrlWithTicket(connection.baseUrl, ticket))
     }
 
-    return connection.wsUrl
+    return registryGatewayWsUrl(connection, connection.wsUrl)
   })
 })
 

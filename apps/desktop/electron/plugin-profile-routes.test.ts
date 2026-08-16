@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { buildOpaqueProfileRoutes, type ProfileRouteConfig } from './plugin-profile-routes'
+import {
+  buildOpaqueProfileRoutes,
+  buildRegistryProfileRoutes,
+  localRouteFallbackProfiles,
+  type ProfileRouteConfig,
+  registryGatewayWsUrl
+} from './plugin-profile-routes'
 
 function config(overrides: Partial<ProfileRouteConfig> = {}): ProfileRouteConfig {
   return {
@@ -163,5 +169,82 @@ describe('buildOpaqueProfileRoutes', () => {
 
     expect(new Set(routes.map(route => route.connectionId))).toHaveLength(3)
     expect(JSON.stringify(routes.map(({ connectionId, mode }) => ({ connectionId, mode })))).not.toContain('org-a')
+  })
+})
+
+describe('buildRegistryProfileRoutes', () => {
+  it('keeps duplicate profile names distinct by registry connection without exposing source details', () => {
+    const routes = buildRegistryProfileRoutes({
+      agents: [
+        { connectionId: 'local', profile: 'research' },
+        { connectionId: 'homelab', profile: 'research' }
+      ],
+      legacyRoutes: [
+        { connectionId: 'legacy-hash', mode: 'local', profile: 'research', targetProfile: 'research' }
+      ],
+      sources: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        {
+          authMode: 'token',
+          host: 'private.lan',
+          id: 'homelab',
+          kind: 'ssh',
+          keyPath: '/secret/id_ed25519',
+          label: 'Homelab',
+          remoteProfile: 'remote-research',
+          token: 'encrypted-secret'
+        }
+      ]
+    })
+
+    expect(routes).toEqual([
+      { connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' },
+      { connectionId: 'homelab', mode: 'remote', profile: 'research', targetProfile: 'remote-research' }
+    ])
+    expect(JSON.stringify(routes)).not.toContain('private.lan')
+    expect(JSON.stringify(routes)).not.toContain('id_ed25519')
+    expect(JSON.stringify(routes)).not.toContain('encrypted-secret')
+    expect(new Set(routes.map(route => `${route.connectionId}/${route.profile}`))).toHaveLength(2)
+  })
+
+  it('preserves legacy v1 targetProfile correction for routes reached through local', () => {
+    const routes = buildRegistryProfileRoutes({
+      agents: [{ connectionId: 'local', profile: 'barry' }],
+      legacyRoutes: [
+        { connectionId: 'legacy-hash', mode: 'remote', profile: 'barry', targetProfile: 'default' }
+      ],
+      sources: [{ id: 'local', kind: 'local', label: 'This device' }]
+    })
+
+    expect(routes).toEqual([
+      { connectionId: 'local', mode: 'remote', profile: 'barry', targetProfile: 'default' }
+    ])
+  })
+
+  it('scopes registry-shared remote websocket URLs to the requested profile', () => {
+    expect(
+      registryGatewayWsUrl(
+        { profile: 'research', sharedRemote: true },
+        'wss://gateway.example/api/ws?token=secret'
+      )
+    ).toBe('wss://gateway.example/api/ws?token=secret&profile=research')
+    expect(
+      registryGatewayWsUrl({ profile: 'research' }, 'ws://127.0.0.1:5151/api/ws?token=local')
+    ).toBe('ws://127.0.0.1:5151/api/ws?token=local')
+  })
+})
+
+describe('localRouteFallbackProfiles', () => {
+  it('restores failed local profiles when another source returned agents', () => {
+    const agents = [{ connectionId: 'cloud-prod', profile: 'default' }]
+
+    expect(localRouteFallbackProfiles(agents, 'local', ['default', 'venture'], true)).toEqual([
+      'default',
+      'venture'
+    ])
+  })
+
+  it('does not synthesize local routes after a successful local enumeration', () => {
+    expect(localRouteFallbackProfiles([], 'local', ['default'], false)).toEqual([])
   })
 })

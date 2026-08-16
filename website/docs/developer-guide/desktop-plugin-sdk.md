@@ -412,22 +412,26 @@ host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
 host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
-host.requestProfile<T>(profile, method, params?) // routed RPC; no foreground swap
+host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
+host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
-cron, kanban, …). `host.requestProfile` routes that RPC through a named Desktop
-profile's local/SSH/URL/cloud backend without changing the active chat or gateway.
-Use `host.profileRoutes()` for connection-aware UI: `connectionId` is stable,
-installation-scoped, and derived inside Electron with installation-keyed hashing;
-profiles sharing one execution gateway receive the same id, while endpoint or
-credential fields never cross the plugin IPC boundary. Key persisted identity by
-`connectionId + targetProfile`, not by profile name alone. `profile` is the Desktop
-route to pass to `host.requestProfile()` or `host.openSession()`; `targetProfile` is
-the backend Hermes profile served by that route. They differ only when a Desktop
-route explicitly maps to another backend profile (for example an SSH
-`remoteProfile` override); profile names are bot identity, not connection secrets.
+cron, kanban, …). `host.requestProfile` accepts a descriptor from
+`host.profileRoutes()` and routes that RPC through its exact registry source and
+profile without changing the active chat or gateway. The profile-only overload is
+retained for unambiguous legacy v1/local callers; registry-aware plugins should pass
+the descriptor so two sources exposing the same profile name cannot collide.
+
+`host.profileRoutes()` inventories every reachable source in the current connection
+registry. `connectionId` is the registry routing identity; pair it with `profile`
+for keys and persistence. Endpoint, token, SSH host/key, and other raw connection
+fields never cross the plugin IPC boundary. `profile` is the source-local route used
+for requests; `targetProfile` is the backend Hermes profile served by that route.
+They differ when a route explicitly maps to another backend profile (for example an
+SSH `remoteProfile` override or a legacy per-profile URL alias). This distinction
+preserves backend identity without exposing connection secrets.
 
 Profile-shaped plugins get first-class methods too:
 `profiles.list` (each profile + its most recent conversation as

@@ -30,6 +30,7 @@ import {
   $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
+  requestGatewayForAgent,
   requestGatewayForProfile
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -118,6 +119,34 @@ const $busyBySession = computed($sessionStates, states => {
 })
 
 const $viewport = atom<ViewportRect>(readViewport())
+
+async function requestPluginProfile<T>(
+  route: PluginProfileRoute | string,
+  method: string,
+  params: Record<string, unknown>
+): Promise<T> {
+  if (typeof route !== 'string') {
+    return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
+  }
+
+  const getAgentRoster = window.hermesDesktop?.getAgentRoster
+
+  if (!getAgentRoster) {
+    return requestGatewayForProfile<T>(route, method, params)
+  }
+
+  const roster = await getAgentRoster()
+  const profile = route.trim() || 'default'
+  const matches = roster.agents.filter(agent => agent.profile === profile)
+
+  if (matches.length === 1 && matches[0].connectionId === 'local') {
+    return requestGatewayForProfile<T>(profile, method, params)
+  }
+
+  throw new Error(
+    `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
+  )
+}
 
 if (typeof window !== 'undefined') {
   const refresh = () => $viewport.set(readViewport())
@@ -335,8 +364,8 @@ export const host = {
   /** One-shot system status snapshot (platforms, versions, …). */
   status: async () => getStatus(),
 
-  /** Credential-free Desktop profile routes for connection-aware plugin UI.
-   *  Profiles sharing one execution gateway receive the same opaque id. */
+  /** Credential-free routes across every current registry source. Identity is
+   *  the (connectionId, profile) pair; endpoint/auth details stay in Electron. */
   profileRoutes: async () => {
     const desktop = window.hermesDesktop
     const getProfileRoutes = desktop?.getProfileRoutes
@@ -357,10 +386,15 @@ export const host = {
     return getProfileRoutes(profiles.map(profile => profile.name))
   },
 
-  /** Gateway JSON-RPC through a named Desktop profile without foregrounding
-   *  that profile or changing the active chat/gateway. */
-  requestProfile: async <T>(profile: string, method: string, params: Record<string, unknown> = {}): Promise<T> =>
-    requestGatewayForProfile<T>(profile, method, params),
+  /** Gateway JSON-RPC through a credential-free route descriptor without
+   *  foregrounding it. Passing a bare profile is the v1/local compatibility
+   *  overload; registry callers must pass the descriptor so duplicate names
+   *  remain unambiguous. */
+  requestProfile: async <T>(
+    route: PluginProfileRoute | string,
+    method: string,
+    params: Record<string, unknown> = {}
+  ): Promise<T> => requestPluginProfile<T>(route, method, params),
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */

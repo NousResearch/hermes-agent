@@ -584,6 +584,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Probe failure must never block prompt build.
             pass
 
+    # Bot Mode teammate protocol — when the desktop's Bot Mode manages this
+    # install (any profile carries ui_meta['hermes-bots']), every session of
+    # every profile learns the bot-to-bot messaging protocol, including
+    # headless `hermes -p <bot> chat` sessions started by a teammate. Silent
+    # on non-Bot-Mode installs and when the profile's SOUL.md already carries
+    # the section (legacy plugin-side append). Deterministic per (process,
+    # home) — cache-safe. Gated by config.yaml ``agent.bot_mode_protocol``
+    # (default True).
+    if getattr(agent, "_bot_mode_protocol", True):
+        try:
+            from tools.bot_mode_probe import get_bot_mode_protocol_section
+            _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
+            if _bot_section:
+                post_workspace_parts.append(_bot_section)
+        except Exception:
+            pass
+
     # Active-profile hint — names the Hermes profile the agent is running
     # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
     # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic

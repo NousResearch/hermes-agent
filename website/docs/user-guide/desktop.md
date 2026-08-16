@@ -162,6 +162,27 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Messaging** — set up gateway channels.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
+### Bot Mode (built in)
+
+**Bot Mode** ships with the app and is on by default: a "one chat per agent"
+roster where every [Hermes profile](./profiles.md) appears as a bot with its
+own avatar (geometric face, uploaded image, AI-generated portrait, or a pixel
+pet), its own canonical **Bot Chat** conversation, and its own **Routines**
+(recurring tasks backed by Hermes cron). Create new agents from the roster —
+Name / Title / Description plus an Advanced disclosure with the full
+capabilities surface (model, SOUL, skills, toolsets, MCP servers) — group
+them into sections, and open group chats where several bots deliberate.
+
+Bots message each other: type `@researcher have a look at this` in any chat
+and the active bot hands the message off and reports back, and bots reach
+each other's Bot Chats directly (`hermes -p <bot> chat`). The backend teaches
+every session the messaging protocol automatically (config
+`agent.bot_mode_protocol`, default on) — including headless CLI sessions a
+teammate bot starts — so handoffs work without touching your SOUL.md.
+
+Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
+routines pane, and composer middleware unregister live, no restart needed.
+
 ### Keyboard & navigation
 
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.

@@ -159,7 +159,12 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 row["has_avatar"] = False
             out.append(row)
-        return _ok(rid, {"profiles": out})
+        # Capability flag: this backend's prompt builder injects the Bot Mode
+        # teammate-messaging protocol (tools/bot_mode_probe.py) into every
+        # session of Bot-Mode-managed installs. Clients that would otherwise
+        # append the protocol to SOUL.md (the desktop's hermes-bots plugin)
+        # must skip their SOUL writes when this is present.
+        return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
     except Exception as e:
         return _err(rid, 5061, str(e))
 

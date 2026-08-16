@@ -2299,9 +2299,19 @@ def anthropic_prompt_cache_policy(
     # Also consulted for a LiteLLM route on the OpenAI wire: that grant is
     # inferred from the provider/host name, so an operator who explicitly
     # declares prompt_caching for the route+model must still win over the
-    # inference — in either direction.
+    # inference — in either direction. Narrowed to the routes the LiteLLM
+    # branch below can actually grant (chat_completions + Claude): the lookup
+    # calls get_compatible_custom_providers, which rebuilds its normalized
+    # view on every call (~1.5ms uncached), and this function runs per
+    # request destination. Widening it unconditionally regressed the
+    # non-declaring common case ~200x (7.5us -> 1528us).
     custom_prompt_caching = None
-    if is_anthropic_wire or _is_litellm_route(provider_lower, eff_base_url):
+    _litellm_openai_wire = (
+        eff_api_mode == "chat_completions"
+        and is_claude
+        and _is_litellm_route(provider_lower, eff_base_url)
+    )
+    if is_anthropic_wire or _litellm_openai_wire:
         try:
             from hermes_cli.config import get_custom_provider_model_capability
 
@@ -2402,11 +2412,7 @@ def anthropic_prompt_cache_policy(
     # Gated on chat_completions explicitly rather than `not
     # is_anthropic_wire`: codex_responses / bedrock_converse are separate
     # transports with their own marker handling and must not be swept in.
-    if (
-        eff_api_mode == "chat_completions"
-        and is_claude
-        and _is_litellm_route(provider_lower, eff_base_url)
-    ):
+    if _litellm_openai_wire:
         return True, False
 
     # MiniMax on its Anthropic-compatible endpoint serves its own

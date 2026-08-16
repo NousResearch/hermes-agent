@@ -87,7 +87,7 @@ def _reload_updated_runtime_modules() -> None:
 
 
 def _reload_config_modules() -> None:
-    """Force-reload config modules from disk after git pull.
+    """Force-reload modules from disk after git pull.
 
     ``hermes update`` runs in the PRE-pull Python process. After ``git pull``
     updates the source files on disk, modules already in ``sys.modules``
@@ -99,17 +99,31 @@ def _reload_config_modules() -> None:
     This function force-reloads ``hermes_cli.config_defaults``,
     ``hermes_cli.config``, and ``hermes_cli.config_migrations`` from disk
     so subsequent imports read the UPDATED code.
+
+    It also reloads ``hermes_cli._subprocess_compat`` and
+    ``hermes_cli.dashboard_procs`` so that post-update dashboard cleanup
+    (``_finish_dashboard_update_cleanup`` → ``_scan_dashboard_processes``)
+    uses the freshly-pulled code. Without this, a new symbol added to
+    ``_subprocess_compat`` (e.g. ``bounded_probe_run``) is invisible to the
+    cached module object, causing ``ImportError`` during the cleanup step
+    that runs later in the same process.
     """
     import importlib
 
     importlib.invalidate_caches()
-    for mod_name in ("hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations"):
+    for mod_name in (
+        "hermes_cli.config_defaults",
+        "hermes_cli.config",
+        "hermes_cli.config_migrations",
+        "hermes_cli._subprocess_compat",
+        "hermes_cli.dashboard_procs",
+    ):
         mod = sys.modules.get(mod_name)
         if mod is not None:
             try:
                 importlib.reload(mod)
             except Exception as exc:
-                logger.debug("Could not reload %s for fresh config check: %s", mod_name, exc)
+                logger.debug("Could not reload %s for fresh post-update code: %s", mod_name, exc)
 
 
 def _run_config_check_fresh() -> tuple:

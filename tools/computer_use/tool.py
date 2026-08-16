@@ -196,6 +196,47 @@ _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
 
 
+# Sessions already told that their approval bypass widened the driver mode.
+# The resolver runs per dispatch, so without this the warning would repeat on
+# every single tool call.
+_escalation_warned: set = set()
+
+
+def _warn_bypass_escalation(session_id: str) -> None:
+    """Say out loud that an approval bypass just widened the driver's mode.
+
+    ``-z`` / ``--yolo`` read as "don't prompt me", but they also swap the
+    driver onto a private ``unrestricted`` daemon, dropping the ceiling the
+    configured mode would have applied. That is deliberate (see
+    ``_cua_permission_mode``) and ``unrestricted`` is reachable no other way
+    — it is intentionally not a config value, so a stale config line cannot
+    silently bypass approvals. But it is easy to trigger without meaning to:
+    a script gets ``-z`` for quiet output and loses its limits as a side
+    effect. So the widening is at least stated, once per session.
+    """
+    key = str(session_id or "")
+    with _approval_lock:
+        if key in _escalation_warned:
+            return
+        _escalation_warned.add(key)
+    try:
+        from tools.computer_use.cua_backend import _cua_configured_permission_mode
+
+        configured = _cua_configured_permission_mode()
+    except Exception:
+        configured = "standard"
+    logger.warning(
+        "computer_use: approval bypass (--yolo / -z) escalated the cua-driver "
+        "permission mode from the configured '%s' to 'unrestricted' for this "
+        "session. Runtime approval prompts are disabled and the driver's "
+        "residual ceilings no longer apply. Drop the bypass flag to keep '%s', "
+        "or declare a version-3 computer_use.capability_manifest to keep a "
+        "ceiling on bypassed runs.",
+        configured,
+        configured,
+    )
+
+
 def _cua_permission_mode(session_id: str) -> str:
     """Map Hermes's explicit approval bypass onto Cua's immutable mode.
 
@@ -216,9 +257,11 @@ def _cua_permission_mode(session_id: str) -> str:
         )
 
         if is_approval_bypass_active_for_session(session_id):
+            _warn_bypass_escalation(session_id)
             return "unrestricted"
         current_key = get_current_session_key(default="")
         if current_key and is_approval_bypass_active_for_session(current_key):
+            _warn_bypass_escalation(session_id)
             return "unrestricted"
     except Exception:
         # Approval state must fail closed if it cannot be resolved.
@@ -412,6 +455,7 @@ def _shutdown_backend_atexit() -> None:
     with _approval_lock:
         _session_auto_approve.clear()
         _always_allow.clear()
+        _escalation_warned.clear()
 
     for backend, call_lock in unique.values():
         try:

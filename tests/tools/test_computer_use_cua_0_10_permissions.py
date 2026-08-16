@@ -257,3 +257,73 @@ def test_transport_reset_invalidates_native_and_browser_capabilities():
     assert backend._snapshot_tokens == {}
     assert backend._typed_browser.state.target_id is None
     assert backend._typed_browser.state.refs == {}
+
+
+# ── the escalation is at least audible ──────────────────────────────────
+
+
+def test_bypass_escalation_is_warned_once_per_session(caplog):
+    """`-z` reads as "don't prompt me" but also drops the driver's ceiling.
+
+    That widening is deliberate and unrestricted is reachable no other way,
+    but it is easy to trigger by accident: a script takes -z for quiet output
+    and loses its limits as a side effect. It must not be silent.
+    """
+    import logging
+
+    from tools.computer_use import tool as computer_use
+
+    computer_use._escalation_warned.clear()
+    with patch(
+        "tools.approval.is_approval_bypass_active_for_session",
+        return_value=True,
+    ):
+        with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):
+            assert computer_use._cua_permission_mode("session-warn") == "unrestricted"
+            assert computer_use._cua_permission_mode("session-warn") == "unrestricted"
+
+    escalation = [
+        r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
+    ]
+    assert len(escalation) == 1, "warning must fire once, not on every dispatch"
+    message = escalation[0].getMessage()
+    assert "standard" in message
+    assert "unrestricted" in message
+
+
+def test_no_escalation_warning_without_a_bypass(caplog):
+    import logging
+
+    from tools.computer_use import tool as computer_use
+
+    computer_use._escalation_warned.clear()
+    with patch(
+        "tools.approval.is_approval_bypass_active_for_session",
+        return_value=False,
+    ):
+        with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):
+            assert computer_use._cua_permission_mode("session-quiet") == "standard"
+
+    assert not [
+        r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
+    ]
+
+
+def test_each_session_is_warned_separately(caplog):
+    import logging
+
+    from tools.computer_use import tool as computer_use
+
+    computer_use._escalation_warned.clear()
+    with patch(
+        "tools.approval.is_approval_bypass_active_for_session",
+        return_value=True,
+    ):
+        with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):
+            computer_use._cua_permission_mode("session-one")
+            computer_use._cua_permission_mode("session-two")
+
+    escalation = [
+        r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
+    ]
+    assert len(escalation) == 2

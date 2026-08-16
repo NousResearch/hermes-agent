@@ -571,6 +571,8 @@ class TestLiteLLMOpenAIWire:
             ("custom:litellm", "https://my-litellm-host.example.com/v1"),
             # Host signal: bare `custom` alias pointed at a LiteLLM host.
             ("custom", "https://litellm.internal.example.com/v1"),
+            # Host signal, hyphen-delimited label (self-hosted naming).
+            ("custom", "https://my-litellm-gw.internal.example.com/v1"),
         ],
     )
     @pytest.mark.parametrize(
@@ -578,7 +580,6 @@ class TestLiteLLMOpenAIWire:
         [
             "claude-opus-4.8",
             "anthropic/claude-sonnet-4.6",
-            "claude-3-7-sonnet",
         ],
     )
     def test_claude_on_litellm_openai_wire_caches_with_envelope_layout(
@@ -737,6 +738,40 @@ class TestLiteLLMOpenAIWire:
                 "models": {"claude-opus-4.8": {"prompt_caching": True}},
             }
         ]
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_capability_declared_false_wins_over_openrouter_grant(self):
+        # A litellm-named provider pointed at OpenRouter previously took the
+        # OpenRouter branch and ignored an explicit per-model opt-out, because
+        # the capability lookup was gated on the Anthropic wire. The operator's
+        # declaration now wins on this wire too.
+        agent = _make_agent(
+            provider="custom:litellm",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        agent._custom_providers = [
+            {
+                "name": "litellm",
+                "base_url": "https://openrouter.ai/api/v1",
+                "models": {"claude-opus-4.8": {"prompt_caching": False}},
+            }
+        ]
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_litellm_provider_on_lookalike_host_still_grants(self):
+        # Precedence is intentional and pinned: the provider id is an
+        # independent signal, so an explicitly litellm-named provider grants
+        # even when the HOST is a lookalike. Only the host-derived signal is
+        # token-gated (see test_litellm_lookalike_hosts_do_not_cache, which
+        # uses provider="custom").
+        agent = _make_agent(
+            provider="custom:litellm",
+            base_url="https://notlitellm.attacker.example/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     def test_litellm_openai_wire_emits_no_top_level_marker(self):

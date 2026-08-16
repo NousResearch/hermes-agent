@@ -696,7 +696,7 @@ export function SkillsView({
                 {visibleSkills.length === 0 ? (
                   capabilityEmpty('skills')
                 ) : (
-                  <MasterDetail pane={skillEditorPane} split="wide">
+                  <MasterDetail pane={skillEditorPane} resizeId="capabilities-split" split="wide">
                     <ListColumn
                       header={
                         <ListStrip
@@ -754,7 +754,7 @@ export function SkillsView({
           ) : visibleToolsets.length === 0 ? (
             capabilityEmpty('tools')
           ) : (
-            <MasterDetail split="wide">
+            <MasterDetail resizeId="capabilities-split" split="wide">
               <ListColumn
                 header={
                   <ListStrip

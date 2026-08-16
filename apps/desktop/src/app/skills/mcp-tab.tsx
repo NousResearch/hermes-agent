@@ -411,11 +411,6 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // Config/document order, not alphabetical — the list mirrors mcp.json.
   const names = useMemo(() => Object.keys(servers), [servers])
 
-  // Left column view: the configured fleet, or the Nous-approved catalog to
-  // install from. Both share one cached catalog fetch (also feeds description
-  // enrichment below), so switching between them never re-requests.
-  const [leftView, setLeftView] = useState<'catalog' | 'servers'>('servers')
-
   // Key by the SCOPED profile — installed/enabled badges are per-profile, so
   // sharing one cache across profiles would flash the previous profile's state
   // on switch. When no selector override is set this is the active profile,
@@ -426,7 +421,17 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     staleTime: 5 * 60_000
   })
 
-  const catalog = catalogQuery.data?.entries ?? []
+  const catalog = useMemo(() => catalogQuery.data?.entries ?? [], [catalogQuery.data])
+
+  // The catalog SECTION of the unified list only offers entries that aren't
+  // already configured — installed servers appear once, in the fleet list
+  // above, with live status. Match by catalog `installed` flag or a config
+  // entry under the same name (covers a just-saved doc the catalog refetch
+  // hasn't caught up with yet).
+  const availableCatalog = useMemo(
+    () => catalog.filter((entry: McpCatalogEntry) => !entry.installed && !(entry.name in servers)),
+    [catalog, servers]
+  )
 
   const descriptionFor = (serverName: string, server: Record<string, unknown>): null | string => {
     const lower = serverName.toLowerCase()
@@ -922,30 +927,6 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     return <PageLoader className="min-h-24" label={configLoading ? m.loading : t.skills.loading} />
   }
 
-  // Zero servers and a pristine doc: one centered invitation — with a path into
-  // the catalog (kept out when the user is already browsing it).
-  if (Object.keys(servers).length === 0 && !dirty && leftView === 'servers') {
-    return (
-      <div className="flex h-full min-h-0 flex-1">
-        <PanelEmpty
-          action={
-            <span className="flex items-center gap-2">
-              <Button onClick={addServer} size="sm">
-                {m.newServer}
-              </Button>
-              <Button onClick={() => setLeftView('catalog')} size="sm" variant="text">
-                {m.tabCatalog}
-              </Button>
-            </span>
-          }
-          description={m.emptyDesc}
-          icon="plug"
-          title={m.emptyTitle}
-        />
-      </div>
-    )
-  }
-
   // Selection may reference an unsaved block (freshly pasted) — fall back to
   // the draft's parsed entry so the config pane can still describe it.
   const savedEntry = selected ? servers[selected] : undefined
@@ -966,9 +947,9 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
 
   return (
     <div className={cn('grid h-full min-h-0 grid-cols-1', MASTER_DETAIL_WIDE_COLS)}>
-      {/* LEFT: the focused block's server config, or the fleet list / catalog. */}
+      {/* LEFT: the focused block's server config, or the unified fleet+catalog list. */}
       <aside className="flex min-h-0 flex-col overflow-hidden border-r border-(--ui-stroke-quaternary)">
-        {leftView === 'servers' && selected && activeEntry ? (
+        {selected && activeEntry ? (
           <ServerConfig
             authing={authing === selected}
             description={descriptionFor(selected, activeEntry)}
@@ -986,27 +967,28 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
           />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col p-2">
-            {/* Geometry mirrors ListStrip (mb-1 h-6 pl-2) so these tabs land on
-                the exact line the sort link occupies in the Skills/Tools views. */}
-            <div className="mb-1 flex h-6 shrink-0 items-center gap-3 pl-2 pr-1">
-              {(['servers', 'catalog'] as const).map(view => (
-                <TextTab
-                  active={leftView === view}
-                  className="h-6 px-0 text-[0.72rem]"
-                  key={view}
-                  onClick={() => setLeftView(view)}
-                >
-                  {view === 'servers' ? m.tabServers : m.tabCatalog}
-                </TextTab>
-              ))}
-            </div>
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-              {leftView === 'catalog' ? (
-                <McpCatalog
-                  entries={catalog}
-                  loading={catalogQuery.isLoading}
-                  onInstalled={onCatalogInstalled}
-                  profile={profile}
+              {/* ONE coherent column: the configured fleet on top, the
+                  Nous-approved catalog below it. Installed entries live in the
+                  fleet list (with live status), so the catalog section only
+                  offers what's NOT installed yet — no duplicate rows, no tab
+                  flipping to find the install button. */}
+              {/* Geometry mirrors ListStrip (mb-1 h-6 pl-2) so this header
+                  lands on the exact line the sort link occupies in the
+                  Skills/Tools views. */}
+              <div className="mb-1 flex h-6 shrink-0 items-center pl-2 pr-1">
+                <span className="text-[0.72rem] font-medium text-(--ui-text-tertiary)">{m.tabServers}</span>
+              </div>
+              {names.length === 0 ? (
+                <PanelEmpty
+                  action={
+                    <Button onClick={addServer} size="sm">
+                      {m.newServer}
+                    </Button>
+                  }
+                  description={m.emptyDesc}
+                  icon="plug"
+                  title={m.emptyTitle}
                 />
               ) : (
                 <>
@@ -1031,6 +1013,19 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                     )
                   })}
                   <PanelAddButton label={m.newServer} onClick={addServer} />
+                </>
+              )}
+              {(catalogQuery.isLoading || availableCatalog.length > 0) && (
+                <>
+                  <div className="mb-1 mt-3 flex h-6 shrink-0 items-center border-t border-(--ui-stroke-quaternary) pl-2 pr-1 pt-2">
+                    <span className="text-[0.72rem] font-medium text-(--ui-text-tertiary)">{m.tabCatalog}</span>
+                  </div>
+                  <McpCatalog
+                    entries={availableCatalog}
+                    loading={catalogQuery.isLoading}
+                    onInstalled={onCatalogInstalled}
+                    profile={profile}
+                  />
                 </>
               )}
             </div>

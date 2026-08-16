@@ -40,6 +40,7 @@ def test_install_writes_entry_with_absolute_exec_and_icon(tmp_path, xdg_home, mo
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
     hermes_bin.write_text("", encoding="utf-8")
+    monkeypatch.setattr(lde.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
         "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(hermes_bin)
     )
@@ -66,8 +67,29 @@ def test_install_writes_entry_with_absolute_exec_and_icon(tmp_path, xdg_home, mo
     assert values["Terminal"] == "false"
 
 
+def test_exec_prefers_public_path_launcher_over_internal_entrypoint(
+    tmp_path, monkeypatch
+):
+    public_launcher = tmp_path / ".local" / "bin" / "hermes"
+    public_launcher.parent.mkdir(parents=True)
+    public_launcher.write_text("", encoding="utf-8")
+    internal_entrypoint = tmp_path / ".hermes" / "hermes-agent" / "hermes"
+
+    monkeypatch.setattr(
+        lde.shutil,
+        "which",
+        lambda name: str(public_launcher) if name == "hermes" else None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: str(internal_entrypoint)
+    )
+
+    assert lde.resolve_exec_command() == f"{public_launcher} desktop"
+
+
 def test_installed_entry_is_executable(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
+    monkeypatch.setattr(lde.shutil, "which", lambda _name: None)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes")
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
@@ -78,6 +100,7 @@ def test_installed_entry_is_executable(tmp_path, xdg_home, monkeypatch):
 
 def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
+    monkeypatch.setattr(lde.shutil, "which", lambda _name: None)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
@@ -90,6 +113,7 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
 
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
+    monkeypatch.setattr(lde.shutil, "which", lambda _name: None)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes")
     calls: list[Path] = []
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda d: calls.append(d) or [])
@@ -105,6 +129,7 @@ def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monke
 def test_install_without_source_icon_uses_themed_name(tmp_path, xdg_home, monkeypatch):
     root = tmp_path / "hermes-agent"
     root.mkdir()
+    monkeypatch.setattr(lde.shutil, "which", lambda _name: None)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes")
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 
@@ -196,6 +221,7 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     spaced = tmp_path / "my apps" / "hermes"
     spaced.parent.mkdir()
     spaced.write_text("", encoding="utf-8")
+    monkeypatch.setattr(lde.shutil, "which", lambda _name: None)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(spaced))
     monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
 

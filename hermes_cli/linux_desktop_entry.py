@@ -60,15 +60,24 @@ def icon_path(project_root: Path) -> Path:
 def resolve_exec_command() -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
-    Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
-    runs as a module with no launcher installed, use the current
-    interpreter, also absolute.
+    Prefer the public ``hermes`` launcher on PATH. The installer's launcher
+    execs the checkout's Python entry point, so by the time this code runs,
+    ``sys.argv[0]`` points at ``~/.hermes/hermes-agent/hermes`` rather than
+    the stable ``~/.local/bin/hermes`` command the user invoked. When no
+    public launcher is available, fall back to the current executable or the
+    current interpreter, also absolute.
     """
     from hermes_cli.relaunch import resolve_hermes_bin
 
-    bin_path = resolve_hermes_bin()
+    path_launcher = shutil.which("hermes")
+    bin_path = path_launcher or resolve_hermes_bin()
     if bin_path:
-        argv = [str(Path(bin_path).resolve()), "desktop"]
+        # Preserve the public launcher path even when it is a symlink. The
+        # launcher is the stable interface; its target may change on update.
+        absolute_bin = (
+            Path(bin_path).absolute() if path_launcher else Path(bin_path).resolve()
+        )
+        argv = [str(absolute_bin), "desktop"]
     else:
         argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)

@@ -8480,6 +8480,86 @@ def test_slash_exec_context_routes_to_live_session_without_worker(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_slash_exec_context_without_metadata_mirror(monkeypatch):
+    """/context on a session with NO _metadata_mirror (lazy/older session).
+
+    _metadata_mirror() is a safe accessor ({} when absent) and
+    _session_usage_snapshot falls back to the agent's own counters, so the
+    output must degrade to a real answer, not raise or render blank
+    (review point on PR #86434: the mirror-present case was the only one
+    pinned)."""
+    import threading as _threading
+
+    class _Agent:
+        model = "mirrorless-model"
+        provider = "mirrorless-provider"
+        session_input_tokens = 111
+        session_output_tokens = 22
+        session_total_tokens = 133
+        session_api_calls = 2
+
+    server._sessions["sid"] = {
+        "agent": _Agent(),
+        "session_key": "",
+        "history": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "there"},
+        ],
+        "history_lock": _threading.Lock(),
+        "history_version": 1,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        # deliberately NO _metadata_mirror key
+    }
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "/context", "session_id": "sid"},
+            }
+        )
+        assert resp is not None, "handle_request returned None"
+        assert "result" in resp, resp
+        out = resp["result"]["output"]
+        assert "Conversation: 2 messages" in out
+        assert "mirrorless-model" in out
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slash_exec_context_unknown_session_clear_error(monkeypatch):
+    """Unknown/never-loaded session id: slash.exec fails at _sess_nowait
+    (4001 session not found) BEFORE the live/isolated dispatch — the
+    command has no live branch there, and the contract is a clear error,
+    never an unhandled branch (review point on PR #86434)."""
+    assert "no-such-session" not in server._sessions
+
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("worker must not run for unknown session")
+
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "slash.exec",
+            "params": {"command": "/context", "session_id": "no-such-session"},
+        }
+    )
+    assert resp is not None, "handle_request returned None"
+    assert "error" in resp, resp
+    assert resp["error"]["code"] == 4001
+    assert "not found" in resp["error"]["message"]
+
+
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
     from tools.approval import get_current_session_key
 

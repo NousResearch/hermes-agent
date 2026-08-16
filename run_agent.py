@@ -4879,19 +4879,28 @@ class AIAgent:
 
         Valid JSON arguments are canonicalized so equivalent objects do not
         evade deduplication merely because their keys or whitespace differ.
-        Malformed arguments retain their raw representation rather than being
-        repaired here. Only the first occurrence of each unique pair is kept.
+        Duplicate object keys use the parser's last-value-wins semantics,
+        matching downstream argument parsing. Malformed or excessively nested
+        arguments retain their raw representation rather than being repaired
+        here. Only the first occurrence of each unique pair is kept.
         Returns the original list if no duplicates were found.
         """
+        seen_raw: set = set()
         seen: set = set()
         unique: list = []
         for tc in tool_calls:
+            raw_key = (tc.function.name, tc.function.arguments)
+            if raw_key in seen_raw:
+                logger.warning("Removed duplicate tool call: %s", tc.function.name)
+                continue
+            seen_raw.add(raw_key)
+
             arguments = tc.function.arguments
             try:
                 arguments = json.dumps(
                     json.loads(arguments), separators=(",", ":"), sort_keys=True
                 )
-            except (TypeError, ValueError):
+            except (RecursionError, TypeError, ValueError):
                 pass
             key = (tc.function.name, arguments)
             if key not in seen:

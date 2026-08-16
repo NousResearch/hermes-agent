@@ -10,6 +10,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
@@ -35,6 +36,7 @@ import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer } from './focus'
+import { describeCommand, GhostSuggestionView, SkillStripView, useGhostSuggestion, useSkillStrip } from './ghost-suggestion'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -71,8 +73,6 @@ import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
-import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
-import { GhostSuggestionView, SkillStripView, describeCommand, useGhostSuggestion, useSkillStrip } from './ghost-suggestion'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
@@ -376,6 +376,7 @@ export function ChatBar({
   // mutate the Set in place so React doesn't re-render on every ref update;
   // the hook reads through `rejectedCommandsRef` on each candidate change.
   const rejectedCommandsRef = useRef<Set<string>>(new Set())
+
   const ghost = useGhostSuggestion({
     draftRef,
     editorRef,
@@ -571,6 +572,7 @@ export function ChatBar({
       if (event.key === 'Escape') {
         event.preventDefault()
         ghost.dismiss()
+
         return
       }
 

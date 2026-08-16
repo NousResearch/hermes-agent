@@ -26,18 +26,18 @@ export function SkillStripView({ items, onDismissForever, className }: SkillStri
 
   return (
     <div
-      data-slot="composer-skill-strip"
       className={cn(
         'pointer-events-auto mb-1 flex flex-wrap items-center gap-1.5',
         'animate-[fade-in_0.15s_ease-out] text-[0.72rem] text-(--ui-text-tertiary)',
         className
       )}
+      data-slot="composer-skill-strip"
     >
       <span className="opacity-80">{t.composer.skillStripPrefix}</span>
       {items.map(item => (
         <span
-          key={item.command}
           className="inline-flex items-center gap-1 rounded-full border border-(--ui-border-subtle) bg-(--ui-surface-secondary)/60 px-2 py-0.5"
+          key={item.command}
           title={item.description}
         >
           <span className="font-mono italic opacity-90">{item.command}</span>
@@ -47,10 +47,10 @@ export function SkillStripView({ items, onDismissForever, className }: SkillStri
         </span>
       ))}
       <button
-        type="button"
-        onClick={onDismissForever}
-        className="ml-auto rounded px-1.5 py-0.5 opacity-50 transition-opacity hover:opacity-100"
         aria-label={t.composer.skillStripDismiss}
+        className="ml-auto rounded px-1.5 py-0.5 opacity-50 transition-opacity hover:opacity-100"
+        onClick={onDismissForever}
+        type="button"
       >
         {t.composer.skillStripDismiss}
       </button>

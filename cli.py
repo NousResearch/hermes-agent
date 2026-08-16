@@ -18147,8 +18147,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # A plain /-prefix completion keeps its original append behavior.
                 suggestion_text = buf.suggestion.text
                 if suggestion_text.startswith("/") and not buf.text.lstrip().startswith("/"):
-                    buf.text = suggestion_text
-                    buf.cursor_position = len(suggestion_text)
+                    # Full replacement via the buffer's normal edit pipeline so
+                    # undo history and cursor validation stay intact — assigning
+                    # buf.text directly would bypass delete_before_cursor and
+                    # clobber the undo stack.
+                    buf.delete_before_cursor(len(buf.text))
+                    buf.insert_text(suggestion_text)
                 else:
                     buf.insert_text(suggestion_text)
             else:

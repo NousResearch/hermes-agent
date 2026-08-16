@@ -12,6 +12,7 @@ const KEY = 'hermes.desktop.skillSuggestions.enabled.v1'
 function readInitial(): boolean {
   try {
     const raw = localStorage.getItem(KEY)
+
     // Absent key = default ON (feature ships enabled).
     return raw === null ? true : raw === '1'
   } catch {
@@ -23,6 +24,7 @@ export const $skillSuggestionsEnabled = atom<boolean>(typeof window === 'undefin
 
 export function setSkillSuggestionsEnabled(enabled: boolean): void {
   $skillSuggestionsEnabled.set(enabled)
+
   try {
     localStorage.setItem(KEY, enabled ? '1' : '0')
   } catch {

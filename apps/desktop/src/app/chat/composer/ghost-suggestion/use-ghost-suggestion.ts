@@ -18,10 +18,10 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { $skillSuggestionsEnabled } from '@/store/skill-suggestions'
 import type { HermesGateway } from '@/hermes'
 import type { CommandsCatalogLike } from '@/lib/desktop-slash-commands'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
+import { $skillSuggestionsEnabled } from '@/store/skill-suggestions'
 
 const MIN_DRAFT_LENGTH = 2
 const DEBOUNCE_MS = 300
@@ -261,6 +261,7 @@ export function useDraftValue(ref: { current: string }): string {
   const [value, setValue] = useState<string>(ref.current)
   const rafRef = useRef<number | undefined>(undefined)
 
+  // eslint-disable-next-line no-restricted-syntax -- rAF handle (DOM frame loop), not a reactive-value mirror
   useEffect(() => {
     let lastValue = ref.current
 
@@ -298,6 +299,7 @@ export function useGhostSuggestion({
   const [catalog, setCatalog] = useState<CommandsCatalogLike | null>(() =>
     peekCachedSlashCompletion<CommandsCatalogLike>('catalog') ?? null
   )
+
   const [candidates, setCandidates] = useState<GhostCandidate[]>([])
   const [activeIndex, setActiveIndex] = useState(0)
   const [dismissedFor, setDismissedFor] = useState<string | null>(null)
@@ -335,21 +337,23 @@ export function useGhostSuggestion({
   // Build the set we actually surface: catalog commands minus rejected.
   const visibleCandidates = useMemo(() => {
     const rejected = rejectedCommandsRef.current
+
     return candidates.filter(candidate => !rejected.has(candidate.command))
   }, [candidates, rejectedCommandsRef])
 
   // Dev telemetry: log every state change to the console and stash the
   // latest snapshot on `window.__ghostDebug` so the engineer can verify
-  // the hook by opening DevTools and running `__ghostDebug()`. Cheap, runs
-  // in both dev and prod builds — the noise is acceptable for a feature
-  // this experimental.
-  {
+  // the hook by opening DevTools and running `__ghostDebug()`. Gated to
+  // dev builds only — production must not log per keystroke or mutate a
+  // global on every render.
+  if (import.meta.env.DEV) {
     const snapshot = {
       draft: draft.slice(0, 30),
       candidates: candidates.map(c => c.command),
       active: visibleCandidates[activeIndex]?.command ?? null,
       dismissed: dismissedFor === draft
     }
+
     console.log('[ghost]', snapshot)
     ;(window as unknown as { __ghostDebug?: unknown }).__ghostDebug = snapshot
   }
@@ -362,6 +366,7 @@ export function useGhostSuggestion({
     if (!enabled) {
       setCandidates([])
       setActiveIndex(0)
+
       return
     }
 
@@ -372,6 +377,7 @@ export function useGhostSuggestion({
     if (draft.length < MIN_DRAFT_LENGTH || isTriggerActive(draft)) {
       setCandidates([])
       setActiveIndex(0)
+
       return
     }
 
@@ -385,6 +391,7 @@ export function useGhostSuggestion({
 
     if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       setCandidates(cached.candidates)
+
       return
     }
 

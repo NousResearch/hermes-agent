@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 /**
  * Skill strip — the transient suggestion hint above the composer.
  *
@@ -16,12 +17,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CommandsCatalogLike } from '@/lib/desktop-slash-commands'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
+import { $skillSuggestionsEnabled } from '@/store/skill-suggestions'
 
 import type { GhostCandidate } from './use-ghost-suggestion'
 import { useDraftValue } from './use-ghost-suggestion'
-
-import { useStore } from '@nanostores/react'
-import { $skillSuggestionsEnabled } from '@/store/skill-suggestions'
 
 const VISIBLE_MS = 4_000
 const MAX_ITEMS = 3
@@ -113,6 +112,7 @@ export function useSkillStrip(
   candidates: GhostCandidate[]
 ): SkillStripState {
   const [items, setItems] = useState<SkillStripItem[]>([])
+
   const [dismissed, setDismissed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(DISMISS_STORAGE_KEY) === '1'
@@ -120,11 +120,13 @@ export function useSkillStrip(
       return false
     }
   })
+
   const hideTimerRef = useRef<number | undefined>(undefined)
   const draft = useDraftValue(draftRef)
   const enabled = useStore($skillSuggestionsEnabled)
 
   // Re-arm the visible strip whenever the draft changes and candidates exist.
+  // eslint-disable-next-line no-restricted-syntax -- timer handle (auto-hide), not a reactive-value mirror
   useEffect(() => {
     if (dismissed || !enabled) {
       return

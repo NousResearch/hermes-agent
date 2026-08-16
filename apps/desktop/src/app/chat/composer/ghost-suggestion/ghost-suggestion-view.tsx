@@ -88,6 +88,7 @@ export function GhostSuggestionView({ command, description, className }: GhostSu
       }
 
       const rect = el.getBoundingClientRect()
+
       const inside =
         event.clientX >= rect.left &&
         event.clientX <= rect.right &&
@@ -139,7 +140,7 @@ export function GhostSuggestionView({ command, description, className }: GhostSu
       {hovered && description ? (
         <div className="absolute bottom-full right-0 mb-1 max-w-[15rem] overflow-hidden rounded border border-(--ui-border-subtle) bg-(--ui-surface-secondary) px-2 py-1">
           {showMarquee ? (
-            <div ref={trackRef} className="w-fit" style={{ whiteSpace: 'nowrap' }}>
+            <div className="w-fit" ref={trackRef} style={{ whiteSpace: 'nowrap' }}>
               <div
                 className="inline-flex"
                 style={{
@@ -148,7 +149,7 @@ export function GhostSuggestionView({ command, description, className }: GhostSu
                 }}
               >
                 <span className="pr-6">{description}</span>
-                <span className="pr-6" aria-hidden>
+                <span aria-hidden className="pr-6">
                   {description}
                 </span>
               </div>
@@ -159,8 +160,8 @@ export function GhostSuggestionView({ command, description, className }: GhostSu
         </div>
       ) : null}
       <span
-        ref={commandRef}
         className="font-mono italic opacity-70"
+        ref={commandRef}
         style={{ minWidth: width ? `${width}px` : undefined }}
       >
         {' '}

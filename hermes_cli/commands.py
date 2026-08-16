@@ -2313,6 +2313,18 @@ class SlashCommandAutoSuggest(AutoSuggest):
         self._completer = completer  # Reuse its model cache
 
     @staticmethod
+    def _hint_keyword_hit(keyword: str, q_lower: str) -> bool:
+        """Match a CN-intent hint keyword against the lowered query.
+
+        Latin keywords use word-boundary matching so ``help`` does not fire on
+        ``helpline`` / ``helping`` / ``help desk``; CJK keywords (no spaces)
+        keep substring behavior.
+        """
+        if keyword.isascii() and keyword.isalnum():
+            return re.search(rf"\b{re.escape(keyword)}\b", q_lower) is not None
+        return keyword in q_lower
+
+    @staticmethod
     def _intent_score(query: str, command: str, description: str) -> float | None:
         """Score free-text input against a command's name + description.
 
@@ -2378,7 +2390,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
         # an explicit 中文→命令 hint is the strongest signal (学习无人机 → /learn).
         q_lower = query.lower()
         for keywords, command in self._CN_INTENT_HINTS:
-            if any(keyword in q_lower for keyword in keywords):
+            if any(self._hint_keyword_hit(kw, q_lower) for kw in keywords):
                 if command in COMMANDS or command in self._iter_skill_commands():
                     from prompt_toolkit.auto_suggest import Suggestion as _S
 

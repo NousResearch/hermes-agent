@@ -979,13 +979,6 @@ function layoutNode(
 
   if (performLayout) {
     node._rLayoutGen = _generation
-
-    let ancestor: Node | null = node
-
-    while (ancestor && ancestor._rSubtreeLayoutGen !== _generation) {
-      ancestor._rSubtreeLayoutGen = _generation
-      ancestor = ancestor.parent
-    }
   }
 
   const style = node.style
@@ -1053,6 +1046,15 @@ function layoutNode(
       _yogaCacheHits++
 
       return
+    }
+  }
+
+  if (performLayout) {
+    let ancestor: Node | null = node
+
+    while (ancestor && ancestor._rSubtreeLayoutGen !== _generation) {
+      ancestor._rSubtreeLayoutGen = _generation
+      ancestor = ancestor.parent
     }
   }
 

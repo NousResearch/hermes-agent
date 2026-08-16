@@ -74,7 +74,7 @@ describe('incremental layout rounding', () => {
     expect(clock.getComputedWidth()).toBe(6.5)
     expect(transcript.getComputedWidth()).toBe(transcriptWidth)
     expect(counters.rounded).toBeLessThanOrEqual(4)
-    expect(counters.roundSkips).toBeGreaterThanOrEqual(1)
+    expect(counters.roundSkips).toBe(1)
 
     root.freeRecursive()
     Yoga.Config.destroy(config)

@@ -3917,14 +3917,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         def _emit_stream_text(piece: str) -> None:
             candidate = "".join(pending_timeout_prefix) + piece
-            if pending_timeout_prefix or ROUTER_TIMEOUT_SHIM.startswith(piece):
-                if ROUTER_TIMEOUT_SHIM.startswith(candidate):
-                    pending_timeout_prefix.append(piece)
-                    return
-                if pending_timeout_prefix:
-                    agent._fire_stream_delta("".join(pending_timeout_prefix))
-                    pending_timeout_prefix.clear()
-            agent._fire_stream_delta(piece)
+            unpadded = candidate.lstrip()
+            sentinel_and_trailing_space = (
+                unpadded.startswith(ROUTER_TIMEOUT_SHIM)
+                and not unpadded[len(ROUTER_TIMEOUT_SHIM):].strip()
+            )
+            if (
+                not unpadded
+                or ROUTER_TIMEOUT_SHIM.startswith(unpadded)
+                or sentinel_and_trailing_space
+            ):
+                pending_timeout_prefix.append(piece)
+                return
+            pending_timeout_prefix.clear()
+            agent._fire_stream_delta(candidate)
             deltas_were_sent["yes"] = True
 
         def _flush_valid_timeout_prefix(response: Any) -> None:

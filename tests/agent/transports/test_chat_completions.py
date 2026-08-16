@@ -522,6 +522,51 @@ class TestChatCompletionsValidate:
         assert transport.validate_response(response) is True
 
     @pytest.mark.parametrize(
+        "usage",
+        [
+            SimpleNamespace(completion_tokens=float("inf")),
+            {"completion_tokens": float("inf")},
+            SimpleNamespace(output_tokens=float("inf")),
+            {"output_tokens": float("inf")},
+            SimpleNamespace(completion_tokens=True),
+        ],
+    )
+    def test_rejects_timeout_shim_without_finite_positive_token_proof(
+        self, transport, usage
+    ):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is False
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            {"completion_tokens": 1},
+            SimpleNamespace(output_tokens=1),
+            {"output_tokens": 1},
+            {"output_tokens": 10**400},
+        ],
+    )
+    def test_accepts_timeout_text_with_supported_positive_token_proof(
+        self, transport, usage
+    ):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is True
+
+    @pytest.mark.parametrize(
         ("content", "tool_calls"),
         [
             ("The router said: Connect timeout, please try again later.", None),

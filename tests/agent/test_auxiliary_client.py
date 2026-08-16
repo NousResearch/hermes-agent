@@ -4622,18 +4622,45 @@ class TestFastModelTier:
         assert not overlap
 
 
-def test_auxiliary_validation_rejects_router_timeout_shim():
+def _responses_output(text, *, usage):
+    return SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )],
+        usage=usage,
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=SimpleNamespace(completion_tokens=0),
+        ),
+        SimpleNamespace(
+            output_text=" Connect timeout, please try again later. ",
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+        {
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 0},
+        },
+        _responses_output(
+            "Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=0),
+        ),
+    ],
+)
+def test_auxiliary_validation_rejects_router_timeout_shim(response):
     """Auxiliary consumers must send HTTP-success timeout shims into recovery."""
     from agent.auxiliary_client import (
         _is_invalid_aux_response_error,
         _validate_llm_response,
-    )
-
-    response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(
-            content="Connect timeout, please try again later.", tool_calls=None,
-        ))],
-        usage=SimpleNamespace(completion_tokens=0),
     )
 
     with pytest.raises(RuntimeError, match="router timeout shim") as exc_info:
@@ -4641,4 +4668,119 @@ def test_auxiliary_validation_rejects_router_timeout_shim():
 
     # Both sync and async auxiliary fallback gates share this classifier.
     assert _is_invalid_aux_response_error(exc_info.value)
-    assert not _is_invalid_aux_response_error(RuntimeError("Auxiliary compression: normal provider failure"))
+    assert not _is_invalid_aux_response_error(
+        RuntimeError("Auxiliary compression: normal provider failure")
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            output_text=" Connect timeout, please try again later. ",
+            usage=SimpleNamespace(output_tokens=1),
+        ),
+        {
+            "output_text": "Connect timeout, please try again later.",
+            "usage": {"output_tokens": 1},
+        },
+        _responses_output(
+            "Connect timeout, please try again later.",
+            usage=SimpleNamespace(output_tokens=1),
+        ),
+    ],
+)
+def test_auxiliary_validation_accepts_recovered_generated_timeout_text(response):
+    """Recovered Responses text retains token proof and remains usable."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    recovered = _validate_llm_response(response, task="compression")
+
+    assert recovered.choices[0].message.content == (
+        "Connect timeout, please try again later."
+    )
+
+
+def _router_timeout_shim_response():
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content="Connect timeout, please try again later.",
+            tool_calls=None,
+        ))],
+        usage=SimpleNamespace(completion_tokens=0),
+    )
+
+
+def test_sync_auxiliary_router_timeout_shim_continues_to_fallback():
+    """The sync consumer must recover instead of returning the provider shim."""
+    primary = MagicMock()
+    primary.base_url = "https://primary.example/v1"
+    primary.chat.completions.create.return_value = _router_timeout_shim_response()
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create.return_value = _DummyResponse("recovered sync")
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary/model", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "primary/model"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback, "fallback/model", "openrouter"),
+        ) as fallback_resolver,
+    ):
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+    assert result.choices[0].message.content == "recovered sync"
+    fallback_resolver.assert_called()
+    fallback.chat.completions.create.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_auxiliary_router_timeout_shim_continues_to_fallback():
+    """The async consumer mirrors the sync invalid-response recovery path."""
+    primary = MagicMock()
+    primary.base_url = "https://primary.example/v1"
+    primary.chat.completions.create = AsyncMock(
+        return_value=_router_timeout_shim_response()
+    )
+    fallback = MagicMock()
+    fallback.base_url = "https://openrouter.ai/api/v1"
+    fallback.chat.completions.create = AsyncMock(
+        return_value=_DummyResponse("recovered async")
+    )
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary/model", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary, "primary/model"),
+        ),
+        patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback, "fallback/model", "openrouter"),
+        ) as fallback_resolver,
+        patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(fallback, "fallback/model"),
+        ),
+    ):
+        result = await async_call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+    assert result.choices[0].message.content == "recovered async"
+    fallback_resolver.assert_called()
+    fallback.chat.completions.create.assert_awaited_once()

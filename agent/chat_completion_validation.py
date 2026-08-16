@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -14,11 +15,11 @@ def _has_positive_completion_tokens(usage: Any) -> bool:
         value = (
             usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
         )
-        if (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and value > 0
-        ):
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and value > 0:
+            return True
+        if isinstance(value, float) and math.isfinite(value) and value > 0:
             return True
     return False
 

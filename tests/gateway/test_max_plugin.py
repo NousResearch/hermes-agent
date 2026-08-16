@@ -376,6 +376,100 @@ DQYJKoZIhvcNAQEBBQADggKPADCCAoUCggKBAMsEBPQE3U1b1Q8kq9nWJmH8RCnx
 
 
 # ---------------------------------------------------------------------------
+# 7e. Media uploads
+# ---------------------------------------------------------------------------
+
+
+class TestMediaUploads:
+
+    def test_guess_media_type(self):
+        assert MaxAdapter._guess_media_type("photo.png") == "image"
+        assert MaxAdapter._guess_media_type("photo.PNG") == "image"
+        assert MaxAdapter._guess_media_type("clip.mp4") == "video"
+        assert MaxAdapter._guess_media_type("voice.mp3") == "audio"
+        assert MaxAdapter._guess_media_type("doc.pdf") == "file"
+        assert MaxAdapter._guess_media_type("noext") == "file"
+
+    def test_upload_media_flow(self, tmp_path):
+        # Create a fake image to upload
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG fake")
+
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = MagicMock()
+
+        # Step 1: /uploads returns url only (no token for image!)
+        resp1 = MagicMock()
+        resp1.status_code = 200
+        resp1.json.return_value = {"url": "https://upload.example/put"}
+
+        # Step 2: upload to url returns token INSIDE photos map (real MAX behavior)
+        resp2 = MagicMock()
+        resp2.status_code = 200
+        resp2.json.return_value = {
+            "photos": {
+                "photoId123": {"token": "real-token-from-photos"}
+            }
+        }
+
+        async def fake_post(url, **kwargs):
+            if "uploads" in url:
+                return resp1
+            return resp2
+
+        # _upload_media opens a NEW client for CDN upload; mock that via patch
+        import httpx as _httpx
+        up_client = MagicMock()
+        up_client.post = AsyncMock(return_value=resp2)
+        up_client.__aenter__ = AsyncMock(return_value=up_client)
+        up_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(_max.httpx, "AsyncClient", return_value=up_client):
+            adapter._http_client.post = AsyncMock(side_effect=fake_post)
+            att = _run(adapter._upload_media(str(img)))
+        assert att is not None
+        assert att["type"] == "image"
+        # Token must come from the photos map, NOT from /uploads
+        assert att["payload"]["token"] == "real-token-from-photos"
+
+    def test_send_with_media_files(self, tmp_path):
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"fake-jpeg")
+
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = MagicMock()
+
+        resp1 = MagicMock()
+        resp1.status_code = 200
+        resp1.json.return_value = {"url": "https://upload.example/put"}
+        resp2 = MagicMock()
+        resp2.status_code = 200
+        resp2.json.return_value = {"token": "upload-token"}
+        resp3 = MagicMock()
+        resp3.status_code = 200
+
+        # CDN upload goes through a separate client
+        up_client = MagicMock()
+        up_client.post = AsyncMock(return_value=resp2)
+        up_client.__aenter__ = AsyncMock(return_value=up_client)
+        up_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_post(url, **kwargs):
+            if "uploads" in url:
+                return resp1
+            return resp3  # POST /messages
+
+        with patch.object(_max.httpx, "AsyncClient", return_value=up_client):
+            adapter._http_client.post = AsyncMock(side_effect=fake_post)
+            result = _run(adapter.send(
+                "1", "смотри", metadata={"user_id": "2", "chat_type": "dm", "media_files": [str(img)]}
+            ))
+        assert result.success is True
+        # 2 API calls: /uploads + send message (CDN upload on separate client)
+        assert adapter._http_client.post.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # 8. _standalone_send
 # ---------------------------------------------------------------------------
 

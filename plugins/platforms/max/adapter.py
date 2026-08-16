@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_url,
 )
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -63,6 +64,76 @@ _ECHO_MARKER = "hermes-agent-max"  # appended to outgoing text for echo-loop pre
 CA_DOWNLOAD_TIMEOUT = 10  # seconds
 MAX_SEND_RATE_PER_CHAT = 2.0  # MAX: max 2 messages/sec per chat
 _TRUNCATION_NOTICE = "\n\n✂️ (сообщение обрезано — лимит MAX 4000 симв.)"
+_MEDIA_LABELS = {"image": "Фото", "video": "Видео", "audio": "Аудио", "file": "Файл", "voice": "Голосовое"}
+
+
+def _find_media_url(obj: Any, depth: int = 0) -> Optional[str]:
+    """Recursively find a media download URL in a MAX update.
+
+    MAX can nest voice/audio URLs deep inside the update object
+    (message.attachments[].payload.url, message.voice, body.attachments,
+    or at the update root). This mirrors what clients actually receive
+    without pulling in any external library.
+    """
+    if depth > 8 or obj is None:
+        return None
+    if isinstance(obj, dict):
+        # type + url at the same level (typical attachment shape)
+        atype = str(obj.get("type", "")).lower()
+        url = obj.get("url") or obj.get("download_url") or ""
+        if atype in ("voice", "audio", "video") and isinstance(url, str) and url.startswith("http"):
+            return url
+        # payload.url pattern
+        payload = obj.get("payload")
+        if isinstance(payload, dict):
+            url = payload.get("url") or payload.get("download_url") or ""
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+        # recurse into known containers
+        for key in ("attachments", "voice", "audio", "message", "body", "payload", "media"):
+            found = _find_media_url(obj.get(key), depth + 1)
+            if found:
+                return found
+        for val in obj.values():
+            found = _find_media_url(val, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = _find_media_url(item, depth + 1)
+            if found:
+                return found
+    return None
+
+_MIME_BY_EXT = {
+    ".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword", ".odt": "application/vnd.oasis.opendocument.text",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel", ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
+    ".rtf": "application/rtf", ".epub": "application/epub+zip", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint", ".json": "application/json", ".xml": "application/xml",
+    ".zip": "application/zip", ".rar": "application/vnd.rar", ".7z": "application/x-7z-compressed",
+    ".tar": "application/x-tar", ".gz": "application/gzip", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".flac": "audio/flac", ".opus": "audio/opus",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+    ".webm": "video/webm", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp", ".svg": "image/svg+xml",
+    ".html": "text/html", ".htm": "text/html", ".log": "text/plain", ".py": "text/x-python",
+}
+
+
+def _mime_for_ext(ext: str, fallback_type: str = "file") -> str:
+    """Map a file extension to a MIME type (lowercased, with dot).
+
+    Falls back to a type-appropriate default when the extension is unknown.
+    """
+    e = ext.lower() if ext else ""
+    if e in _MIME_BY_EXT:
+        return _MIME_BY_EXT[e]
+    return {
+        "video": "video/mp4", "audio": "audio/mpeg", "file": "application/octet-stream",
+        "image": "image/jpeg",
+    }.get(fallback_type, "application/octet-stream")
 
 
 def _get_scoped_secret(name, default=None):
@@ -365,6 +436,75 @@ class MaxAdapter(BasePlatformAdapter):
 
     # -- Inbound message processing -----------------------------------------
 
+    async def _download_url(self, url: str, ext: str = ".bin") -> str:
+        """Download an attachment URL to the local cache dir.
+
+        Uses an SSRF-safe client with the system trust store so hosts that
+        chain to a different root (e.g. fd.oneme.ru) verify fine — the
+        adapter's main client is pinned to the Минцифры CA.
+        """
+        # Preferred: SSRF-safe, system trust store (covers fd.oneme.ru etc.)
+        try:
+            from tools.url_safety import create_ssrf_safe_async_client
+
+            async with create_ssrf_safe_async_client(
+                timeout=30.0, follow_redirects=True
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code >= 300:
+                    raise RuntimeError(f"HTTP {resp.status_code} downloading {url[:60]}")
+                return self._save_to_cache(resp.content, ext)
+        except Exception as e:
+            logger.debug("[%s] SSRF-safe download failed (%s), falling back to pinned CA client", self.name, e)
+
+        # Fallback: main client (pinned to Минцифры CA)
+        if self._http_client is None:
+            raise RuntimeError("HTTP client not initialized")
+        resp = await self._http_client.get(url, timeout=30.0)
+        if resp.status_code >= 300:
+            raise RuntimeError(f"HTTP {resp.status_code} downloading {url[:60]}")
+        return self._save_to_cache(resp.content, ext)
+
+    def _save_to_cache(self, data: bytes, ext: str) -> str:
+        """Persist raw attachment bytes under HERMES_HOME/cache/attachments.
+
+        Sniffs audio magic bytes so an MP3/OGG/WAV delivered as ``.bin`` (MAX
+        file-type attachments don't always carry a filename) is still saved
+        with its real container extension and is picked up by the STT path.
+        """
+        if not ext or ext == ".bin":
+            try:
+                from tools.audio_container import sniff_audio_ext
+                ext = sniff_audio_ext(data, ".bin")
+            except Exception:
+                pass
+        cache_dir = os.path.join(
+            os.getenv("HERMES_HOME", "") or os.path.expanduser("~/.hermes"),
+            "cache", "attachments",
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        fname = f"att_{uuid.uuid4().hex[:12]}{ext}"
+        path = os.path.join(cache_dir, fname)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    async def _download_attachment(self, token: str, media_type: str) -> Optional[str]:
+        """Resolve an attachment token to a downloadable URL and fetch it.
+
+        MAX attachment payloads carry ``token`` but not always a direct URL.
+        This uses the public download endpoint for a token-based fetch.
+        """
+        try:
+            url = f"{API_SCHEME}://{API_HOST}/attachments/{token}"
+            ext = {
+                "image": ".jpg", "video": ".mp4", "audio": ".mp3", "file": ".bin",
+            }.get(media_type, ".bin")
+            return await self._download_url(url, ext)
+        except Exception as e:
+            logger.warning("[%s] Token-based download failed: %s", self.name, e)
+            return None
+
     async def _handle_update(self, upd: Dict[str, Any]) -> None:
         """Process a single Update object from MAX."""
         update_type = upd.get("update_type") or upd.get("event") or "unknown"
@@ -385,8 +525,99 @@ class MaxAdapter(BasePlatformAdapter):
         if not text:
             text = upd.get("body")
         text = (text or "").strip()
-        if not text:
-            return
+
+        # Handle attachments: download media and pass to agent as media_urls.
+        attachments_desc = ""
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        if isinstance(body_obj, dict):
+            attachments = body_obj.get("attachments") or []
+            for att in attachments:
+                if not isinstance(att, dict):
+                    continue
+                t = att.get("type", "")
+                payload = att.get("payload") or {}
+                url = payload.get("url") if isinstance(payload, dict) else None
+                if t == "image" and url:
+                    # Download to local cache so the vision tool can read it
+                    try:
+                        local_path = await cache_image_from_url(url, ext=".jpg")
+                        media_urls.append(local_path)
+                        media_types.append("image/jpeg")
+                        attachments_desc += " [Фото]"
+                        logger.info("[%s] Downloaded inbound image to %s", self.name, local_path)
+                    except Exception as e:
+                        logger.warning("[%s] Failed to cache image %s: %s", self.name, url[:60], e)
+                        attachments_desc += " [Фото (не удалось скачать)]"
+                elif t == "image":
+                    media_kind = "[Фото]"
+                    attachments_desc += f" {media_kind}"
+                    # Image without direct URL — try token-based download if payload has token
+                    token = payload.get("token") if isinstance(payload, dict) else None
+                    if token:
+                        local_path = await self._download_attachment(token, "image")
+                        if local_path:
+                            media_urls.append(local_path)
+                            media_types.append("image/jpeg")
+                elif t in ("video", "audio", "file") and url:
+                    # Try to download non-image attachments too
+                    try:
+                        # Prefer the real filename from payload (gives the right
+                        # extension: .pdf/.docx/.mp4/... instead of a generic .bin)
+                        fname = payload.get("filename") if isinstance(payload, dict) else None
+                        ext = ""
+                        if fname:
+                            ext = os.path.splitext(str(fname))[1].lower()
+                        if not ext:
+                            ext = os.path.splitext(url.split("?")[0])[1] or {
+                                "video": ".mp4", "audio": ".mp3", "file": ".bin",
+                            }.get(t, ".bin")
+                        local_path = await self._download_url(url, ext)
+                        media_urls.append(local_path)
+                        mime = _mime_for_ext(ext, t)
+                        # If the real extension (from filename or magic-byte
+                        # sniff) is audio but the attachment type was 'file',
+                        # upgrade the MIME so the STT pipeline kicks in.
+                        if t == "file" and os.path.splitext(local_path)[1].lower() in (
+                            ".mp3", ".ogg", ".wav", ".m4a", ".flac", ".opus", ".aac", ".oga",
+                        ):
+                            mime = _mime_for_ext(os.path.splitext(local_path)[1].lower(), "audio")
+                        media_types.append(mime)
+                        attachments_desc += f" [{_MEDIA_LABELS.get(t, t)}]"
+                        logger.info("[%s] Downloaded inbound %s to %s", self.name, t, local_path)
+                    except Exception as e:
+                        logger.warning("[%s] Failed to download %s %s: %s", self.name, t, url[:60], e)
+                        attachments_desc += f" [{_MEDIA_LABELS.get(t, t)} (не удалось скачать)]"
+                elif t == "video":
+                    attachments_desc += " [Видео]"
+                elif t == "audio":
+                    attachments_desc += " [Аудио]"
+                elif t == "file":
+                    attachments_desc += " [Файл]"
+                else:
+                    attachments_desc += f" [Вложение:{t}]"
+        if not text and attachments_desc:
+            text = attachments_desc
+        if not text and not media_urls:
+            # Voice messages may arrive as a sparse update (no message body).
+            # Try a recursive URL search before giving up.
+            voice_url = _find_media_url(upd)
+            if voice_url:
+                try:
+                    ext = os.path.splitext(voice_url.split("?")[0])[1] or ".ogg"
+                    local_path = await self._download_url(voice_url, ext)
+                    media_urls.append(local_path)
+                    media_types.append(_mime_for_ext(ext, "audio"))
+                    attachments_desc = " [Голосовое]"
+                    text = attachments_desc
+                    logger.info("[%s] Downloaded inbound voice to %s", self.name, local_path)
+                except Exception as e:
+                    logger.warning("[%s] Failed to download voice %s: %s", self.name, voice_url[:60], e)
+                    return
+            else:
+                # Log the raw update so we can see what MAX actually sent
+                logger.info("[%s] Empty inbound — RAW update (full): %s", self.name, json.dumps(upd, ensure_ascii=False))
+                return
 
         # Echo-loop prevention
         if _ECHO_MARKER in text:
@@ -433,14 +664,17 @@ class MaxAdapter(BasePlatformAdapter):
 
         message_event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=MessageType.PHOTO if media_urls else MessageType.TEXT,
             source=source,
             message_id=msg_id,
             raw_message=upd,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
         logger.info("[%s] Message from %s (chat %s): %s", self.name, user_name, chat_id, text[:80])
+        logger.debug("[%s] RAW update keys=%s body=%s", self.name, list(upd.keys()), json.dumps(body_obj, ensure_ascii=False)[:500])
         await self.handle_message(message_event)
 
     def _is_duplicate(self, msg_id: str) -> bool:
@@ -516,6 +750,91 @@ class MaxAdapter(BasePlatformAdapter):
             cut = cut[:boundary]
         return cut.rstrip() + _TRUNCATION_NOTICE
 
+    @staticmethod
+    def _guess_media_type(path: str) -> str:
+        """Guess MAX media type from file extension."""
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        if ext in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+            return "image"
+        if ext in ("mp4", "mov", "avi", "mkv", "webm"):
+            return "video"
+        if ext in ("mp3", "ogg", "wav", "m4a", "flac"):
+            return "audio"
+        return "file"
+
+    async def _upload_media(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Upload a file to MAX and return the attachment dict for /messages.
+
+        Flow: POST /uploads?type=X → get url+token → upload file to url →
+        attachment {"type": X, "payload": {"token": ...}}.
+        """
+        if self._http_client is None:
+            return None
+        media_type = self._guess_media_type(file_path)
+        try:
+            # 1. Get upload URL (may include token for video/audio)
+            resp = await self._http_client.post(
+                f"{API_SCHEME}://{API_HOST}/uploads",
+                params={"type": media_type},
+                headers={"Authorization": self._token},
+                timeout=15.0,
+            )
+            if resp.status_code >= 300:
+                logger.warning("[%s] /uploads HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+                return None
+            data = resp.json()
+            upload_url = data.get("url")
+            if not upload_url:
+                logger.warning("[%s] /uploads missing url", self.name)
+                return None
+
+            # 2. Upload the file (multipart field "data").
+            #    The upload URL lives on a CDN (iu.oneme.ru / fu.oneme.ru /
+            #    okcdn.ru) with a REGULAR CA cert. Our client is pinned to the
+            #    Ministry CA, so use a fresh client with default trust here.
+            async with httpx.AsyncClient(verify=True, timeout=60.0) as up_client:
+                with open(file_path, "rb") as f:
+                    files = {"data": (os.path.basename(file_path), f)}
+                    up = await up_client.post(upload_url, files=files, timeout=60.0)
+            if up.status_code >= 300:
+                logger.warning("[%s] upload HTTP %d: %s", self.name, up.status_code, up.text[:200])
+                return None
+
+            # 3. Token comes from the upload response, NOT from /uploads.
+            #    - image  → {"photos": {"<id>": {"token": "..."}}} (or token field)
+            #    - file   → {"token": "..."}
+            #    - video/audio → <retval>1</retval> (token already from /uploads)
+            token = ""
+            photos = None
+            try:
+                up_data = up.json()
+                if isinstance(up_data, dict):
+                    if up_data.get("photos"):
+                        photos = up_data["photos"]
+                        # token lives inside photos map
+                        for pid, pinfo in up_data["photos"].items():
+                            if isinstance(pinfo, dict) and pinfo.get("token"):
+                                token = pinfo["token"]
+                                break
+                    token = token or up_data.get("token") or ""
+            except Exception:
+                # Some responses are not JSON (e.g. <retval>1</retval>)
+                pass
+            if not token:
+                token = data.get("token") or ""
+            if not token and media_type == "image":
+                logger.warning("[%s] No token after image upload", self.name)
+                return None
+
+            # 4. Build attachment
+            payload: Dict[str, Any] = {"token": token}
+            if photos:
+                payload["photos"] = photos
+            return {"type": media_type, "payload": payload}
+        except Exception as e:
+            logger.error("[%s] Upload media failed: %s", self.name, e)
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -527,6 +846,9 @@ class MaxAdapter(BasePlatformAdapter):
 
         Long content (>4000 chars) is split into several sequential messages,
         respecting MAX's ~2 msg/sec limit via ``_rate_limit_send``.
+
+        Attachments: if metadata carries ``media_files`` (list of paths),
+        they are uploaded via POST /uploads and attached to the first chunk.
         """
         if self._http_client is None:
             return SendResult(success=False, error="HTTP client not initialized")
@@ -541,11 +863,26 @@ class MaxAdapter(BasePlatformAdapter):
         else:
             params["chat_id"] = chat_id
 
+        # Upload attachments (if any)
+        attachments: List[Dict[str, Any]] = []
+        media_files = metadata.get("media_files") or []
+        for fp in media_files:
+            att = await self._upload_media(str(fp))
+            if att:
+                attachments.append(att)
+            else:
+                logger.warning("[%s] Could not upload attachment: %s", self.name, fp)
+
         chunks = self._split_text(content)
         last: SendResult = SendResult(success=False, error="no chunks")
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             # MAX supports markdown formatting for bot messages
-            payload = {"text": chunk, "attachments": [], "format": "markdown"}
+            # Attachments go with the first chunk only
+            payload = {
+                "text": chunk,
+                "attachments": attachments if i == 0 else [],
+                "format": "markdown",
+            }
             body = json.dumps(payload).encode("utf-8")
             try:
                 await self._rate_limit_send(str(chat_id))
@@ -570,6 +907,94 @@ class MaxAdapter(BasePlatformAdapter):
                 last = SendResult(success=False, error=str(e))
                 break
         return last
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a file/photo natively via MAX uploads.
+
+        Overrides the base fallback (which only posts a "couldn't deliver"
+        notice). Uploads the file via POST /uploads and attaches it to a
+        message with the caption as text.
+        """
+        text = caption or ""
+        att = await self._upload_media(str(file_path))
+        if not att:
+            return SendResult(success=False, error="upload failed")
+        if not text:
+            text = f"📎 {file_name or os.path.basename(str(file_path))}"
+        metadata = metadata or {}
+        user_id = metadata.get("user_id") or self._last_user_id
+        chat_type = metadata.get("chat_type") or "dm"
+        params: Dict[str, Any] = {}
+        if chat_type == "dm" and user_id:
+            params["user_id"] = user_id
+        else:
+            params["chat_id"] = chat_id
+        payload = {"text": text[:MAX_MESSAGE_LENGTH], "attachments": [att], "format": "markdown"}
+        try:
+            await self._rate_limit_send(str(chat_id))
+            resp = await self._http_client.post(
+                f"{API_SCHEME}://{API_HOST}/messages",
+                params=params,
+                content=json.dumps(payload).encode("utf-8"),
+                headers={"Authorization": self._token, "Content-Type": "application/json"},
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+            logger.warning("[%s] send_document HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error("[%s] send_document error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image file natively via MAX uploads (type=image)."""
+        return await self.send_document(chat_id, file_path, caption=caption, metadata=metadata)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image by URL: download it first, then upload to MAX."""
+        if self._http_client is None:
+            return SendResult(success=False, error="HTTP client not initialized")
+        try:
+            import tempfile
+            resp = await self._http_client.get(image_url, timeout=30.0)
+            if resp.status_code >= 300:
+                return SendResult(success=False, error=f"HTTP {resp.status_code} downloading image")
+            ext = os.path.splitext(image_url.split("?")[0])[1] or ".jpg"
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(resp.content)
+                tmp_path = tmp.name
+            try:
+                return await self.send_document(chat_id, tmp_path, caption=caption, metadata=metadata)
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.error("[%s] send_image error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator via POST /chats/{chatId}/actions.
@@ -663,11 +1088,44 @@ async def _standalone_send(
     token = extra.get("token") or _get_scoped_secret("MAX_BOT_TOKEN", "")
     if not token:
         return {"error": "max standalone send: MAX_BOT_TOKEN not configured"}
-    if media_files:
-        logger.warning("[max] standalone send: media_files are not supported yet, sending text only")
     ca_path = _default_ca_path()
     text = (message or "")[:MAX_MESSAGE_LENGTH]
-    body = json.dumps({"text": text, "attachments": []}).encode("utf-8")
+
+    # Upload attachments (if any)
+    attachments: List[Dict[str, Any]] = []
+    for fp in (media_files or []):
+        try:
+            media_type = MaxAdapter._guess_media_type(str(fp))
+            async with httpx.AsyncClient(verify=ca_path or True, timeout=15.0) as client:
+                # 1. Get upload URL
+                r = await client.post(
+                    f"{API_SCHEME}://{API_HOST}/uploads",
+                    params={"type": media_type},
+                    headers={"Authorization": token},
+                )
+                data = r.json()
+                # 2. Upload file
+                if r.status_code < 300 and data.get("url"):
+                    with open(str(fp), "rb") as f:
+                        up = await client.post(
+                            data["url"],
+                            files={"data": (os.path.basename(str(fp)), f)},
+                            timeout=30.0,
+                        )
+                    if up.status_code < 300:
+                        payload: Dict[str, Any] = {"token": data.get("token", "")}
+                        try:
+                            up_data = up.json()
+                            if isinstance(up_data, dict) and up_data.get("photos"):
+                                payload["photos"] = up_data["photos"]
+                        except Exception:
+                            pass
+                        attachments.append({"type": media_type, "payload": payload})
+        except Exception as e:
+            logger.warning("[max] standalone upload %s failed: %s", fp, e)
+
+    payload = {"text": text, "attachments": attachments, "format": "markdown"}
+    body = json.dumps(payload).encode("utf-8")
     params: Dict[str, Any] = {}
     extra2 = getattr(pconfig, "extra", {}) or {}
     user_id = extra2.get("user_id") or os.getenv("MAX_HOME_USER_ID", "").strip()

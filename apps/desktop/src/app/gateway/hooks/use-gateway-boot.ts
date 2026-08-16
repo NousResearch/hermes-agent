@@ -29,7 +29,7 @@ import {
 } from '@/store/gateway'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, refreshActiveProfile, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
   $connection,
@@ -344,10 +344,17 @@ export function useGatewayBoot({
         }
 
         // Same shape as boot(): profile first (session scope depends on it),
-        // then the independent fetches concurrently.
+        // then the independent fetches concurrently. refreshActiveProfile is
+        // explicit here: the rail's $profiles still shows the PREVIOUS
+        // backend's list after a connection/mode apply, and nothing else
+        // re-pulls /api/profiles deterministically post-switch — leaving the
+        // rail stale or (if a stale in-flight response landed) collapsed
+        // (#85731). Best-effort like the rest: a failure keeps the cached
+        // list rather than blanking the rail.
         await adoptPrimaryProfile()
         await Promise.all([
           seedDefaultCwd(),
+          refreshActiveProfile().catch(() => undefined),
           callbacksRef.current.refreshHermesConfig().catch(() => undefined),
           callbacksRef.current.refreshSessions().catch(() => undefined)
         ])

@@ -39,9 +39,29 @@ export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
 }
 
+// ── Stale-fetch invalidation across backend switches ───────────────────────
+// $profiles mirrors the ACTIVE backend's /api/profiles. A connection/mode
+// apply (the soft re-home) or a profile/agent activation changes which backend
+// that is while a fetch may still be in flight — and a late response from the
+// PREVIOUS backend must not clobber the list the new backend just served.
+// That was #85731's disappearing rail: applying a different remote/Cloud
+// connection let the old (often dying, profile-less) backend's response land
+// last, collapsing $profiles and hiding the rail. Bumping the epoch strands
+// every in-flight fetch: the response still resolves for its caller, but it
+// no longer writes the shared cache ("guard against the past").
+let profileListEpoch = 0
+
+export function invalidateProfileListFetches(): void {
+  profileListEpoch += 1
+}
+
 export async function refreshProfiles(): Promise<ProfileInfo[]> {
+  const epoch = profileListEpoch
   const { profiles } = await getProfiles()
-  $profiles.set(profiles)
+
+  if (epoch === profileListEpoch) {
+    $profiles.set(profiles)
+  }
 
   return profiles
 }
@@ -110,13 +130,19 @@ interface ActiveProfileResponse {
 // Pull the running backend's current profile + the available profile list.
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
+  const epoch = profileListEpoch
+
   try {
     const res = await window.hermesDesktop.api<ActiveProfileResponse>({
       path: '/api/profiles/active',
       timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
     })
 
-    setActiveProfile(res.current || 'default')
+    // Same stale-response guard as refreshProfiles: a backend switch mid-fetch
+    // means this answer describes the PREVIOUS backend.
+    if (epoch === profileListEpoch) {
+      setActiveProfile(res.current || 'default')
+    }
   } catch {
     // Backend may not be ready; keep the last known value.
   }
@@ -183,6 +209,10 @@ $activeGatewayProfile.subscribe(value => {
     // every profile switch.
     invalidateProfileScopedQueries()
     resetStarmapGraph()
+    // /api/profiles now routes to a different backend: strand any in-flight
+    // profile-list fetch so the previous backend's late answer can't clobber
+    // the rail (the #85731 class — same guard as the connection-apply wipe).
+    invalidateProfileListFetches()
   }
 
   _lastRoutedProfile = key

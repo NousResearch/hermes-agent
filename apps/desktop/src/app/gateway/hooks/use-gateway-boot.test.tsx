@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
-import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $connection, $currentCwd, $gatewayState } from '@/store/session'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -160,6 +160,7 @@ beforeEach(() => {
   closeSecondaryGateways()
   $activeGatewayProfile.set('default')
   $connection.set(null)
+  $profiles.set([])
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
@@ -197,6 +198,7 @@ afterEach(() => {
   closeSecondaryGateways()
   $activeGatewayProfile.set('default')
   $connection.set(null)
+  $profiles.set([])
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -268,6 +270,56 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {
+    // The reported repro: connected to backend A, the rail shows A's named
+    // profiles; the user applies a different remote/Cloud connection (soft
+    // re-home). The rail must repopulate from backend B — before the fix
+    // nothing deterministically re-pulled /api/profiles on the soft switch,
+    // so the rail kept (or, with a stale in-flight response, collapsed to)
+    // the previous backend's list.
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & {
+      api: ReturnType<typeof vi.fn>
+    }
+
+    desktop.api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/profiles/active') {
+        return { active: 'default', current: 'default' }
+      }
+
+      if (path === '/api/profiles') {
+        return {
+          profiles: [
+            { is_default: true, name: 'default' },
+            { is_default: false, name: 'cloud-eric' }
+          ]
+        }
+      }
+
+      throw new Error(`unexpected api call: ${path}`)
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    // The rail currently mirrors backend A's profile universe.
+    $profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'eric' }
+    ] as never)
+
+    // Settings → Gateway apply lands: main tears down softly and notifies.
+    act(() => connectionApplied?.())
+    await flushAsync()
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    // Backend B's list replaced A's — the rail survives the switch instead of
+    // painting the previous backend's (or an empty) universe.
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'cloud-eric'])
   })
 
   it('a remote that drops post-boot keeps looping with NO boot.error (the dead-end CONNECTING combo)', async () => {

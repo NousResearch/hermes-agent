@@ -6,6 +6,7 @@ import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
+import { invalidateProfileListFetches } from '@/store/profile'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -45,6 +46,12 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // The next backend is a different runtime — don't carry the old one's
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()
+  // Strand any in-flight /api/profiles fetch from the PREVIOUS backend. The
+  // rail's $profiles cache is deliberately NOT wiped (an empty list flickers
+  // the rail away), but a late response from the old backend must not
+  // overwrite what the new backend reports — that stale write is how a
+  // remote/Cloud connection apply made the profile rail vanish (#85731).
+  invalidateProfileListFetches()
   // Pins are mirrored per-backend. The next gateway has its own state.db and
   // has never seen them, so drop the "already pushed" bookkeeping and let the
   // next reconcile re-assert the whole set against the new backend.

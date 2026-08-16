@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-12T00:00:00Z",
+  "generated_at": "2026-08-16T00:00:00Z",
   "plugins": [
     {
       "name": "hermes-media-studio",
@@ -25,6 +25,18 @@
       "capabilities": ["platform"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "liquid-glass-wal",
+      "description": "Linux-native pywal and Hyprland liquid glass theme for Hermes Desktop, with live wallpaper-driven colors.",
+      "author": "kvnloo",
+      "tags": ["desktop", "theme", "pywal", "hyprland", "linux"],
+      "repo": "kvnloo/hermes-liquid-glass",
+      "ref": "b84e5415b7d3a28cd63408214abe434c7b767775",
+      "homepage": "https://github.com/kvnloo/hermes-liquid-glass",
+      "capabilities": ["desktop"],
+      "api_version": 1,
+      "added_at": "2026-08-16"
     },
     {
       "name": "plugin-llm-example",

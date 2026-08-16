@@ -70,6 +70,7 @@ try {
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int dwProcessId);
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+[DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr hWnd);
 '@ -ErrorAction Stop
     $script:Win32 = $true
 } catch { $script:Win32 = $false }
@@ -412,27 +413,45 @@ function Show-ProgressWindow {
         # full-size on screen. Tuck the console away FIRST — MainWindowHandle
         # is unambiguous only while this process owns just its console (once
         # the card exists it may resolve to the card). SW_MINIMIZE = 6.
+        # Only tuck when the console is already iconic (i.e. /min-spawned);
+        # a direct launch from the user's own terminal must not be minimized.
+        $script:ConsoleHwnd = [System.IntPtr]::Zero
         try {
             if ($script:Win32) {
                 $consoleHwnd = (Get-Process -Id $PID).MainWindowHandle
-                if ($consoleHwnd -ne [System.IntPtr]::Zero) {
+                if ($consoleHwnd -ne [System.IntPtr]::Zero -and [HermesHandoff.Win32]::IsIconic($consoleHwnd)) {
+                    $script:ConsoleHwnd = $consoleHwnd
                     [HermesHandoff.Win32]::ShowWindow($consoleHwnd, 6) | Out-Null
                 }
             }
-        } catch {}
-        $form.Show()
-        # `cmd start /min` spawned us backgrounded, so the card comes up
-        # behind everything without one explicit activation. Claim it ONCE
-        # (so the user knows the update started), then never again — the
-        # window is decoration and competes with nothing (no TopMost).
-        # NOTE: /min minimized the whole PowerShell process, so the WinForms
-        # window inherits the minimized state and Activate() is a no-op.
-        # SW_RESTORE (9) un-minimizes before claiming foreground.
+        } catch {
+            Write-Debug "console minimize skipped: $($_.Exception.Message)"
+        }
         try {
-            if ($script:Win32) { [HermesHandoff.Win32]::ShowWindow($form.Handle, 9) | Out-Null }  # SW_RESTORE
-            $form.Activate()
-            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
-        } catch {}
+            $form.Show()
+            # `cmd start /min` spawned us backgrounded, so the card comes up
+            # behind everything without one explicit activation. Claim it ONCE
+            # (so the user knows the update started), then never again — the
+            # window is decoration and competes with nothing (no TopMost).
+            # NOTE: /min minimized the whole PowerShell process, so the WinForms
+            # window inherits the minimized state and Activate() is a no-op.
+            # SW_RESTORE (9) un-minimizes before claiming foreground.
+            try {
+                if ($script:Win32) { [HermesHandoff.Win32]::ShowWindow($form.Handle, 9) | Out-Null }  # SW_RESTORE
+                $form.Activate()
+                if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
+            } catch {
+                Write-Debug "progress card activation skipped: $($_.Exception.Message)"
+            }
+        } catch {
+            # Card failed to appear after we tucked the console: restore the
+            # console so the user isn't left with nothing on screen, then
+            # degrade to log-only via the outer handler.
+            if ($script:ConsoleHwnd -ne [System.IntPtr]::Zero) {
+                try { [HermesHandoff.Win32]::ShowWindow($script:ConsoleHwnd, 9) | Out-Null } catch { Write-Debug "console restore failed: $($_.Exception.Message)" }
+            }
+            throw
+        }
         [System.Windows.Forms.Application]::DoEvents()
         $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub; Timer = $null }
         $timer = New-Object System.Windows.Forms.Timer

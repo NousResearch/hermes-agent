@@ -118,6 +118,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
+    # Keyless local extract backend (plugins/web/local) — readability
+    # extraction. Apache-2.0 (deps: courlan/htmldate Apache-2.0, jusText
+    # BSD-2, lxml BSD, urllib3 MIT — verified 2026-08-16).
+    "search.trafilatura": ("trafilatura==2.2.0",),
 
     # ─── Monitoring ─────────────────────────────────────────────────────────
     # OTLP gateway monitoring export. Lazily installed on first use of

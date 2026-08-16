@@ -220,12 +220,20 @@ def _list_registered_web_providers():
         return []
 
 
-def _get_backend() -> str:
+def _get_backend(capability: Optional[str] = None) -> str:
     """Determine which web backend to use (shared fallback).
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
+
+    ``capability`` (``"search"`` / ``"extract"`` / None) scopes the final
+    plugin-provider walk: a single-capability plugin backend (e.g. the
+    extract-only ``local`` provider, available with no key at all) must
+    not win auto-detection for the capability it cannot service — that
+    would route the other capability's dispatch through the wrong
+    provider. Explicit ``web.backend`` config and the built-in candidate
+    probes are unaffected.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None:
@@ -262,6 +270,10 @@ def _get_backend() -> str:
         if provider.name in _LEGACY_WEB_BACKENDS:
             continue
         try:
+            if capability == "search" and not provider.supports_search():
+                continue
+            if capability == "extract" and not provider.supports_extract():
+                continue
             if provider.is_available():
                 return provider.name
         except Exception as exc:  # noqa: BLE001 — a broken provider is skipped
@@ -305,7 +317,7 @@ def _get_capability_backend(capability: str) -> str:
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
     if specific and _is_backend_available(specific):
         return specific
-    return _get_backend()
+    return _get_backend(capability)
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -892,8 +904,9 @@ async def web_extract_tool(
                             "error": (
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to local (free, "
+                                "no key), firecrawl, tavily, exa, or "
+                                "parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -926,8 +939,9 @@ async def web_extract_tool(
                             "success": False,
                             "error": (
                                 "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to local (free, "
+                                "no key), firecrawl, tavily, exa, or "
+                                "parallel."
                             ),
                         },
                         ensure_ascii=False,

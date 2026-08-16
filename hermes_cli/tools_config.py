@@ -2041,6 +2041,28 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
         _print_info("    Pair with an extract provider if you also need web_extract.")
 
+    elif post_setup_key == "local_extract":
+        try:
+            __import__("trafilatura")
+            _print_success("    trafilatura is already installed")
+        except ImportError:
+            _print_info("    Installing trafilatura (readability extraction)...")
+            try:
+                # Route through the lazy_deps allowlist so the pinned,
+                # venv-scoped spec (search.trafilatura) stays the single
+                # source of truth for the version.
+                from tools.lazy_deps import ensure as _lazy_ensure
+
+                _lazy_ensure("search.trafilatura", prompt=False)
+                _print_success("    trafilatura installed")
+            except Exception as exc:  # noqa: BLE001 — surface remediation
+                _print_warning("    trafilatura install failed:")
+                _print_info(f"      {str(exc)[:300]}")
+                _print_info("    Run manually: uv pip install trafilatura")
+                return
+        _print_info("    No API key required. Pages are fetched from this machine.")
+        _print_info("    Extract-only — pair with a search provider (ddgs, searxng, ...).")
+
     elif post_setup_key == "spotify":
         # Run the full `hermes auth spotify` flow — if the user has no
         # client_id yet, this drops them into the interactive wizard
@@ -3507,6 +3529,7 @@ _POST_SETUP_READY: dict = {
     "piper": lambda: _module_installed("piper"),
     "faster_whisper": lambda: _module_installed("faster_whisper"),
     "ddgs": lambda: _module_installed("ddgs"),
+    "local_extract": lambda: _module_installed("trafilatura"),
     "langfuse": lambda: _module_installed("langfuse"),
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),

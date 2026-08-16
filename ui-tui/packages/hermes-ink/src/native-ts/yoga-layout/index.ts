@@ -436,6 +436,21 @@ export class Node {
   _cGen = -1
   _cN = 0
   _cWr = 0
+  _rLayoutGen = -1
+  _rSubtreeLayoutGen = -1
+  _rValid = false
+  _rLeft = NaN
+  _rTop = NaN
+  _rWidth = NaN
+  _rHeight = NaN
+  _rRoundedLeft = NaN
+  _rRoundedTop = NaN
+  _rRoundedWidth = NaN
+  _rRoundedHeight = NaN
+  _rParentAbsLeft = NaN
+  _rParentAbsTop = NaN
+  _rScale = NaN
+  _rIsText = false
   constructor(config?: Config) {
     this.style = defaultStyle()
     this.layout = {
@@ -509,6 +524,7 @@ export class Node {
     this._cN = 0
     this._cWr = 0
     this._fbBasis = NaN
+    this._rValid = false
   }
   markDirty(): void {
     this.isDirty_ = true
@@ -842,6 +858,8 @@ export class Node {
     _yogaNodesVisited = 0
     _yogaMeasureCalls = 0
     _yogaCacheHits = 0
+    _yogaRoundedNodes = 0
+    _yogaRoundSkips = 0
     _generation++
     const w = ownerWidth === undefined ? NaN : ownerWidth
     const h = ownerHeight === undefined ? NaN : ownerHeight
@@ -924,18 +942,24 @@ let _yogaNodesVisited = 0
 let _yogaMeasureCalls = 0
 let _yogaCacheHits = 0
 let _yogaLiveNodes = 0
+let _yogaRoundedNodes = 0
+let _yogaRoundSkips = 0
 
 export function getYogaCounters(): {
   visited: number
   measured: number
   cacheHits: number
   live: number
+  rounded: number
+  roundSkips: number
 } {
   return {
     visited: _yogaNodesVisited,
     measured: _yogaMeasureCalls,
     cacheHits: _yogaCacheHits,
-    live: _yogaLiveNodes
+    live: _yogaLiveNodes,
+    rounded: _yogaRoundedNodes,
+    roundSkips: _yogaRoundSkips
   }
 }
 
@@ -952,6 +976,18 @@ function layoutNode(
   forceHeight = false
 ): void {
   _yogaNodesVisited++
+
+  if (performLayout) {
+    node._rLayoutGen = _generation
+
+    let ancestor: Node | null = node
+
+    while (ancestor && ancestor._rSubtreeLayoutGen !== _generation) {
+      ancestor._rSubtreeLayoutGen = _generation
+      ancestor = ancestor.parent
+    }
+  }
+
   const style = node.style
   const layout = node.layout
   const sameGen = node._cGen === _generation && !performLayout
@@ -2191,28 +2227,83 @@ function collectLayoutChildren(node: Node, flow: Node[], abs: Node[]): void {
 }
 
 function roundLayout(node: Node, scale: number, absLeft: number, absTop: number): void {
-  if (scale === 0) {
+  const l = node.layout
+  const isText = node.measureFunc !== null
+  const wasLaidOut = node._rLayoutGen === _generation
+
+  if (
+    node._rValid &&
+    node._rSubtreeLayoutGen !== _generation &&
+    sameFloat(node._rParentAbsLeft, absLeft) &&
+    sameFloat(node._rParentAbsTop, absTop) &&
+    sameFloat(node._rScale, scale) &&
+    node._rIsText === isText &&
+    sameFloat(node._rRoundedLeft, l.left) &&
+    sameFloat(node._rRoundedTop, l.top) &&
+    sameFloat(node._rRoundedWidth, l.width) &&
+    sameFloat(node._rRoundedHeight, l.height)
+  ) {
+    _yogaRoundSkips++
+
     return
   }
 
-  const l = node.layout
+  if (
+    node._rValid &&
+    !wasLaidOut &&
+    sameFloat(l.left, node._rRoundedLeft) &&
+    sameFloat(l.top, node._rRoundedTop) &&
+    sameFloat(l.width, node._rRoundedWidth) &&
+    sameFloat(l.height, node._rRoundedHeight)
+  ) {
+    l.left = node._rLeft
+    l.top = node._rTop
+    l.width = node._rWidth
+    l.height = node._rHeight
+  }
+
+  _yogaRoundedNodes++
+
   const nodeLeft = l.left
   const nodeTop = l.top
   const nodeWidth = l.width
   const nodeHeight = l.height
   const absNodeLeft = absLeft + nodeLeft
   const absNodeTop = absTop + nodeTop
-  const isText = node.measureFunc !== null
-  l.left = roundValue(nodeLeft, scale, false, isText)
-  l.top = roundValue(nodeTop, scale, false, isText)
-  const absRight = absNodeLeft + nodeWidth
-  const absBottom = absNodeTop + nodeHeight
-  const hasFracW = !isWholeNumber(nodeWidth * scale)
-  const hasFracH = !isWholeNumber(nodeHeight * scale)
-  l.width =
-    roundValue(absRight, scale, isText && hasFracW, isText && !hasFracW) - roundValue(absNodeLeft, scale, false, isText)
-  l.height =
-    roundValue(absBottom, scale, isText && hasFracH, isText && !hasFracH) - roundValue(absNodeTop, scale, false, isText)
+  node._rValid = true
+  node._rLeft = nodeLeft
+  node._rTop = nodeTop
+  node._rWidth = nodeWidth
+  node._rHeight = nodeHeight
+  node._rParentAbsLeft = absLeft
+  node._rParentAbsTop = absTop
+  node._rScale = scale
+  node._rIsText = isText
+
+  if (scale === 0) {
+    l.left = nodeLeft
+    l.top = nodeTop
+    l.width = nodeWidth
+    l.height = nodeHeight
+  } else {
+    l.left = roundValue(nodeLeft, scale, false, isText)
+    l.top = roundValue(nodeTop, scale, false, isText)
+    const absRight = absNodeLeft + nodeWidth
+    const absBottom = absNodeTop + nodeHeight
+    const hasFracW = !isWholeNumber(nodeWidth * scale)
+    const hasFracH = !isWholeNumber(nodeHeight * scale)
+    l.width =
+      roundValue(absRight, scale, isText && hasFracW, isText && !hasFracW) -
+      roundValue(absNodeLeft, scale, false, isText)
+    l.height =
+      roundValue(absBottom, scale, isText && hasFracH, isText && !hasFracH) -
+      roundValue(absNodeTop, scale, false, isText)
+  }
+
+  node._rRoundedLeft = l.left
+  node._rRoundedTop = l.top
+  node._rRoundedWidth = l.width
+  node._rRoundedHeight = l.height
 
   for (const c of node.children) {
     roundLayout(c, scale, absNodeLeft, absNodeTop)

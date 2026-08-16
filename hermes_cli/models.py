@@ -5276,7 +5276,7 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
     provider = normalize_provider(provider_id)
     current = str(model_id or "").strip()
     is_opencode = provider in {"opencode-zen", "opencode-go"} or (
-        isinstance(provider_id, str) and provider_id.lower().startswith("opencode-go")
+        isinstance(provider_id, str) and provider_id.lower().startswith(("opencode-go", "opencode-zen"))
     )
     if not current or not is_opencode:
         return current
@@ -5385,7 +5385,7 @@ def normalize_opencode_base_url(
         return url
     provider = normalize_provider(provider_id)
     is_opencode = provider in {"opencode-zen", "opencode-go"} or (
-        isinstance(provider_id, str) and provider_id.lower().startswith("opencode-go")
+        isinstance(provider_id, str) and provider_id.lower().startswith(("opencode-go", "opencode-zen"))
     )
     if not is_opencode:
         return url

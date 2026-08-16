@@ -568,7 +568,7 @@ def _resolve_runtime_from_pool_entry(
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-            isinstance(provider, str) and provider.startswith("opencode-go")
+            isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
         )
         if is_opencode_provider:
             # Re-derive api_mode from the effective model rather than the
@@ -592,7 +592,7 @@ def _resolve_runtime_from_pool_entry(
     # chat_completions / codex_responses (heals a stripped URL persisted to
     # model.base_url by an earlier switch into an anthropic-routed model).
     is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-        isinstance(provider, str) and provider.startswith("opencode-go")
+        isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
     )
     if is_opencode_provider:
         from hermes_cli.models import normalize_opencode_base_url
@@ -2312,7 +2312,7 @@ def resolve_runtime_provider(
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-                isinstance(provider, str) and provider.startswith("opencode-go")
+                isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
             )
             if is_opencode_provider:
                 # opencode-zen/go must always re-derive api_mode from the
@@ -2337,7 +2337,7 @@ def resolve_runtime_provider(
                 )
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         is_opencode_provider = provider in {"opencode-zen", "opencode-go"} or (
-            isinstance(provider, str) and provider.startswith("opencode-go")
+            isinstance(provider, str) and provider.lower().startswith(("opencode-go", "opencode-zen"))
         )
         if is_opencode_provider:
             from hermes_cli.models import normalize_opencode_base_url

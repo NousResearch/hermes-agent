@@ -80,18 +80,29 @@ def _load_disk_cache() -> None:
     global _disk_cache_loaded
     if _disk_cache_loaded:
         return
-    _disk_cache_loaded = True
 
     path = _disk_cache_path()
     if path is None:
+        _disk_cache_loaded = True
         return
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+    except FileNotFoundError:
+        _disk_cache_loaded = True
+        return
+    except json.JSONDecodeError:
+        _disk_cache_loaded = True
+        return
+    except OSError:
+        # Transient I/O (file busy, brief permission flap). Retry next call.
+        return
     except Exception:
+        _disk_cache_loaded = True
         return
 
+    _disk_cache_loaded = True
     if not isinstance(data, dict) or data.get("version") != _DISK_CACHE_VERSION:
         return
 

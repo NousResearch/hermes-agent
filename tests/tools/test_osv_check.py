@@ -1,6 +1,9 @@
 """Tests for OSV malware check on MCP extension packages."""
 
 import json
+import time
+from pathlib import Path
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -242,6 +245,44 @@ class TestCheckPackageForMalware:
         assert key in data["entries"]
         assert "expiry" in data["entries"][key]
         assert data["entries"][key]["result"] is None
+
+    def test_disk_cache_retries_after_transient_oserror(self, tmp_path, monkeypatch):
+        """A busy/unreadable cache file must not disable disk loads for the process."""
+        from tools import osv_check
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache_file = tmp_path / "cache" / "osv_check.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps({
+                "version": osv_check._DISK_CACHE_VERSION,
+                "entries": {
+                    "PyPI|mcp-server-retry|": {
+                        "expiry": time.time() + 3600,
+                        "result": None,
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        real_open = open
+        calls = {"n": 0}
+
+        def flaky_open(path, *args, **kwargs):
+            if Path(path) == cache_file:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise OSError("resource temporarily unavailable")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", flaky_open)
+        with osv_check._cache_lock:
+            osv_check._load_disk_cache()
+            assert osv_check._disk_cache_loaded is False
+            osv_check._load_disk_cache()
+            assert osv_check._disk_cache_loaded is True
+            assert ("PyPI", "mcp-server-retry", None) in osv_check._cache
 
 
 class TestLiveOsvQuery:

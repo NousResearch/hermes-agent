@@ -3499,6 +3499,9 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     drop. A non-positive *keep* disables pruning. Pruning failures are swallowed
     so they can never break output saving.
     """
+    if keep <= 0:
+        return 0
+
     # A crash after the sidecar prepare but before Markdown commit can leave an
     # orphan. Ignore fresh files to avoid racing a concurrent writer; old
     # sidecars without their commit-marker Markdown are safe to reclaim.
@@ -3516,8 +3519,6 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
         except OSError as exc:
             logger.debug("Failed to prune orphan cron response sidecar %s: %s", sidecar.name, exc)
 
-    if keep <= 0:
-        return 0
     try:
         files = sorted(
             (f for f in job_output_dir.glob("*.md") if f.is_file()),

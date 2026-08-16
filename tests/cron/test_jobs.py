@@ -1101,6 +1101,23 @@ class TestCronOutputRetention:
         assert all(path.exists() for path in outputs[1:])
         assert all(path.exists() for path in sidecars[1:])
 
+    @pytest.mark.parametrize("keep", [0, -1])
+    def test_non_positive_keep_preserves_orphan_sidecars(self, tmp_path, keep):
+        import os
+        import time
+
+        from cron.jobs import _prune_job_output
+
+        output_dir = tmp_path / "job"
+        output_dir.mkdir()
+        orphan = output_dir / "old.run.response.json"
+        orphan.write_text("{}", encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(orphan, (old, old))
+
+        assert _prune_job_output(output_dir, keep=keep) == 0
+        assert orphan.exists()
+
 
 # =========================================================================
 # claim_dispatch — pre-run one-shot crash safety (issue #38758)

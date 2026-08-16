@@ -5143,6 +5143,45 @@ class TestNativeTaskCardProgress:
         ]
         assert adapter._native_task_card_streams == {}
 
+    @pytest.mark.asyncio
+    async def test_append_payload_never_mixes_markdown_text_with_chunks(
+        self, adapter
+    ):
+        """#87743: chat.appendStream rejects a request carrying both
+        markdown_text and chunks (`cannot_provide_both_markdown_text_and_chunks`),
+        which made every native task-card update fail and silently downgraded
+        each turn to the plain-text fallback. The fallback_text must never be
+        attached to the chunks payload."""
+        client = adapter._app.client
+
+        async def api_call(method, *, json):
+            if method == "chat.startStream":
+                return {"ts": "stream-1"}
+            return {"ok": True}
+
+        client.api_call.side_effect = api_call
+
+        result = await adapter.send_native_task_card_progress(
+            "C1",
+            [{"id": "call-1", "title": "terminal", "status": "in_progress"}],
+            metadata={"thread_id": "thread-1"},
+            fallback_text="fallback progress text",
+        )
+
+        assert result.success is True
+        append_calls = [
+            call
+            for call in client.api_call.await_args_list
+            if call.args[0] == "chat.appendStream"
+        ]
+        assert append_calls, "expected an appendStream call"
+        payload = append_calls[0].kwargs["json"]
+        assert "chunks" in payload
+        assert "markdown_text" not in payload, (
+            "appendStream must not mix markdown_text with chunks — Slack "
+            "rejects the pair and the whole native card fails (#87743)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestSlackAuthoredTextDeduplication

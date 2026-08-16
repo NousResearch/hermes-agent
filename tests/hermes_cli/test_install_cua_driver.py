@@ -388,6 +388,23 @@ class TestInstallCuaDriverUpgrade:
 
         runner.assert_not_called()
 
+    @pytest.mark.parametrize("upgrade", [False, True])
+    def test_missing_explicit_override_does_not_install_standard_driver(
+        self, monkeypatch, upgrade
+    ):
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/missing/custom/cua-driver")
+        with patch.object(
+                 tools_config,
+                 "_resolved_cua_driver_cmd",
+                 return_value=None,
+             ), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=upgrade) is False
+
+        runner.assert_not_called()
+
     def test_non_upgrade_without_binary_runs_installer(self):
         from hermes_cli import tools_config
 

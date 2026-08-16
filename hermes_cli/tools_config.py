@@ -1039,6 +1039,20 @@ def install_cua_driver(
     driver_cmd = _cua_driver_cmd()
     binary = _resolved_cua_driver_cmd()
 
+    # An explicit override is authoritative even when it is currently broken.
+    # Do not install or replace the standard system driver: that cannot repair
+    # the configured path and would mutate an unrelated installation.
+    override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    if override and not binary:
+        _print_warning(
+            "    HERMES_CUA_DRIVER_CMD does not resolve to an executable: "
+            f"{override}"
+        )
+        _print_info(
+            "    Fix or unset the override before running computer-use install."
+        )
+        return False
+
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
         if not _cua_install_target_writable():

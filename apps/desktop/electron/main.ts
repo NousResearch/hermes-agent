@@ -92,6 +92,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   removeConnection,
+  resolveRegistryLocalRoute,
   setPrimaryConnection,
   updateEligibility,
   upsertConnection
@@ -9290,10 +9291,11 @@ async function ensureBackend(profile) {
 
 // ── Registry-scoped backends (multi-connection, PR 2 of the campaign) ──────
 // Resolve a backend for (connectionId, profile) against the v2 registry.
-// The LOCAL connection routes through ensureBackend() untouched, so every
-// single-source path stays byte-identical; non-local connections pool under
-// the composite key from backendScopeKey() and reuse the same pool entry
-// lifecycle (LRU, idle reaper, touch) as per-profile local backends.
+// The LOCAL connection routes through ensureBackend() when the v1 route is
+// itself local (so every single-source path stays byte-identical), and forces
+// a genuinely-local child when the v1 mode says remote; non-local connections
+// pool under the composite key from backendScopeKey() and reuse the same pool
+// entry lifecycle (LRU, idle reaper, touch) as per-profile local backends.
 async function ensureRegistryBackend(connectionId, profile) {
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
@@ -9304,7 +9306,61 @@ async function ensureRegistryBackend(connectionId, profile) {
   }
 
   if (source.kind === 'local') {
-    return ensureBackend(profile)
+    // The registry's 'local' entry means THIS machine's runtime — always.
+    // ensureBackend() follows the v1 routing table, which resolves to a
+    // REMOTE descriptor when the v1 global mode is remote (or the profile
+    // has its own remote override). A migrated remote-mode user would then
+    // see the roster's "This device" rows enumerate + dial the remote box
+    // (every profile duplicated, -slug handles forced). Delegate only when
+    // the v1 route is genuinely local; otherwise spawn/reuse a forced-local
+    // child pooled under the composite 'conn:local::<profile>' key so it
+    // can't collide with the v1 remote descriptor cached at the bare key.
+    const profileKey = String(profile ?? '').trim() || 'default'
+
+    const localRoute = resolveRegistryLocalRoute(profileKey, {
+      globalRemote: globalRemoteActive(),
+      profileRemoteOverride: Boolean(profileHasRemoteOverride(profileKey))
+    })
+
+    if (localRoute.delegate) {
+      return ensureBackend(profile)
+    }
+
+    const existingLocal = backendPool.get(localRoute.poolKey)
+
+    if (existingLocal) {
+      existingLocal.lastActiveAt = Date.now()
+
+      return existingLocal.connectionPromise
+    }
+
+    evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+
+    const localEntry = {
+      process: null,
+      port: null,
+      token: null,
+      connectionPromise: null,
+      lastActiveAt: Date.now(),
+      remoteBaseUrl: null
+    }
+
+    localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
+      forceLocal: true,
+      poolKey: localRoute.poolKey
+    }).catch(async error => {
+      if (backendPool.get(localRoute.poolKey) === localEntry) {
+        backendPool.delete(localRoute.poolKey)
+      }
+
+      stopBackendChild(localEntry.process)
+      await waitForBackendExit(localEntry.process)
+      throw error
+    })
+    backendPool.set(localRoute.poolKey, localEntry)
+    startPoolIdleReaper()
+
+    return localEntry.connectionPromise
   }
 
   const key = backendScopeKey(id, profile)
@@ -9495,7 +9551,13 @@ function startPoolIdleReaper() {
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
-async function spawnPoolBackend(profile, entry) {
+// `opts.forceLocal` skips remote resolution entirely (the registry 'local'
+// entry means THIS machine regardless of the v1 routing table); `opts.poolKey`
+// is the backendPool key when it differs from the profile name (composite
+// registry scopes) so the exit/error cleanup evicts the right entry.
+async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
+  const poolKey = opts.poolKey || profile
+
   await reapOrphanedBackendsOnce()
   // A profile may point at its OWN remote backend (connection.json
   // `profiles[name]`), or inherit the app-wide remote (env / global settings).
@@ -9503,7 +9565,7 @@ async function spawnPoolBackend(profile, entry) {
   // remote is reachable and hand back its connection descriptor. The pool
   // entry keeps `entry.process === null`, which stopPoolBackend/evict already
   // tolerate.
-  const remote = await resolveRemoteBackend(profile)
+  const remote = opts.forceLocal ? null : await resolveRemoteBackend(profile)
 
   if (remote) {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
@@ -9605,13 +9667,13 @@ async function spawnPoolBackend(profile, entry) {
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
     releaseBackendChild(child)
-    backendPool.delete(profile)
+    backendPool.delete(poolKey)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
     releaseBackendChild(child)
-    backendPool.delete(profile)
+    backendPool.delete(poolKey)
 
     if (!ready) {
       rejectStart?.(
@@ -11370,7 +11432,9 @@ function createWindow() {
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
 // connectionId '' / 'local' / the registry primary all behave sensibly; the
-// local kind delegates to ensureBackend so legacy behavior is untouched.
+// local kind delegates to ensureBackend when the v1 route is local, and
+// forces a genuinely-local child when the v1 global mode is remote (the
+// registry 'local' entry always means this machine).
 ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
 

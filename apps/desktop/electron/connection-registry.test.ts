@@ -26,6 +26,7 @@ import {
   normalizeRegistry,
   REGISTRY_VERSION,
   removeConnection,
+  resolveRegistryLocalRoute,
   setPrimaryConnection,
   uniqueLabel,
   updateEligibility,
@@ -126,6 +127,36 @@ test('backendScopeKey: non-local connections get an unambiguous composite', () =
   assert.ok(backendScopeKey('homelab', 'research').startsWith(backendScopePrefix('homelab')))
   assert.ok(!backendScopeKey('homelab-2', 'research').startsWith(backendScopePrefix('homelab')))
   assert.ok(!'research'.startsWith(backendScopePrefix('homelab')))
+})
+
+// --- resolveRegistryLocalRoute (registry 'local' entry vs the v1 route) ---
+
+test("registry local route: delegates to the legacy path when v1 is local (single-source users byte-identical)", () => {
+  assert.deepEqual(resolveRegistryLocalRoute('research', {}), { delegate: true, poolKey: 'research' })
+  assert.deepEqual(resolveRegistryLocalRoute('', {}), { delegate: true, poolKey: 'default' })
+  assert.deepEqual(resolveRegistryLocalRoute(null, { globalRemote: false }), { delegate: true, poolKey: 'default' })
+})
+
+test("registry local route: v1 REMOTE global mode forces a genuinely-local backend (migration scenario)", () => {
+  // The migration keeps the mandatory 'local' entry AND makes the v1 remote
+  // the registry primary. If 'local' delegated to the v1 route here, the
+  // roster's "This device" rows would enumerate + dial the REMOTE primary —
+  // every profile duplicated and local agents talking to the remote box.
+  const route = resolveRegistryLocalRoute('default', { globalRemote: true })
+
+  assert.equal(route.delegate, false)
+  // The forced-local child must NOT pool under the bare profile key: that
+  // slot is where the v1 route caches the REMOTE descriptor. The composite
+  // form is prefix-owned by the local connection and collision-free.
+  assert.equal(route.poolKey, 'conn:local::default')
+  assert.ok(route.poolKey.startsWith(backendScopePrefix(LOCAL_CONNECTION_ID)))
+  assert.notEqual(route.poolKey, backendScopeKey(LOCAL_CONNECTION_ID, 'default'))
+})
+
+test('registry local route: a per-profile remote override also forces local', () => {
+  const route = resolveRegistryLocalRoute('research', { profileRemoteOverride: true })
+
+  assert.deepEqual(route, { delegate: false, poolKey: 'conn:local::research' })
 })
 
 // --- buildAgentRoster (union roster + @name-device rule) ---

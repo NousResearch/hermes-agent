@@ -374,6 +374,8 @@ components.
 
 ```ts
 host.state.activeSessionId  // ReadableAtom<string | null>
+host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
+host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
 host.state.cwd              // ReadableAtom<string>
 host.state.gateway          // ReadableAtom<string>  ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>
@@ -405,6 +407,17 @@ cron, kanban, …). Profile-shaped plugins get first-class methods too:
 probe) and `profiles.create` (`name`, `description`, `clone_from`,
 `clone_all`, `no_skills`, `soul`, optional `model` + `provider` pin) — the
 ws twins of the dashboard's `/api/profiles` REST routes.
+`host.state.busy` is the focused chat's live turn (thinking and streaming).
+`host.state.awaitingResponse` stays true from send until the first assistant
+payload. Both follow `activeSessionId`. Subscribe in a component:
+
+```javascript
+const busy = useValue(host.state.busy)
+```
+
+For token-level detail, listen with `host.onEvent` (`message.start`,
+`message.delta`, `message.complete`).
+
 `host.onEvent` streams live gateway events (message deltas,
 session lifecycle, tool activity). Listeners are isolated — a throw in your
 listener can't affect app dispatch. Every `host` door is async-safe: a sync throw

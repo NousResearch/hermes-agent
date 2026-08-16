@@ -20,6 +20,7 @@
 
 import { atom, type ReadableAtom } from 'nanostores'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
@@ -69,6 +70,14 @@ export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
+    /** True from send until the first assistant payload on the focused chat. */
+    awaitingResponse: readonlyAtom<boolean>(PRIMARY_SESSION_VIEW.$awaitingResponse),
+    /**
+     * True while the focused chat is working after a send. Covers the wait
+     * for the first token and the stream that follows. Same session as
+     * `activeSessionId`. A draft with no runtime id uses the global flag.
+     */
+    busy: readonlyAtom<boolean>(PRIMARY_SESSION_VIEW.$busy),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. */

@@ -980,8 +980,17 @@ install_node() {
         if pkg install -y nodejs >/dev/null; then
             local installed_ver
             installed_ver=$(node --version 2>/dev/null || true)
-            log_success "Node.js $installed_ver installed via pkg"
-            HAS_NODE=true
+            if [ -n "$installed_ver" ]; then
+                log_success "Node.js $installed_ver installed via pkg"
+                HAS_NODE=true
+            else
+                # pkg succeeded but the binary cannot start — the same
+                # silent-success class the managed-download probe guards
+                # against (#87460). Degrade instead of claiming success.
+                log_error "Node.js installed via pkg failed to start:"
+                node --version >&2 || true
+                HAS_NODE=false
+            fi
         else
             log_warn "Failed to install Node.js via pkg"
             HAS_NODE=false
@@ -1106,10 +1115,14 @@ install_node() {
         # whole installer at exit 127 with the loader's explanation
         # discarded by 2>/dev/null — installs died mid-sentence with no
         # output at all (#87460). Degrade instead, and surface the real
-        # error the loader printed.
+        # error the loader printed. Remove the broken tree and the bin
+        # links so later steps and retry runs start clean instead of
+        # resolving `node` to a binary that cannot start.
         log_error "Downloaded Node.js failed to start:"
         printf '%s\n' "$installed_ver" >&2
         log_info "On Debian/Ubuntu the usual fix is: sudo apt-get install -y libatomic1"
+        rm -rf "$HERMES_HOME/node"
+        rm -f "$node_link_dir/node" "$node_link_dir/npm" "$node_link_dir/npx"
         HAS_NODE=false
         return 0
     fi

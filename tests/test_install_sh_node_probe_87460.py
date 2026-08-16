@@ -153,6 +153,18 @@ def test_broken_node_degrades_with_clear_error(tmp_path: Path) -> None:
     assert "apt-get install -y libatomic1" in stdout + stderr
     assert "HAS_NODE=false" in stdout
     assert "HAS_NODE=true" not in stdout
+    # AI-review follow-up: the broken tree and bin links must not linger
+    # — retries and later installer steps resolve `node` cleanly.
+    home = tmp_path / "home"
+    link_dir = tmp_path / "links"
+    assert not (home / "node").exists(), "broken managed Node tree left behind"
+    assert not (link_dir / "node").exists(), "broken node symlink left behind"
+    assert not (link_dir / "npm").exists(), "broken npm symlink left behind"
+    # AI-review follow-up: the broken tree and bin links must not linger
+    # — retries and later installer steps resolve `node` cleanly.
+    assert not (home / "node").exists(), "broken managed Node tree left behind"
+    assert not (link_dir / "node").exists(), "broken node symlink left behind"
+    assert not (link_dir / "npm").exists(), "broken npm symlink left behind"
 
 
 def test_healthy_node_reports_success(tmp_path: Path) -> None:

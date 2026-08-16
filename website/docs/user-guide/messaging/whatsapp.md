@@ -177,6 +177,14 @@ Observation never inherits an unrestricted `group_policy: open`.
 group JIDs and may narrow `group_allow_from` further. Messages from other groups
 are neither retained nor added to the context window.
 
+:::note Native bridge only
+Both features are wired into the local Baileys bridge adapter, which is the
+connection `hermes whatsapp` sets up. The WhatsApp Cloud API adapter shares the
+gating and formatting behavior but is not wired to either path, so
+`history_backfill` and `observe_unmentioned_group_messages` have no effect on a
+Cloud API connection.
+:::
+
 ---
 
 ## Session Persistence

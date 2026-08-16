@@ -301,7 +301,9 @@ def cron_status():
             if last_error:
                 # Show WHY ticks fail — e.g. a root-rewritten jobs.json
                 # (PermissionError) that silently locked out the ticker's
-                # uid for ~14h in the field (#68483).
+                # uid for ~14h in the field (#68483), or fd exhaustion
+                # (EMFILE) that used to stall the scheduler invisibly
+                # (#87644).
                 print(color(f"  Last tick error: {last_error}", Colors.RED))
                 if "Permission denied" in last_error:
                     print(color(
@@ -309,6 +311,14 @@ def cron_status():
                         "(e.g. rewritten by a root `docker exec hermes "
                         "hermes cron ...`). Fix ownership to match the "
                         "gateway user, and prefer `docker exec -u <uid>:<gid>`.",
+                        Colors.YELLOW,
+                    ))
+                elif "Too many open files" in last_error or "EMFILE" in last_error:
+                    print(color(
+                        "  Hint: the ticker hit file-descriptor exhaustion "
+                        "(EMFILE). The scheduler now retries with backoff and "
+                        "attempts fd reclamation, but if the leak persists, "
+                        "restart the gateway to recover scheduling.",
                         Colors.YELLOW,
                     ))
             print("  Check the gateway log for 'Cron tick error'.")

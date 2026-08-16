@@ -13,6 +13,7 @@ import atexit
 import concurrent.futures
 import contextlib
 import contextvars
+import errno
 import json
 import logging
 import os
@@ -1332,6 +1333,68 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+# Errnos that mean "another ticker (or manual tick) holds the tick lock",
+# as opposed to a real failure opening/locking the file.  Everything else —
+# most importantly EMFILE/ENFILE (fd exhaustion, #87644) and EACCES on
+# open() — must be surfaced, never swallowed as lock contention.
+def _is_lock_contention_errno(err: OSError) -> bool:
+    """Return True when *err* from the lock syscall means the lock is held.
+
+    - POSIX: ``flock(LOCK_EX|LOCK_NB)`` reports EWOULDBLOCK/EAGAIN when
+      another process holds the lock (EACCES on some NFS implementations).
+    - Windows: ``msvcrt.locking(LK_NBLCK)`` reports EACCES/EDEADLK.
+    """
+    if err.errno is None:
+        return False
+    if fcntl is not None:
+        return err.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
+    if msvcrt is not None:
+        return err.errno in (errno.EACCES, errno.EDEADLK)
+    return False
+
+
+def _is_fd_exhaustion(exc: BaseException) -> bool:
+    """Return True when *exc* indicates file-descriptor exhaustion.
+
+    Recognizes EMFILE/ENFILE by errno, and the "Too many open files" wording
+    for wrapped exceptions (``load_jobs`` wraps the raw OSError in a
+    RuntimeError with that message, #87644).
+    """
+    if isinstance(exc, OSError) and exc.errno in (errno.EMFILE, errno.ENFILE):
+        return True
+    text = str(exc).lower()
+    return "too many open files" in text or "emfile" in text
+
+
+def _reclaim_fds_best_effort() -> None:
+    """Best-effort attempt to free leaked file descriptors.
+
+    The cron FD-leak family (#60859, #79742, #80792) leaks descriptors from
+    abandoned workers/sessions.  Two safe, idempotent levers:
+
+    1. ``gc.collect()`` — closes file-like objects held only in reference
+       cycles (the classic unclosed-file leak shape), which CPython would
+       otherwise never finalize.
+    2. ``apply_nofile_soft_limit()`` — raise RLIMIT_NOFILE's soft limit
+       toward the configured target when the hard limit allows, giving the
+       process headroom to keep serving even before every leak is freed.
+
+    Never raises: a reclamation attempt must not make the ticker worse.
+    """
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        from hermes_cli.resource_limits import apply_nofile_soft_limit
+
+        apply_nofile_soft_limit(None)
+    except Exception:
+        pass
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -6471,7 +6534,12 @@ def tick(
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
+    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows.
+    # Only genuine lock contention (another ticker holds the lock) skips the
+    # tick silently.  A real OSError — most importantly EMFILE/ENFILE from fd
+    # exhaustion — must NOT be swallowed as "another instance holds the
+    # lock": that previously made the scheduler appear healthy (tick returned
+    # 0, heartbeat recorded success) while no job ever ran again (#87644).
     lock_fd = None
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
@@ -6479,11 +6547,32 @@ def tick(
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-    except (OSError, IOError):
-        logger.debug("Tick skipped — another instance holds the lock")
+    except OSError as exc:
+        if lock_fd is not None and _is_lock_contention_errno(exc):
+            logger.debug("Tick skipped — another instance holds the lock")
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+            return 0
+        # Real failure: log loudly, attempt fd reclamation, and let the
+        # caller (ticker loop) see a FAILED tick so liveness degrades
+        # instead of reporting healthy-while-stalled.
         if lock_fd is not None:
-            lock_fd.close()
-        return 0
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+        if _is_fd_exhaustion(exc):
+            logger.error(
+                "Cron tick could not acquire tick lock: %s — attempting fd "
+                "reclamation; scheduler will retry on the next tick",
+                exc,
+            )
+            _reclaim_fds_best_effort()
+        else:
+            logger.error("Cron tick could not acquire tick lock: %s", exc)
+        raise
 
     try:
         # Global emergency stop (`hermes pause`): skip dispatch entirely while

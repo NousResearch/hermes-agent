@@ -24,6 +24,13 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
+# Cap for the exponential tick backoff applied while consecutive ticks fail
+# with fd exhaustion (EMFILE/ENFILE, #87644).  Base is the tick interval
+# (60s by default); each consecutive EMFILE failure doubles the wait, capped
+# here so a still-alive-but-exhausted gateway never sleeps longer than this
+# between recovery attempts.
+_EMFILE_BACKOFF_MAX_SECONDS = 15 * 60  # 15 minutes
+
 
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
@@ -348,6 +355,10 @@ class InProcessCronScheduler(CronScheduler):
     ):
         import logging
         from cron.scheduler import tick as cron_tick
+        from cron.scheduler import (
+            _is_fd_exhaustion,
+            _reclaim_fds_best_effort,
+        )
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -385,6 +396,12 @@ class InProcessCronScheduler(CronScheduler):
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
+        # Exponential backoff for consecutive tick failures — most importantly
+        # fd exhaustion (EMFILE/ENFILE, #87644).  While FDs stay exhausted the
+        # ticker must NOT hammer the store every 60s; once they free (leak
+        # fixed, reclamation ran) the next tick succeeds and the backoff
+        # resets, so the scheduler self-heals without a gateway restart.
+        consecutive_failures = 0
         while not stop_event.is_set():
             ok = False
             try:
@@ -415,13 +432,30 @@ class InProcessCronScheduler(CronScheduler):
                 # uid went unnoticed for ~14h with the reason buried in the
                 # gateway log (#68483).
                 record_ticker_error(f"{type(e).__name__}: {e}")
+                if _is_fd_exhaustion(e):
+                    # EMFILE: try to free descriptors (gc.collect + raise the
+                    # soft nofile limit) so the NEXT tick can succeed; back off
+                    # exponentially so the exhausted process stops hammering
+                    # the store while it has no chance of making progress
+                    # (#87644).
+                    _reclaim_fds_best_effort()
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
             if ok:
                 clear_ticker_error()
-            stop_event.wait(interval)
+                consecutive_failures = 0
+            wait_seconds = interval
+            if consecutive_failures > 0:
+                wait_seconds = min(
+                    interval * (2 ** (consecutive_failures - 1)),
+                    _EMFILE_BACKOFF_MAX_SECONDS,
+                )
+            stop_event.wait(wait_seconds)
 
     def _start_multiplex(
         self,
@@ -443,6 +477,10 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
+        from cron.scheduler import (
+            _is_fd_exhaustion,
+            _reclaim_fds_best_effort,
+        )
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -475,8 +513,10 @@ class InProcessCronScheduler(CronScheduler):
             finally:
                 reset_hermes_home_override(home_token)
 
+        consecutive_failures = 0
         while not stop_event.is_set():
             ok = False
+            _tick_error = None
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
@@ -499,6 +539,13 @@ class InProcessCronScheduler(CronScheduler):
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"
+                if _is_fd_exhaustion(e):
+                    # EMFILE: attempt fd reclamation so the next tick can
+                    # succeed, and back off exponentially (#87644).
+                    _reclaim_fds_best_effort()
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
             else:
                 _tick_error = None
             # Record per-profile heartbeat after each tick cycle.
@@ -517,4 +564,12 @@ class InProcessCronScheduler(CronScheduler):
                             record_ticker_error(_tick_error)
                 finally:
                     reset_hermes_home_override(home_token)
-            stop_event.wait(interval)
+            if ok:
+                consecutive_failures = 0
+            wait_seconds = interval
+            if consecutive_failures > 0:
+                wait_seconds = min(
+                    interval * (2 ** (consecutive_failures - 1)),
+                    _EMFILE_BACKOFF_MAX_SECONDS,
+                )
+            stop_event.wait(wait_seconds)

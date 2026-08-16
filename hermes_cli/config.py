@@ -5003,8 +5003,8 @@ def warn_unpinned_cron_jobs_after_model_config_change(
         f"{snapshot_field} values that differ from the new global {axis}. "
         "They will fail closed on their next run instead of silently using the "
         "changed model/provider. Inspect with `hermes cron list`, then pin the "
-        "intended values with `cronjob action=update job_id=<job_id> "
-        "provider=<provider> model=<model>`."
+        "intended values with `hermes cron edit <job_id> --provider <provider> "
+        "--model <model>`."
     )
 
 

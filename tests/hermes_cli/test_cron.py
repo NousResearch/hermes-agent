@@ -1,5 +1,6 @@
 """Tests for hermes_cli.cron command handling."""
 
+import argparse
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 from cron.jobs import create_job, get_job, list_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
+from hermes_cli.subcommands.cron import build_cron_parser
 
 
 @pytest.fixture()
@@ -19,6 +21,30 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+
+    def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        args = parser.parse_args(
+            [
+                "cron",
+                "edit",
+                job["id"],
+                "--model",
+                "new-model",
+                "--provider",
+                "nous",
+            ]
+        )
+        cron_command(args)
+
+        updated = get_job(job["id"])
+        assert updated["model"] == "new-model"
+        assert updated["provider"] == "nous"
+        assert "Updated job" in capsys.readouterr().out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(

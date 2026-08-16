@@ -1347,7 +1347,14 @@ def _finalize_single_query(cli) -> None:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
-        cli._release_active_session()
+        try:
+            agent = getattr(cli, "agent", None)
+            if agent is not None:
+                agent.close()
+        except Exception:
+            logger.debug("Could not close single-query agent", exc_info=True)
+        finally:
+            cli._release_active_session()
 
 
 def _reset_terminal_input_modes_on_exit() -> None:

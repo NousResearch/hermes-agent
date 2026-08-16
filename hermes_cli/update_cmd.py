@@ -828,11 +828,147 @@ def _print_update_completion(message: str) -> None:
         print(f"=== hermes-update completed {action_id} ===")
 
 
+def _called_process_error_cmd_parts(exc: subprocess.CalledProcessError) -> list[str]:
+    """Normalize ``CalledProcessError.cmd`` into argv-style tokens."""
+    cmd = exc.cmd
+    if cmd is None:
+        return []
+    if isinstance(cmd, (str, bytes)):
+        text = cmd.decode("utf-8", "replace") if isinstance(cmd, bytes) else cmd
+        try:
+            return shlex.split(text, posix=os.name != "nt")
+        except ValueError:
+            return text.split()
+    return [str(part) for part in cmd]
+
+
+def _called_process_error_is_git(exc: subprocess.CalledProcessError) -> bool:
+    """True when the failed subprocess was git itself."""
+    parts = _called_process_error_cmd_parts(exc)
+    if not parts:
+        return False
+    # Windows argv may use backslashes; basename() on POSIX would otherwise
+    # keep the whole path. Normalize separators before taking the name.
+    name = os.path.basename(parts[0].replace("\\", "/")).lower()
+    return name in {"git", "git.exe"}
+
+
+def _called_process_error_is_python_dep_install(
+    exc: subprocess.CalledProcessError,
+) -> bool:
+    """True when the failed subprocess was a uv/pip (or ensurepip) install."""
+    parts = [part.lower() for part in _called_process_error_cmd_parts(exc)]
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0].replace("\\", "/"))
+    if "ensurepip" in parts:
+        return True
+    if "install" in parts and (
+        "pip" in parts or exe in {"pip", "pip.exe", "pip3", "pip3.exe", "uv", "uv.exe"}
+    ):
+        return True
+    return False
+
+
+def _format_update_failure_stage(exc: subprocess.CalledProcessError) -> str:
+    """Name the update stage that actually failed.
+
+    The git pull and the Python-dependency install share one ``try`` in
+    ``_cmd_update_impl``. Calling every ``CalledProcessError`` a git failure
+    (the historical Windows message) sent users hunting in the wrong place
+    and, worse, keyed the ZIP overlay on exception *type* rather than on git
+    actually having failed (#87304, #85840).
+    """
+    if _called_process_error_is_python_dep_install(exc):
+        return "Python dependency install failed"
+    if _called_process_error_is_git(exc):
+        return "Git update failed"
+    return "Update step failed"
+
+
+def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
+    """ZIP fallback is for Windows git file-I/O breakage, not later stages.
+
+    A dependency-install failure (locked ``hermes.exe`` / ``uv pip install``
+    exit 2) is not a git failure. The pull has already succeeded by then, so
+    re-downloading the source ZIP cannot fix the install and would replace
+    every top-level entry except ``venv`` / ``node_modules`` / ``.git`` /
+    ``.env`` — permanently deleting uncommitted edits and untracked files.
+    """
+    return (
+        isinstance(exc, subprocess.CalledProcessError)
+        and _m()._is_windows()
+        and _called_process_error_is_git(exc)
+    )
+
+
+def _print_called_process_error_tail(
+    exc: subprocess.CalledProcessError, *, limit: int = 12
+) -> None:
+    """Print a captured stderr/stdout tail when the failing call recorded one."""
+    blob = exc.stderr or exc.stdout or ""
+    if isinstance(blob, bytes):
+        blob = blob.decode("utf-8", "replace")
+    lines = [line for line in str(blob).splitlines() if line.strip()]
+    if not lines:
+        return
+    print("  Last output:")
+    for line in lines[-limit:]:
+        print(f"    {line}")
+
+
+def _zip_overlay_block_reason(root: Path) -> Optional[str]:
+    """Why overlaying a ZIP onto ``root`` would destroy work, or None if safe.
+
+    The ZIP path swaps every top-level entry (except a tiny preserve set) and
+    then deletes the backups, so uncommitted edits and untracked files under
+    a replaced directory are gone. Fail closed when git status cannot run:
+    unknown dirtiness is not a license to clobber the tree (#87304).
+    """
+    if not (root / ".git").exists():
+        return None
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    result = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        suffix = f" ({detail[0]})" if detail else ""
+        return f"could not check the working tree{suffix}"
+    if result.stdout.strip():
+        return "the working tree has uncommitted changes or untracked files"
+    return None
+
+
+def _abort_zip_update_if_dirty_tree() -> None:
+    """Refuse to overlay a ZIP onto a dirty git checkout (#87304)."""
+    reason = _zip_overlay_block_reason(_m().PROJECT_ROOT)
+    if reason is None:
+        return
+    print(f"✗ ZIP fallback refused: {reason}.")
+    print(
+        "  Overlaying the ZIP would overwrite uncommitted edits and permanently "
+        "delete untracked files."
+    )
+    print("  Stash or commit your changes, then rerun `hermes update`.")
+    print("  To inspect: git status --porcelain")
+    _m().sys.exit(1)
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
-    drivers causing 'Invalid argument' errors on file creation).
+    drivers causing 'Invalid argument' errors on file creation). Refuses to
+    overlay a dirty git checkout: the replace-then-drop-backups path would
+    permanently delete uncommitted edits and untracked files (#87304).
     """
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
@@ -859,6 +995,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
+    _abort_zip_update_if_dirty_tree()
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -6458,8 +6595,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if _m()._is_windows():
-            print(f"⚠ Git update failed: {e}")
+        stage = _format_update_failure_stage(e)
+        if _should_zip_fallback_on_update_error(e):
+            print(f"⚠ {stage}: {e}")
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(
@@ -6467,7 +6605,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
         else:
-            print(f"✗ Update failed: {e}")
+            print(f"✗ {stage}: {e}")
+            _print_called_process_error_tail(e)
+            if _called_process_error_is_python_dep_install(e):
+                print(
+                    "  The git update already finished. Re-downloading the source "
+                    "ZIP cannot fix a dependency install error and would overwrite "
+                    "local files."
+                )
+                if _m()._is_windows():
+                    print("  Retry through the venv interpreter:")
+                    print(
+                        '    venv\\Scripts\\python.exe -c '
+                        '"from hermes_cli.main import main; main()" update --yes'
+                    )
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---

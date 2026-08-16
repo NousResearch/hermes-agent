@@ -293,6 +293,26 @@ class TestLengthContinuationPromptBranching:
         assert "output length limit" in prompt
 
 
+    def test_repetition_stub_uses_pivot_prompt(self):
+        """A repetition-guard kill must NOT get the network-error prompt:
+        'Continue exactly where you left off' resumes the degenerate tail
+        the guard just killed (observed: telegram 2026-08-16, Qwen fallback
+        burned all 4 continuation retries re-looping)."""
+        prompt = _get_continuation_prompt(True, None, repetition_loop=True)
+        assert "degenerated" in prompt
+        assert "Continue exactly where you left off" not in prompt
+
+
+    def test_repetition_wins_over_dropped_tools_advice(self):
+        """Chunking advice is about oversized tool args — irrelevant when the
+        stream died to a repetition loop."""
+        prompt = _get_continuation_prompt(
+            True, ["write_file"], repetition_loop=True
+        )
+        assert "degenerated" in prompt
+        assert "smaller tool" not in prompt
+
+
 
 # ── Integration: live conversation loop ───────────────────────────────────
 
@@ -495,6 +515,96 @@ class TestContentFilterStallActivatesFallback:
         assert result["final_response"] == "Done on the fallback provider."
         assert result["completed"] is True
 
+
+
+class TestRepetitionGuardContinuation:
+    """A repetition-guard kill is tagged on the stub and the loop pivots
+    once, then keeps the partial — it must never burn the whole retry
+    budget resuming the degenerate tail (telegram 2026-08-16 regression)."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streaming_call_tags_repetition_stub(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        from agent.stream_repetition_guard import StreamRepetitionLoopError
+
+        def _degenerate_stream():
+            yield _make_stream_chunk(content="The config is loaded. ")
+            raise StreamRepetitionLoopError("The config is loaded.", 22)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _degenerate_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        agent._current_streamed_assistant_text = "The config is loaded. "
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert getattr(response, "_repetition_terminated", False) is True, (
+            "Repetition-guard termination must tag the stub so the loop "
+            "sends the pivot nudge instead of the network-error stub."
+        )
+
+    def test_second_repetition_kill_ends_turn_with_clean_partial(
+        self, loop_agent,
+    ):
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+        from agent.conversation_loop import _LENGTH_CONTINUATION_REPETITION_STUB
+
+        def _rep_stub():
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model="local/test-model",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(
+                        content=(
+                            "The config is loaded."
+                            "\n\n[FAILED_REPETITION_LOOP: streaming stopped "
+                            "because a non-trivial line repeated 22 times. "
+                            "Treat the response above as partial and do not "
+                            "continue the same tail.]"
+                        ),
+                    ),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+                _dropped_tool_names=None,
+                _repetition_terminated=True,
+            )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            _rep_stub(), _rep_stub(),
+        ]
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("audit the config")
+
+        # Second kill gives up instead of injecting a third nudge: exactly
+        # two API calls, turn settles as partial.
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["partial"] is True
+        # The first (and only) nudge was the pivot prompt; the give-up path
+        # then strips nudges from the settled turn.
+        assert not any(
+            isinstance(m, dict)
+            and m.get("content") == _LENGTH_CONTINUATION_REPETITION_STUB
+            for m in result["messages"]
+        )
+        # Guard markers never persist into the settled assistant content.
+        assert result["final_response"]
+        assert "FAILED_REPETITION_LOOP" not in result["final_response"]
+        assert "The config is loaded." in result["final_response"]
 
 
 class TestEmptyPartialStreamStubNotPersisted:

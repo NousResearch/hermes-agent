@@ -5367,6 +5367,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             if _content_filter_terminated:
                 _stub._content_filter_terminated = True
+            if _repetition_terminated:
+                # The conversation loop's continuation machinery reads this to
+                # send the repetition-pivot nudge instead of the network-error
+                # "continue exactly where you left off" stub — the latter told
+                # the model to resume the degenerate tail the guard just
+                # killed, re-triggering the loop until the retry budget burned.
+                _stub._repetition_terminated = True
             # Partial-stream stub: chunks WERE received (deltas fired), so
             # the provider is demonstrably responsive — clear the circuit
             # breaker (#58962) just like the full-success return below.

@@ -481,7 +481,7 @@ function SidebarSessionRowImpl({
                       <SidebarRowLabel
                         className="line-clamp-2 break-words font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                       >
-                        <span className="hover-marquee-inner">{title}</span>
+                        {title}
                       </SidebarRowLabel>
                     </OverflowTip>
                     {/* Session-list density (#68119): comfortable adds one

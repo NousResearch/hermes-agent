@@ -269,6 +269,53 @@ class TestSessionOps:
         assert state.agent.enabled_toolsets == []
 
     @pytest.mark.asyncio
+    async def test_set_session_model_preserves_explicit_empty_disabled_toolsets(self, monkeypatch):
+        """Regression: a session with disabled_toolsets == [] must keep that
+        explicitly-empty list across session/set_model. The pre-PR code
+        collapsed `[]` into `None` via `list(...) if current_disabled_toolsets
+        else None`, which would silently let _make_agent restore any
+        config-derived disabled toolsets in the future the same way the
+        enabled_toolsets regression did for enabled toolsets."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+                enabled_toolsets=["hermes-acp"],
+                disabled_toolsets=[],
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("requested_provider") or "openai-codex",
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
+            )
+
+        monkeypatch.setattr(manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        result = await acp_agent.set_session_model(
+            model_id="anthropic:claude-sonnet-4-6",
+            session_id=state.session_id,
+        )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert captured["disabled_toolsets"] == []
+        assert captured["disabled_toolsets"] is not None
+        assert state.agent.disabled_toolsets == []
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
@@ -686,6 +733,40 @@ class TestSlashCommands:
         assert captured["enabled_toolsets"] == []
         assert captured["enabled_toolsets"] is not None
         assert state.agent.enabled_toolsets == []
+
+    def test_cmd_model_preserves_explicit_empty_disabled_toolsets_across_switch(self, agent, mock_manager, monkeypatch):
+        """Regression sibling to the enabled_toolsets==[] case: a session with
+        disabled_toolsets == [] must keep that explicitly-empty list across a
+        /model switch. The pre-PR `list(...) if current_disabled_toolsets else
+        None` collapsed [] into None; mirrored fix on the disabled side
+        prevents the same latent bug class from biting once /model's
+        disabled_toolsets handling starts to mean anything beyond a no-op."""
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = []
+
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("requested_provider") or "openrouter",
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
+            )
+
+        monkeypatch.setattr(mock_manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        agent._handle_slash_command("/model anthropic:claude-sonnet-4-6", state)
+
+        assert captured["disabled_toolsets"] == []
+        assert captured["disabled_toolsets"] is not None
+        assert state.agent.disabled_toolsets == []
 
 
 

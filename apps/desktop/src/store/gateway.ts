@@ -235,8 +235,18 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
     entry.reconnectAttempt = 0
-  } catch {
-    // Transport failure → fall through to the backoff below.
+  } catch (error) {
+    // The registry no longer knows this connection (removed while we were
+    // backing off). Retrying forever can never succeed — fail-stop: dispose
+    // the entry and evict it instead of an infinite 15s-cap retry loop.
+    if (entry.connectionId && isMissingConnectionError(error)) {
+      entry.reconnecting = false
+      disposeSecondary(entry)
+      g.secondaries.delete(entry.scope)
+
+      return
+    }
+    // Other transport failure → fall through to the backoff below.
   } finally {
     entry.reconnecting = false
 
@@ -244,6 +254,15 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
       scheduleReconnect(entry)
     }
   }
+}
+
+// Electron's getConnectionFor rejects with `No connection with id "…"` when
+// the registry entry is gone. That is a permanent condition for the scoped
+// socket, unlike transient transport errors.
+function isMissingConnectionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('No connection with id')
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
@@ -531,6 +550,39 @@ export function closeSecondaryGateways(): void {
 
   g.secondaries.clear()
   restoreActiveToPrimaryIfEvicted()
+}
+
+// Registry lifecycle: a connection was removed or materially edited. Dispose
+// every secondary scoped to it (a removed remote/cloud source has no local
+// process to die, so without this its WebSocket stays open streaming ghost
+// events). With `redial` (the edit case) each disposed profile is re-dialed
+// through the normal open path so the fresh socket targets the NEW endpoint;
+// the active scope re-activates so the foreground keeps painting.
+export function disposeSecondariesForConnection(connectionId: string, opts: { redial?: boolean } = {}): void {
+  const id = String(connectionId || '').trim()
+
+  if (!id) {
+    return
+  }
+
+  for (const [key, entry] of [...g.secondaries]) {
+    if (entry.connectionId !== id) {
+      continue
+    }
+
+    const wasActive = key === g.activeKey
+
+    disposeSecondary(entry)
+    g.secondaries.delete(key)
+
+    if (opts.redial) {
+      const reopen = wasActive
+        ? ensureGatewayForAgent(entry.connectionId, entry.profile)
+        : openGatewayForAgent(entry.connectionId, entry.profile)
+
+      void reopen.catch(() => undefined)
+    }
+  }
 }
 
 // Self-accept so editing this module (or a fan-out that lands here) is an

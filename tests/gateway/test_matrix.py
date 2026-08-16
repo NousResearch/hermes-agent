@@ -948,12 +948,6 @@ class TestMatrixRoomStateChanges:
         await self.adapter._on_room_state(self._event(etype, content=content))
         assert self.adapter._take_pending_room_notes(self.ROOM) == expected
 
-    @pytest.mark.asyncio
-    async def test_direct_account_data_refreshes_dm_cache(self):
-        self.adapter._refresh_dm_cache = AsyncMock()
-        await self.adapter._on_direct_account_data(self._event("m.direct"))
-        self.adapter._refresh_dm_cache.assert_awaited_once()
-
     async def _dispatch_text(self, body, *, is_dm=True, require_mention=False):
         captured = None
         self.adapter._is_dm_room = AsyncMock(return_value=is_dm)
@@ -988,6 +982,37 @@ class TestMatrixRoomStateChanges:
         )
         # consumed — not delivered twice
         assert self.adapter._take_pending_room_notes(self.ROOM) is None
+
+    @pytest.mark.asyncio
+    async def test_command_does_not_consume_pending_notes(self):
+        await self.adapter._on_room_state(
+            self._event("m.room.topic", content={"topic": "Deploys"})
+        )
+
+        captured = await self._dispatch_text("/help")
+
+        assert captured is not None
+        assert captured.channel_context is None
+        assert (
+            self.adapter._take_pending_room_notes(self.ROOM)
+            == f'[The room topic changed to: "Deploys"]\n{self.MARKER}'
+        )
+
+    def test_pending_note_cache_is_bounded_lru(self):
+        from plugins.platforms.matrix.adapter import _RoomStateNote
+
+        self.adapter._room_identity_cache_max = 2
+        note = _RoomStateNote("changed")
+
+        self.adapter._stash_room_note("!first:example.org", "topic", note)
+        self.adapter._stash_room_note("!second:example.org", "topic", note)
+        self.adapter._stash_room_note("!first:example.org", "name", note)
+        self.adapter._stash_room_note("!third:example.org", "topic", note)
+
+        assert list(self.adapter._pending_room_notes) == [
+            "!first:example.org",
+            "!third:example.org",
+        ]
 
     @pytest.mark.asyncio
     async def test_dropped_message_keeps_notes_pending(self):
@@ -2504,7 +2529,7 @@ class TestMatrixEncryptedEventHandler:
         assert "internal.invite" in waited_types
         assert "m.room.name" in waited_types
         assert "m.room.topic" in waited_types
-        assert "m.direct" in waited_types
+        assert "m.direct" not in waited_types
 
         await adapter.disconnect()
 

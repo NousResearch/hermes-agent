@@ -104,7 +104,6 @@ except ImportError:
         ROOM_ENCRYPTION = "m.room.encryption"
         ROOM_JOIN_RULES = "m.room.join_rules"
         ROOM_HISTORY_VISIBILITY = "m.room.history_visibility"
-        DIRECT = "m.direct"
 
     EventType = _EventTypeStub  # type: ignore[misc,assignment]
 
@@ -2089,14 +2088,6 @@ class MatrixAdapter(BasePlatformAdapter):
                     self._on_room_state,
                     wait_sync=True,
                 )
-        _direct_type = getattr(EventType, "DIRECT", None)
-        if _direct_type is not None:
-            client.add_event_handler(
-                _direct_type,
-                self._on_direct_account_data,
-                wait_sync=True,
-            )
-
         # Initial sync to catch up, then start background sync.
         self._startup_ts = time.time()
         # Reset clock-skew detector for each connect cycle so a reconnect
@@ -3560,7 +3551,11 @@ class MatrixAdapter(BasePlatformAdapter):
             # top-level fields. Mirror them so matrix matches signal/slack.
             user_id=sender,
             user_name=display_name,
-            channel_context=self._take_pending_room_notes(room_id),
+            channel_context=(
+                self._take_pending_room_notes(room_id)
+                if msg_type == MessageType.TEXT
+                else None
+            ),
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -5059,10 +5054,6 @@ class MatrixAdapter(BasePlatformAdapter):
             kind, note = change
             self._stash_room_note(room_id, kind, note)
 
-    async def _on_direct_account_data(self, event: Any) -> None:
-        """Re-read m.direct so DM-vs-room classification stays current."""
-        await self._refresh_dm_cache()
-
     def _room_state_change_note(
         self, event: Any
     ) -> Optional[tuple[str, _RoomStateNote]]:
@@ -5162,12 +5153,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return {}
 
     def _stash_room_note(self, room_id: str, kind: str, note: _RoomStateNote) -> None:
-        notes = self._pending_room_notes.setdefault(room_id, {})
+        notes = self._pending_room_notes.pop(room_id, {})
         notes[kind] = note
+        self._pending_room_notes[room_id] = notes
+
         while len(self._pending_room_notes) > self._room_identity_cache_max:
             oldest = next(iter(self._pending_room_notes))
-            if oldest == room_id:
-                break
             self._pending_room_notes.pop(oldest, None)
 
     def _take_pending_room_notes(self, room_id: str) -> Optional[str]:

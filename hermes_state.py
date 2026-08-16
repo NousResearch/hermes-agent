@@ -8965,18 +8965,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (this guard has already needed targeted fixes — see the #74478
         patience note below).
         """
-        active_lock = conn.execute(
-            "SELECT holder FROM compression_locks "
-            "WHERE session_id = ? AND expires_at > ?",
-            (session_id, time.time()),
-        ).fetchone()
-        if (
-            active_lock is not None
-            and active_lock["holder"] != compression_lock_holder
-        ):
-            raise SessionCompressionInProgressError(
-                f"Session {session_id!r} is being compressed by another writer"
-            )
+        # NOTE (#75316 redesign): appends do NOT check compression_locks.
+        # The lock's job is to stop two COMPRESSIONS colliding, not to fence
+        # ordinary transcript writes. Concurrent appends during a compression
+        # are safe by construction: archive_and_compact() commits against a
+        # watermark captured at compression start and clones every row that
+        # arrived after it back into the live transcript, in the same write
+        # transaction. Blocking appends here was the root cause of a whole
+        # symptom family — turns dying as session_persistence_failed while a
+        # slow provider summary held the lease (#74568, #77386), including
+        # stale locks from dead PIDs blocking writes for the full TTL.
         if turn_lease_holder:
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             lease = conn.execute(
@@ -9720,18 +9718,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return cursor.fetchone() is not None
 
+    def get_active_message_watermark(self, session_id: str) -> int:
+        """MAX(id) of the session's active rows — the compression watermark.
+
+        Captured at compression START (before the slow provider summary call).
+        Every active row with ``id > watermark`` at commit time arrived
+        concurrently and must survive the compaction verbatim. Returns 0 for
+        an empty/unknown session.
+        """
+        if not session_id:
+            return 0
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def archive_and_compact(
         self,
         session_id: str,
         compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None,
+        watermark: Optional[int] = None,
+        lock_holder: Optional[str] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
-        Soft-archives every currently-active message (``active = 0``) and
-        inserts *compacted_messages* as fresh active rows — atomically, in one
-        write transaction. The conversation keeps ONE session id for life
-        (#38763) WITHOUT destroying history:
+        Soft-archives the active messages (``active = 0``) and inserts
+        *compacted_messages* as fresh active rows — atomically, in one write
+        transaction. The conversation keeps ONE session id for life (#38763)
+        WITHOUT destroying history:
 
         - The live-context load (:meth:`get_messages_as_conversation`,
           :meth:`get_messages`) filters ``active = 1`` by default, so the model
@@ -9745,14 +9763,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           flipping to active=0 is a content-preserving UPDATE) and are
           recoverable via get_messages(..., include_inactive=True).
 
-        This is the durability-preserving alternative to :meth:`replace_messages`
-        for compaction. ``message_count`` is set to the ACTIVE (compacted) count,
-        matching what the live load returns. ``model_config_patch`` is merged
-        into the session's JSON config in the same transaction; a ``None``
-        value removes that key. Returns the new active count.
+        Concurrent-append safety (#75316): when *watermark* is provided (the
+        value of :meth:`get_active_message_watermark` captured at compression
+        START), rows that arrived during the slow provider summary call
+        (``id > watermark``) are NOT summarized away. They are re-sequenced
+        after the compacted set by a pure-SQL column clone (every column
+        except ``id`` — content, api_content, platform_message_id, token
+        counts, reasoning sidecars all survive byte-exact, and the FTS
+        triggers index the clones naturally), and the originals are archived.
+        NOTE: re-sequencing assigns the tail rows fresh ids; consumers that
+        reference durable row ids re-resolve by content (see 3e8ab0610).
+        ``watermark=None`` preserves the historical archive-everything
+        behavior.
+
+        Commit-fence safety: when *lock_holder* is provided, the commit
+        verifies INSIDE the transaction that the compression lock is still
+        held by that holder and unexpired — a compression whose lease was
+        reclaimed (crash cleanup, TTL expiry, competing writer) fails the
+        commit instead of clobbering the winner's transcript.
+
+        ``message_count`` is set to the ACTIVE count after commit, matching
+        what the live load returns. ``model_config_patch`` is merged into the
+        session's JSON config in the same transaction; a ``None`` value
+        removes that key. Returns the new active count.
         """
 
         def _do(conn):
+            if lock_holder is not None:
+                lock_row = conn.execute(
+                    "SELECT holder, expires_at FROM compression_locks "
+                    "WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if (
+                    lock_row is None
+                    or lock_row["holder"] != lock_holder
+                    or float(lock_row["expires_at"]) <= time.time()
+                ):
+                    raise SessionCompressionInProgressError(
+                        f"Compression lease for {session_id!r} lost before "
+                        "commit; refusing to publish a stale compaction"
+                    )
+
             patched_model_config = None
             if model_config_patch is not None:
                 # on_missing="raise": a prune/compaction must not commit
@@ -9763,12 +9815,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     conn, session_id, model_config_patch, on_missing="raise"
                 )
 
+            # Concurrent tail: active rows that arrived after the watermark.
+            # Snapshot their ids and tool_calls now — the clone below needs a
+            # stable id list, and the tool-call count keeps sessions.* honest.
+            tail_ids: list[int] = []
+            tail_tool_calls = 0
+            if watermark is not None:
+                for row in conn.execute(
+                    "SELECT id, tool_calls FROM messages "
+                    "WHERE session_id = ? AND active = 1 AND id > ? "
+                    "ORDER BY id",
+                    (session_id, int(watermark)),
+                ).fetchall():
+                    tail_ids.append(int(row["id"]))
+                    raw = row["tool_calls"]
+                    if raw:
+                        try:
+                            parsed = json.loads(raw) if isinstance(raw, str) else raw
+                            tail_tool_calls += len(parsed) if isinstance(parsed, list) else 0
+                        except (TypeError, ValueError):
+                            pass
+
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs
             # rewind/undo's active=0+compacted=0, which means "user took it
             # back"). search_messages includes compacted=1 rows by default so
             # the pre-compaction transcript stays discoverable; live-context
-            # loads (active=1 only) still exclude them.
+            # loads (active=1 only) still exclude them. Tail originals are
+            # archived too — their clones (below) carry the live copy.
             conn.execute(
                 "UPDATE messages SET active = 0, compacted = 1 "
                 "WHERE session_id = ? AND active = 1",
@@ -9777,6 +9851,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, compacted_messages
             )
+
+            if tail_ids:
+                # Re-sequence the concurrent tail after the compacted set via
+                # a pure-SQL column clone: no decode/re-encode round trip, no
+                # field drift — new id, active=1, compacted=0, all else exact.
+                placeholders = ",".join("?" for _ in tail_ids)
+                clone_cols = [
+                    c for c in self._message_column_names(conn)
+                    if c not in ("id", "active", "compacted")
+                ]
+                col_list = ", ".join(clone_cols)
+                conn.execute(
+                    f"INSERT INTO messages ({col_list}, active, compacted) "
+                    f"SELECT {col_list}, 1, 0 FROM messages "
+                    f"WHERE id IN ({placeholders}) ORDER BY id",
+                    tail_ids,
+                )
+                inserted += len(tail_ids)
+                tool_calls_total += tail_tool_calls
+
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
             if model_config_patch is None:
@@ -9793,6 +9887,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return inserted
 
         return self._execute_write(_do)
+
+    def _message_column_names(self, conn) -> List[str]:
+        """Column names of the messages table, cached per-connection era."""
+        cached = getattr(self, "_message_columns_cache", None)
+        if cached:
+            return cached
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        self._message_columns_cache = cols
+        return cols
 
     def set_latest_user_api_content(
         self, session_id: str, content: Any, api_content: str

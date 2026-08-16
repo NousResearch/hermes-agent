@@ -2451,6 +2451,9 @@ def compress_context(
     _lock_db = getattr(agent, "_session_db", None)
     _lock_sid = agent.session_id or ""
     _lock_holder: Optional[str] = None
+    # Watermark captured at compression start (#75316); None = fall back to
+    # archive-everything (no concurrent-tail preservation this cycle).
+    _commit_watermark: Optional[int] = None
     # Probe whether the lock subsystem is actually available on this
     # SessionDB instance. A process running mismatched module versions can have
     # this call site while its long-lived SessionDB instance predates the lock
@@ -2555,6 +2558,27 @@ def compress_context(
                 _lock_acquired = _try_acquire_lock(
                     _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
                 )
+                if _lock_acquired:
+                    # Watermark (#75316): MAX(id) of active rows at compression
+                    # START. Appends are NOT blocked while the slow provider
+                    # summary runs — any row landing after this point is
+                    # concurrent tail, and archive_and_compact() re-sequences
+                    # it after the compacted set instead of archiving it.
+                    try:
+                        _commit_watermark = _lock_db.get_active_message_watermark(
+                            _lock_sid
+                        )
+                    except Exception as _wm_err:
+                        # Watermark capture is safety-additive: without it the
+                        # commit falls back to archive-everything (historical
+                        # behavior), so failure here must not abort compression.
+                        logger.warning(
+                            "compression watermark capture failed for "
+                            "session=%s (%s) — concurrent appends this cycle "
+                            "will be archived with the snapshot",
+                            _lock_sid, _wm_err,
+                        )
+                        _commit_watermark = None
             except Exception as _lock_err:
                 # The method exists and entered its implementation but failed.
                 # Do not mistake an internal AttributeError or TypeError for
@@ -3422,6 +3446,8 @@ def compress_context(
                         model_config_patch={
                             PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None,
                         },
+                        watermark=_commit_watermark,
+                        lock_holder=_lock_holder,
                     )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are

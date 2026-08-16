@@ -950,11 +950,42 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            configured_extra_tools: set[str] = set()
+            try:
+                from hermes_cli.config import load_config_readonly
+
+                config = load_config_readonly()
+                auxiliary = config.get("auxiliary", {})
+                review_config = (
+                    auxiliary.get("background_review", {})
+                    if isinstance(auxiliary, dict)
+                    else {}
+                )
+                extra_tools = (
+                    review_config.get("extra_tools", [])
+                    if isinstance(review_config, dict)
+                    else []
+                )
+                if isinstance(extra_tools, list):
+                    configured_extra_tools = {
+                        name.strip()
+                        for name in extra_tools
+                        if isinstance(name, str) and name.strip()
+                    }
+                    review_whitelist.update(configured_extra_tools)
+            except Exception:
+                pass
+            allowed_tools_description = "memory and skill management tools"
+            if configured_extra_tools:
+                allowed_tools_description += (
+                    ", plus these configured tools: "
+                    + ", ".join(sorted(configured_extra_tools))
+                )
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    f"{{tool_name}}. Only {allowed_tools_description} are allowed."
                 ),
             )
             try:
@@ -975,8 +1006,8 @@ def _run_review_in_thread(
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
+                        + f"\n\nYou can only call {allowed_tools_description}. "
+                        "Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,

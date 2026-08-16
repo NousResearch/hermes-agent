@@ -2414,7 +2414,12 @@ def _send_media_via_adapter(
                 logger.warning("Job '%s': %s", job.get("id", "?"), msg)
                 errors.append(msg)
         except Exception as e:
-            msg = f"failed to send media {media_path}: {e}"
+            # Argument-less exceptions (notably TimeoutError, the most likely
+            # failure on this path) have an empty str(), which would render
+            # the reason as nothing at all. Fall back to the class name.
+            msg = (
+                f"failed to send media {media_path}: {str(e) or type(e).__name__}"
+            )
             logger.warning("Job '%s': %s", job.get("id", "?"), msg)
             errors.append(msg)
     return errors

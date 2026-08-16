@@ -795,6 +795,40 @@ def _clear_turn_process_ownership(agent: Any) -> None:
     agent._gateway_turn_process_epoch = None
 
 
+def _context_usage_fields(agent: Any) -> Dict[str, int]:
+    """Context fill and window of the agent, for a turn's ``usage`` block.
+
+    ``input_tokens``/``output_tokens``/``total_tokens`` are cumulative over
+    every API call the turn made, so they answer "what did this turn cost",
+    not "how full is the context" — a long tool-using turn reports several
+    times the window. Remote clients that draw the same gauge as ``/context``
+    and the TUI status bar need the two numbers those read:
+
+    * ``context_tokens`` — ``last_prompt_tokens``, the prompt size of the
+      most recent model call. Compression resets it to 0 (or the ``-1``
+      sentinel from the Codex runtime); both clamp to 0 here, matching
+      ``agent/context_breakdown.py``'s ``measured_used``.
+    * ``context_window`` — the compressor's resolved ``context_length``, the
+      denominator that same code divides by. ``/api/model/info`` cannot
+      stand in for it: that route lives on the dashboard server, not here.
+
+    Both are 0 when the agent exposes no compressor, so a client can tell
+    "unknown" from a genuinely empty context.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+
+    def _as_int(value: Any) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "context_tokens": _as_int(getattr(compressor, "last_prompt_tokens", 0)),
+        "context_window": _as_int(getattr(compressor, "context_length", 0)),
+    }
+
+
 def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
     """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
     user_message = body.get("message") or body.get("input")
@@ -6382,6 +6416,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        **_context_usage_fields(agent),
                     }
                     # Include the effective session ID in the result so callers
                     # (e.g. X-Hermes-Session-Id header) can track compression-
@@ -6895,6 +6930,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                             "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                             "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                            **_context_usage_fields(agent),
                         }
                         return r, u
 

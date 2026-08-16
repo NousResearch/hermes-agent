@@ -62,7 +62,9 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
@@ -609,7 +611,12 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
-def _ensure_cdp_supervisor(task_id: str, target_id: Optional[str] = None) -> None:
+def _ensure_cdp_supervisor(
+    task_id: str,
+    target_id: Optional[str] = None,
+    *,
+    expected_generation: Optional[int] = None,
+) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
     Idempotent — delegates to ``SupervisorRegistry.get_or_start`` which skips
@@ -628,6 +635,13 @@ def _ensure_cdp_supervisor(task_id: str, target_id: Optional[str] = None) -> Non
     the browser session itself.  The agent simply won't see
     ``pending_dialogs`` / ``frame_tree`` fields in snapshots.
     """
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id, {})
+        if expected_generation is None:
+            raw_generation = session_info.get("_lifecycle_generation")
+            if isinstance(raw_generation, int) and not isinstance(raw_generation, bool):
+                expected_generation = raw_generation
+
     cdp_url = _get_cdp_override()
     # A fixed CDP endpoint can already contain unrelated user/task pages. Do
     # not let the supervisor attach to the endpoint's first page before
@@ -637,8 +651,6 @@ def _ensure_cdp_supervisor(task_id: str, target_id: Optional[str] = None) -> Non
     if not cdp_url:
         # Fallback: active session may carry a per-session CDP URL from a
         # cloud provider (Browserbase sets this).
-        with _cleanup_lock:
-            session_info = _active_sessions.get(task_id, {})
         maybe = str(session_info.get("cdp_url") or "")
         if maybe:
             cdp_url = _resolve_cdp_override(maybe)
@@ -648,12 +660,32 @@ def _ensure_cdp_supervisor(task_id: str, target_id: Optional[str] = None) -> Non
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
 
         policy, timeout_s = _get_dialog_policy_config()
+
+        def _publication_allowed() -> bool:
+            bare_task_id = _bare_task_id_for_session_key(task_id)
+            with _cleanup_lock:
+                current = _active_sessions.get(task_id)
+                if current is None:
+                    return False
+                if _task_state_locked(bare_task_id) in {
+                    BrowserTaskState.RETIRING,
+                    BrowserTaskState.RETIRED,
+                }:
+                    return False
+                if expected_generation is None:
+                    return True
+                return (
+                    _task_generation_locked(bare_task_id) == expected_generation
+                    and current.get("_lifecycle_generation") == expected_generation
+                )
+
         SUPERVISOR_REGISTRY.get_or_start(
             task_id=task_id,
             cdp_url=cdp_url,
             target_id=target_id,
             dialog_policy=policy,
             dialog_timeout_s=timeout_s,
+            publish_guard=_publication_allowed,
         )
     except Exception as exc:
         logger.debug(
@@ -1673,6 +1705,41 @@ _recording_sessions: set = set()  # session_keys with active recordings
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
 _LOCAL_SUFFIX = "::local"
 
+
+class BrowserCleanupReason(str, Enum):
+    """Why browser ownership is being torn down."""
+
+    TERMINAL = "terminal"
+    INACTIVITY = "inactivity"
+    PROVIDER_EXPIRY = "provider_expiry"
+    RESTART_ROLLBACK = "restart_rollback"
+
+
+class BrowserTaskState(str, Enum):
+    """Process-local lifecycle for one bare browser task."""
+
+    STARTING = "starting"
+    ACTIVE = "active"
+    RETIRING = "retiring"
+    RETIRED = "retired"
+
+
+class OrphanTargetOwnership(str, Enum):
+    """Confidence in exact target ownership recovered from daemon metadata."""
+
+    PINNED = "pinned"
+    CONFIRMED_UNPINNED = "confirmed_unpinned"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class _PendingProviderCleanup:
+    """Provider session identity retained until close is confirmed."""
+
+    task_id: str
+    provider: Any
+    session_id: str
+
 # Successful terminal cleanup leaves a task tombstone so a later non-navigation
 # command cannot silently recreate a blank session. Explicit browser_navigate
 # is the only operation that clears the tombstone. Process-local by design:
@@ -1731,13 +1798,106 @@ _session_last_activity: Dict[str, float] = {}
 # Background cleanup thread state
 _cleanup_thread = None
 _cleanup_running = False
-# Protects _session_last_activity AND _active_sessions for thread safety
+# Protects browser lifecycle, activity, and ownership maps for thread safety.
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
+
+# Bare-task lifecycle and generation fencing. ``_retired_browser_tasks`` stays
+# as the compatibility tombstone surface, while these maps model transient
+# STARTING/RETIRING states that a set alone cannot represent.
+_browser_task_states: Dict[str, BrowserTaskState] = {}
+_browser_task_generations: Dict[str, int] = {}
+_browser_task_cleanup_reasons: Dict[str, BrowserCleanupReason] = {}
+_browser_task_cleanup_locks: Dict[str, Any] = {}
+
+# Page/daemon ownership lives in ``_active_sessions``. Provider-account
+# ownership is separate because a provider close can fail after the page and
+# local daemon have already been removed.
+_pending_provider_cleanups: Dict[
+    Tuple[str, int, str], _PendingProviderCleanup
+] = {}
 
 
 class _BrowserSessionRetiredError(RuntimeError):
     """Raised when an implicit session lookup targets a retired browser task."""
+
+
+def _task_state_locked(bare_task_id: str) -> BrowserTaskState:
+    """Read lifecycle state while ``_cleanup_lock`` is held."""
+    if bare_task_id in _retired_browser_tasks:
+        return BrowserTaskState.RETIRED
+    state = _browser_task_states.get(bare_task_id, BrowserTaskState.ACTIVE)
+    # The tombstone set remains authoritative for RETIRED so older tests and
+    # hot-reload callers that replace/clear it cannot inherit a stale map row.
+    if state is BrowserTaskState.RETIRED:
+        return BrowserTaskState.ACTIVE
+    return state
+
+
+def _set_task_state_locked(
+    bare_task_id: str,
+    state: BrowserTaskState,
+    *,
+    cleanup_reason: Optional[BrowserCleanupReason] = None,
+) -> None:
+    """Write lifecycle state and keep the compatibility tombstone in sync."""
+    _browser_task_states[bare_task_id] = state
+    if state is BrowserTaskState.RETIRED:
+        _retired_browser_tasks.add(bare_task_id)
+    else:
+        _retired_browser_tasks.discard(bare_task_id)
+    if cleanup_reason is None:
+        if state is not BrowserTaskState.RETIRING:
+            _browser_task_cleanup_reasons.pop(bare_task_id, None)
+    else:
+        _browser_task_cleanup_reasons[bare_task_id] = cleanup_reason
+
+
+def _task_generation_locked(bare_task_id: str) -> int:
+    return _browser_task_generations.get(bare_task_id, 0)
+
+
+def _advance_task_generation_locked(bare_task_id: str) -> int:
+    generation = _task_generation_locked(bare_task_id) + 1
+    _browser_task_generations[bare_task_id] = generation
+    return generation
+
+
+def _task_has_active_sessions_locked(bare_task_id: str) -> bool:
+    return any(
+        _bare_task_id_for_session_key(session_key) == bare_task_id
+        for session_key in _active_sessions
+    )
+
+
+def _task_cleanup_operation_lock(bare_task_id: str) -> Any:
+    """Return the re-entrant per-task lock shared by commands and cleanup."""
+    with _cleanup_lock:
+        return _browser_task_cleanup_locks.setdefault(
+            bare_task_id, threading.RLock()
+        )
+
+
+def _cleanup_reason_retires_task(reason: BrowserCleanupReason) -> bool:
+    return reason in {
+        BrowserCleanupReason.TERMINAL,
+        BrowserCleanupReason.RESTART_ROLLBACK,
+    }
+
+
+def _coerce_cleanup_reason(reason: BrowserCleanupReason | str) -> BrowserCleanupReason:
+    if isinstance(reason, BrowserCleanupReason):
+        return reason
+    return BrowserCleanupReason(str(reason))
+
+
+def _is_browser_task_unavailable(task_id: str) -> bool:
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    with _cleanup_lock:
+        return _task_state_locked(bare_task_id) in {
+            BrowserTaskState.RETIRING,
+            BrowserTaskState.RETIRED,
+        }
 
 
 def _is_task_owned_shared_cdp_session(session_info: Dict[str, Any]) -> bool:
@@ -1754,22 +1914,43 @@ def _is_task_owned_shared_cdp_session(session_info: Dict[str, Any]) -> bool:
 def _is_browser_task_retired(task_id: str) -> bool:
     bare_task_id = _bare_task_id_for_session_key(task_id or "default")
     with _cleanup_lock:
-        return bare_task_id in _retired_browser_tasks
+        return _task_state_locked(bare_task_id) is BrowserTaskState.RETIRED
 
 
 def _browser_session_retired_result(task_id: str) -> Dict[str, Any]:
     bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    with _cleanup_lock:
+        state = _task_state_locked(bare_task_id)
+        reason = _browser_task_cleanup_reasons.get(bare_task_id)
+    cleanup_pending = state is BrowserTaskState.RETIRING
+    terminal = state is BrowserTaskState.RETIRED or (
+        cleanup_pending
+        and reason is not None
+        and _cleanup_reason_retires_task(reason)
+    )
     return {
         "success": False,
         "error": (
-            "Browser session ownership for this task has been retired. "
-            "Call browser_navigate to start a fresh owned session."
+            "Browser session cleanup is still pending; normal browser commands "
+            "are blocked until exact ownership is released."
+            if cleanup_pending
+            else (
+                "Browser session ownership for this task has been retired. "
+                "Call browser_navigate to start a fresh owned session."
+            )
         ),
         "code": "browser_session_retired",
         "data": {
             "task_id": bare_task_id,
-            "terminal": True,
-            "recovery": "browser_navigate",
+            "state": state.value,
+            "terminal": terminal,
+            "cleanup_pending": cleanup_pending,
+            "cleanup_reason": reason.value if reason is not None else None,
+            "recovery": (
+                "retry_cleanup"
+                if cleanup_pending
+                else "browser_navigate"
+            ),
         },
     }
 
@@ -1782,8 +1963,13 @@ def _clear_retired_browser_task_for_navigation(task_id: str) -> bool:
     """
     bare_task_id = _bare_task_id_for_session_key(task_id or "default")
     with _cleanup_lock:
-        was_retired = bare_task_id in _retired_browser_tasks
-        _retired_browser_tasks.discard(bare_task_id)
+        state = _task_state_locked(bare_task_id)
+        if state is BrowserTaskState.RETIRING:
+            raise _BrowserSessionRetiredError(bare_task_id)
+        was_retired = state is BrowserTaskState.RETIRED
+        if was_retired:
+            _advance_task_generation_locked(bare_task_id)
+            _set_task_state_locked(bare_task_id, BrowserTaskState.STARTING)
     if was_retired:
         logger.info(
             "Explicit navigation is restarting retired browser task: %s",
@@ -1798,20 +1984,14 @@ def _restore_retired_browser_task_after_failed_navigation(
 ) -> None:
     """Fail closed when an explicit restart did not complete navigation.
 
-    If the attempt created session ownership, use the normal exact cleanup
-    path. A transient cleanup failure deliberately keeps ownership retryable
-    and therefore does not install a tombstone. If no session was created (or
-    cleanup confirmed removal), restore the terminal task marker directly.
+    The rollback enters RETIRING before physical cleanup. If exact cleanup
+    fails, ownership remains retryable but every normal command stays blocked;
+    successful cleanup transitions to RETIRED.
     """
-    with _cleanup_lock:
-        replacement_exists = session_key in _active_sessions
-
-    if replacement_exists and not cleanup_browser(session_key):
-        return
-
-    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
-    with _cleanup_lock:
-        _retired_browser_tasks.add(bare_task_id)
+    cleanup_browser(
+        session_key,
+        reason=BrowserCleanupReason.RESTART_ROLLBACK,
+    )
 
 
 def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
@@ -1866,9 +2046,11 @@ def _emergency_cleanup_all_sessions():
 
     # Clean up this process's own sessions first, so their owner_pid files
     # are removed before the reaper scans.
-    if _active_sessions:
-        logger.info("Emergency cleanup: closing %s active session(s)...",
-                    len(_active_sessions))
+    if _active_sessions or _pending_provider_cleanups:
+        logger.info(
+            "Emergency cleanup: closing %s active/pending browser ownership(s)...",
+            len(_active_sessions) + len(_pending_provider_cleanups),
+        )
         try:
             cleanup_all_browsers()
         except Exception as e:
@@ -1933,7 +2115,10 @@ def _cleanup_inactive_browser_sessions():
         try:
             elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
             logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
-            if cleanup_browser(task_id):
+            if cleanup_browser(
+                task_id,
+                reason=BrowserCleanupReason.INACTIVITY,
+            ):
                 with _cleanup_lock:
                     _session_last_activity.pop(task_id, None)
             else:
@@ -2084,14 +2269,43 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     return max(0.0, time.time() - latest)
 
 
-def _orphan_has_pinned_target(socket_dir: str, session_name: str) -> bool:
-    """Return whether an orphan directory still records an owned pinned page."""
+def _orphan_target_ownership(
+    socket_dir: str,
+    session_name: str,
+) -> OrphanTargetOwnership:
+    """Classify exact target ownership without guessing from broken metadata.
+
+    ``cdp_*`` names are task-owned shared-CDP sessions. Missing, unreadable,
+    malformed, or wrong-shaped metadata for those sessions is UNKNOWN: deleting
+    the directory or daemon would erase the last place exact ownership may be
+    recovered. Legacy local/provider sessions are confirmed unpinned when they
+    have no target record.
+    """
     target_file = Path(socket_dir) / f"{session_name}.target"
+    if not target_file.exists():
+        if session_name.startswith("cdp_"):
+            return OrphanTargetOwnership.UNKNOWN
+        return OrphanTargetOwnership.CONFIRMED_UNPINNED
     try:
         payload = json.loads(target_file.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
-        return False
-    return payload.get("pinned") is True and bool(payload.get("targetId"))
+        return OrphanTargetOwnership.UNKNOWN
+    if not isinstance(payload, dict):
+        return OrphanTargetOwnership.UNKNOWN
+    target_id = payload.get("targetId")
+    if payload.get("pinned") is True and isinstance(target_id, str) and target_id:
+        return OrphanTargetOwnership.PINNED
+    if payload.get("pinned") is False:
+        return OrphanTargetOwnership.CONFIRMED_UNPINNED
+    return OrphanTargetOwnership.UNKNOWN
+
+
+def _orphan_has_pinned_target(socket_dir: str, session_name: str) -> bool:
+    """Compatibility wrapper; the reaper itself uses tri-state ownership."""
+    return (
+        _orphan_target_ownership(socket_dir, session_name)
+        is OrphanTargetOwnership.PINNED
+    )
 
 
 def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
@@ -2248,7 +2462,15 @@ def _reap_orphaned_browser_sessions():
                 continue
 
         # owner_alive is False (dead owner) OR legacy daemon not tracked here.
-        pinned_target_owned = _orphan_has_pinned_target(socket_dir, session_name)
+        target_ownership = _orphan_target_ownership(socket_dir, session_name)
+        if target_ownership is OrphanTargetOwnership.UNKNOWN:
+            logger.warning(
+                "Orphaned shared-CDP target metadata for session %s is missing "
+                "or unreadable; retaining daemon and ownership directory",
+                session_name,
+            )
+            continue
+        pinned_target_owned = target_ownership is OrphanTargetOwnership.PINNED
         pid_file = os.path.join(socket_dir, f"{session_name}.pid")
         if not os.path.isfile(pid_file):
             if pinned_target_owned:
@@ -2586,7 +2808,127 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+def _provider_cleanup_key(
+    task_id: str,
+    provider: Any,
+    session_id: str,
+) -> Tuple[str, int, str]:
+    return (task_id, id(provider) if provider is not None else 0, session_id)
+
+
+def _remember_pending_provider_cleanup(
+    task_id: str,
+    provider: Any,
+    session_id: str,
+) -> None:
+    bare_task_id = _bare_task_id_for_session_key(task_id)
+    record = _PendingProviderCleanup(bare_task_id, provider, session_id)
+    with _cleanup_lock:
+        # One provider session has exactly one retry owner. A legacy record may
+        # initially lack a provider object and later resolve one; replace that
+        # record instead of accumulating duplicate close attempts.
+        stale_keys = [
+            key
+            for key, pending in _pending_provider_cleanups.items()
+            if pending.task_id == bare_task_id
+            and pending.session_id == session_id
+        ]
+        for key in stale_keys:
+            _pending_provider_cleanups.pop(key, None)
+        _pending_provider_cleanups[
+            _provider_cleanup_key(bare_task_id, provider, session_id)
+        ] = record
+        # A late stale creator can finish after terminal cleanup already
+        # reported no published session and moved to RETIRED. If disposing its
+        # provider session then fails, reopen only the cleanup state (never the
+        # browser command surface) and make the retry visible to the reaper.
+        if _task_state_locked(bare_task_id) is BrowserTaskState.RETIRED:
+            _set_task_state_locked(
+                bare_task_id,
+                BrowserTaskState.RETIRING,
+                cleanup_reason=BrowserCleanupReason.TERMINAL,
+            )
+        _session_last_activity.setdefault(bare_task_id, time.time())
+
+
+def _clear_pending_provider_cleanup(task_id: str, session_id: str) -> None:
+    bare_task_id = _bare_task_id_for_session_key(task_id)
+    with _cleanup_lock:
+        stale_keys = [
+            key
+            for key, record in _pending_provider_cleanups.items()
+            if record.task_id == bare_task_id and record.session_id == session_id
+        ]
+        for key in stale_keys:
+            _pending_provider_cleanups.pop(key, None)
+
+
+def _attempt_provider_session_close(
+    task_id: str,
+    provider: Any,
+    session_id: str,
+) -> bool:
+    """Close a provider session once and retain identity on any failure."""
+    bare_task_id = _bare_task_id_for_session_key(task_id)
+    owner = provider
+    if owner is None:
+        try:
+            owner = _get_cloud_provider()
+        except Exception as exc:
+            logger.warning("Could not resolve cloud browser provider for cleanup: %s", exc)
+    if owner is None:
+        _remember_pending_provider_cleanup(bare_task_id, provider, session_id)
+        return False
+    try:
+        closed = owner.close_session(session_id)
+    except Exception as exc:
+        logger.warning("Could not close cloud browser session: %s", exc)
+        _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
+        return False
+    if closed is not True:
+        logger.warning("Cloud browser provider did not confirm session close")
+        _remember_pending_provider_cleanup(bare_task_id, owner, session_id)
+        return False
+    _clear_pending_provider_cleanup(bare_task_id, session_id)
+    return True
+
+
+def _dispose_unpublished_session(
+    task_id: str,
+    session_info: Any,
+    provider: Any = None,
+) -> bool:
+    """Dispose resources created by a stale or losing session creator."""
+    if not isinstance(session_info, dict):
+        return True
+    session_id = session_info.get("bb_session_id")
+    if not session_id:
+        # Local and shared-CDP candidates are metadata-only until their first
+        # command, so there is no daemon or target to release before publication.
+        return True
+    owner = session_info.get("_provider_cleanup_owner", provider)
+    return _attempt_provider_session_close(task_id, owner, str(session_id))
+
+
+def _abandon_session_creation(
+    bare_task_id: str,
+    generation: int,
+) -> None:
+    """Return a failed creator's STARTING state to ACTIVE when still current."""
+    with _cleanup_lock:
+        if (
+            _task_generation_locked(bare_task_id) == generation
+            and _task_state_locked(bare_task_id) is BrowserTaskState.STARTING
+            and not _task_has_active_sessions_locked(bare_task_id)
+        ):
+            _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+
+
+def _get_session_info(
+    task_id: Optional[str] = None,
+    *,
+    _for_cleanup: bool = False,
+) -> Dict[str, Any]:
     """
     Get or create session info for the given session key.
 
@@ -2606,46 +2948,57 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """
     if task_id is None:
         task_id = "default"
+    bare_task_id = _bare_task_id_for_session_key(task_id)
 
     # Start the cleanup thread if not running (handles inactivity timeouts)
     _start_browser_cleanup_thread()
 
     with _cleanup_lock:
-        # Implicit lookups (all non-navigation browser tools) must not revive a
-        # task after terminal cleanup. browser_navigate explicitly clears this
-        # marker only after its URL/policy preflight succeeds.
-        if _bare_task_id_for_session_key(task_id) in _retired_browser_tasks:
-            raise _BrowserSessionRetiredError(task_id)
-
-        # Update activity and read the session in one critical section so a
-        # successful cleanup cannot remove ownership and install its tombstone
-        # between these two operations.
-        _session_last_activity[task_id] = time.time()
-
-        # Check if we already have a session for this task
+        state = _task_state_locked(bare_task_id)
         existing_session = _active_sessions.get(task_id)
+        cleanup_lookup = (
+            _for_cleanup
+            and state is BrowserTaskState.RETIRING
+            and existing_session is not None
+        )
+        if state in {BrowserTaskState.RETIRING, BrowserTaskState.RETIRED} and not cleanup_lookup:
+            raise _BrowserSessionRetiredError(task_id)
+        if not _for_cleanup:
+            # Update activity and read ownership in one critical section so a
+            # cleanup cannot retire the task between those operations.
+            _session_last_activity[task_id] = time.time()
 
     if existing_session is not None:
-        if not _session_has_expired(existing_session):
+        if _for_cleanup or not _session_has_expired(existing_session):
             return existing_session
 
         logger.info(
             "Replacing expired cloud browser session for task %s",
             task_id,
         )
-        _cleanup_single_browser_session(task_id, retire_task=False)
-        # Cleanup removes the activity entry. The replacement session must be
-        # tracked by the inactivity reaper just like an initial session.
-        _update_session_activity(task_id)
+        if not _cleanup_browser_session_keys(
+            task_id,
+            [task_id],
+            reason=BrowserCleanupReason.PROVIDER_EXPIRY,
+        ):
+            raise _BrowserSessionRetiredError(task_id)
+        return _get_session_info(task_id)
 
-        # Guard against a concurrent replacement: another thread may have
-        # already cleaned up the expired session and created a fresh one
-        # while we were waiting.  If so, return the live replacement instead
-        # of falling through to create yet another session.
-        with _cleanup_lock:
-            replacement = _active_sessions.get(task_id)
-        if replacement is not None and replacement is not existing_session:
-            return replacement
+    if _for_cleanup:
+        raise _BrowserSessionRetiredError(task_id)
+
+    with _cleanup_lock:
+        # Recheck after the unlocked expiry/lookup path. Terminal cleanup may
+        # have advanced the generation while this creator was entering.
+        state = _task_state_locked(bare_task_id)
+        if state in {BrowserTaskState.RETIRING, BrowserTaskState.RETIRED}:
+            raise _BrowserSessionRetiredError(task_id)
+        winner = _active_sessions.get(task_id)
+        if winner is not None:
+            return winner
+        creation_generation = _task_generation_locked(bare_task_id)
+        if not _task_has_active_sessions_locked(bare_task_id):
+            _set_task_state_locked(bare_task_id, BrowserTaskState.STARTING)
 
     # Hybrid routing: session keys ending with ``::local`` force a local
     # Chromium regardless of the globally-configured cloud provider.  Public
@@ -2653,66 +3006,103 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # the bare task_id key.
     force_local = _is_local_sidecar_key(task_id)
 
-    # Create session outside the lock (network call in cloud mode)
-    cdp_override = _get_cdp_override()
-    if cdp_override and not force_local:
-        session_info = _create_cdp_session(task_id, cdp_override)
-    elif force_local:
-        session_info = _create_local_session(task_id)
-    else:
-        provider = _get_cloud_provider()
-        if provider is None:
+    # Create session outside the lock (network call in cloud mode). Publication
+    # below is fenced by the bare-task generation captured above.
+    provider = None
+    session_info: Dict[str, Any]
+    try:
+        cdp_override = _get_cdp_override()
+        if cdp_override and not force_local:
+            session_info = _create_cdp_session(task_id, cdp_override)
+        elif force_local:
             session_info = _create_local_session(task_id)
         else:
-            try:
-                session_info = provider.create_session(task_id)
-                # Validate cloud provider returned a usable session
-                if not session_info or not isinstance(session_info, dict):
-                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
-                if session_info.get("cdp_url"):
-                    # Some cloud providers (including Browser-Use v3) return an HTTP
-                    # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
-                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
-            except Exception as e:
-                provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
-                )
+            provider = _get_cloud_provider()
+            if provider is None:
+                session_info = _create_local_session(task_id)
+            else:
+                provider_candidate: Any = None
                 try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
-                    raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
-                    ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
+                    provider_candidate = provider.create_session(task_id)
+                    if not provider_candidate or not isinstance(provider_candidate, dict):
+                        raise ValueError(
+                            "Cloud provider returned invalid session: "
+                            f"{provider_candidate!r}"
+                        )
+                    session_info = dict(provider_candidate)
+                    session_info["_provider_cleanup_owner"] = provider
+                    if session_info.get("cdp_url"):
+                        # Some providers return an HTTP discovery URL instead
+                        # of a raw websocket endpoint.
+                        session_info["cdp_url"] = _resolve_cdp_override(
+                            str(session_info["cdp_url"])
+                        )
+                except Exception as exc:
+                    _dispose_unpublished_session(
+                        task_id,
+                        provider_candidate,
+                        provider,
+                    )
+                    provider_name = type(provider).__name__
+                    logger.warning(
+                        "Cloud provider %s failed (%s); attempting fallback to "
+                        "local Chromium for task %s",
+                        provider_name,
+                        exc,
+                        task_id,
+                        exc_info=True,
+                    )
+                    try:
+                        session_info = _create_local_session(task_id)
+                    except Exception as local_error:
+                        raise RuntimeError(
+                            f"Cloud provider {provider_name} failed ({exc}) and local "
+                            f"fallback also failed ({local_error})"
+                        ) from exc
                     session_info = dict(session_info)
                     session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
+                    session_info["fallback_reason"] = str(exc)
                     session_info["fallback_provider"] = provider_name
+    except BaseException:
+        _abandon_session_creation(bare_task_id, creation_generation)
+        raise
 
     with _cleanup_lock:
-        # Double-check: another thread may have created a session while we
-        # were doing the network call. Use the existing one to avoid leaking
-        # orphan cloud sessions.
-        if task_id in _active_sessions:
-            return _active_sessions[task_id]
-        session_info = dict(session_info)
-        session_info.setdefault("session_key", task_id)
-        session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
-        _active_sessions[task_id] = session_info
+        current_state = _task_state_locked(bare_task_id)
+        stale_creator = (
+            _task_generation_locked(bare_task_id) != creation_generation
+            or current_state in {
+                BrowserTaskState.RETIRING,
+                BrowserTaskState.RETIRED,
+            }
+        )
+        winner = _active_sessions.get(task_id)
+        if not stale_creator and winner is None:
+            session_info = dict(session_info)
+            session_info.setdefault("session_key", task_id)
+            session_info.setdefault("owner_task_id", bare_task_id)
+            session_info["_lifecycle_generation"] = creation_generation
+            _active_sessions[task_id] = session_info
+            _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+            published = True
+        else:
+            published = False
+
+    if not published:
+        _dispose_unpublished_session(task_id, session_info, provider)
+        if stale_creator:
+            raise _BrowserSessionRetiredError(task_id)
+        return winner
 
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
     # Idempotent; swallows errors. See _ensure_cdp_supervisor for details.
     # Skip for local sidecars — they have no CDP URL.
     if not force_local:
-        _ensure_cdp_supervisor(task_id)
+        _ensure_cdp_supervisor(
+            task_id,
+            expected_generation=creation_generation,
+        )
 
     return session_info
 
@@ -3160,12 +3550,48 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _serialize_browser_task_command(func):
+    """Fence browser subprocess dispatch against terminal task cleanup."""
+
+    @functools.wraps(func)
+    def _wrapped(
+        task_id: str,
+        command: str,
+        args: List[str] = None,
+        timeout: Optional[int] = None,
+        _engine_override: Optional[str] = None,
+        _allow_cleanup: bool = False,
+    ) -> Dict[str, Any]:
+        if _allow_cleanup:
+            # Cleanup already owns the per-task operation lock.
+            return func(
+                task_id,
+                command,
+                args,
+                timeout,
+                _engine_override,
+                _allow_cleanup=True,
+            )
+
+        bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+        with _task_cleanup_operation_lock(bare_task_id):
+            # Close the gap where cleanup could enter RETIRING after the last
+            # state check but before subprocess dispatch.
+            if _is_browser_task_unavailable(task_id):
+                return _browser_session_retired_result(task_id)
+            return func(task_id, command, args, timeout, _engine_override)
+
+    return _wrapped
+
+
+@_serialize_browser_task_command
 def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _allow_cleanup: bool = False,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -3186,7 +3612,7 @@ def _run_browser_command(
     # Fail before executable discovery or session lookup. This is the hard
     # boundary that prevents snapshot/click/eval/etc. from launching a daemon
     # or adopting a fresh page after cleanup retired exact target ownership.
-    if _is_browser_task_retired(task_id):
+    if not _allow_cleanup and _is_browser_task_unavailable(task_id):
         return _browser_session_retired_result(task_id)
 
     if timeout is None:
@@ -3230,12 +3656,17 @@ def _run_browser_command(
         return {"success": False, "error": hint}
 
     from tools.interrupt import is_interrupted
-    if is_interrupted():
+    # A turn cancellation must stop new browser work, but it must not cancel
+    # the exact close commands that establish the turn's ownership boundary.
+    if not _allow_cleanup and is_interrupted():
         return {"success": False, "error": "Interrupted"}
 
     # Get session info (creates Browserbase session with proxies if needed)
     try:
-        session_info = _get_session_info(task_id)
+        if _allow_cleanup:
+            session_info = _get_session_info(task_id, _for_cleanup=True)
+        else:
+            session_info = _get_session_info(task_id)
     except _BrowserSessionRetiredError:
         # Covers a cleanup racing between the early check above and lookup.
         return _browser_session_retired_result(task_id)
@@ -3243,7 +3674,14 @@ def _run_browser_command(
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
 
-    if session_info.get("cdp_url"):
+    # Session creation/publication happens outside the lifecycle lock. Cleanup
+    # may have entered RETIRING immediately after publication, so recheck before
+    # any capability probe, daemon spawn, or browser command dispatch.
+    if not _allow_cleanup and _is_browser_task_unavailable(task_id):
+        return _browser_session_retired_result(task_id)
+
+    task_owned_shared_cdp = _is_task_owned_shared_cdp_session(session_info)
+    if task_owned_shared_cdp:
         try:
             browser_cmd = _find_agent_browser(require_pin_tab=True)
         except AgentBrowserCapabilityError as exc:
@@ -3263,7 +3701,7 @@ def _run_browser_command(
     # CDP mode: the per-task named session pins one target on the shared endpoint.
     # Local mode: --session <name> launches a local headless Chromium.
     # The rest of the command (--json, command, args) is identical.
-    if session_info.get("cdp_url"):
+    if task_owned_shared_cdp:
         # agent-browser 0.34+ supports this combination: --pin-tab persists a
         # target binding for the named session instead of adopting another tab.
         backend_args = [
@@ -3273,6 +3711,11 @@ def _run_browser_command(
             session_info["cdp_url"],
             "--pin-tab",
         ]
+    elif session_info.get("cdp_url"):
+        # Provider-backed browsers retain the pre-pinning contract: their
+        # provider session owns the remote browser, so generic --cdp support is
+        # sufficient and must remain compatible with Node 22/agent-browser 0.26.
+        backend_args = ["--cdp", session_info["cdp_url"]]
     else:
         # Local mode — launch Chromium (headless by default, headed when configured)
         backend_args = ["--session", session_info["session_name"]]
@@ -3297,7 +3740,7 @@ def _run_browser_command(
         # --ignore-scripts: see _run_chrome_fallback_command's identical comment.
         npx_spec = (
             AGENT_BROWSER_PIN_TAB_NPX_SPEC
-            if session_info.get("cdp_url")
+            if task_owned_shared_cdp
             else AGENT_BROWSER_NPX_SPEC
         )
         cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", npx_spec]
@@ -3328,7 +3771,7 @@ def _run_browser_command(
         if _is_npx_agent_browser_sentinel(browser_cmd):
             _apply_agent_browser_npm_policy(
                 browser_env,
-                pin_tab_acquisition=bool(session_info.get("cdp_url")),
+                pin_tab_acquisition=task_owned_shared_cdp,
             )
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
@@ -3837,9 +4280,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # terminal boundary is only cleared permanently after a successful,
     # non-blocked navigation. Failed attempts clean any partial replacement and
     # restore the tombstone so follow-up snapshot/click/eval cannot see blank.
-    restarting_retired_task = _clear_retired_browser_task_for_navigation(
-        effective_task_id
-    )
+    try:
+        restarting_retired_task = _clear_retired_browser_task_for_navigation(
+            effective_task_id
+        )
+    except _BrowserSessionRetiredError:
+        return json.dumps(
+            _browser_session_retired_result(effective_task_id),
+            ensure_ascii=False,
+        )
 
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate
@@ -3888,10 +4337,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # agent-browser pinned. Without this, a shared CDP endpoint's
         # supervisor attaches to the first unrelated page and browser_console
         # can read or mutate another task's tab.
-        if session_info.get("cdp_url"):
+        if _is_task_owned_shared_cdp_session(session_info):
             pinned_target_id = _pinned_cdp_target_id(nav_session_key)
             if pinned_target_id:
-                _ensure_cdp_supervisor(nav_session_key, target_id=pinned_target_id)
+                _ensure_cdp_supervisor(
+                    nav_session_key,
+                    target_id=pinned_target_id,
+                    expected_generation=session_info.get("_lifecycle_generation"),
+                )
 
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
@@ -4697,7 +5150,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # The supervisor is a direct CDP fast path that bypasses
     # _run_browser_command. Apply the same terminal ownership gate before a
     # stale supervisor can evaluate against a task that cleanup retired.
-    if _is_browser_task_retired(effective_task_id):
+    if _is_browser_task_unavailable(effective_task_id):
         return json.dumps(
             _browser_session_retired_result(effective_task_id),
             ensure_ascii=False,
@@ -4745,21 +5198,31 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         supervisor = None
 
     if supervisor is not None:
-        try:
-            sup_result = supervisor.evaluate_runtime(expression)
-        except Exception as exc:
-            # A supervisor exists, so an exception may have happened after the
-            # expression reached Chrome. Never turn an ambiguous exception into
-            # a second execution through agent-browser.
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "code": "cdp_evaluate_failed",
-                    "data": {"exception_type": type(exc).__name__},
-                },
-                ensure_ascii=False,
-            )
+        # Hold the same per-task operation lock used by subprocess commands.
+        # Without it, cleanup could enter RETIRING after the state check but
+        # before Runtime.evaluate reached Chrome.
+        bare_task_id = _bare_task_id_for_session_key(effective_task_id)
+        with _task_cleanup_operation_lock(bare_task_id):
+            if _is_browser_task_unavailable(effective_task_id):
+                return json.dumps(
+                    _browser_session_retired_result(effective_task_id),
+                    ensure_ascii=False,
+                )
+            try:
+                sup_result = supervisor.evaluate_runtime(expression)
+            except Exception as exc:
+                # A supervisor exists, so an exception may have happened after
+                # the expression reached Chrome. Never turn an ambiguous
+                # exception into a second execution through agent-browser.
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "code": "cdp_evaluate_failed",
+                        "data": {"exception_type": type(exc).__name__},
+                    },
+                    ensure_ascii=False,
+                )
 
         if sup_result.get("ok"):
             raw_result = sup_result.get("result")
@@ -4852,10 +5315,10 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
             }
             return json.dumps(_copy_fallback_warning(response, result))
         # A live DOM node / NodeList / Window can't be JSON-serialized by CDP
-        # and fails the eval with "Object reference chain is too long".  The
-        # supervisor fast path retries with returnByValue=false, but the CLI
-        # subprocess can't, so turn the cryptic protocol error into actionable
-        # guidance instead of surfacing it raw.
+        # and fails the eval with "Object reference chain is too long". Turn
+        # the cryptic protocol error into actionable guidance. Neither
+        # path replays the expression: serialization can fail after JavaScript
+        # side effects have already happened.
         if "reference chain is too long" in err.lower():
             response = {
                 "success": False,
@@ -5451,7 +5914,180 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> bool:
+def _retry_provider_cleanup_records(
+    records: List[_PendingProviderCleanup],
+) -> bool:
+    all_closed = True
+    for record in records:
+        if not _attempt_provider_session_close(
+            record.task_id,
+            record.provider,
+            record.session_id,
+        ):
+            all_closed = False
+    return all_closed
+
+
+def _begin_task_cleanup_locked(
+    bare_task_id: str,
+    reason: BrowserCleanupReason,
+) -> BrowserCleanupReason:
+    """Enter RETIRING and advance the generation before inspecting sessions."""
+    state = _task_state_locked(bare_task_id)
+    previous_reason = _browser_task_cleanup_reasons.get(bare_task_id)
+    if state is BrowserTaskState.RETIRED:
+        effective_reason = BrowserCleanupReason.TERMINAL
+    elif (
+        state is BrowserTaskState.RETIRING
+        and previous_reason is not None
+        and _cleanup_reason_retires_task(previous_reason)
+        and not _cleanup_reason_retires_task(reason)
+    ):
+        effective_reason = previous_reason
+    else:
+        effective_reason = reason
+    _advance_task_generation_locked(bare_task_id)
+    _set_task_state_locked(
+        bare_task_id,
+        BrowserTaskState.RETIRING,
+        cleanup_reason=effective_reason,
+    )
+    return effective_reason
+
+
+def _is_hermes_owned_local_browser_session(session_info: Dict[str, Any]) -> bool:
+    """Return whether headed cross-turn persistence may retain this session."""
+    return not session_info.get("cdp_url") and not session_info.get("bb_session_id")
+
+
+def _cleanup_browser_session_keys(
+    task_id: str,
+    session_keys: Optional[List[str]] = None,
+    *,
+    reason: BrowserCleanupReason | str,
+    preserve_local_headed: bool = False,
+) -> bool:
+    """Cleanup selected ownership under one bare-task lifecycle transition."""
+    reason = _coerce_cleanup_reason(reason)
+    bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+    operation_lock = _task_cleanup_operation_lock(bare_task_id)
+    include_camofox = session_keys is None and _is_camofox_mode()
+
+    with operation_lock:
+        with _cleanup_lock:
+            effective_reason = _begin_task_cleanup_locked(bare_task_id, reason)
+            if session_keys is None:
+                if _is_local_sidecar_key(task_id):
+                    selected_keys = [task_id] if task_id in _active_sessions else []
+                else:
+                    selected_keys = [
+                        key
+                        for key, info in _active_sessions.items()
+                        if _bare_task_id_for_session_key(key) == bare_task_id
+                        and not (
+                            preserve_local_headed
+                            and _is_hermes_owned_local_browser_session(info)
+                        )
+                    ]
+            else:
+                selected_keys = list(dict.fromkeys(session_keys))
+            # Camofox keeps task ownership in its own module rather than in
+            # ``_active_sessions``. Preserve the pre-lifecycle hard-cleanup
+            # path by scheduling its bare task even when no agent-browser
+            # session key exists.
+            if include_camofox and task_id not in selected_keys:
+                selected_keys.append(task_id)
+            pending_before = [
+                record
+                for record in _pending_provider_cleanups.values()
+                if record.task_id == bare_task_id
+            ]
+
+        # Fence supervisor publication even when no browser session has been
+        # published yet. Per-session cleanup repeats this stop harmlessly.
+        for supervisor_key in set(selected_keys) | {task_id}:
+            _stop_cdp_supervisor(supervisor_key)
+
+        pending_retries_closed = _retry_provider_cleanup_records(pending_before)
+        cleanup_results = {
+            session_key: _cleanup_single_browser_session(session_key)
+            for session_key in selected_keys
+        }
+        failed_keys = [
+            key
+            for key, cleaned in cleanup_results.items()
+            if cleaned is False
+        ]
+
+        with _cleanup_lock:
+            retained_failed_keys = []
+            for failed_key in failed_keys:
+                retained = _active_sessions.get(failed_key)
+                if retained is not None:
+                    retained["_cleanup_retry_pending"] = True
+                    retained_failed_keys.append(failed_key)
+
+            recorded_key = _last_active_session_key.get(bare_task_id)
+            if retained_failed_keys:
+                if recorded_key not in retained_failed_keys:
+                    _last_active_session_key[bare_task_id] = retained_failed_keys[0]
+            elif recorded_key in selected_keys:
+                # If the primary was cleaned while a headed local sidecar was
+                # deliberately retained, keep normal commands on that survivor.
+                sidecar_key = f"{bare_task_id}{_LOCAL_SUFFIX}"
+                if (
+                    task_id == bare_task_id
+                    and sidecar_key not in selected_keys
+                    and sidecar_key in _active_sessions
+                ):
+                    _last_active_session_key[bare_task_id] = sidecar_key
+                else:
+                    _last_active_session_key.pop(bare_task_id, None)
+            elif (
+                not failed_keys
+                and not _is_local_sidecar_key(task_id)
+                and not _task_has_active_sessions_locked(bare_task_id)
+            ):
+                _last_active_session_key.pop(bare_task_id, None)
+
+            has_active_sessions = _task_has_active_sessions_locked(bare_task_id)
+            has_pending_provider = any(
+                record.task_id == bare_task_id
+                for record in _pending_provider_cleanups.values()
+            )
+            cleanup_confirmed = (
+                not failed_keys
+                and pending_retries_closed
+                and not has_pending_provider
+            )
+            if cleanup_confirmed:
+                if has_active_sessions:
+                    _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+                elif _cleanup_reason_retires_task(effective_reason):
+                    _set_task_state_locked(bare_task_id, BrowserTaskState.RETIRED)
+                else:
+                    _set_task_state_locked(bare_task_id, BrowserTaskState.ACTIVE)
+                if not has_active_sessions:
+                    for activity_key in list(_session_last_activity):
+                        if _bare_task_id_for_session_key(activity_key) == bare_task_id:
+                            _session_last_activity.pop(activity_key, None)
+            else:
+                _set_task_state_locked(
+                    bare_task_id,
+                    BrowserTaskState.RETIRING,
+                    cleanup_reason=effective_reason,
+                )
+                # Keep provider-only retry ownership visible to the background
+                # reaper even after page metadata has been removed.
+                _session_last_activity.setdefault(bare_task_id, time.time())
+        return cleanup_confirmed
+
+
+def cleanup_browser(
+    task_id: Optional[str] = None,
+    *,
+    reason: BrowserCleanupReason | str = BrowserCleanupReason.TERMINAL,
+) -> bool:
     """
     Clean up browser session(s) for a task.
 
@@ -5467,57 +6103,30 @@ def cleanup_browser(task_id: Optional[str] = None) -> bool:
     Args:
         task_id: Task identifier (or explicit session key)
     """
-    if task_id is None:
-        task_id = "default"
+    return _cleanup_browser_session_keys(
+        task_id or "default",
+        reason=reason,
+    )
 
-    # Expand to the full set of session keys to reap. For a bare task_id
-    # that includes the cloud/primary key + the local sidecar if one exists.
-    if _is_local_sidecar_key(task_id):
-        session_keys = [task_id]
-        bare_task_id = task_id[: -len(_LOCAL_SUFFIX)]
-    else:
-        session_keys = [task_id]
-        sidecar_key = f"{task_id}{_LOCAL_SUFFIX}"
-        with _cleanup_lock:
-            if sidecar_key in _active_sessions:
-                session_keys.append(sidecar_key)
-        bare_task_id = task_id
 
-    cleanup_results = {
-        session_key: _cleanup_single_browser_session(session_key)
-        for session_key in session_keys
-    }
-    failed_keys = [key for key, cleaned in cleanup_results.items() if cleaned is False]
-
-    # A terminal cleanup was requested but could not confirm exact target
-    # closure. Keep ownership and let the inactivity worker retry later; this
-    # marker distinguishes teardown retry from ordinary mid-turn command
-    # silence, which must not reap shared-CDP sessions.
-    if failed_keys:
-        with _cleanup_lock:
-            for failed_key in failed_keys:
-                retained = _active_sessions.get(failed_key)
-                if retained is not None:
-                    retained["_cleanup_retry_pending"] = True
-
-    # Drop stale last-active ownership. Cleaning a bare task drops its binding;
-    # cleaning a sidecar drops the binding only if that sidecar was still the
-    # recorded owner. This prevents a later click/snapshot from resurrecting a
-    # cleaned sidecar on about:blank while preserving a primary-session binding.
-    if failed_keys and _last_active_session_key.get(bare_task_id) not in failed_keys:
-        _last_active_session_key[bare_task_id] = failed_keys[0]
-    elif not failed_keys and _is_local_sidecar_key(task_id):
-        if _last_active_session_key.get(bare_task_id) == task_id:
-            _last_active_session_key.pop(bare_task_id, None)
-    elif not failed_keys:
-        _last_active_session_key.pop(bare_task_id, None)
-    return not failed_keys
+def cleanup_browser_for_turn(task_id: Optional[str] = None) -> bool:
+    """Enforce the per-turn boundary while retaining only local headed state."""
+    task_id = task_id or "default"
+    preserve_local = _is_headed_mode()
+    # Camofox owns its sessions outside ``_active_sessions``. Preserve the old
+    # headed cross-turn behavior explicitly; hard cleanup still goes through
+    # ``cleanup_browser`` and closes the Camofox task below.
+    if preserve_local and _is_camofox_mode():
+        return True
+    return _cleanup_browser_session_keys(
+        task_id,
+        reason=BrowserCleanupReason.TERMINAL,
+        preserve_local_headed=preserve_local,
+    )
 
 
 def _cleanup_single_browser_session(
     task_id: str,
-    *,
-    retire_task: bool = True,
 ) -> bool:
     """Internal: reap a single browser session by its exact session key."""
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
@@ -5545,7 +6154,7 @@ def _cleanup_single_browser_session(
         session_info = _active_sessions.get(task_id)
 
     if session_info:
-        bb_session_id = session_info.get("bb_session_id", "unknown")
+        bb_session_id = session_info.get("bb_session_id")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
 
         # Stop auto-recording before closing (saves the file)
@@ -5560,16 +6169,21 @@ def _cleanup_single_browser_session(
                 task_id,
             )
         else:
-            tab_close_terminal = not bool(session_info.get("cdp_url"))
+            task_owned_shared_cdp = _is_task_owned_shared_cdp_session(session_info)
+            tab_close_terminal = not task_owned_shared_cdp
             try:
                 # ``agent-browser close`` disconnects the named session but
                 # does not close its page in an externally-owned shared CDP
                 # browser. Close the pinned tab first so completed tasks do
                 # not leak pages; pinning makes this fail closed if the target
                 # was already removed.
-                if session_info.get("cdp_url"):
+                if task_owned_shared_cdp:
                     tab_close_result = _run_browser_command(
-                        task_id, "tab", ["close"], timeout=10
+                        task_id,
+                        "tab",
+                        ["close"],
+                        timeout=10,
+                        _allow_cleanup=True,
                     )
                     tab_close_terminal = tab_close_result.get("success") or (
                         tab_close_result.get("code") in {"tab_gone", "already_gone"}
@@ -5582,7 +6196,13 @@ def _cleanup_single_browser_session(
                             tab_close_result.get("error", tab_close_result),
                         )
                         return False
-                close_result = _run_browser_command(task_id, "close", [], timeout=10)
+                close_result = _run_browser_command(
+                    task_id,
+                    "close",
+                    [],
+                    timeout=10,
+                    _allow_cleanup=True,
+                )
                 if not close_result.get("success"):
                     logger.warning(
                         "agent-browser session close failed for task %s: %s",
@@ -5598,31 +6218,23 @@ def _cleanup_single_browser_session(
                 if not tab_close_terminal:
                     return False
 
-        # Now remove from tracking under lock. Install the terminal tombstone
-        # atomically with removal once no sibling session (primary/sidecar)
-        # remains for this task. Provider-authoritative expiry replacement
-        # passes retire_task=False because it continues directly into a fresh
-        # cloud session rather than ending task ownership.
+        # Page/target ownership is now gone (or provider-authoritative close
+        # below will release it). Remove it independently from provider API
+        # ownership so a failed provider close cannot resurrect/adopt a page.
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
-            bare_task_id = _bare_task_id_for_session_key(task_id)
-            task_still_active = any(
-                _bare_task_id_for_session_key(session_key) == bare_task_id
-                for session_key in _active_sessions
-            )
-            if retire_task and not task_still_active:
-                _retired_browser_tasks.add(bare_task_id)
 
         # Cloud mode: close the cloud browser session via provider API.
         # Local sidecars have bb_session_id=None so this no-ops for them.
+        provider_closed = True
         if bb_session_id:
-            provider = _get_cloud_provider()
-            if provider is not None:
-                try:
-                    provider.close_session(bb_session_id)
-                except Exception as e:
-                    logger.warning("Could not close cloud browser session: %s", e)
+            provider = session_info.get("_provider_cleanup_owner")
+            provider_closed = _attempt_provider_session_close(
+                task_id,
+                provider,
+                str(bb_session_id),
+            )
 
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -5642,6 +6254,7 @@ def _cleanup_single_browser_session(
                 shutil.rmtree(socket_dir, ignore_errors=True)
 
         logger.debug("Removed task %s from active sessions", task_id)
+        return provider_closed
     else:
         logger.debug("No active session found for task_id: %s", task_id)
     return True
@@ -5654,7 +6267,13 @@ def cleanup_all_browsers() -> None:
     Useful for cleanup on shutdown.
     """
     with _cleanup_lock:
-        task_ids = list(_active_sessions.keys())
+        task_ids = {
+            _bare_task_id_for_session_key(task_id)
+            for task_id in _active_sessions
+        }
+        task_ids.update(
+            record.task_id for record in _pending_provider_cleanups.values()
+        )
     for task_id in task_ids:
         cleanup_browser(task_id)
 

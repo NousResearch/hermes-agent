@@ -366,13 +366,13 @@ def _make_supervisor_with_cdp_fn(cdp_fn):
     return sup
 
 
-class TestEvaluateRuntimeDomNodeCrashRetry:
+class TestEvaluateRuntimeSerializationFailure:
     """returnByValue=True on a DOM node fails CDP serialization with 'Object
-    reference chain is too long'.  evaluate_runtime must retry with
-    returnByValue=False and return the node's description instead of crashing.
+    reference chain is too long'. The expression has already run and must not
+    be dispatched a second time.
     """
 
-    def test_reference_chain_crash_retries_without_by_value(self):
+    def test_reference_chain_crash_returns_actionable_failure_without_replay(self):
         from tools.browser_supervisor import CDPProtocolError
 
         calls = []
@@ -388,26 +388,40 @@ class TestEvaluateRuntimeDomNodeCrashRetry:
                         "message": "Object reference chain is too long",
                     },
                 )
-            # returnByValue=False: Chrome returns the node's description, no value.
-            return {
-                "id": 8,
-                "result": {
-                    "result": {
-                        "type": "object",
-                        "subtype": "node",
-                        "description": "body",
-                    }
-                },
-            }
+            raise AssertionError("expression must not be replayed")
 
         sup = _make_supervisor_with_cdp_fn(_fake_cdp)
         try:
             out = sup.evaluate_runtime("document.body")
-            assert out["ok"] is True
-            assert out["result"] == "body"
-            assert out["result_type"] == "object"
-            # First call by_value=True (crashed), retried with by_value=False.
-            assert calls == [True, False]
+            assert out["ok"] is False
+            assert out["kind"] == "result_serialization_failed"
+            assert out["data"]["expression_executed"] is True
+            assert out["data"]["replayed"] is False
+            assert calls == [True]
+        finally:
+            _stop_supervisor(sup)
+
+    def test_side_effecting_serialization_failure_executes_once(self):
+        from tools.browser_supervisor import CDPProtocolError
+
+        side_effect_count = 0
+
+        async def _fake_cdp(method, params=None, *, session_id=None, timeout=10.0):
+            nonlocal side_effect_count
+            side_effect_count += 1
+            raise CDPProtocolError(
+                9,
+                {
+                    "code": -32000,
+                    "message": "Object reference chain is too long",
+                },
+            )
+
+        sup = _make_supervisor_with_cdp_fn(_fake_cdp)
+        try:
+            out = sup.evaluate_runtime("window.counter++; returnDeepCycle()")
+            assert out["kind"] == "result_serialization_failed"
+            assert side_effect_count == 1
         finally:
             _stop_supervisor(sup)
 

@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 # ``websockets`` costs ~22 ms at import and is only needed when a supervisor
 # actually connects to a CDP endpoint (``_connect_ws``). With
@@ -657,17 +657,25 @@ class CDPSupervisor:
             # For live DOM nodes / NodeLists / Window that serialization can
             # blow past CDP's recursion guard and fail the whole call with
             # ``Object reference chain is too long`` (a protocol-level error,
-            # not a JS exception).  Retry once with ``returnByValue=False`` so
-            # Chrome returns the object's description string instead — the same
-            # graceful degradation path used for ``document.querySelector(...)``
-            # results — rather than crashing the eval.
+            # not a JS exception). The expression has already executed, so it
+            # must never be replayed with different serialization parameters.
             if return_by_value and _is_reference_chain_protocol_error(exc):
-                try:
-                    response = _run_eval(False)
-                except Exception as exc2:
-                    return _runtime_failure(exc2)
-            else:
-                return _runtime_failure(exc)
+                failure = _runtime_failure(exc)
+                return {
+                    "ok": False,
+                    "kind": "result_serialization_failed",
+                    "error": (
+                        "JavaScript executed once, but its result could not be "
+                        "serialized. Return a primitive value, use "
+                        "JSON.stringify(), or inspect the page with a snapshot."
+                    ),
+                    "data": {
+                        **(failure.get("data") or {}),
+                        "expression_executed": True,
+                        "replayed": False,
+                    },
+                }
+            return _runtime_failure(exc)
 
         # Runtime.evaluate response shape:
         #   {"id": N, "result": {"result": {"type": "...", "value": ..., ...},
@@ -1533,6 +1541,8 @@ class _SupervisorRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: Dict[str, CDPSupervisor] = {}
+        self._generation: Dict[str, int] = {}
+        self._starting: Dict[str, List[CDPSupervisor]] = {}
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         """Return the supervisor for ``task_id`` if running, else ``None``."""
@@ -1548,40 +1558,73 @@ class _SupervisorRegistry:
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
         start_timeout: float = 15.0,
+        publish_guard: Optional[Callable[[], bool]] = None,
     ) -> CDPSupervisor:
         """Ensure a supervisor runs for ``(task_id, cdp_url, target_id)``.
 
         If a supervisor exists for this task but was bound to a different
         ``cdp_url``, the old one is stopped and a fresh one is started.
         """
+        supervisor: CDPSupervisor
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
                 if existing.cdp_url == cdp_url and existing.target_id == target_id:
                     thread_ok = existing._thread is not None and existing._thread.is_alive()
                     loop_ok = existing._loop is not None and existing._loop.is_running()
-                    if thread_ok and loop_ok:
+                    guard_ok = publish_guard is None or publish_guard()
+                    if thread_ok and loop_ok and guard_ok:
                         return existing
                     # Unhealthy — tear down and recreate.
                 # URL changed or unhealthy — tear down, fall through to re-create.
-                self._by_task.pop(task_id, None)
-        if existing is not None:
-            existing.stop()
+            # Construct and register the starter before releasing the same
+            # lock that observed/displaced the old entry. Otherwise stop()
+            # can pass through the gap and a later starter can publish after
+            # that stop already returned.
+            supervisor = CDPSupervisor(
+                task_id=task_id,
+                cdp_url=cdp_url,
+                target_id=target_id,
+                dialog_policy=dialog_policy,
+                dialog_timeout_s=dialog_timeout_s,
+            )
+            self._by_task.pop(task_id, None)
+            start_generation = self._generation.get(task_id, 0)
+            self._starting.setdefault(task_id, []).append(supervisor)
 
-        supervisor = CDPSupervisor(
-            task_id=task_id,
-            cdp_url=cdp_url,
-            target_id=target_id,
-            dialog_policy=dialog_policy,
-            dialog_timeout_s=dialog_timeout_s,
-        )
-        supervisor.start(timeout=start_timeout)
+        try:
+            if existing is not None:
+                existing.stop()
+            supervisor.start(timeout=start_timeout)
+        except BaseException:
+            with self._lock:
+                starters = self._starting.get(task_id, [])
+                if supervisor in starters:
+                    starters.remove(supervisor)
+                if not starters:
+                    self._starting.pop(task_id, None)
+            supervisor.stop()
+            raise
+
         duplicate: Optional[CDPSupervisor] = None
         displaced: Optional[CDPSupervisor] = None
+        stale_start = False
         with self._lock:
+            starters = self._starting.get(task_id, [])
+            if supervisor in starters:
+                starters.remove(supervisor)
+            if not starters:
+                self._starting.pop(task_id, None)
+
+            stale_start = self._generation.get(task_id, 0) != start_generation
+            if not stale_start and publish_guard is not None:
+                stale_start = not publish_guard()
+
             # Guard against a concurrent get_or_start from another thread.
             already = self._by_task.get(task_id)
-            if (
+            if stale_start:
+                pass
+            elif (
                 already is not None
                 and already.cdp_url == cdp_url
                 and already.target_id == target_id
@@ -1595,6 +1638,9 @@ class _SupervisorRegistry:
         # targets racing for one task, the last publisher owns the registry and
         # explicitly stops the instance it displaced; no untracked supervisor
         # remains live.
+        if stale_start:
+            supervisor.stop()
+            return supervisor
         if duplicate is not None:
             supervisor.stop()
             return duplicate
@@ -1603,18 +1649,38 @@ class _SupervisorRegistry:
         return supervisor
 
     def stop(self, task_id: str) -> None:
-        """Stop and discard the supervisor for ``task_id`` if it exists."""
+        """Fence, stop, and discard published or in-flight supervisors."""
         with self._lock:
+            self._generation[task_id] = self._generation.get(task_id, 0) + 1
             supervisor = self._by_task.pop(task_id, None)
-        if supervisor is not None:
-            supervisor.stop()
+            starters = list(self._starting.get(task_id, ()))
+        to_stop = ([supervisor] if supervisor is not None else []) + starters
+        seen: set[int] = set()
+        for item in to_stop:
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            item.stop()
 
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
             items = list(self._by_task.items())
             self._by_task.clear()
-        for _, supervisor in items:
+            starters = [
+                (task_id, supervisor)
+                for task_id, supervisors in self._starting.items()
+                for supervisor in supervisors
+            ]
+            for task_id in set(self._generation) | set(self._starting) | {
+                task_id for task_id, _ in items
+            }:
+                self._generation[task_id] = self._generation.get(task_id, 0) + 1
+        seen: set[int] = set()
+        for _, supervisor in items + starters:
+            if id(supervisor) in seen:
+                continue
+            seen.add(id(supervisor))
             supervisor.stop()
 
 

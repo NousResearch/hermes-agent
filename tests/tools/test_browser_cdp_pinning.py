@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 from tools import browser_tool
 
@@ -318,7 +318,9 @@ def test_fixed_cdp_supervisor_receives_pinned_target(monkeypatch):
         target_id="TARGET-A",
         dialog_policy="must_respond",
         dialog_timeout_s=300.0,
+        publish_guard=ANY,
     )
+    assert callable(start.call_args.kwargs["publish_guard"])
 
 
 def test_pinned_cdp_target_id_uses_agent_browser_active_page(monkeypatch):

@@ -226,6 +226,45 @@
     --ui-diff-remove-background: color-mix(in srgb, var(--ui-red) 12%, transparent);
     --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 70%, #000);
 
+    /* Colorblind mode (desktop.colorblind_mode): blue add / orange remove —
+       a pair that stays clearly separable under red-green color vision
+       deficiency (the two hues land on opposite sides of the
+       deuteranopia/protanopia confusion axis). Opt-in: the default green/red
+       palette above applies unless html carries [data-colorblind='true'],
+       which useColorblindMode() toggles from the config. */
+    :root[data-colorblind='true']:not(.dark) {
+      --ui-diff-add-border: #0a6cd2;
+      --ui-diff-add-background: color-mix(in srgb, #0a6cd2 20%, transparent);
+      --ui-diff-add-foreground: #0a6cd2;
+      --ui-diff-remove-border: #c2570a;
+      --ui-diff-remove-background: color-mix(in srgb, #c2570a 20%, transparent);
+      --ui-diff-remove-foreground: #c2570a;
+    }
+    :root[data-colorblind='true'].dark {
+      --ui-diff-add-border: #5f9ef8;
+      --ui-diff-add-background: color-mix(in srgb, #5f9ef8 22%, transparent);
+      --ui-diff-add-foreground: #a8c8ff;
+      --ui-diff-remove-border: #ff9e64;
+      --ui-diff-remove-background: color-mix(in srgb, #ff9e64 22%, transparent);
+      --ui-diff-remove-foreground: #ffc9a3;
+    }
+    /* Review file-tree status glyphs (A/D icons) and the +n/−n counters use
+       the semantic green/red text classes directly; recolor them inside
+       review rows only so the whole diff surface speaks one color language
+       without touching app-wide green/red usage (errors, PR badges, …). */
+    :root[data-colorblind='true'] .group\/review-row .text-\(--ui-green\) {
+      color: #0a6cd2;
+    }
+    :root[data-colorblind='true'] .group\/review-row .text-\(--ui-red\) {
+      color: #c2570a;
+    }
+    :root[data-colorblind='true'].dark .group\/review-row .text-\(--ui-green\) {
+      color: #5f9ef8;
+    }
+    :root[data-colorblind='true'].dark .group\/review-row .text-\(--ui-red\) {
+      color: #ff9e64;
+    }
+
     /* Overlay ladder. DESIGN.md: app-wide surfaces must not compete through
        ad-hoc z-index literals — pick the rung that describes the surface.
        Values are deliberately sparse so a one-off can slot between two rungs

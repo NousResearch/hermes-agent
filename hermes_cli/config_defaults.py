@@ -3515,6 +3515,11 @@ DEFAULT_CONFIG = {
         # Ignored on macOS/Windows. Bridged to the HERMES_DESKTOP_PASSWORD_STORE
         # env var the Electron app reads, so an explicit env var still wins.
         "password_store": "auto",
+        # Colorblind-friendly diff colors: when true, file diffs use a
+        # blue (add) / orange (remove) pair that stays clearly separable
+        # under red-green color vision deficiency, instead of the default
+        # green/red. Off by default — preserves the default palette.
+        "colorblind_mode": False,
         # macOS only: optional persistent code-signing identity (a cert in the
         # login keychain — a self-signed "Code Signing" cert from Keychain
         # Access works; no Apple Developer account needed) used to re-sign

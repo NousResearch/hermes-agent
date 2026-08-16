@@ -1541,14 +1541,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
+        """Raw chat+sender key so distinct group authors can never coalesce."""
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        chat_id = str(raw.get("chatId") or event.source.chat_id or "")
+        sender_id = str(
+            raw.get("senderId")
+            or raw.get("from")
+            or event.user_id
+            or event.source.user_id
+            or ""
         )
+        profile = str(event.source.profile or "")
+        return "\x1f".join((profile, chat_id, sender_id))
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.

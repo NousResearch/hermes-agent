@@ -147,6 +147,8 @@ def test_disallowed_group_never_buffers_or_persists():
 
 
 def test_triggered_turn_uses_same_shared_group_source_and_immediate_context():
+    from gateway.run import _build_gateway_agent_history
+
     adapter = _make_adapter()
     asyncio.run(adapter._build_message_event(_group_message("pool opens Sunday")))
 
@@ -169,7 +171,17 @@ def test_triggered_turn_uses_same_shared_group_source_and_immediate_context():
         "[Bob|6289999999999@s.whatsapp.net]\nwhen does the pool open?"
     )
     assert "observed WhatsApp group context" in (event.channel_prompt or "")
-    assert "[Alice] pool opens Sunday" in (event.channel_context or "")
+    # Durable mode has one context source: state.db replay. The RAM backfill
+    # remains available for non-durable mode but must not duplicate this row.
+    assert event.channel_context is None
+    history = [message for _sid, message, _skip in adapter._session_store.messages]
+    replay, observed_context = _build_gateway_agent_history(
+        history, channel_prompt=event.channel_prompt
+    )
+    assert replay == []
+    assert observed_context == (
+        "[Alice|6281234567890@s.whatsapp.net]\npool opens Sunday"
+    )
     assert event.metadata["whatsapp_archive_text"] == (
         "@15551230000 when does the pool open?"
     )
@@ -177,6 +189,25 @@ def test_triggered_turn_uses_same_shared_group_source_and_immediate_context():
         "6289999999999@s.whatsapp.net"
     )
     assert event.metadata["whatsapp_chat_id"] == GROUP_JID
+
+
+def test_ram_context_remains_when_durable_observe_is_inactive_for_chat():
+    adapter = _make_adapter(observe=False)
+    asyncio.run(adapter._build_message_event(_group_message("pool opens Sunday")))
+
+    event = asyncio.run(
+        adapter._build_message_event(
+            _group_message(
+                "@15551230000 when?",
+                sender="6289999999999@s.whatsapp.net",
+                messageId="wamid-43",
+                mentionedIds=[BOT_JID],
+            )
+        )
+    )
+
+    assert event is not None
+    assert "[Alice] pool opens Sunday" in (event.channel_context or "")
 
 
 def test_gateway_command_retains_sender_identity_and_text_for_authorization():
@@ -208,6 +239,8 @@ def test_shared_group_source_is_authorized_by_approved_group(monkeypatch):
 
 
 def test_immediate_context_window_remains_bounded_to_fifty_messages():
+    from gateway.run import _build_gateway_agent_history
+
     adapter = _make_adapter()
 
     for index in range(55):
@@ -222,6 +255,83 @@ def test_immediate_context_window_remains_bounded_to_fifty_messages():
     assert entries[0][3] == "message 5"
     assert entries[-1][3] == "message 54"
     assert len(adapter._session_store.messages) == 55
+    history = [message for _sid, message, _skip in adapter._session_store.messages]
+    replay, observed_context = _build_gateway_agent_history(history)
+    assert replay == []
+    assert observed_context is not None
+    context_lines = observed_context.splitlines()
+    assert "message 4" not in context_lines
+    assert "message 5" in context_lines
+    assert "message 54" in context_lines
+    assert observed_context.count("[Alice|") == 50
+
+
+def test_observed_rows_never_replay_as_user_turns_without_prompt_marker():
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {
+            "role": "user",
+            "content": "[Alice|6281234567890@s.whatsapp.net]\nambient",
+            "observed": True,
+        },
+        {"role": "assistant", "content": "previous answer"},
+    ]
+
+    replay, observed_context = _build_gateway_agent_history(
+        history, channel_prompt=None
+    )
+
+    assert replay == [{"role": "assistant", "content": "previous answer"}]
+    assert observed_context == (
+        "[Alice|6281234567890@s.whatsapp.net]\nambient"
+    )
+
+
+def test_text_debounce_never_merges_different_group_senders():
+    async def exercise():
+        adapter = _make_adapter()
+        adapter._pending_text_batches = {}
+        adapter._pending_text_batch_tasks = {}
+        adapter._text_batch_delay_seconds = 60.0
+        adapter._text_batch_split_delay_seconds = 60.0
+
+        first = await adapter._build_message_event(
+            _group_message(
+                "@15551230000 first",
+                sender="6281111111111@s.whatsapp.net",
+                sender_name="Alice",
+                messageId="wamid-first",
+                mentionedIds=[BOT_JID],
+            )
+        )
+        second = await adapter._build_message_event(
+            _group_message(
+                "@15551230000 second",
+                sender="6282222222222@s.whatsapp.net",
+                sender_name="Bob",
+                messageId="wamid-second",
+                mentionedIds=[BOT_JID],
+            )
+        )
+        assert first is not None and second is not None
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        try:
+            assert len(adapter._pending_text_batches) == 2
+            assert adapter._text_batch_key(first) != adapter._text_batch_key(second)
+            assert {event.text for event in adapter._pending_text_batches.values()} == {
+                "[Alice|6281111111111@s.whatsapp.net]\nfirst",
+                "[Bob|6282222222222@s.whatsapp.net]\nsecond",
+            }
+        finally:
+            tasks = list(adapter._pending_text_batch_tasks.values())
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(exercise())
 
 
 def test_immediate_context_backfill_is_opt_in_for_existing_deployments(monkeypatch):

@@ -551,21 +551,28 @@ class WhatsAppBehaviorMixin:
         self, data: Dict[str, Any]
     ) -> Optional[str]:
         """Format buffered messages the target session has not seen yet."""
+        # Durable observe rows are replayed by the gateway as the same bounded
+        # context-only window. Attaching the RAM copy as well would show every
+        # ambient message twice in the addressed turn.
+        chat_id = str(data.get("chatId") or "")
+        observe_allowed = self._whatsapp_observe_allowed_chats()
+        if (
+            self._whatsapp_observe_unmentioned_group_messages()
+            and getattr(self, "_session_store", None) is not None
+            and observe_allowed
+            and self._matches_whatsapp_allowlist(chat_id, observe_allowed)
+        ):
+            return None
         if not self._whatsapp_history_backfill_enabled():
             return None
         if not self._whatsapp_require_mention():
             return None
-        chat_id = str(data.get("chatId") or "")
         if chat_id in self._whatsapp_free_response_chats():
             return None
         entries = self._group_history_buffers.get(chat_id)
         if not entries:
             return None
-        if self._whatsapp_observe_unmentioned_group_messages():
-            # Durable observe mode deliberately shares one group session.
-            sender_key = "__shared_group_session__"
-        else:
-            sender_key = self._normalize_whatsapp_id(data.get("senderId")) or "?"
+        sender_key = self._normalize_whatsapp_id(data.get("senderId")) or "?"
         watermarks = self._group_history_watermarks.setdefault(chat_id, {})
         seen_upto = watermarks.get(sender_key, 0)
         fresh = [entry for entry in entries if entry[0] > seen_upto]

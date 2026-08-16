@@ -1332,27 +1332,9 @@ def _build_replay_entry(
     return entry
 
 
-_OBSERVED_CONTEXT_PROMPT_MARKERS = (
-    "observed Telegram group context",
-    "observed WhatsApp group context",
-)
 _OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
-
-
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for group turns that may include observed chatter.
-
-    Telegram and WhatsApp observe-unmentioned modes persist skipped group
-    chatter so a later trigger can see it. Those rows must not replay as
-    ordinary user turns. Adapters mark eligible turns in their channel prompt;
-    the legacy helper name is retained for compatibility with existing tests.
-    """
-
-    return bool(
-        channel_prompt
-        and any(marker in channel_prompt for marker in _OBSERVED_CONTEXT_PROMPT_MARKERS)
-    )
+_OBSERVED_GROUP_CONTEXT_MAX_MESSAGES = 50
 
 
 def _csv_or_list_to_set(raw: Any) -> set[str]:
@@ -1449,7 +1431,6 @@ def _build_gateway_agent_history(
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
     for msg in history or []:
         role = msg.get("role")
@@ -1468,8 +1449,12 @@ def _build_gateway_agent_history(
         content = msg.get("content")
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+        # ``observed`` is a storage-level semantic, not an adapter prompt
+        # convention. Never replay such rows as user-authored requests, even
+        # when dispatch bypasses the adapter or loses its channel prompt.
+        if msg.get("observed"):
+            if role == "user" and content:
+                observed_group_context.append(str(content).strip())
             continue
 
         # Rich agent messages (tool_calls, tool results) must be passed through
@@ -1523,7 +1508,9 @@ def _build_gateway_agent_history(
         agent_history, now=time.time()
     )
 
-    observed_context = "\n".join(observed_group_context).strip() or None
+    observed_context = "\n".join(
+        observed_group_context[-_OBSERVED_GROUP_CONTEXT_MAX_MESSAGES:]
+    ).strip() or None
     return agent_history, observed_context
 
 

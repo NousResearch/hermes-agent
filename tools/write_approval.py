@@ -18,10 +18,10 @@ Both stores are written from two origins:
 This module lets the user gate those writes per-subsystem with a boolean
 ``write_approval``:
 
-  * ``false`` (default) — write freely (the pre-gate behaviour)
-  * ``true``            — require approval: do not commit the write; either
-    prompt inline (memory, interactive CLI only) or **stage** it to a pending
-    store and surface it for the user to approve or reject out-of-band
+  * ``false`` — write freely (the pre-gate behaviour; still the default for memory)
+  * ``true``  — require approval: do not commit the write; either prompt inline
+    (memory, interactive CLI only) or **stage** it to a pending store and surface
+    it for the user to approve or reject out-of-band (default for skills, #70128)
 
 The size asymmetry between memory and skills is real and unavoidable: a memory
 entry can be reviewed inline in a chat bubble; a 100 KB SKILL.md cannot. So
@@ -74,16 +74,18 @@ CONFIG_KEY = "write_approval"
 def write_approval_enabled(subsystem: str) -> bool:
     """Return whether the approval gate is enabled for ``subsystem``.
 
-    Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
-    ``False`` (gate off — writes flow freely) for any unset / invalid value so
-    existing installs keep their current behaviour until the user opts in.
+    Reads ``<subsystem>.write_approval`` from config.yaml. When the key is
+    unset, falls back to ``DEFAULT_CONFIG`` values via ``load_config()``
+    (memory defaults to off; skills defaults to on after #70128). Invalid
+    subsystem names always return ``False``.
     """
     if subsystem not in _SUBSYSTEMS:
         return False
     try:
-        from hermes_cli.config import load_config, cfg_get
+        from hermes_cli.config import load_config, cfg_get, DEFAULT_CONFIG
         cfg = load_config()
-        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
+        default = cfg_get(DEFAULT_CONFIG, subsystem, CONFIG_KEY, default=False)
+        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=default)
     except Exception:
         return False
     return _normalize_enabled(raw)
@@ -261,8 +263,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         inline_detail: full content shown in the inline prompt (memory entries
             are small; skills never take the inline path).
 
-    Decision matrix:
-        gate off (default)                    → allow (writes flow freely)
+    Decision matrix (memory defaults gate off; skills defaults gate on):
+        gate off                              → allow (writes flow freely)
         gate on, memory + interactive CLI     → inline approve/deny prompt
         gate on, memory + gateway/script/bg   → stage
         gate on, skills (any origin)          → stage (too big to review inline)

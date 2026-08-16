@@ -24,6 +24,10 @@ def isolate_skills(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Force the skills write-approval gate OFF so size-limit validation runs on
+    # the direct write path. The gate defaults on after #70128 (staging has its
+    # own coverage in tests/tools/test_write_approval.py).
+    monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem: False)
     return skills_dir
 
 

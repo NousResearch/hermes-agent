@@ -30,9 +30,15 @@ from agent.skill_utils import (
 @contextmanager
 def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
-    only the temp directory — not the real ~/.hermes/skills/."""
+    only the temp directory — not the real ~/.hermes/skills/.
+
+    Also forces the skills write-approval gate OFF so these tests exercise the
+    direct write/dispatch paths. The gate defaults on after #70128; its staging
+    behaviour has dedicated coverage in tests/tools/test_write_approval.py.
+    """
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch("tools.write_approval.write_approval_enabled", return_value=False):
         yield
 
 
@@ -864,6 +870,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
          patch("tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
          patch("tools.skill_usage._is_curator_managed_record", return_value=True), \
+         patch("tools.write_approval.write_approval_enabled", return_value=False), \
          patch("tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root
 

@@ -169,3 +169,34 @@ def test_stored_prompt_staleness(tmp_path):
     # prompts without a stamp (every non-Bot-Chat session) are never stale
     assert not bot_mode_probe.stored_prompt_capability_stale("ordinary prompt", home)
     assert not bot_mode_probe.stored_prompt_capability_stale("", home)
+
+
+def test_legacy_bot_chat_upgrade(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    legacy = "old prompt with no protocol and no stamp"
+    # legacy Bot Chat on a managed install → upgrade once
+    assert bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home)
+
+    # a rebuilt prompt (stamped) never re-fires
+    upgraded = legacy + "\n\n" + bot_mode_probe.get_bot_mode_protocol_section(home) + "\n\n" + bot_mode_probe.epoch_line(home)
+    assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(upgraded, home)
+
+    # SOUL already carries the legacy plugin-side append → probe silent →
+    # no upgrade (rebuilding would loop: the new prompt would be unstamped too)
+    bot_mode_probe._reset_cache_for_tests()
+    (home / "SOUL.md").write_text("# Me\n\n## Messaging other agents\nlegacy\n", encoding="utf-8")
+    assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home)
+
+    # prompt whose SOUL section rode into it → protocol heading present → no upgrade
+    assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(
+        "prompt containing\n## Messaging other agents\nfrom SOUL", home
+    )
+
+    # unmanaged install → probe silent → never upgrades
+    bot_mode_probe._reset_cache_for_tests()
+    home2 = tmp_path / ".hermes2"
+    home2.mkdir()
+    assert not bot_mode_probe.stored_bot_chat_prompt_needs_upgrade(legacy, home2)

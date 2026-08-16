@@ -260,6 +260,33 @@ def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike |
         return False
 
 
+def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
+    """True when a Bot Chat session's stored prompt PREDATES this feature.
+
+    Legacy Bot Chats (created before bundling / this epoch mechanism)
+    persisted prompts with no protocol section and no epoch stamp; without
+    an explicit upgrade they would be stranded forever — the staleness check
+    above only fires on stamped prompts. This is a one-time migration per
+    legacy session: the caller must only invoke it for sessions titled
+    "Bot Chat", and only rebuilds when the probe would actually emit a
+    section (a profile whose SOUL.md already carries the legacy plugin-side
+    append keeps its protocol-free prompt — rebuilding those would loop,
+    since the probe stays silent and the rebuilt prompt would be unstamped
+    again). Fails closed to "no upgrade".
+    """
+    try:
+        if _EPOCH_PREFIX in (stored_prompt or ""):
+            return False
+        if _PROTOCOL_HEADING in (stored_prompt or ""):
+            return False
+        # Only upgrade when the rebuild would actually add the section —
+        # this is what guarantees the rebuilt prompt carries a stamp and
+        # the upgrade can never re-fire.
+        return bool(get_bot_mode_protocol_section(home))
+    except Exception:
+        return False
+
+
 def _reset_cache_for_tests() -> None:
     with _lock:
         _cached.clear()

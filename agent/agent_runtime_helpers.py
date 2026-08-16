@@ -2150,23 +2150,25 @@ def _is_litellm_route(provider_lower: str, base_url: str) -> bool:
 
     Provider naming varies per install (``litellm``, ``custom:litellm``, or a
     bare ``custom`` alias pointed at a LiteLLM host), so both signals are
-    checked. The host side matches ``litellm`` as a whole dot- or
-    hyphen-delimited label token rather than a raw substring:
-    ``base_url_hostname``'s own docstring names substring host matching as the
-    false-positive class to avoid, and a plain ``"litellm" in hostname`` grants
-    Anthropic markers to unrelated hosts like ``notlitellm.example.com``.
+    checked. Both match ``litellm`` as a whole delimited token rather than a
+    raw substring: ``base_url_hostname``'s own docstring names substring host
+    matching as the false-positive class to avoid, and a plain
+    ``"litellm" in ...`` grants Anthropic markers to unrelated routes like
+    ``notlitellm.example.com`` or a provider named ``custom:notlitellm``.
     A ``litellm`` *path* segment never qualifies — only the host does.
     """
-    if "litellm" in provider_lower:
+    if _has_litellm_token(provider_lower, ":-_/"):
         return True
-    hostname = base_url_hostname(base_url)
-    if not hostname:
+    return _has_litellm_token(base_url_hostname(base_url), ".-")
+
+
+def _has_litellm_token(value: str, delimiters: str) -> bool:
+    """True when ``value`` contains ``litellm`` as a whole delimited token."""
+    if not value:
         return False
-    return any(
-        "litellm" == token
-        for label in hostname.split(".")
-        for token in label.split("-")
-    )
+    for delimiter in delimiters:
+        value = value.replace(delimiter, " ")
+    return "litellm" in value.split()
 
 
 def anthropic_prompt_cache_policy(

@@ -658,6 +658,34 @@ class TestLiteLLMOpenAIWire:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
     @pytest.mark.parametrize(
+        "provider", ["custom:notlitellm", "notlitellm", "mylitellmthing"]
+    )
+    def test_litellm_lookalike_provider_names_do_not_cache(self, provider):
+        # The provider signal is token-wise for the same reason as the host:
+        # a user-named provider that merely contains "litellm" is not a
+        # LiteLLM route and must not be handed Anthropic markers.
+        agent = _make_agent(
+            provider=provider,
+            base_url="https://gateway.attacker.example/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    @pytest.mark.parametrize(
+        "provider", ["litellm", "custom:litellm", "litellm-router", "LiteLLM"]
+    )
+    def test_litellm_provider_spellings_still_cache(self, provider):
+        # ...while every real spelling of a LiteLLM provider id still matches.
+        agent = _make_agent(
+            provider=provider,
+            base_url="https://gateway.internal.example/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    @pytest.mark.parametrize(
         "api_mode", ["codex_responses", "bedrock_converse", "codex_app_server"]
     )
     def test_litellm_claude_on_other_transports_does_not_cache(self, api_mode):

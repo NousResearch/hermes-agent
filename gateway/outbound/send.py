@@ -715,11 +715,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
-        if entry is not None and entry.send_message_handler is not None:
+        handler = entry.send_message_handler if entry is not None else None
+        if handler is not None and args:
             # Custom handler receives the full typed request once (not per chunk).
             try:
                 import inspect
-                result = entry.send_message_handler(args or {}, chat_id, platform_name, pconfig)
+                result = handler(args, chat_id, platform_name, pconfig)
                 return await result if inspect.isawaitable(result) else result
             except Exception as e:
                 return {"error": f"Plugin send_message handler failed: {e}"}
@@ -727,6 +728,30 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         send_one = lambda chunk, is_last: _via_adapter_route(
             platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
     last_result = await _send_chunks(chunks, send_one)
+    if (
+        isinstance(last_result, dict)
+        and last_result.get("error")
+        and handler is not None
+        and not args
+        and (entry.standalone_sender_fn is None if entry is not None else True)
+    ):
+        try:
+            import inspect
+            synth_args = {
+                "message": chunks[-1] if chunks else message,
+                "chat_id": chat_id,
+                "target": chat_id,
+            }
+            if thread_id:
+                synth_args["thread_id"] = thread_id
+            if media_files:
+                synth_args["media_files"] = media_files
+            res = handler(synth_args, chat_id, platform_name, pconfig)
+            res = await res if inspect.isawaitable(res) else res
+            if isinstance(res, dict) and (res.get("success") or res.get("error")):
+                return res
+        except Exception as e:
+            return {"error": f"Plugin send_message handler failed: {e}"}
     if (warning and isinstance(last_result, dict) and last_result.get("success")
             and not last_result.get("media_delivered")):
         last_result["warnings"] = [*last_result.get("warnings", []), warning]

@@ -37,7 +37,7 @@ import { initAuthCreds, BufferJSON, proto } from '@whiskeysockets/baileys';
 import {
   mkdir, open as fsOpen, readdir, readFile, rename, stat, unlink,
 } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { randomBytes } from 'crypto';
 
 const TMP_PREFIX = '.tmp-';
@@ -84,6 +84,23 @@ export async function writeFileAtomic(filePath, contents) {
     await handle.close();
     handle = null;
     await rename(tmpPath, filePath);
+    // rename() only orders the DIRECTORY ENTRY, and that entry is itself
+    // buffered: a crash right after the rename can lose it, leaving the old
+    // name or nothing at all. fsync the parent directory so the replacement
+    // is durable, not just atomic. Best-effort — some filesystems reject a
+    // directory fsync, and failing here would undo a rename that already
+    // succeeded.
+    let dirHandle = null;
+    try {
+      dirHandle = await fsOpen(dirname(filePath), 'r');
+      await dirHandle.sync();
+    } catch {
+      /* directory fsync unsupported — the rename still landed */
+    } finally {
+      if (dirHandle) {
+        try { await dirHandle.close(); } catch {}
+      }
+    }
   } catch (err) {
     if (handle) {
       try { await handle.close(); } catch {}
@@ -97,9 +114,14 @@ export async function writeFileAtomic(filePath, contents) {
 async function sweepStaleTemps(folder) {
   try {
     const entries = await readdir(folder);
+    // Match the exact shape writeFileAtomic produces (`<file>.tmp-<pid>-<hex>`).
+    // A substring test would also delete legitimate key files: ids are only
+    // mangled for `/` and `:`, so a sender-key whose JID happens to contain
+    // ".tmp-" would be swept away as garbage at startup.
+    const tempShape = /\.tmp-\d+-[0-9a-f]+$/;
     await Promise.all(
       entries
-        .filter((name) => name.includes(TMP_PREFIX))
+        .filter((name) => tempShape.test(name))
         .map((name) => unlink(join(folder, name)).catch(() => {})),
     );
   } catch {
@@ -167,6 +189,14 @@ export async function useAtomicMultiFileAuthState(folder) {
             'backup, or delete it deliberately to pair again from scratch.',
           );
         }
+        // Non-strict path: keys regenerate, so this is recoverable — but an
+        // existing-yet-unreadable file is damage, not a first run. Say so, or
+        // the key-file half of the outage stays as invisible as the creds
+        // half used to be.
+        process.emitWarning(
+          `${filePath} exists but is empty or unreadable (${err.message}); ` +
+          'treating as absent and regenerating.',
+        );
         return null;
       }
     });

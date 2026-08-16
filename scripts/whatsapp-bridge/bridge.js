@@ -439,7 +439,18 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  // saveCreds() is fire-and-forget from Baileys' event handlers. The atomic
+  // writer REJECTS on a failed write where the old one silently truncated, so
+  // an unhandled rejection here would tear the socket down mid-connection.
+  // Catch and log: a failed save means the on-disk creds are stale but intact,
+  // which is survivable — losing the process is not.
+  sock.ev.on('creds.update', () => {
+    saveCreds().catch((err) => {
+      console.error(`⚠️  WhatsApp creds save failed: ${err?.message || err}`);
+      console.error('   On-disk credentials are unchanged (previous state preserved).');
+    });
+    lidToPhone = buildLidMap();
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;

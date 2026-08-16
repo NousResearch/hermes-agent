@@ -20,6 +20,9 @@ import { join } from 'node:path';
 import { writeFileAtomic, useAtomicMultiFileAuthState } from './auth_state.js';
 
 const HERE = import.meta.dirname;
+// RLIMIT_FSIZE via `ulimit -f` is POSIX-only. The bridge itself is
+// cross-platform, so skip (don't fail) the harness on Windows.
+const POSIX = process.platform !== 'win32';
 
 function freshDir() {
   return mkdtempSync(join(tmpdir(), 'authstate-'));
@@ -43,7 +46,7 @@ function runUnderFileSizeLimit(script, blocks = 1) {
 
 // ── The bug, reproduced against the stock implementation ─────────────────
 
-test('BASELINE: a plain writeFile destroys existing creds when the write fails', () => {
+test('BASELINE: a plain writeFile destroys existing creds when the write fails', { skip: !POSIX }, () => {
   const dir = freshDir();
   const target = join(dir, 'creds.json');
   const result = runUnderFileSizeLimit(`
@@ -69,7 +72,7 @@ test('BASELINE: a plain writeFile destroys existing creds when the write fails',
 
 // ── The guarantee ────────────────────────────────────────────────────────
 
-test('atomic write leaves existing creds intact when the write fails', () => {
+test('atomic write leaves existing creds intact when the write fails', { skip: !POSIX }, () => {
   const dir = freshDir();
   const target = join(dir, 'creds.json');
   const result = runUnderFileSizeLimit(`
@@ -190,5 +193,41 @@ test('concurrent saves on one file serialize without interleaving', async () => 
   const parsed = JSON.parse(readFileSync(join(dir, 'creds.json'), 'utf8'));
   assert.ok(parsed.registrationId !== undefined, 'file must remain valid JSON under concurrency');
   assert.deepEqual(readdirSync(dir).filter((f) => f.includes('.tmp-')), []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('sweep removes only real temp files, not keys whose id contains .tmp-', async () => {
+  const dir = freshDir();
+  // A sender-key id can legitimately contain this substring; a naive
+  // `name.includes('.tmp-')` sweep would delete a live key at startup.
+  const lookalike = join(dir, 'sender-key-1234.tmp-abc@s.whatsapp.net.json');
+  writeFileSync(lookalike, JSON.stringify({ keep: true }));
+  writeFileSync(join(dir, 'creds.json.tmp-999-deadbeef'), 'junk');
+
+  await useAtomicMultiFileAuthState(dir);
+
+  assert.ok(readdirSync(dir).includes('sender-key-1234.tmp-abc@s.whatsapp.net.json'),
+    'a real key file must survive the sweep');
+  assert.deepEqual(readdirSync(dir).filter((f) => /\.tmp-\d+-[0-9a-f]+$/.test(f)), [],
+    'genuine temp files must still be swept');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a failed saveCreds rejects (caller must catch) and leaves creds intact', async () => {
+  const dir = freshDir();
+  const { saveCreds } = await useAtomicMultiFileAuthState(dir);
+  await saveCreds();
+  const original = readFileSync(join(dir, 'creds.json'), 'utf8');
+
+  // Make the directory read-only so the temp-file create fails.
+  const { chmodSync } = await import('node:fs');
+  chmodSync(dir, 0o500);
+  try {
+    await assert.rejects(() => saveCreds(), 'a failed write must reject, not resolve silently');
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  assert.equal(readFileSync(join(dir, 'creds.json'), 'utf8'), original,
+    'the previous credentials must survive a failed save');
   rmSync(dir, { recursive: true, force: true });
 });

@@ -457,7 +457,7 @@ export const fa = defineLocale({
       toolViewDesc: 'حالت محصولی بارِ خام ابزار را پنهان می‌کند؛ حالت فنی ورودی/خروجی کامل را نشان می‌دهد.',
       uiScaleTitle: 'مقیاس رابط کاربری',
       uiScaleDesc: (percent: number) =>
-        `اندازهٔ متن و کنترل‌ها را در کل برنامه تغییر می‌دهد. Cmd/Ctrl همراه با +، - و 0 هم کار می‌کند. مقدار فعلی: ${percent}٪.`,
+        `اندازهٔ متن و کنترل‌ها را در کل برنامه تغییر می‌دهد. Cmd/Ctrl همراه با +، - و 0 هم کار می‌کند. مقدار فعلی: ${percent}%.`,
       terminalFontTitle: 'قلم پایانه',
       terminalFontDesc:
         'یک قلم نصب‌شده برای پایانه‌های دسکتاپ انتخاب کنید. قلم‌های Nerd، نمادهای Powerlevel10k و پوسته را نمایش می‌دهند؛ برای استفاده از JetBrains Mono همراه برنامه، خالی بگذارید.',
@@ -2621,7 +2621,7 @@ export const fa = defineLocale({
         },
         empty: 'هنوز داده‌ای از زمینه نیست',
         loading: 'در حال بارگذاری تفکیک…',
-        percentFull: percent => `${percent}٪ پر`,
+        percentFull: percent => `${percent}% پر`,
         title: 'مصرف زمینه',
         tokenSummary: (used, max) => `${used} / ${max} توکن`
       },

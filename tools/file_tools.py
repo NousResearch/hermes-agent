@@ -1009,6 +1009,9 @@ def _check_approval_required_write(paths: list[str],
         display_target=f"<write to {display_targets}>",
         cron_deny_message=blocked.format(
             why="requires approval but this cron session denies it."),
+        single_query_deny_message=blocked.format(
+            why="requires approval but single-query mode (-q) runs without "
+                "a user present to approve it."),
         autoapprove_log_prefix="ssh_config_write",
         fail_closed_when_no_human=True,
         no_human_block_message=blocked.format(

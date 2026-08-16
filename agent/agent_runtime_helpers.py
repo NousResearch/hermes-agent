@@ -2145,6 +2145,32 @@ def plan_cache_sections_for_destination(
     return plan.messages, plan.tools
 
 
+def _is_litellm_route(provider_lower: str, base_url: str) -> bool:
+    """True when a route is a LiteLLM proxy, by provider id or host token.
+
+    Provider naming varies per install (``litellm``, ``custom:litellm``, or a
+    bare ``custom`` alias pointed at a LiteLLM host), so both signals are
+    checked. Both match ``litellm`` as a whole delimited token rather than a
+    raw substring: ``base_url_hostname``'s own docstring names substring host
+    matching as the false-positive class to avoid, and a plain
+    ``"litellm" in ...`` grants Anthropic markers to unrelated routes like
+    ``notlitellm.example.com`` or a provider named ``custom:notlitellm``.
+    A ``litellm`` *path* segment never qualifies — only the host does.
+    """
+    if _has_litellm_token(provider_lower, ":-_/"):
+        return True
+    return _has_litellm_token(base_url_hostname(base_url), ".-")
+
+
+def _has_litellm_token(value: str, delimiters: str) -> bool:
+    """True when ``value`` contains ``litellm`` as a whole delimited token."""
+    if not value:
+        return False
+    for delimiter in delimiters:
+        value = value.replace(delimiter, " ")
+    return "litellm" in value.split()
+
+
 def anthropic_prompt_cache_policy(
     agent,
     *,
@@ -2269,8 +2295,23 @@ def anthropic_prompt_cache_policy(
     # capability declaration instead; explicit false is authoritative too.
     # This preserves the runtime model id (and therefore request/cache keys)
     # while avoiding unsafe alias-name guesses.
+    #
+    # Also consulted for a LiteLLM route on the OpenAI wire: that grant is
+    # inferred from the provider/host name, so an operator who explicitly
+    # declares prompt_caching for the route+model must still win over the
+    # inference — in either direction. Narrowed to the routes the LiteLLM
+    # branch below can actually grant (chat_completions + Claude): the lookup
+    # calls get_compatible_custom_providers, which rebuilds its normalized
+    # view on every call (~1.5ms uncached), and this function runs per
+    # request destination. Widening it unconditionally regressed the
+    # non-declaring common case ~200x (7.5us -> 1528us).
     custom_prompt_caching = None
-    if is_anthropic_wire:
+    _litellm_openai_wire = (
+        eff_api_mode == "chat_completions"
+        and is_claude
+        and _is_litellm_route(provider_lower, eff_base_url)
+    )
+    if is_anthropic_wire or _litellm_openai_wire:
         try:
             from hermes_cli.config import get_custom_provider_model_capability
 
@@ -2286,7 +2327,11 @@ def anthropic_prompt_cache_policy(
                 _cap_exc,
             )
     if custom_prompt_caching is not None:
-        return custom_prompt_caching, custom_prompt_caching
+        # Layout follows the transport, not the declaration: the native
+        # inner-block form is only honored on the Anthropic Messages wire
+        # (see the LiteLLM OpenAI-wire branch below for why a top-level
+        # marker is dropped or 400s on chat_completions).
+        return custom_prompt_caching, custom_prompt_caching and is_anthropic_wire
 
     # MiniMax-M3 rides MiniMax's server-side automatic prefix cache on the
     # Anthropic wire (content-keyed, no marker needed); explicit cache_control
@@ -2333,6 +2378,42 @@ def anthropic_prompt_cache_policy(
     if is_anthropic_wire and is_claude:
         # Third-party Anthropic-compatible gateway.
         return True, True
+
+    # LiteLLM fronting a Claude model on the OpenAI-compatible wire.
+    # The branch above only matches LiteLLM in Anthropic proxy mode
+    # (api_mode == "anthropic_messages"). A LiteLLM deployment that
+    # exposes /v1/chat/completions instead matched no grant branch above
+    # and fell through to (False, False): no cache_control is injected, the
+    # system prompt goes on the wire as a plain string, and the provider
+    # serves zero cache hits — the entire prompt is re-billed at full price
+    # every turn. Same failure class already documented above for
+    # Qwen/DashScope. The endpoint supports Anthropic-style cache_control
+    # fine; only the provider detection missed it (#84506).
+    #
+    # Gated on the Claude family only: a Gemini/GPT/Qwen route through the
+    # same proxy must not receive markers — some strict OpenAI-wire relays
+    # reject the cache_control block format outright (cf. the DeepSeek /
+    # OpenCode exclusion below, #77217).
+    #
+    # Envelope layout (native_anthropic=False), matching every other
+    # OpenAI-wire grant in this function. The native inner-block layout
+    # writes a TOP-LEVEL msg["cache_control"] on role:tool and
+    # empty-content messages and relies on the Anthropic adapter to
+    # relocate it — but that adapter only runs for api_mode ==
+    # "anthropic_messages" (agent/transports/anthropic.py), and the
+    # chat_completions transport performs no relocation. On this wire the
+    # native layout therefore (a) silently loses those breakpoints, spending
+    # 2 of the 4 available on markers the provider never sees, and (b) when
+    # LiteLLM relocates a top-level marker itself for an OpenRouter-backed
+    # Claude route, lands it on an empty text block — the HTTP 400
+    # "text content blocks must contain" shape handled in
+    # agent/anthropic_adapter.py (#69512).
+    #
+    # Gated on chat_completions explicitly rather than `not
+    # is_anthropic_wire`: codex_responses / bedrock_converse are separate
+    # transports with their own marker handling and must not be swept in.
+    if _litellm_openai_wire:
+        return True, False
 
     # MiniMax on its Anthropic-compatible endpoint serves its own
     # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented

@@ -715,6 +715,7 @@ TOOL_CATEGORIES = {
                     # specific binary (e.g. a local build); there is no
                     # version-pin env var.
                 ],
+                "computer_use_backend": "cua",
                 "post_setup": "cua_driver",
             },
         ],
@@ -3779,6 +3780,9 @@ def _is_provider_active(
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
+    if provider.get("computer_use_backend"):
+        current = cfg_get(config, "computer_use", "backend")
+        return current == provider["computer_use_backend"]
     if provider.get("imagegen_backend"):
         image_cfg = config.get("image_gen", {})
         if not isinstance(image_cfg, dict):
@@ -4242,6 +4246,11 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         web_cfg = config.setdefault("web", {})
         web_cfg["backend"] = provider["web_backend"]
         web_cfg["use_gateway"] = bool(managed_feature)
+
+    # Set computer_use backend in config if applicable
+    if provider.get("computer_use_backend"):
+        cu_cfg = config.setdefault("computer_use", {})
+        cu_cfg["backend"] = provider["computer_use_backend"]
 
     # For tools without a specific config key (e.g. image_gen), still
     # track use_gateway so the runtime knows the user's intent.
@@ -4911,6 +4920,12 @@ def _reconfigure_provider(
         web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
+    # Set computer_use backend in config if applicable
+    if provider.get("computer_use_backend"):
+        cu_cfg = config.setdefault("computer_use", {})
+        cu_cfg["backend"] = provider["computer_use_backend"]
+        _print_success(f"  Computer Use backend set to: {provider['computer_use_backend']}")
+
     if managed_feature and managed_feature not in {"web", "tts", "stt", "browser"}:
         section = config.setdefault(managed_feature, {})
         if not isinstance(section, dict):
@@ -4948,7 +4963,13 @@ def _reconfigure_provider(
                 img_cfg = config.setdefault("image_gen", {})
                 if isinstance(img_cfg, dict):
                     img_cfg["provider"] = "fal"
-                    img_cfg["use_gateway"] = False
+                    # A managed (Nous Subscription) row also carries
+                    # imagegen_backend="fal" — the model picker runs AFTER
+                    # _write_provider_config set use_gateway=True, so an
+                    # unconditional False here silently flipped managed
+                    # picks onto the user's personal FAL_KEY (same class
+                    # as fe63353cb, which fixed the plugin-provider path).
+                    img_cfg["use_gateway"] = bool(managed_feature)
         # STT providers prompt for model selection on reconfig too.
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -4991,7 +5012,9 @@ def _reconfigure_provider(
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict):
                 img_cfg["provider"] = "fal"
-                img_cfg["use_gateway"] = False
+                # Same managed-row guard as the no-env-vars branch above:
+                # never clobber a Nous-managed pick back onto direct keys.
+                img_cfg["use_gateway"] = bool(managed_feature)
 
     # STT providers prompt for model selection on reconfig too.
     if provider.get("stt_provider") and not managed_feature:

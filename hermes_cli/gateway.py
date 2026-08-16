@@ -1707,11 +1707,12 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
 
     # Windows Task Scheduler is a supervisor too — and the most reliable
     # signal is the task's own state, not a parent-chain walk. A Scheduled
-    # Task gateway whose conhost bootstrap has already exited is invisible
-    # to `_reaper_candidate_is_supervisor_owned` (the parent chain breaks
-    # before services.exe, fail-open), yet it is alive and supervised.
-    # Querying the task state catches that case: if HermesGateway is
-    # Running, the reaper must not touch its process tree (#86098).
+    # Task gateway whose conhost/VBS bootstrap has already exited is
+    # invisible to `_reaper_candidate_is_supervisor_owned` (the parent
+    # chain breaks before services.exe, fail-open), yet it is alive and
+    # supervised. After that launcher exits the task is typically Ready,
+    # not Running — treating only Running as supervised still kills the
+    # detached gateway on every desktop serve start (#86098, #87001).
     if is_windows():
         try:
             # The install-time task name is profile-aware (Hermes_Gateway /
@@ -1722,7 +1723,7 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
             _task_name = get_task_name()
         except Exception:
             _task_name = "Hermes_Gateway"
-        if _windows_scheduled_task_running(_task_name):
+        if _windows_scheduled_task_supervises(_task_name):
             return False
 
     from gateway.status import _pid_exists, write_planned_stop_marker
@@ -1957,31 +1958,29 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def _windows_scheduled_task_running(task_name: str) -> bool:
-    """Return True when a Windows scheduled task with ``task_name`` is Running.
+# Task Scheduler states that mean "this profile still has an official
+# supervisor". Ready is the steady state after the VBS/cmd launcher
+# exits and leaves the detached gateway running (#87001). Queued is a
+# rare in-between. Disabled / MISSING are not supervisors.
+_WINDOWS_TASK_SUPERVISOR_STATES = frozenset({"Running", "Ready", "Queued"})
 
-    Used to treat Task Scheduler as a gateway supervisor on Windows: the
-    orphan-reap sweep must not kill a gateway that a scheduled task is
-    actively managing (it writes the planned-stop marker, the gateway exits
-    cleanly with code 0, and the scheduler never restarts it — silently
-    killing A2A/messaging on every desktop-app launch).
 
-    Best-effort: any failure (missing task, powershell unavailable, timeout)
-    returns False so the caller falls back to its existing behaviour.
+def _windows_scheduled_task_state(task_name: str) -> str | None:
+    """Return the English ``Get-ScheduledTask`` State, or None on failure.
 
-    Implemented with PowerShell (``Get-ScheduledTask``) instead of ``schtasks``
-    because the latter localizes its output (a Chinese Windows prints
-    ``状态: 正在运行``, not ``Status: Running``) and emits the local codepage,
-    which ``subprocess`` with ``encoding="utf-8"`` silently mangles. The
-    ``State`` property of ``Get-ScheduledTask`` is an English enum value
-    (``Running`` / ``Ready`` / ``Disabled``), stable across locales.
+    Implemented with PowerShell instead of ``schtasks`` because the latter
+    localizes its output (a Chinese Windows prints ``状态: 正在运行``, not
+    ``Status: Running``) and emits the local codepage, which ``subprocess``
+    with ``encoding="utf-8"`` silently mangles. The ``State`` property is
+    an English enum value (``Running`` / ``Ready`` / ``Disabled``), stable
+    across locales.
     """
     if not is_windows():
-        return False
+        return None
     try:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
-            return False
+            return None
         ps_cmd = (
             f"$t = Get-ScheduledTask -TaskName '{task_name}' "
             "-ErrorAction SilentlyContinue; if ($t) { $t.State } else { 'MISSING' }"
@@ -1995,11 +1994,40 @@ def _windows_scheduled_task_running(task_name: str) -> bool:
             timeout=10,
         )
         if result.returncode != 0:
-            return False
+            return None
         state = (result.stdout or "").strip()
-        return state == "Running"
+        return state or None
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None
+
+
+def _windows_scheduled_task_running(task_name: str) -> bool:
+    """Return True when a Windows scheduled task with ``task_name`` is Running.
+
+    Narrow helper kept for callers that need the in-flight state. The
+    orphan-reaper uses ``_windows_scheduled_task_supervises`` instead —
+    Ready is the normal post-launch state for a detached gateway.
+    """
+    return _windows_scheduled_task_state(task_name) == "Running"
+
+
+def _windows_scheduled_task_supervises(task_name: str) -> bool:
+    """Return True when Task Scheduler still owns this profile's gateway.
+
+    Used to treat Task Scheduler as a gateway supervisor on Windows: the
+    orphan-reap sweep must not kill a gateway that a scheduled task
+    launched and left detached. After the bootstrap exits the task is
+    Ready, not Running; a Running-only check still writes the planned-stop
+    marker, the gateway exits cleanly with code 0, and the scheduler never
+    restarts it — silently killing A2A/messaging on every desktop-app
+    launch (#86098, #87001).
+
+    Best-effort: any failure (missing task, powershell unavailable, timeout)
+    returns False so the caller falls back to pidfile / parent-chain
+    exclusions.
+    """
+    state = _windows_scheduled_task_state(task_name)
+    return state in _WINDOWS_TASK_SUPERVISOR_STATES
 
 
 def _windows_gateway_should_absorb_console_controls() -> bool:
@@ -2164,16 +2192,48 @@ def _user_systemd_private_socket_path() -> Path:
     return Path(xdg) / "systemd" / "private"
 
 
+def _path_exists_safe(path: Path) -> bool:
+    """``Path.exists()`` that treats an inaccessible path as absent.
+
+    ``Path.exists()`` only swallows a subset of ``OSError`` (ENOENT/ENOTDIR/
+    EBADF/ELOOP); ``EACCES`` still propagates. When ``XDG_RUNTIME_DIR`` leaks
+    from another user — the classic ``su``/``sudo -u`` from a root shell case,
+    where ``/run/user/0`` is ``0700 root:root`` — stat-ing a socket underneath
+    it raises ``PermissionError`` that escapes the systemd preflight as a raw
+    traceback (#86558). An unreadable path is, for our purposes, not reachable.
+    """
+    try:
+        return path.exists()
+    except OSError:  # e.g. EACCES on another user's runtime dir
+        return False
+
+
+def _runtime_dir_is_ours(runtime_dir: str) -> bool:
+    """True when *runtime_dir* exists and is owned by the current uid.
+
+    A leaked ``XDG_RUNTIME_DIR`` belonging to another user must not be trusted:
+    its sockets are unreadable (``EACCES``) and its bus is not ours to drive.
+    """
+    try:
+        return Path(runtime_dir).stat().st_uid == os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    except OSError:
+        return False
+
+
 def _user_systemd_socket_ready() -> bool:
     """Return True when user-scope systemd has a reachable control socket.
 
     Some distros expose only the per-user systemd private socket even when the
     D-Bus session bus socket is absent. ``systemctl --user`` can still work in
     that configuration, so preflight checks must treat either socket as valid.
+
+    An inaccessible socket path (e.g. a foreign ``XDG_RUNTIME_DIR`` inherited
+    across ``su``) is treated as not-ready rather than crashing, so the caller
+    falls through to the documented ``UserSystemdUnavailableError`` path.
     """
     return (
-        _user_dbus_socket_path().exists()
-        or _user_systemd_private_socket_path().exists()
+        _path_exists_safe(_user_dbus_socket_path())
+        or _path_exists_safe(_user_systemd_private_socket_path())
     )
 
 
@@ -2185,17 +2245,23 @@ def _ensure_user_systemd_env() -> None:
     ``systemctl --user`` fails with "Failed to connect to bus: No medium found".
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
+
+    An ``XDG_RUNTIME_DIR`` that leaked from another user (``su``/``sudo -u``
+    from root, where the env still points at ``/run/user/0``) is dropped in
+    favour of our own ``/run/user/{uid}`` so ``systemctl --user`` targets the
+    right instance instead of an unreadable foreign socket (#86558).
     """
     uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-    if "XDG_RUNTIME_DIR" not in os.environ:
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if not xdg or not _runtime_dir_is_ours(xdg):
         runtime_dir = f"/run/user/{uid}"
-        if Path(runtime_dir).exists():
+        if _runtime_dir_is_ours(runtime_dir):
             os.environ["XDG_RUNTIME_DIR"] = runtime_dir
 
     if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}")
         bus_path = Path(xdg_runtime) / "bus"
-        if bus_path.exists():
+        if _path_exists_safe(bus_path):
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
 
 
@@ -3176,14 +3242,23 @@ def _append_node_dir_for_service(
     """
     from hermes_constants import iter_hermes_node_dirs
 
+    managed_node_present = False
     for directory in iter_hermes_node_dirs(hermes_root):
         entry = str(directory)
         try:
             present = directory.is_dir()
         except OSError:
             present = False
-        if present and entry not in path_entries:
-            path_entries.append(entry)
+        if present:
+            managed_node_present = True
+            if entry not in path_entries:
+                path_entries.append(entry)
+
+    # Ambient PATH lookup is a fallback, not an additional rung. Once the
+    # target Hermes home provides managed Node, consulting the invoker's PATH
+    # makes a system unit differ between sudo/root and its service user.
+    if managed_node_present:
+        return
 
     resolved_node = shutil.which("node")
     if not resolved_node:
@@ -4391,8 +4466,22 @@ def _gateway_run_command() -> list[str]:
     return cmd
 
 
-def _timestamped_stderr_gateway_command(error_log: Path) -> list[str]:
-    """Wrap gateway run so raw stderr lines are timestamped before file write."""
+def _timestamped_stderr_gateway_command(
+    error_log: Path,
+    *,
+    external_supervisor: bool = False,
+) -> list[str]:
+    """Wrap gateway run so raw stderr lines are timestamped before file write.
+
+    ``external_supervisor=True`` is for launchd ProgramArguments only: the
+    inner ``gateway run`` must carry ``--external-supervisor`` so
+    ``hermes update`` sees the flag on the live grandchild argv and hands
+    the process back to launchd instead of starting a detached watcher
+    (#86893 / #87005). The detached nohup fallback stays unmarked.
+    """
+    inner = _gateway_run_command()
+    if external_supervisor and "--external-supervisor" not in inner:
+        inner = [*inner, "--external-supervisor"]
     return [
         get_python_path(),
         "-m",
@@ -4400,7 +4489,7 @@ def _timestamped_stderr_gateway_command(error_log: Path) -> list[str]:
         "--error-log",
         str(error_log),
         "--",
-        *_gateway_run_command(),
+        *inner,
     ]
 
 
@@ -4498,7 +4587,9 @@ def generate_launchd_plist() -> str:
     # timestamps to raw stderr lines before they land in gateway.error.log.
     prog_args = [
         f"<string>{part}</string>"
-        for part in _timestamped_stderr_gateway_command(err_path)
+        for part in _timestamped_stderr_gateway_command(
+            err_path, external_supervisor=True
+        )
     ]
     prog_args_xml = "\n        ".join(prog_args)
 

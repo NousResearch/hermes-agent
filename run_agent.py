@@ -1423,14 +1423,14 @@ class AIAgent:
         # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
         # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud
         # gateways idle-kill before the model's thinking phase ends.
-        # uses_implicit_default is False here so the local-endpoint
-        # short-circuit in _compute_non_stream_stale_timeout does not
-        # disable stale detection for users running reasoning models on a
-        # local NIM endpoint.
+        # This is still an implicit default: only the model name selected the
+        # value. Preserve that distinction so a local endpoint keeps the
+        # existing no-watchdog behavior unless the user explicitly configures
+        # a stale timeout. Cloud endpoints still use the finite floor below.
         from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
         reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
         if reasoning_floor is not None:
-            return reasoning_floor, False
+            return reasoning_floor, True
 
         return 90.0, True
 
@@ -4877,13 +4877,32 @@ class AIAgent:
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
-        Only the first occurrence of each unique pair is kept.
+        Valid JSON arguments are canonicalized so equivalent objects do not
+        evade deduplication merely because their keys or whitespace differ.
+        Duplicate object keys use the parser's last-value-wins semantics,
+        matching downstream argument parsing. Malformed or excessively nested
+        arguments retain their raw representation rather than being repaired
+        here. Only the first occurrence of each unique pair is kept.
         Returns the original list if no duplicates were found.
         """
+        seen_raw: set = set()
         seen: set = set()
         unique: list = []
         for tc in tool_calls:
-            key = (tc.function.name, tc.function.arguments)
+            raw_key = (tc.function.name, tc.function.arguments)
+            if raw_key in seen_raw:
+                logger.warning("Removed duplicate tool call: %s", tc.function.name)
+                continue
+            seen_raw.add(raw_key)
+
+            arguments = tc.function.arguments
+            try:
+                arguments = json.dumps(
+                    json.loads(arguments), separators=(",", ":"), sort_keys=True
+                )
+            except (RecursionError, TypeError, ValueError):
+                pass
+            key = (tc.function.name, arguments)
             if key not in seen:
                 seen.add(key)
                 unique.append(tc)

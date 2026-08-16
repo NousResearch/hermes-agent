@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
-import { getAllSessionMessages, getLatestSessionMessages, getSession, type SessionInfo } from '@/hermes'
+import {
+  getAllSessionMessages,
+  getLatestSessionMessages,
+  getSession,
+  type SessionInfo,
+  type SessionResumeResponse
+} from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -1736,11 +1742,71 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // resume RPC ran, for the session that was actually requested.
     const resumeCalls = requestGateway.mock.calls.filter(([method]) => method === 'session.resume')
     expect(resumeCalls.length).toBe(1)
-    expect(resumeCalls[0][1]).toMatchObject({ session_id: 'stored-A' })
+    expect(resumeCalls[0][1]).toMatchObject({
+      defer_history: true,
+      session_id: 'stored-A'
+    })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
 
     // The corrupt mapping was purged so it can't mis-resolve again.
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+  })
+
+  it('paints the bounded latest transcript after the deferred resume acknowledgement', async () => {
+    const latestPage = Array.from({ length: 500 }, (_, index) => ({
+      content: `message-${index}`,
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      timestamp: index + 1
+    }))
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 50_000 })])
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: latestPage,
+      pagination: { limit: 500, offset: 0, order: 'latest', returned: 500 },
+      session_id: 'stored-A'
+    })
+
+    const deferredResume = deferred<SessionResumeResponse>()
+
+    const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return deferredResume.promise
+      }
+
+      return Promise.resolve({})
+    })
+
+    const requestGateway = <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+      requestGatewayMock(method, params) as Promise<T>
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    const resumePromise = resume!('stored-A', true)
+
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect($messages.get()).toHaveLength(0)
+    expect(requestGatewayMock).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({
+        defer_history: true,
+        omit_messages: true,
+        session_id: 'stored-A'
+      })
+    )
+
+    deferredResume.resolve({
+      session_id: 'rt-A',
+      resumed: 'stored-A',
+      message_count: 500,
+      messages: [],
+      info: {}
+    })
+    await resumePromise
+    expect($messages.get()).toHaveLength(500)
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {

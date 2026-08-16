@@ -6178,6 +6178,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
+    def increment_hygiene_failure_streak(self, session_key: str) -> int:
+        """Atomically increment the session-hygiene failure streak for one chat."""
+        if not session_key:
+            return 1
+        result = []
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO gateway_hygiene_state (session_key, failure_streak)
+                   VALUES (?, 1)
+                   ON CONFLICT(session_key) DO UPDATE SET
+                       failure_streak = gateway_hygiene_state.failure_streak + 1""",
+                (session_key,),
+            )
+            row = conn.execute(
+                "SELECT failure_streak FROM gateway_hygiene_state WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            result.append(int(row[0]))
+
+        self._execute_write(_do)
+        return result[0]
+
+    def reset_hygiene_failure_streak(self, session_key: str) -> None:
+        """Clear the persisted session-hygiene failure streak for one chat."""
+        if not session_key:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM gateway_hygiene_state WHERE session_key = ?",
+                (session_key,),
+            )
+
+        self._execute_write(_do)
+
     def get_compression_ineffective_count(self, session_id: str) -> int:
         """Return the persisted ineffective-compaction strike count.
 
@@ -7785,6 +7821,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
+
+    def get_dominant_session_model_route(
+        self, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the main-loop model route that served most API calls.
+
+        ``sessions`` is a legacy aggregate row and can hold model/provider fields
+        written by different route changes. ``session_model_usage`` keeps the
+        coherent per-call tuple, so persisted status and billing reads should use
+        its dominant main-loop route when one is available.
+        """
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                """SELECT model, billing_provider, billing_base_url, billing_mode,
+                          api_call_count
+                     FROM session_model_usage
+                    WHERE session_id = ?
+                      AND task = ''
+                      AND model <> 'unknown'
+                      AND billing_provider <> ''
+                    ORDER BY api_call_count DESC,
+                             (input_tokens + output_tokens + cache_read_tokens +
+                              cache_write_tokens + reasoning_tokens) DESC,
+                             last_seen DESC
+                    LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
@@ -11657,6 +11722,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clauses.append("s.archived = 0")
         return " AND ".join(clauses), params
 
+    @staticmethod
+    def _apply_prune_age_filter(
+        older_than_days: Optional[float], filters: Dict[str, Any]
+    ) -> None:
+        """Translate the legacy age window into the shared activity filter."""
+        if (
+            filters.get("last_active_before") is None
+            and filters.get("started_before") is None
+            and older_than_days is not None
+        ):
+            filters["last_active_before"] = time.time() - (
+                older_than_days * 86400
+            )
+
     def list_prune_candidates(
         self,
         older_than_days: Optional[float] = None,
@@ -11674,14 +11753,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         threshold: it uses the latest message timestamp, falling back to
         ``started_at`` for sessions without messages.
         """
-        if (
-            filters.get("last_active_before") is None
-            and filters.get("started_before") is None
-            and older_than_days is not None
-        ):
-            filters["last_active_before"] = time.time() - (
-                older_than_days * 86400
-            )
+        self._apply_prune_age_filter(older_than_days, filters)
         where, params = self._prune_filter_where(source=source, **filters)
         with self._lock:
             cursor = self._conn.execute(
@@ -11697,6 +11769,31 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 params,
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def count_open_prune_matches(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> int:
+        """Count open sessions excluded from a matching bulk prune.
+
+        This applies every normal prune filter, but inverts only the
+        ``ended_at`` safety guard. It is visibility-only: callers can explain
+        why an otherwise matching session was skipped without making live
+        sessions eligible for destructive pruning.
+        """
+        self._apply_prune_age_filter(older_than_days, filters)
+        where, params = self._prune_filter_where(source=source, **filters)
+        ended_guard = "s.ended_at IS NOT NULL"
+        if not where.startswith(ended_guard):
+            raise RuntimeError("prune filter lost its ended-session safety guard")
+        open_where = f"s.ended_at IS NULL{where[len(ended_guard):]}"
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions s WHERE {open_where}", params
+            )
+            return int(cursor.fetchone()[0])
 
     def archive_sessions(
         self,
@@ -11813,14 +11910,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
         """
-        if (
-            filters.get("last_active_before") is None
-            and filters.get("started_before") is None
-            and older_than_days is not None
-        ):
-            filters["last_active_before"] = time.time() - (
-                older_than_days * 86400
-            )
+        self._apply_prune_age_filter(older_than_days, filters)
         where, where_params = self._prune_filter_where(source=source, **filters)
         removed_ids: list[str] = []
 

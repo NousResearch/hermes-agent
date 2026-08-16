@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -8,7 +9,6 @@ import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $activeSessionId,
-  $busy,
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -54,7 +54,7 @@ export function useSessionStateCache({
   setBusy,
   setMessages
 }: SessionStateCacheOptions) {
-  const busy = useStore($busy)
+  const busy = useStore(PRIMARY_SESSION_VIEW.$busy)
   const sessionTiles = useStore($sessionTiles)
   const activeSessionIdRef = useRef<string | null>(activeSessionId)
   const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)

@@ -738,6 +738,10 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    history_ready = session.get("resume_history_ready")
+    if history_ready is not None and not history_ready.is_set():
+        session["resume_history_error"] = "session resume cancelled"
+        history_ready.set()
     _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
@@ -1997,8 +2001,11 @@ def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def _err(rid, code: int, msg: str) -> dict:
-    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
+def _err(rid, code: int, msg: str, data=None) -> dict:
+    error = {"code": code, "message": msg}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
 def method(name: str):
@@ -2277,6 +2284,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
         owns_db = False
         profile_home = current.get("profile_home")
         try:
+            history_ready = current.get("resume_history_ready")
+            if history_ready is not None:
+                if not history_ready.wait(timeout=300.0):
+                    raise TimeoutError("session history hydration timed out")
+                if history_error := current.get("resume_history_error"):
+                    raise RuntimeError(str(history_error))
+                with _sessions_lock:
+                    if _sessions.get(sid) is not current:
+                        return
             tokens = _set_session_context(key)
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
@@ -8350,6 +8366,75 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer = threading.Timer(delay, _run)
     timer.daemon = True
     timer.start()
+
+
+def _schedule_resume_hydration(
+    sid: str, stored_id: str, db, *, close_db: bool = False
+) -> None:
+    """Load a cold resume's transcript off the JSON-RPC response path."""
+
+    def _run() -> None:
+        session = _sessions.get(sid)
+        try:
+            if session is None:
+                return
+            _emit(
+                "session.resume_progress",
+                sid,
+                {"phase": "history", "status": "loading"},
+            )
+            db.reopen_session(stored_id)
+            raw_history, display_history = db.get_resume_conversations(stored_id)
+            prefix = db.get_ancestor_display_prefix(stored_id)
+            history = sanitize_replay_history(raw_history)
+
+            if _sessions.get(sid) is not session:
+                return
+            with session["history_lock"]:
+                session["history"] = history
+                session["display_history_prefix"] = prefix
+                session["resume_hydrating"] = False
+                session["resume_message_count"] = len(display_history)
+            session["resume_history_ready"].set()
+            _emit(
+                "session.resume_progress",
+                sid,
+                {
+                    "message_count": len(display_history),
+                    "phase": "history",
+                    "status": "complete",
+                },
+            )
+            _maybe_schedule_auto_continue(sid, session, stored_id)
+            _start_agent_build(sid, session)
+        except Exception as exc:
+            if _sessions.get(sid) is not session:
+                return
+            message = f"resume failed: {exc}"
+            session["resume_hydrating"] = False
+            session["resume_history_error"] = message
+            session["agent_error"] = message
+            session["resume_history_ready"].set()
+            session["agent_ready"].set()
+            _emit(
+                "session.resume_progress",
+                sid,
+                {"message": message, "phase": "history", "status": "failed"},
+            )
+            _emit("error", sid, {"message": message})
+            with _sessions_lock:
+                discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
+            lease = (discarded or {}).get("active_session_lease")
+            if lease is not None:
+                lease.release()
+        finally:
+            if close_db and hasattr(db, "close"):
+                try:
+                    db.close()
+                except Exception:
+                    logger.debug("failed to close resume db for %s", sid, exc_info=True)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _session_pending_kind(sid: str) -> str:

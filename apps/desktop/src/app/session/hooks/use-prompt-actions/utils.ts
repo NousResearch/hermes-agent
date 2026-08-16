@@ -199,18 +199,22 @@ export async function withSessionNotFoundResume<T>(
  * blocks an IDLE target and reports "session busy" about a session doing
  * nothing, and the converse lets a background send fire mid-turn.
  *
- * The published per-session state is authoritative. Fall back to the
- * foreground flag only when the target has no state yet — a just-minted
- * session whose first publish hasn't landed.
+ * The published per-session state is authoritative. A known target with no
+ * slice yet is idle — never inherit another session's leftover foreground
+ * flag (focusing B while A runs). Fall back to the foreground flag only for
+ * a true draft (no session id), where that flag must be the focused view's
+ * busy, not a process-global lock.
  */
 export function isTargetSessionBusy(
   sessionStates: Record<string, { busy: boolean }>,
   sessionId: null | string,
   foregroundBusy: boolean
 ): boolean {
-  const state = sessionId ? sessionStates[sessionId] : undefined
+  if (!sessionId) {
+    return foregroundBusy
+  }
 
-  return state ? state.busy : foregroundBusy
+  return Boolean(sessionStates[sessionId]?.busy)
 }
 
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the

@@ -65,3 +65,60 @@ def test_image_and_video_selectors_share_the_gateway_contract(monkeypatch):
         _select_plugin_video_gen_provider("fal", config, use_gateway=use_gateway)
         assert config["image_gen"]["use_gateway"] is use_gateway
         assert config["video_gen"]["use_gateway"] is use_gateway
+
+
+def _quiet_reconfigure(monkeypatch):
+    """Silence prints + model pickers for _reconfigure_provider paths."""
+    import hermes_cli.tools_config as tc
+
+    monkeypatch.setattr(tc, "_print_success", lambda *a, **k: None)
+    monkeypatch.setattr(tc, "_print_info", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(tc, "_print_warning", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(tc, "_configure_imagegen_model", lambda *a, **k: None)
+    monkeypatch.setattr(tc, "_run_post_setup", lambda *a, **k: None, raising=False)
+    # Managed rows gate on live Portal auth — stub it green.
+    import hermes_cli.nous_subscription as ns
+
+    monkeypatch.setattr(ns, "ensure_nous_portal_access", lambda **k: True)
+
+
+def test_reconfigure_managed_fal_row_keeps_gateway_flag(monkeypatch):
+    """The sibling bug of fe63353cb: the legacy-backend model-pick step in
+    _reconfigure_provider hardcoded use_gateway=False AFTER the managed
+    branch wrote True — a Nous Subscription user re-entering the picker to
+    change models was silently flipped onto their personal FAL_KEY."""
+    _quiet_reconfigure(monkeypatch)
+    import hermes_cli.tools_config as tc
+
+    managed_row = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "image_gen",
+        "override_env_vars": ["FAL_KEY"],
+        "imagegen_backend": "fal",
+    }
+    config = {"image_gen": {"model": "fal-ai/gpt-image-2"}}
+
+    tc._reconfigure_provider(managed_row, config)
+
+    assert config["image_gen"]["provider"] == "fal"
+    assert config["image_gen"]["use_gateway"] is True
+
+
+def test_reconfigure_direct_fal_row_clears_gateway_flag(monkeypatch):
+    """Direct-key FAL reconfig must still clear the flag (historical
+    behavior for genuinely non-managed picks)."""
+    _quiet_reconfigure(monkeypatch)
+    import hermes_cli.tools_config as tc
+
+    direct_row = {
+        "name": "FAL.ai",
+        "env_vars": [],
+        "imagegen_backend": "fal",
+    }
+    config = {"image_gen": {"use_gateway": True}}
+
+    tc._reconfigure_provider(direct_row, config)
+
+    assert config["image_gen"]["use_gateway"] is False

@@ -166,6 +166,60 @@ class TestProfileScopedMcp:
         )
         assert resp.json()["ok"] is True
 
+    def test_mcp_test_reports_optional_schema_chars(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The probe's per-tool `schema_chars` (details out-param) surfaces as an
+        ADDITIVE per-tool field on the wire; tools without a size stay bare so
+        older/partial probes degrade to 'no estimate' in the renderer."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  sized-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+
+        def fake_probe(name, config, connect_timeout=30, details=None):
+            if details is not None:
+                details["schema_chars"] = {"tool-a": 420}
+            return [("tool-a", "desc-a"), ("tool-b", "desc-b")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+
+        resp = client.post(
+            "/api/mcp/servers/sized-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        tools = {t["name"]: t for t in body["tools"]}
+        assert tools["tool-a"]["schema_chars"] == 420
+        # No size for tool-b → the key is simply absent (additive-optional).
+        assert "schema_chars" not in tools["tool-b"]
+
+    def test_mcp_test_without_schema_chars_keeps_old_wire_shape(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A probe that never fills schema_chars (older code path) produces the
+        exact pre-overlay tool objects — nothing new for old renderers."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  plain-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mcp_config,
+            "_probe_single_server",
+            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
+        )
+
+        resp = client.post(
+            "/api/mcp/servers/plain-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
+
 
 class TestProfileScopedModel:
     def test_model_set_main_scoped(self, client, isolated_profiles):

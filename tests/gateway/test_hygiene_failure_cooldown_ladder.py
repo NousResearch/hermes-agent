@@ -89,6 +89,36 @@ class TestCooldownLadder:
         assert seen == [BASE * m for m in _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS]
         assert seen == [300.0, 900.0, 2700.0]
 
+    def test_consecutive_failures_escalate_across_gateway_restart(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session("before-rotation", "telegram", session_key=KEY)
+            first_runner = _Runner()
+            first_runner._session_db = db
+            assert _hygiene_cooldown_for_failure(first_runner, KEY, BASE) == BASE
+
+            db.create_session(
+                "after-rotation",
+                "telegram",
+                session_key=KEY,
+                parent_session_id="before-rotation",
+            )
+            restarted_runner = _Runner()
+            restarted_runner._session_db = db
+            assert _hygiene_cooldown_for_failure(
+                restarted_runner, KEY, BASE
+            ) == BASE * 3
+
+            other_chat_runner = _Runner()
+            other_chat_runner._session_db = db
+            assert _hygiene_cooldown_for_failure(
+                other_chat_runner, "agent:main:telegram:private:999", BASE
+            ) == BASE
+        finally:
+            db.close()
+
     def test_ladder_saturates_at_the_top_rung(self):
         """A permanently un-compactable session must not grow without bound."""
         runner = _Runner()
@@ -115,6 +145,24 @@ class TestCooldownLadder:
         _reset_hygiene_failure_streak(runner, KEY)
         assert runner._session_state(KEY).persistent.hygiene_failure_streak == 0
         assert _hygiene_cooldown_for_failure(runner, KEY, BASE) == BASE
+
+    def test_reset_returns_restarted_gateway_to_first_rung(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            runner = _Runner()
+            runner._session_db = db
+            assert _hygiene_cooldown_for_failure(runner, KEY, BASE) == BASE
+            _reset_hygiene_failure_streak(runner, KEY)
+
+            restarted_runner = _Runner()
+            restarted_runner._session_db = db
+            assert _hygiene_cooldown_for_failure(
+                restarted_runner, KEY, BASE
+            ) == BASE
+        finally:
+            db.close()
 
     def test_streaks_are_per_session(self):
         """One wedged session must not penalize every other chat."""

@@ -313,3 +313,60 @@ async def test_unmentioned_group_location_from_removed_user_not_observed():
     await adapter._handle_location_message(update, SimpleNamespace())
 
     assert observed == []
+
+
+def test_group_allowlist_authorized_under_multiplex_closure_handler(monkeypatch):
+    """group_allowed_chats must authorize a chat member under multiplex_profiles.
+
+    Regression for #87132: with gateway.multiplex_profiles the primary message
+    handler is a closure, so its ``__self__`` is absent and the early intake
+    filter could not reach GatewayRunner._is_user_authorized — it fell back to
+    env-only auth and default-denied every non-global sender in an explicitly
+    allowlisted group. The platform-bound callback registered via
+    set_authorization_check survives the closure wrapping and must be consulted.
+    """
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+
+    adapter = _make_adapter(group_allowed_chats=["-100123"])
+
+    # Multiplex: the primary handler is a closure with no ``__self__`` runner.
+    def closure_handler(event):
+        return None
+
+    adapter._message_handler = closure_handler
+    assert getattr(closure_handler, "__self__", None) is None
+
+    # The runner installs this callback at adapter registration; it routes
+    # through the full auth chain (here: the chat allowlist) regardless of how
+    # the message handler is wrapped.
+    def auth_check(user_id, chat_type=None, chat_id=None):
+        return str(chat_id) in {"-100123"}
+
+    adapter.set_authorization_check(auth_check)
+
+    # A sender absent from any user allowlist, posting in the allowlisted group,
+    # is authorized via the chat allowlist.
+    allowed = _make_message(from_user_id=555, chat_id=-100123, chat_type="group")
+    assert adapter._is_user_authorized_from_message(allowed) is True
+
+    # The same sender in a NON-allowlisted group is still rejected.
+    denied = _make_message(from_user_id=555, chat_id=-100999, chat_type="group")
+    assert adapter._is_user_authorized_from_message(denied) is False
+
+
+def test_multiplex_closure_handler_without_callback_falls_back_to_env(monkeypatch):
+    """No registered callback + a closure handler (no runner) must not raise and
+    falls back to env-only auth — the getattr guard keeps the legacy path safe."""
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-100123")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+
+    adapter = _make_adapter(group_allowed_chats=["-100123"])
+    adapter._message_handler = lambda event: None  # closure, no __self__
+    # No set_authorization_check() → _authorization_check is absent/None.
+
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=111, chat_id=-100123, chat_type="group")
+    ) is True
+    assert adapter._is_user_authorized_from_message(
+        _make_message(from_user_id=555, chat_id=-100123, chat_type="group")
+    ) is False

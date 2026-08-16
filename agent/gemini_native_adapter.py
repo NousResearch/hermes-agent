@@ -515,6 +515,49 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
     return normalized or None
 
 
+def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
+    """Return True when Gemini will spend output tokens on thinking.
+
+    Gemini bills thought tokens against ``maxOutputTokens``. A global
+    Hermes ``max_tokens`` of 4096/16384 is enough for visible text, but
+    Ultra/high thinking can consume the entire budget and leave
+    ``finishReason=MAX_TOKENS`` with no complete answer. Continuations
+    then abort after 4 retries.
+    """
+    normalized = _normalize_thinking_config(thinking_config)
+    if not normalized:
+        return False
+    if normalized.get("includeThoughts") is False:
+        return "thinkingLevel" in normalized or bool(normalized.get("thinkingBudget"))
+    budget = normalized.get("thinkingBudget")
+    if isinstance(budget, int) and budget <= 0 and "thinkingLevel" not in normalized:
+        return False
+    return True
+
+
+def _effective_gemini_max_output_tokens(
+    max_tokens: Optional[int], thinking_config: Any
+) -> int:
+    """Resolve native ``maxOutputTokens``.
+
+    Gemini's generateContent API does not treat an omitted cap as
+    unlimited — it applies a low internal default and truncates. When
+    thinking is enabled, also raise a too-small explicit cap to the
+    published 65,535 ceiling so thought tokens do not starve the answer.
+    """
+    if max_tokens is None:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if requested <= 0:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if _thinking_requests_output_headroom(thinking_config):
+        return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
+    return requested
+
+
 def build_gemini_request(
     *,
     messages: List[Dict[str, Any]],
@@ -542,20 +585,9 @@ def build_gemini_request(
     generation_config: Dict[str, Any] = {}
     if temperature is not None:
         generation_config["temperature"] = temperature
-    if max_tokens is not None:
-        generation_config["maxOutputTokens"] = max_tokens
-    else:
-        # Gemini's native generateContent does NOT treat an omitted
-        # maxOutputTokens as "use the model's full output budget" — it applies
-        # a low internal default and the model stops early with
-        # finishReason=MAX_TOKENS, truncating tool calls mid-stream (Hermes
-        # then retries 3× and refuses the incomplete call). Every current
-        # Gemini text model (2.5 + 3.x, flash / flash-lite / pro) caps at
-        # 65,535 output tokens, so default to that ceiling when the caller
-        # passes None ("unlimited"). See the OpenAI-compat path where omitting
-        # the field genuinely means full budget — that assumption does not
-        # hold on the native API.
-        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    generation_config["maxOutputTokens"] = _effective_gemini_max_output_tokens(
+        max_tokens, thinking_config
+    )
     if top_p is not None:
         generation_config["topP"] = top_p
     if stop:

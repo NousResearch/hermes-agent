@@ -77,6 +77,48 @@ export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit
   return window
 }
 
+export interface SidebarSessionSliceParams {
+  cron: URLSearchParams
+  messaging: URLSearchParams
+  recents: URLSearchParams
+}
+
+/** Build the three remote-profile sidebar reads from one workspace scope. */
+export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): SidebarSessionSliceParams {
+  const profile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
+
+  const slice = (limitKey: string, defaultLimit: string, extra: Record<string, string>) =>
+    new URLSearchParams({
+      limit: searchParams.get(limitKey) || defaultLimit,
+      offset: '0',
+      min_messages: '1',
+      archived: 'exclude',
+      order: 'recent',
+      ...extra
+    })
+
+  const recents = slice('recents_limit', '20', { profile })
+  const recentsExclude = searchParams.get('recents_exclude')
+
+  if (recentsExclude) {
+    recents.set('exclude_sources', recentsExclude)
+  }
+
+  const messaging = slice('messaging_limit', '100', { profile })
+  const messagingExclude = searchParams.get('messaging_exclude')
+
+  if (messagingExclude) {
+    messaging.set('exclude_sources', messagingExclude)
+  }
+
+  return {
+    cron: slice('cron_limit', '50', { profile, source: 'cron' }),
+    messaging,
+    recents
+  }
+}
+
+/** Fetch the primary backend's profile-aware session slice, falling back to an empty result when unavailable. */
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FetchJsonForProfile

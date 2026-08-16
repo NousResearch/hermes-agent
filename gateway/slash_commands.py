@@ -611,6 +611,7 @@ class GatewaySlashCommandsMixin:
         # single source of truth; reading it here keeps /status accurate
         # without duplicating token writes into two stores.
         db_total_tokens = 0
+        persisted_route: dict[str, Any] = {}
         if self._session_db:
             try:
                 title = await self._session_db.get_session_title(session_entry.session_id)
@@ -629,6 +630,14 @@ class GatewaySlashCommandsMixin:
                     )
             except Exception:
                 db_total_tokens = 0
+            try:
+                route = await self._session_db.get_dominant_session_model_route(
+                    session_entry.session_id
+                )
+                if isinstance(route, dict):
+                    persisted_route = route
+            except Exception:
+                persisted_route = {}
 
         # Resolve model/context for cockpit-style status. Prefer the live or
         # cached agent because it carries the actual runtime route and context
@@ -651,20 +660,33 @@ class GatewaySlashCommandsMixin:
         model_name = ""
         provider_name = ""
         base_url = ""
+        route_resolved = False
         context_used = 0
         context_total = 0
         if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
-            model_name = _clean_str(getattr(status_agent, "model", ""))
-            provider_name = _clean_str(getattr(status_agent, "provider", ""))
-            base_url = _clean_str(getattr(status_agent, "base_url", ""))
+            live_model = _clean_str(getattr(status_agent, "model", ""))
+            live_provider = _clean_str(getattr(status_agent, "provider", ""))
+            if live_model and live_provider:
+                model_name = live_model
+                provider_name = live_provider
+                base_url = _clean_str(getattr(status_agent, "base_url", ""))
+                route_resolved = True
             ctx = getattr(status_agent, "context_compressor", None)
             if ctx is not None:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
-        model_name = model_name or _clean_str(session_row.get("model"))
-        provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
-        base_url = base_url or _clean_str(session_row.get("billing_base_url"))
+        persisted_model = _clean_str(persisted_route.get("model"))
+        persisted_provider = _clean_str(persisted_route.get("billing_provider"))
+        if not route_resolved and persisted_model and persisted_provider:
+            model_name = persisted_model
+            provider_name = persisted_provider
+            base_url = _clean_str(persisted_route.get("billing_base_url"))
+            route_resolved = True
+        if not route_resolved:
+            model_name = _clean_str(session_row.get("model"))
+            provider_name = _clean_str(session_row.get("billing_provider"))
+            base_url = _clean_str(session_row.get("billing_base_url"))
         context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
 
         user_config: dict[str, Any] = {}
@@ -1772,7 +1794,7 @@ class GatewaySlashCommandsMixin:
         excluded_provs = []
         config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
-            cfg = _load_gateway_config()
+            cfg = _load_gateway_config(config_path=config_path)
             if cfg:
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
@@ -5226,10 +5248,19 @@ class GatewaySlashCommandsMixin:
             try:
                 _entry_for_billing = await self.async_session_store.get_or_create_session(source)
                 persisted = await self._session_db.get_session(_entry_for_billing.session_id) or {}
+                route = await self._session_db.get_dominant_session_model_route(
+                    _entry_for_billing.session_id
+                )
+                persisted_route = route if isinstance(route, dict) else {}
             except Exception:
                 persisted = {}
-            provider = provider or persisted.get("billing_provider")
-            base_url = base_url or persisted.get("billing_base_url")
+                persisted_route = {}
+            if persisted_route.get("billing_provider"):
+                provider = persisted_route["billing_provider"]
+                base_url = persisted_route.get("billing_base_url")
+            else:
+                provider = persisted.get("billing_provider")
+                base_url = persisted.get("billing_base_url")
 
         if wants_reset:
             normalized_provider = str(provider or "").strip().lower()

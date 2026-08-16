@@ -646,6 +646,18 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
+        if not has_usable_secret(pool_api_key) and _loopback_hostname(base_url_hostname(base_url)):
+            # Legacy configs commonly used short/placeholder keys ('123',
+            # 'm', ...) for local no-auth services like Ollama -- fine for
+            # the endpoint itself, but has_usable_secret's 4-char floor
+            # (added after these configs were written) now rejects them
+            # here with no migration path. Every OTHER resolution path in
+            # this file already substitutes "no-key-required" for a
+            # loopback endpoint with no usable secret (the config-based
+            # custom_providers fallback a few hundred lines below, and the
+            # "actual" provider's local-offline exemption further down) --
+            # this pool path was the one gap (issue #86864).
+            pool_api_key = "no-key-required"
         return {
             "provider": provider_label,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",

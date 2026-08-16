@@ -215,6 +215,163 @@
       then "${containerDataDir}/${lib.removePrefix "${cfg.stateDir}/" cfg.workingDirectory}"
       else cfg.workingDirectory;
 
+    # Setup script — links config + auth + documents and fixes up permissions.
+    # Run as the systemd service's ExecStartPre (with the `+` prefix so it runs
+    # as root). This replaces the former system.activationScripts entry, which
+    # only ordered correctly when sops itself used an activation script; sops
+    # deployments that activate via a systemd unit got no ordering guarantee.
+    setupScript = pkgs.writeShellScript "hermes-agent-setup" ''
+      # Pin a known-good PATH: as an ExecStartPre this script no longer inherits
+      # the NixOS activation PATH, and the unit's own PATH does not include
+      # findutils (Mode A) or anything (Mode B). Without this, every `find`
+      # below would silently fall through its `|| true` — breaking the permission
+      # migration and the stale managed-plugin symlink cleanup.
+      export PATH="${lib.makeBinPath [ pkgs.coreutils pkgs.findutils ]}:$PATH"
+
+      # Ensure directories exist (tmpfiles has already run by ExecStartPre, but
+      # keep these as belt-and-suspenders for first boot / manual restarts)
+      mkdir -p ${cfg.stateDir}/.hermes
+      mkdir -p ${cfg.stateDir}/home
+      mkdir -p ${cfg.workingDirectory}
+      chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
+      chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
+      chmod 0750 ${cfg.stateDir}/home
+
+      # Create subdirs, set setgid + group-writable, migrate existing files.
+      # Nix-managed .env/.managed stay 0640/0644; config.yaml uses
+      # configYamlMode (0660 under addToSystemPackages, else 0640).
+      find ${cfg.stateDir}/.hermes -maxdepth 1 \
+        \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
+        -exec chmod g+rw {} + 2>/dev/null || true
+      for _subdir in cron sessions logs memories plugins; do
+        mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
+        chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
+        chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
+        find "${cfg.stateDir}/.hermes/$_subdir" -type f \
+          -exec chmod g+rw {} + 2>/dev/null || true
+      done
+
+      # Merge Nix settings into existing config.yaml.
+      # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
+      # If configFile is user-provided (not generated), overwrite instead of merge.
+      # Mode is configYamlMode (0660 under addToSystemPackages so interactive
+      # hermes-group users can save settings via the CLI/TUI, else 0640).
+      ${if cfg.configFile != null then ''
+        install -o ${cfg.user} -g ${cfg.group} -m ${configYamlMode} -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+      '' else ''
+        ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
+        chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
+        chmod ${configYamlMode} ${cfg.stateDir}/.hermes/config.yaml
+      ''}
+
+      # Managed mode marker (so interactive shells also detect NixOS management)
+      touch ${cfg.stateDir}/.hermes/.managed
+      chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
+      chmod 0644 ${cfg.stateDir}/.hermes/.managed
+
+      # Container mode metadata — tells the host CLI to exec into the
+      # container instead of running locally. Removed when container mode
+      # is disabled so the host CLI falls back to native execution.
+      ${if cfg.container.enable then ''
+        cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
+    # Written by the NixOS setup script (ExecStartPre). Do not edit manually.
+    backend=${cfg.container.backend}
+    container_name=${containerName}
+    exec_user=${cfg.user}
+    hermes_bin=${containerDataDir}/current-package/bin/hermes
+    HERMES_CONTAINER_MODE_EOF
+        chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
+        chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
+      '' else ''
+        rm -f ${cfg.stateDir}/.hermes/.container-mode
+
+        # Remove symlink bridge for hostUsers
+        ${lib.concatStringsSep "\n" (map (user:
+          let
+            userHome = config.users.users.${user}.home;
+            symlinkPath = "${userHome}/.hermes";
+          in ''
+            if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${cfg.stateDir}/.hermes" ]; then
+              rm -f "${symlinkPath}"
+              echo "hermes-agent: removed symlink ${symlinkPath}"
+            fi
+          '') cfg.container.hostUsers)}
+      ''}
+
+      # ── Symlink bridge for interactive users ───────────────────────
+      # Create ~/.hermes -> stateDir/.hermes for each hostUser so the
+      # host CLI shares state with the container service.
+      # Only runs when container mode is enabled.
+      ${lib.optionalString cfg.container.enable
+        (lib.concatStringsSep "\n" (map (user:
+          let
+            userHome = config.users.users.${user}.home;
+            symlinkPath = "${userHome}/.hermes";
+            target = "${cfg.stateDir}/.hermes";
+          in ''
+            if [ -d "${symlinkPath}" ] && [ ! -L "${symlinkPath}" ]; then
+              # Real directory — back it up, then create symlink.
+              # (ln -sfn cannot atomically replace a directory.)
+              _backup="${symlinkPath}.bak.$(date +%s)"
+              echo "hermes-agent: backing up existing ${symlinkPath} to $_backup"
+              mv "${symlinkPath}" "$_backup"
+            fi
+            # For everything else (existing symlink, doesn't exist, etc.)
+            # ln -sfn handles it: replaces symlinks, creates new ones.
+            ln -sfn "${target}" "${symlinkPath}"
+            chown -h ${user}:${cfg.group} "${symlinkPath}"
+          '') cfg.container.hostUsers))}
+
+      # Seed auth file if provided
+      ${lib.optionalString (cfg.authFile != null) ''
+        ${if cfg.authFileForceOverwrite then ''
+          install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
+        '' else ''
+          if [ ! -f ${cfg.stateDir}/.hermes/auth.json ]; then
+            install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
+          fi
+        ''}
+      ''}
+
+      # Seed .env from Nix-declared environment + environmentFiles.
+      # Hermes reads $HERMES_HOME/.env at startup via load_hermes_dotenv(),
+      # so this is the single source of truth for both native and container mode.
+      ${lib.optionalString (cfg.environment != {} || cfg.environmentFiles != []) ''
+        ENV_FILE="${cfg.stateDir}/.hermes/.env"
+        install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
+        cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
+    ${envFileContent}
+    HERMES_NIX_ENV_EOF
+        ${lib.concatStringsSep "\n" (map (f: ''
+          if [ -f "${f}" ]; then
+            echo "" >> "$ENV_FILE"
+            cat "${f}" >> "$ENV_FILE"
+          fi
+        '') cfg.environmentFiles)}
+      ''}
+
+      # Link documents into workspace
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
+        install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
+      '') cfg.documents)}
+
+      # ── Declarative plugins ─────────────────────────────────────────
+      # Remove stale managed symlinks (plugins removed from config)
+      find ${cfg.stateDir}/.hermes/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
+
+      ${lib.concatStringsSep "\n" (map (plugin:
+        let
+          name = lib.getName plugin;
+        in ''
+          if [ ! -f "${plugin}/plugin.yaml" ]; then
+            echo "ERROR: extraPlugins entry '${plugin}' has no plugin.yaml" >&2
+            exit 1
+          fi
+          ln -sfn ${plugin} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+          chown -h ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+        '') cfg.extraPlugins)}
+    '';
+
   in {
     options.services.hermes-agent = with lib; {
       enable = mkEnableOption "Hermes Agent gateway service";
@@ -720,153 +877,6 @@
         ];
       }
 
-      # ── Activation: link config + auth + documents ────────────────────
-      {
-        system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
-          # Ensure directories exist (activation runs before tmpfiles)
-          mkdir -p ${cfg.stateDir}/.hermes
-          mkdir -p ${cfg.stateDir}/home
-          mkdir -p ${cfg.workingDirectory}
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
-          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
-          chmod 0750 ${cfg.stateDir}/home
-
-          # Create subdirs, set setgid + group-writable, migrate existing files.
-          # Nix-managed .env/.managed stay 0640/0644; config.yaml uses
-          # configYamlMode (0660 under addToSystemPackages, else 0640).
-          find ${cfg.stateDir}/.hermes -maxdepth 1 \
-            \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
-            -exec chmod g+rw {} + 2>/dev/null || true
-          for _subdir in cron sessions logs memories plugins; do
-            mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
-            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
-            chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
-            find "${cfg.stateDir}/.hermes/$_subdir" -type f \
-              -exec chmod g+rw {} + 2>/dev/null || true
-          done
-
-          # Merge Nix settings into existing config.yaml.
-          # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
-          # If configFile is user-provided (not generated), overwrite instead of merge.
-          # Mode is configYamlMode (0660 under addToSystemPackages so interactive
-          # hermes-group users can save settings via the CLI/TUI, else 0640).
-          ${if cfg.configFile != null then ''
-            install -o ${cfg.user} -g ${cfg.group} -m ${configYamlMode} -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
-          '' else ''
-            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
-            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
-            chmod ${configYamlMode} ${cfg.stateDir}/.hermes/config.yaml
-          ''}
-
-          # Managed mode marker (so interactive shells also detect NixOS management)
-          touch ${cfg.stateDir}/.hermes/.managed
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
-          chmod 0644 ${cfg.stateDir}/.hermes/.managed
-
-          # Container mode metadata — tells the host CLI to exec into the
-          # container instead of running locally. Removed when container mode
-          # is disabled so the host CLI falls back to native execution.
-          ${if cfg.container.enable then ''
-            cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
-    # Written by NixOS activation script. Do not edit manually.
-    backend=${cfg.container.backend}
-    container_name=${containerName}
-    exec_user=${cfg.user}
-    hermes_bin=${containerDataDir}/current-package/bin/hermes
-    HERMES_CONTAINER_MODE_EOF
-            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
-            chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
-          '' else ''
-            rm -f ${cfg.stateDir}/.hermes/.container-mode
-
-            # Remove symlink bridge for hostUsers
-            ${lib.concatStringsSep "\n" (map (user:
-              let
-                userHome = config.users.users.${user}.home;
-                symlinkPath = "${userHome}/.hermes";
-              in ''
-                if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${cfg.stateDir}/.hermes" ]; then
-                  rm -f "${symlinkPath}"
-                  echo "hermes-agent: removed symlink ${symlinkPath}"
-                fi
-              '') cfg.container.hostUsers)}
-          ''}
-
-          # ── Symlink bridge for interactive users ───────────────────────
-          # Create ~/.hermes -> stateDir/.hermes for each hostUser so the
-          # host CLI shares state with the container service.
-          # Only runs when container mode is enabled.
-          ${lib.optionalString cfg.container.enable
-            (lib.concatStringsSep "\n" (map (user:
-              let
-                userHome = config.users.users.${user}.home;
-                symlinkPath = "${userHome}/.hermes";
-                target = "${cfg.stateDir}/.hermes";
-              in ''
-                if [ -d "${symlinkPath}" ] && [ ! -L "${symlinkPath}" ]; then
-                  # Real directory — back it up, then create symlink.
-                  # (ln -sfn cannot atomically replace a directory.)
-                  _backup="${symlinkPath}.bak.$(date +%s)"
-                  echo "hermes-agent: backing up existing ${symlinkPath} to $_backup"
-                  mv "${symlinkPath}" "$_backup"
-                fi
-                # For everything else (existing symlink, doesn't exist, etc.)
-                # ln -sfn handles it: replaces symlinks, creates new ones.
-                ln -sfn "${target}" "${symlinkPath}"
-                chown -h ${user}:${cfg.group} "${symlinkPath}"
-              '') cfg.container.hostUsers))}
-
-          # Seed auth file if provided
-          ${lib.optionalString (cfg.authFile != null) ''
-            ${if cfg.authFileForceOverwrite then ''
-              install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
-            '' else ''
-              if [ ! -f ${cfg.stateDir}/.hermes/auth.json ]; then
-                install -o ${cfg.user} -g ${cfg.group} -m 0600 ${cfg.authFile} ${cfg.stateDir}/.hermes/auth.json
-              fi
-            ''}
-          ''}
-
-          # Seed .env from Nix-declared environment + environmentFiles.
-          # Hermes reads $HERMES_HOME/.env at startup via load_hermes_dotenv(),
-          # so this is the single source of truth for both native and container mode.
-          ${lib.optionalString (cfg.environment != {} || cfg.environmentFiles != []) ''
-            ENV_FILE="${cfg.stateDir}/.hermes/.env"
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
-            cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
-    ${envFileContent}
-    HERMES_NIX_ENV_EOF
-            ${lib.concatStringsSep "\n" (map (f: ''
-              if [ -f "${f}" ]; then
-                echo "" >> "$ENV_FILE"
-                cat "${f}" >> "$ENV_FILE"
-              fi
-            '') cfg.environmentFiles)}
-          ''}
-
-          # Link documents into workspace
-          ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
-          '') cfg.documents)}
-
-        # ── Declarative plugins ─────────────────────────────────────────
-        # Remove stale managed symlinks (plugins removed from config)
-        find ${cfg.stateDir}/.hermes/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
-
-        ${lib.concatStringsSep "\n" (map (plugin:
-          let
-            name = lib.getName plugin;
-          in ''
-            if [ ! -f "${plugin}/plugin.yaml" ]; then
-              echo "ERROR: extraPlugins entry '${plugin}' has no plugin.yaml" >&2
-              exit 1
-            fi
-            ln -sfn ${plugin} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
-            chown -h ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
-          '') cfg.extraPlugins)}
-        '';
-      }
-
       # ══════════════════════════════════════════════════════════════════
       # MODE A: Native systemd service (default)
       # ══════════════════════════════════════════════════════════════════
@@ -874,8 +884,10 @@
         systemd.services.hermes-agent = {
           description = "Hermes Agent Gateway";
           wantedBy = [ "multi-user.target" ];
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
+          after = [ "network-online.target" ]
+            ++ lib.optional (config.systemd.services ? sops-install-secrets) "sops-install-secrets.service";
+          wants = [ "network-online.target" ]
+            ++ lib.optional (config.systemd.services ? sops-install-secrets) "sops-install-secrets.service";
 
           environment = {
             HOME = cfg.stateDir;
@@ -891,8 +903,14 @@
             WorkingDirectory = cfg.workingDirectory;
 
             # cfg.environment and cfg.environmentFiles are written to
-            # $HERMES_HOME/.env by the activation script. load_hermes_dotenv()
+            # $HERMES_HOME/.env by the setup script. load_hermes_dotenv()
             # reads them at Python startup — no systemd EnvironmentFile needed.
+
+            # Setup runs as root (`+` prefix) before the gateway starts — it links
+            # config/auth/documents and fixes permissions. Formerly a
+            # system.activationScripts entry; moved here so it orders correctly
+            # regardless of how sops activates secrets.
+            ExecStartPre = "+${setupScript}";
 
             ExecStart = lib.concatStringsSep " " ([
               "${effectivePackage}/bin/hermes"
@@ -937,11 +955,19 @@
           description = "Hermes Agent Gateway (container)";
           wantedBy = [ "multi-user.target" ];
           after = [ "network-online.target" ]
-            ++ lib.optional (cfg.container.backend == "docker") "docker.service";
-          wants = [ "network-online.target" ];
+            ++ lib.optional (cfg.container.backend == "docker") "docker.service"
+            ++ lib.optional (config.systemd.services ? sops-install-secrets) "sops-install-secrets.service";
+          wants = [ "network-online.target" ]
+            ++ lib.optional (config.systemd.services ? sops-install-secrets) "sops-install-secrets.service";
           requires = lib.optional (cfg.container.backend == "docker") "docker.service";
 
+          # preStart becomes the service's ExecStartPre. The setup script (formerly
+          # a system.activationScripts entry) runs first here so it orders correctly
+          # regardless of how sops activates secrets. preStart already runs as root
+          # (no User= on the container service), so the cross-user chowns succeed.
           preStart = ''
+            ${setupScript}
+
             # Stable symlinks — container references these, not store paths directly
             ln -sfn ${effectivePackage} ${cfg.stateDir}/current-package
             ln -sfn ${containerEntrypoint} ${cfg.stateDir}/current-entrypoint

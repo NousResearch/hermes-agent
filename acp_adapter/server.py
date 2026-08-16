@@ -977,8 +977,9 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from tools.mcp_tool import register_mcp_servers
+            from tools.mcp_tool import _load_mcp_config, register_mcp_servers
 
+            configured_servers = await asyncio.to_thread(_load_mcp_config)
             config_map: dict[str, dict] = {}
             for server in mcp_servers:
                 name = server.name
@@ -993,6 +994,9 @@ class HermesACPAgent(acp.Agent):
                         "url": server.url,
                         "headers": {item.name: item.value for item in server.headers},
                     }
+                configured = configured_servers.get(name)
+                if isinstance(configured, dict) and "timeout" in configured:
+                    config["timeout"] = configured["timeout"]
                 config_map[name] = config
 
             await asyncio.to_thread(register_mcp_servers, config_map)

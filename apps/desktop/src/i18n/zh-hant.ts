@@ -838,6 +838,9 @@ export const zhHant = defineLocale({
       saveServer: '儲存伺服器',
       capabilitySummary: (tools, prompts, resources) =>
         `已啟用 ${[`${tools} 個工具`, ...(prompts ? [`${prompts} 個提示`] : []), ...(resources ? [`${resources} 個資源`] : [])].join('、')}`,
+      costTokens: tokens => `每次呼叫約 ${tokens} token`,
+      usage30d: uses => `30 天內 ${uses} 次呼叫`,
+      unusedPill: '未使用',
       statusConnecting: '連線中…',
       statusNeedsAuth: '需要驗證',
       statusError: '錯誤',

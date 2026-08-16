@@ -210,9 +210,24 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
             "error": "OAuth authentication required — no token found.",
             "tools": [],
         }
+    # Additive-optional per-tool schema size (chars of the converted registry
+    # schema) — the desktop's cost overlay estimates tokens from it. Older
+    # renderers ignore the extra key; failed probes simply omit it.
+    schema_chars = details.get("schema_chars") or {}
     return {
         "ok": True,
-        "tools": [{"name": t, "description": d} for t, d in tools],
+        "tools": [
+            {
+                "name": t,
+                "description": d,
+                **(
+                    {"schema_chars": schema_chars[t]}
+                    if isinstance(schema_chars.get(t), int)
+                    else {}
+                ),
+            }
+            for t, d in tools
+        ],
         "prompts": details.get("prompts", 0),
         "resources": details.get("resources", 0),
     }

@@ -19,6 +19,7 @@ import {
   getLogs,
   getMcpCatalog,
   getMcpOAuthFlow,
+  getUsageAnalytics,
   type HermesGateway,
   installMcpCatalogEntry,
   type McpCatalogEntry,
@@ -27,7 +28,9 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
+import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
@@ -125,6 +128,41 @@ const probeKey = (name: string, server: Record<string, unknown> | undefined, pro
 
 type Probe = McpTestResult | 'probing'
 
+// Per-server cost/usage overlay inputs: `tokens` is the approximate per-call
+// schema cost from the probe (null = no estimate — older backend or no probe
+// yet), `uses` is the 30-day analytics call count (null = analytics
+// unavailable, so usage is simply omitted).
+interface ServerCost {
+  tokens: null | number
+  uses: null | number
+}
+
+// 30-day per-tool call counts for the MCP fleet — same shape and TTL rules as
+// the Toolsets tab's toolCallsCache (skills/index.tsx), but a 30-day window
+// keyed by the Capabilities scope profile. Purely cosmetic: a failed analytics
+// fetch caches nothing and the overlay omits usage.
+const MCP_USAGE_TTL_MS = 10 * 60_000
+const mcpUsageCache = new Map<string, { at: number; value: Record<string, number> }>()
+
+async function loadMcpUsage(scopeKey: string, scopeProfile: null | string): Promise<null | Record<string, number>> {
+  const cached = mcpUsageCache.get(scopeKey)
+
+  if (cached && Date.now() - cached.at < MCP_USAGE_TTL_MS) {
+    return cached.value
+  }
+
+  try {
+    const analytics = await getUsageAnalytics(30, scopeProfile)
+    const value = Object.fromEntries((analytics.tools ?? []).map(entry => [entry.tool, entry.count]))
+    mcpUsageCache.set(scopeKey, { at: Date.now(), value })
+
+    return value
+  } catch {
+    // Analytics unavailable — degrade to "no usage shown", never an error UI.
+    return null
+  }
+}
+
 type ServerStatus = 'off' | 'probing' | 'ok' | 'needs-auth' | 'error' | 'unknown'
 
 function statusOf(server: Record<string, unknown>, probe: Probe | undefined): ServerStatus {
@@ -159,11 +197,13 @@ const STATUS_DOT: Record<ServerStatus, string> = {
 // "12 tools enabled" / "25 tools, 1 prompts, 103 resources enabled" — only
 // the capabilities the server actually has. When a `server` config is passed,
 // the tool count reflects the per-tool include/exclude filter (what's actually
-// registered), not the raw discovered count.
+// registered), not the raw discovered count. The optional `cost` appends the
+// overlay — "…, ~4.2k tok, 3 uses/30d" — with each half omitted when unknown.
 function capabilitySummary(
   m: Translations['settings']['mcp'],
   probe: McpTestResult,
-  server?: Record<string, unknown>
+  server?: Record<string, unknown>,
+  cost?: ServerCost
 ): string {
   const toolCount = server
     ? countEnabledTools(
@@ -172,18 +212,29 @@ function capabilitySummary(
       )
     : probe.tools.length
 
-  return m.capabilitySummary(toolCount, probe.prompts ?? 0, probe.resources ?? 0)
+  const parts = [m.capabilitySummary(toolCount, probe.prompts ?? 0, probe.resources ?? 0)]
+
+  if (cost && cost.tokens !== null && cost.tokens > 0) {
+    parts.push(m.costTokens(compactNumber(cost.tokens)))
+  }
+
+  if (cost && cost.uses !== null) {
+    parts.push(m.usage30d(compactNumber(cost.uses)))
+  }
+
+  return parts.join(', ')
 }
 
 function statusLine(
   m: Translations['settings']['mcp'],
   status: ServerStatus,
   probe: Probe | undefined,
-  server?: Record<string, unknown>
+  server?: Record<string, unknown>,
+  cost?: ServerCost
 ): string {
   switch (status) {
     case 'ok':
-      return capabilitySummary(m, probe as McpTestResult, server)
+      return capabilitySummary(m, probe as McpTestResult, server, cost)
 
     case 'probing':
       return m.statusConnecting
@@ -371,6 +422,10 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   const probesRef = useRef(probes)
   probesRef.current = probes
 
+  // 30-day per-tool call counts (registry names). null = analytics unavailable
+  // or not loaded yet — the cost overlay then omits usage entirely.
+  const [toolCalls30d, setToolCalls30d] = useState<null | Record<string, number>>(null)
+
   // Blocks the browser until an OAuth flow lands a token; also reset on profile
   // switch, so declared up here alongside the other per-profile view state.
   const [authing, setAuthing] = useState<null | string>(null)
@@ -515,6 +570,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     profileEpoch.current += 1
     draftSeeded.current = false
     setProbes({})
+    setToolCalls30d(null)
     setCursor(0)
     setAuthing(null)
     setDirty(false)
@@ -668,6 +724,30 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     // render and adding it would re-probe the fleet on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [servers])
+
+  // Cosmetic 30-day usage counts for the cost overlay — cached module-wide per
+  // scope profile, epoch-guarded like the probes so a slow profile-A fetch
+  // can't paint into profile B.
+  useEffect(() => {
+    const epoch = profileEpoch.current
+
+    void loadMcpUsage(scopeProfileKey, profile ?? appProfile ?? null).then(value => {
+      if (profileEpoch.current === epoch) {
+        setToolCalls30d(value)
+      }
+    })
+  }, [scopeProfileKey, profile, appProfile])
+
+  // Overlay inputs for one server: token estimate from its (successful) probe,
+  // 30-day uses from analytics. Both halves degrade to null independently.
+  const costFor = (serverName: string, server: Record<string, unknown>): ServerCost => {
+    const probe = probes[serverName]
+
+    return {
+      tokens: probe && probe !== 'probing' && probe.ok ? estimateServerTokens(server, probe.tools) : null,
+      uses: toolCalls30d ? serverUsageCount(serverName, toolCalls30d) : null
+    }
+  }
 
   // Config writes reach live sessions immediately — no manual "Reload MCP".
   const silentReload = async () => {
@@ -952,6 +1032,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
         {selected && activeEntry ? (
           <ServerConfig
             authing={authing === selected}
+            cost={costFor(selected, activeEntry)}
             description={descriptionFor(selected, activeEntry)}
             entry={activeEntry}
             name={selected}
@@ -995,6 +1076,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                   {names.map(serverName => {
                     const server = servers[serverName]
                     const status = statusOf(server, probes[serverName])
+                    const cost = costFor(serverName, server)
 
                     return (
                       <McpRow
@@ -1008,7 +1090,14 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                         onSelect={() => focusServer(serverName)}
                         onToggle={checked => void setServerEnabled(serverName, checked)}
                         status={status}
-                        statusText={statusLine(m, status, probes[serverName], server)}
+                        statusText={statusLine(m, status, probes[serverName], server, cost)}
+                        unused={
+                          serverEnabled(server) &&
+                          status === 'ok' &&
+                          cost.tokens !== null &&
+                          cost.tokens > 0 &&
+                          cost.uses === 0
+                        }
                       />
                     )
                   })}
@@ -1097,6 +1186,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
 
 function ServerConfig({
   authing,
+  cost,
   description,
   entry,
   name,
@@ -1111,6 +1201,7 @@ function ServerConfig({
   saving
 }: {
   authing: boolean
+  cost?: ServerCost
   description: null | string
   entry: Record<string, unknown>
   name: string
@@ -1141,7 +1232,7 @@ function ServerConfig({
     !hasHeaderAuth &&
     (entry.auth === 'oauth' ? status === 'needs-auth' || status === 'error' : !entry.auth && status === 'needs-auth')
 
-  const summary = probe && probe !== 'probing' && probe.ok ? capabilitySummary(m, probe, entry) : null
+  const summary = probe && probe !== 'probing' && probe.ok ? capabilitySummary(m, probe, entry, cost) : null
 
   return (
     // p-2 matches the list view's container so flipping list ⇄ config keeps
@@ -1621,7 +1712,8 @@ function McpRow({
   onSelect,
   onToggle,
   status,
-  statusText
+  statusText,
+  unused
 }: {
   active: boolean
   busy: boolean
@@ -1633,7 +1725,11 @@ function McpRow({
   onToggle: (checked: boolean) => void
   status: ServerStatus
   statusText: string
+  unused?: boolean
 }) {
+  const { t } = useI18n()
+  const m = t.settings.mcp
+
   return (
     <div
       className={cn(
@@ -1649,13 +1745,23 @@ function McpRow({
       >
         <McpAvatar name={name} status={status} />
         <span className="min-w-0 flex-1">
-          <span
-            className={cn(
-              'block truncate text-[0.78rem]',
-              enabled ? 'font-medium text-foreground/85' : 'font-normal text-muted-foreground/60'
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={cn(
+                'min-w-0 truncate text-[0.78rem]',
+                enabled ? 'font-medium text-foreground/85' : 'font-normal text-muted-foreground/60'
+              )}
+            >
+              {prettyName(name)}
+            </span>
+            {/* Subtle "paying for schemas, not using them" hint — a muted pill,
+                never a dialog. Shown only when the overlay KNOWS both halves:
+                nonzero schema cost and zero 30-day uses. */}
+            {unused && (
+              <span className="shrink-0 rounded bg-(--ui-bg-tertiary) px-1 py-px text-[0.58rem] font-normal text-muted-foreground/60">
+                {m.unusedPill}
+              </span>
             )}
-          >
-            {prettyName(name)}
           </span>
           <span className="block truncate text-[0.62rem] text-muted-foreground/50">{statusText}</span>
         </span>

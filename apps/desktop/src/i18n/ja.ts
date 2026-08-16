@@ -864,6 +864,9 @@ export const ja = defineLocale({
       saveServer: 'サーバーを保存',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`ツール ${tools} 個`, ...(prompts ? [`プロンプト ${prompts} 個`] : []), ...(resources ? [`リソース ${resources} 個`] : [])].join('、')} を有効化`,
+      costTokens: tokens => `1 呼び出しあたり約 ${tokens} トークン`,
+      usage30d: uses => `過去 30 日で ${uses} 回使用`,
+      unusedPill: '未使用',
       statusConnecting: '接続中…',
       statusNeedsAuth: '認証が必要です',
       statusError: 'エラー',

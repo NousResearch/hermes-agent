@@ -885,6 +885,9 @@ export const en: Translations = {
       catalogEnvRequired: 'Fill in the required values before installing.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} tools`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} resources`] : [])].join(', ')} enabled`,
+      costTokens: tokens => `~${tokens} tok/call`,
+      usage30d: uses => `${uses} uses/30d`,
+      unusedPill: 'unused',
       statusConnecting: 'Connecting…',
       statusNeedsAuth: 'Needs authentication',
       statusError: 'Error',

@@ -758,6 +758,9 @@ export interface Translations {
       catalogEnvPrompt: (name: string) => string
       catalogEnvRequired: string
       capabilitySummary: (tools: number, prompts: number, resources: number) => string
+      costTokens: (tokens: string) => string
+      usage30d: (uses: string) => string
+      unusedPill: string
       statusConnecting: string
       statusNeedsAuth: string
       statusError: string

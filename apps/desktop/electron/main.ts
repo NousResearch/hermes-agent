@@ -2962,9 +2962,9 @@ function writeBackendOwnership(contents) {
   }
 }
 
-function execText(command, args) {
+function execText(command, args, { timeout = 3000 } = {}) {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 3000 }), (error, stdout) => {
+    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
       if (error) {
         reject(error)
       } else {
@@ -3000,12 +3000,18 @@ async function processStartMarker(pid) {
       return electronMarker
     }
 
-    const ticks = await execText('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().Ticks`
-    ])
+    const ticks = await execText(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().Ticks`
+      ],
+      // PowerShell 5.1 cold starts routinely exceed the default 3s execText
+      // budget (2.4-8s observed in #87169); give the marker probe headroom.
+      { timeout: 30_000 }
+    )
 
     if (!/^\d+$/.test(ticks)) {
       throw new Error(`Invalid Windows start marker for PID ${pid}`)

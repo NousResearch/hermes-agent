@@ -11698,6 +11698,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def count_open_prune_matches(
+        self,
+        older_than_days: Optional[float] = None,
+        source: str = None,
+        **filters,
+    ) -> int:
+        """Count open sessions excluded from a matching bulk prune.
+
+        This applies every normal prune filter, but inverts only the
+        ``ended_at`` safety guard. It is visibility-only: callers can explain
+        why an otherwise matching session was skipped without making live
+        sessions eligible for destructive pruning.
+        """
+        if (
+            filters.get("last_active_before") is None
+            and filters.get("started_before") is None
+            and older_than_days is not None
+        ):
+            filters["last_active_before"] = time.time() - (
+                older_than_days * 86400
+            )
+        where, params = self._prune_filter_where(source=source, **filters)
+        ended_guard = "s.ended_at IS NOT NULL"
+        if not where.startswith(ended_guard):
+            raise RuntimeError("prune filter lost its ended-session safety guard")
+        open_where = f"s.ended_at IS NULL{where[len(ended_guard):]}"
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions s WHERE {open_where}", params
+            )
+            return int(cursor.fetchone()[0])
+
     def archive_sessions(
         self,
         older_than_days: Optional[float] = None,

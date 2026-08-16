@@ -942,6 +942,17 @@ def cmd_sessions(args, sessions_parser=None):
             filters["archived"] = False
 
         candidates = db.list_prune_candidates(**filters)
+        skipped_open = (
+            db.count_open_prune_matches(**filters) if action == "prune" else 0
+        )
+        if skipped_open:
+            suffix = "" if skipped_open == 1 else "s"
+            print(
+                f"Note: {skipped_open} open session{suffix} also match these "
+                "filters but will be skipped because prune only deletes ended "
+                "sessions. Use `hermes sessions delete <id>` to remove one "
+                "explicitly."
+            )
         verb = "Delete" if action == "prune" else "Archive"
         if not candidates:
             print(f"No sessions match ({describe_filters(filters)}).")

@@ -251,11 +251,13 @@ class TestSend:
 
         long_text = "x" * (MAX_MESSAGE_LENGTH + 100)
         _run(adapter.send("1", long_text, metadata={"user_id": "2", "chat_type": "dm"}))
-        sent_body = adapter._http_client.post.call_args.kwargs["content"].decode("utf-8")
-        import json as _json
-        payload = _json.loads(sent_body)
-        assert len(payload["text"]) <= MAX_MESSAGE_LENGTH
-        assert "обрезано" in payload["text"]
+        # send() разбивает на несколько сообщений — к-во вызовов > 1
+        assert adapter._http_client.post.call_count > 1
+        for call in adapter._http_client.post.call_args_list:
+            sent_body = call.kwargs["content"].decode("utf-8")
+            import json as _json
+            payload = _json.loads(sent_body)
+            assert len(payload["text"]) <= MAX_MESSAGE_LENGTH
 
     def test_smart_truncate_short(self):
         adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))

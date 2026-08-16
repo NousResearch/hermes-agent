@@ -499,9 +499,10 @@ class MaxAdapter(BasePlatformAdapter):
     def _smart_truncate(self, content: str) -> str:
         """Truncate to MAX limit, cutting at a markdown-friendly boundary.
 
-        Legacy fallback: used only when a single chunk still exceeds the
-        limit (e.g. an unbreakable 5000-char word). Normal long messages are
-        split by ``_split_text`` instead.
+        If content exceeds MAX_MESSAGE_LENGTH, cut at the last newline or
+        space before the limit (so we don't split a code block / word) and
+        append a truncation notice. If there's no boundary (single long
+        word), cut hard and still append the notice.
         """
         if len(content) <= MAX_MESSAGE_LENGTH:
             return content

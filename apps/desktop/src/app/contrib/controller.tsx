@@ -4,6 +4,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
+import { useColorblindMode } from '@/app/hooks/use-colorblind-mode'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -823,6 +824,11 @@ function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+
+  // Opt-in colorblind mode: sets html[data-colorblind] so styles.css can swap
+  // the diff palette to blue/orange. Hook runs before the HUD branch so the
+  // attribute applies in every window mode.
+  useColorblindMode()
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around

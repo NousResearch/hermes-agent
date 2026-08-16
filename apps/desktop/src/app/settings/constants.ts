@@ -645,7 +645,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'appearance',
     label: 'Appearance',
     icon: Palette,
-    keys: []
+    keys: ['desktop.colorblind_mode']
   },
   {
     id: 'workspace',

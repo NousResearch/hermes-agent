@@ -2265,6 +2265,11 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # Colorblind-friendly diff colors: when true, file diffs use a
+        # blue (add) / orange (remove) pair that stays clearly separable
+        # under red-green color vision deficiency, instead of the default
+        # green/red. Off by default — preserves the default palette.
+        "colorblind_mode": False,
         # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.

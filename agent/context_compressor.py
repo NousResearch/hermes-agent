@@ -1452,6 +1452,9 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
+HISTORICAL_USER_IMAGE_PLACEHOLDER = (
+    "[Attached image removed from this request; original remains in session history]"
+)
 
 
 def _is_image_part(part: Any) -> bool:
@@ -1472,6 +1475,74 @@ def _content_has_images(content: Any) -> bool:
     if not isinstance(content, list):
         return False
     return any(_is_image_part(p) for p in content)
+
+
+def _evict_historical_user_images(
+    messages: List[Dict[str, Any]],
+    *,
+    max_keep: int,
+) -> List[Dict[str, Any]]:
+    """Cap image parts in historical user turns on an outbound request copy.
+
+    The newest user turn is protected in full so every image the user just
+    attached reaches the model on its first request. Older user-image parts are
+    counted newest-first across turns; parts outside ``max_keep`` become stable
+    text placeholders. Tool and assistant images are outside this policy.
+
+    ``max_keep <= 0`` preserves the legacy behavior. Touched messages and their
+    content lists are copied, so persisted history remains byte-identical.
+    """
+    if max_keep <= 0 or not messages:
+        return messages
+
+    newest_user_idx = -1
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            newest_user_idx = idx
+            break
+
+    if newest_user_idx <= 0:
+        return messages
+
+    remaining = max_keep
+    changed = False
+    result: List[Dict[str, Any]] = list(messages)
+    for idx in range(newest_user_idx - 1, -1, -1):
+        msg = messages[idx]
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not _content_has_images(content):
+            continue
+
+        new_parts: List[Any] = list(content)
+        message_changed = False
+        for part_idx in range(len(content) - 1, -1, -1):
+            if not _is_image_part(content[part_idx]):
+                continue
+            if remaining > 0:
+                remaining -= 1
+                continue
+            placeholder_type = (
+                "input_text"
+                if content[part_idx].get("type") == "input_image"
+                else "text"
+            )
+            new_parts[part_idx] = {
+                "type": placeholder_type,
+                "text": HISTORICAL_USER_IMAGE_PLACEHOLDER,
+            }
+            message_changed = True
+
+        if message_changed:
+            new_msg = msg.copy()
+            new_msg["content"] = new_parts
+            drop_stale_api_content(new_msg)
+            result[idx] = new_msg
+            changed = True
+
+    return result if changed else messages
 
 
 def _strip_images_from_content(content: Any) -> Any:

@@ -44,6 +44,10 @@ DEFAULT_CONFIG = {
     },
     "agent": {
         "max_turns": 500,
+        # Maximum user-attached images retained from historical turns in each
+        # outbound request. The current user turn is always preserved in full;
+        # 0 disables request-time eviction.
+        "max_history_user_images": 3,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

@@ -35,6 +35,7 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
+from agent.context_compressor import _evict_historical_user_images
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -2276,6 +2277,16 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Bound retransmission of user-uploaded images without rewriting the
+        # persisted transcript. The current user turn is protected in full;
+        # older images roll out newest-first under the configured cap. Run
+        # before cache planning so an eviction changes the prefix once, then
+        # remains byte-stable on subsequent requests.
+        api_messages = _evict_historical_user_images(
+            api_messages,
+            max_keep=getattr(agent, "max_history_user_images", 3),
+        )
 
         # NOTE (empty-content class fix): no send-time pad loop here.  The
         # single owner for "never send a turn strict wire validation rejects

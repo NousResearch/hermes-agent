@@ -1009,11 +1009,14 @@ Instead, when the budget is actually exhausted (500/500), Hermes injects one mes
 agent:
   max_turns: 500               # Max iterations per conversation turn (default: 500)
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+  max_history_user_images: 3   # Retain this many images from older user turns
 ```
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (500/500) — response may be incomplete`.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+
+`agent.max_history_user_images` bounds user-uploaded image payloads in each outbound request. Hermes always sends every image on the current user turn, then retains only the newest configured number of image parts from older user turns. Older parts become short placeholders in the request copy; persisted session history keeps the original images unchanged. Set the value to `0` to disable request-time eviction.
 
 ## Verify-on-Stop (coding verification)
 

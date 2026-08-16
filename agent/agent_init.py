@@ -1871,6 +1871,17 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    try:
+        agent.max_history_user_images = max(
+            0, int(_agent_section.get("max_history_user_images", 3))
+        )
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid agent.max_history_user_images=%r; using 3.",
+            _agent_section.get("max_history_user_images"),
+        )
+        agent.max_history_user_images = 3
+
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the

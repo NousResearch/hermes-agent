@@ -929,6 +929,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Maximum user-attached images retained from older turns in each outbound
+  # request. Images on the current user turn are always sent in full. Older
+  # images beyond this newest-first cap become placeholders in the request
+  # only; the original session history remains intact. 0 disables eviction.
+  max_history_user_images: 3
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

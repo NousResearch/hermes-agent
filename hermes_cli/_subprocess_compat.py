@@ -365,6 +365,10 @@ def noninteractive_git_env(
       instead of prompting for credentials.
     * ``GCM_INTERACTIVE=Never`` — Git Credential Manager (the default
       credential helper on Windows installs) never pops its own dialog.
+    * isolated git config — inherited ``GIT_CONFIG_*`` overrides, global/system
+      config, pagers, editors, fsmonitor, external diff, and hooks are disabled
+      for the child process. A user's repo/global config should not be able to
+      hang or mutate Hermes's internal plumbing calls.
 
     ``GIT_ASKPASS`` / ``SSH_ASKPASS`` are deliberately left alone: when the
     user has a *working* askpass helper or ssh-agent configured, auth should
@@ -381,6 +385,43 @@ def noninteractive_git_env(
     env = dict(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+
+    # Do not inherit caller-supplied config injection. We rebuild the
+    # GIT_CONFIG_COUNT block below so ambient -c values cannot re-enable
+    # pagers, hooks, fsmonitor, editors, or credential prompts.
+    for key in list(env):
+        if (
+            key == "GIT_CONFIG_PARAMETERS"
+            or key.startswith("GIT_CONFIG_KEY_")
+            or key.startswith("GIT_CONFIG_VALUE_")
+        ):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+
+    devnull = os.devnull
+    env["GIT_CONFIG_GLOBAL"] = devnull
+    env["GIT_CONFIG_SYSTEM"] = devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_PAGER"] = "cat"
+    env["PAGER"] = "cat"
+    env["GIT_EDITOR"] = "true"
+
+    config_overrides = {
+        "credential.helper": "",
+        "core.askPass": "",
+        "core.fsmonitor": "false",
+        "core.untrackedCache": "false",
+        "core.hooksPath": devnull,
+        "core.pager": "cat",
+        "core.editor": "true",
+        "sequence.editor": "true",
+        "diff.external": "",
+    }
+    env["GIT_CONFIG_COUNT"] = str(len(config_overrides))
+    for idx, (key, value) in enumerate(config_overrides.items()):
+        env[f"GIT_CONFIG_KEY_{idx}"] = key
+        env[f"GIT_CONFIG_VALUE_{idx}"] = value
+
     return env
 
 

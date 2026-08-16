@@ -320,5 +320,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             ),
             group="Observation",
         ),
+        ProviderField(
+            key="observationOptOutPhrases",
+            label="Observation opt-out phrases",
+            kind=KIND_JSON,
+            description=(
+                "User-message substrings (case-insensitive) that mark a turn "
+                "no_observe: still stored/searchable, excluded from Honcho's "
+                "reasoning pipeline (no representation/conclusion updates)."
+            ),
+            placeholder='["don\'t remember this", "off the record"]',
+            group="Observation",
+        ),
     ),
 )

@@ -1740,6 +1740,7 @@ def _compute_host_turn_frame(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    client_submitted_at: float | None = None,
 ) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1766,6 +1767,11 @@ def _compute_host_turn_frame(
         "source": _session_source(session),
         "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation,
+        **(
+            {"client_submitted_at": client_submitted_at}
+            if client_submitted_at is not None
+            else {}
+        ),
     }
 
 
@@ -1843,6 +1849,7 @@ def _submit_prompt_to_compute_host(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    client_submitted_at: float | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(
@@ -1852,6 +1859,7 @@ def _submit_prompt_to_compute_host(
         text,
         image_paths=image_paths,
         queued_prompt_generation=queued_prompt_generation,
+        client_submitted_at=client_submitted_at,
     )
 
     def _complete(done: dict) -> None:
@@ -7791,6 +7799,7 @@ def _enqueue_prompt(
     text: Any,
     transport: Any,
     image_paths: list[str] | None = None,
+    client_submitted_at: float | None = None,
 ) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -7819,6 +7828,8 @@ def _enqueue_prompt(
     queued = {"text": text, "transport": transport}
     if image_paths:
         queued["image_paths"] = image_paths
+    if client_submitted_at is not None:
+        queued["client_submitted_at"] = client_submitted_at
     existing = session.get("queued_prompt")
     if (
         existing
@@ -7830,6 +7841,10 @@ def _enqueue_prompt(
     ):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        # Two submissions have become one model-visible user row. There is no
+        # single truthful event timestamp; omitting it is the conservative
+        # legacy fallback and cannot impersonate either constituent event.
+        existing.pop("client_submitted_at", None)
         return
     if existing:
         session.setdefault("queued_prompts", []).append(queued)
@@ -7870,6 +7885,9 @@ def _sanitize_queued_entry_vs_inflight_user(
                 return None
             cleaned = dict(entry)
             cleaned["text"] = rest
+            # Rewriting a merged envelope changes which submission survives;
+            # no constituent timestamp can safely identify the new envelope.
+            cleaned.pop("client_submitted_at", None)
             return cleaned
     return entry
 
@@ -7949,7 +7967,13 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    queued: bool = False,
+    client_submitted_at: float | None = None,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -8027,7 +8051,13 @@ def _handle_busy_submit(
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            image_paths=image_paths,
+            client_submitted_at=client_submitted_at,
+        )
         session["last_active"] = time.time()
 
     # Attachments need a separate model invocation. Queue them without
@@ -8086,6 +8116,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["running"] = False
             return True
     dispatch_failed = False
+    submission_kwargs = {"queued_prompt_generation": queue_generation}
+    if queued.get("client_submitted_at") is not None:
+        submission_kwargs["client_submitted_at"] = queued["client_submitted_at"]
     try:
         if use_compute_host:
             if queued.get("image_paths"):
@@ -8095,11 +8128,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     image_paths=queued["image_paths"],
-                    queued_prompt_generation=queue_generation,
+                    **submission_kwargs,
                 )
             else:
                 resp = _submit_prompt_to_compute_host(
-                    rid, sid, session, queued["text"], queued_prompt_generation=queue_generation
+                    rid, sid, session, queued["text"], **submission_kwargs
                 )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
@@ -8116,7 +8149,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     image_paths=queued["image_paths"],
-                    queued_prompt_generation=queue_generation,
+                    **submission_kwargs,
                 )
             else:
                 _run_prompt_submit(
@@ -8124,7 +8157,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     sid,
                     session,
                     queued["text"],
-                    queued_prompt_generation=queue_generation,
+                    **submission_kwargs,
                 )
     except Exception as exc:
         print(
@@ -10384,6 +10417,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    client_submitted_at: float | None = None,
 ) -> None:
     with session["history_lock"]:
         if (
@@ -10701,6 +10735,11 @@ def _run_prompt_submit(
                 _run_params = {}
             if "task_id" in _run_params:
                 run_kwargs["task_id"] = session["session_key"]
+            if (
+                client_submitted_at is not None
+                and "persist_user_timestamp" in _run_params
+            ):
+                run_kwargs["persist_user_timestamp"] = client_submitted_at
             if display_kind and "persist_user_display_kind" in _run_params:
                 run_kwargs["persist_user_display_kind"] = display_kind
                 run_kwargs["persist_user_display_metadata"] = display_metadata

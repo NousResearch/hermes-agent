@@ -66,6 +66,55 @@ def test_mutator_route_table_matches_prd_inventory():
     }
 
 
+def test_compute_host_real_turn_forwards_client_submission_timestamp(monkeypatch):
+    captured = {}
+    session = {
+        "agent": object(),
+        "session_key": "stored-sid",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+    }
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+
+    monkeypatch.setattr(host, "_ensure_server_session", lambda _server, _frame: session)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_args: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, _session, text, **kwargs: captured.update(
+            rid=rid,
+            sid=sid,
+            text=text,
+            client_submitted_at=kwargs.get("client_submitted_at"),
+        ),
+    )
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+
+    try:
+        host._run_real_turn(
+            {
+                "type": "turn.start",
+                "request_id": "turn-1",
+                "sid": "runtime-sid",
+                "text": "hello",
+                "client_submitted_at": 1700000000.125,
+            }
+        )
+    finally:
+        host.close()
+
+    assert captured == {
+        "rid": "turn-1",
+        "sid": "runtime-sid",
+        "text": "hello",
+        "client_submitted_at": 1700000000.125,
+    }
+
+
 def test_append_log_record_single_write_lines(tmp_path):
     path = tmp_path / "agent.log"
 

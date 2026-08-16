@@ -267,11 +267,32 @@ def _pending_reaction_notes(session: dict) -> str:
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
+    import math
+
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
 
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    client_submitted_at = params.get("client_submitted_at")
+    if client_submitted_at is not None:
+        if (
+            isinstance(client_submitted_at, bool)
+            or not isinstance(client_submitted_at, (int, float))
+            or client_submitted_at <= 0
+            or client_submitted_at >= 253_402_300_800
+            or not math.isfinite(client_submitted_at)
+        ):
+            return _err(
+                rid,
+                4004,
+                "client_submitted_at must be finite Unix seconds in (0, 253402300800)",
+            )
+    submission_timestamp_kwargs = (
+        {"client_submitted_at": client_submitted_at}
+        if client_submitted_at is not None
+        else {}
+    )
     # Typed bare stop phrase while backend voice mode is active ends the
     # voice chat instead of sending "stop" to the agent — the typed twin of
     # the spoken stop phrase (PR #73106), applied at the ONE server-side
@@ -353,6 +374,7 @@ def _(rid, params: dict) -> dict:
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport,
             queued=bool(params.get("queued")),
+            **submission_timestamp_kwargs,
         )
         if busy_response is not None:
             return busy_response
@@ -707,7 +729,13 @@ def _(rid, params: dict) -> dict:
         _start_inflight_turn(session, text)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(
+            rid,
+            sid,
+            session,
+            text,
+            **submission_timestamp_kwargs,
+        )
         if not isolated_response.get("error"):
             if survivor_user_row_ids is not None:
                 # The truncation already happened inline above (memory + DB),
@@ -793,7 +821,13 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            **submission_timestamp_kwargs,
+        )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

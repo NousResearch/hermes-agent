@@ -687,6 +687,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          // The optimistic row and durable row are two representations of this
+          // exact client submission event. Never re-sample time in the gateway.
+          client_submitted_at: submittedAt,
           ...(interrupted && { interrupted }),
           // Typed into the floating HUD, so the user is looking at another app
           // rather than at Hermes. The gateway turns this into a per-turn hint

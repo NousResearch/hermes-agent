@@ -39,6 +39,51 @@ def test_enqueue_pins_text_and_transport():
     assert session["queued_prompt"] == {"text": "hello", "transport": "ws-1"}
 
 
+def test_enqueue_and_drain_preserve_client_submission_timestamp(monkeypatch):
+    session = _session()
+    server._enqueue_prompt(
+        session,
+        "hello",
+        "ws-1",
+        client_submitted_at=1700000000.125,
+    )
+
+    assert session["queued_prompt"] == {
+        "text": "hello",
+        "transport": "ws-1",
+        "client_submitted_at": 1700000000.125,
+    }
+
+    dispatched = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, _session, text, **kwargs: dispatched.append((text, kwargs)),
+    )
+
+    assert server._drain_queued_prompt("drain", "sid", session) is True
+    assert dispatched == [
+        (
+            "hello",
+            {
+                "client_submitted_at": 1700000000.125,
+                "queued_prompt_generation": 0,
+            },
+        )
+    ]
+
+
+def test_text_queue_merge_drops_event_timestamp_instead_of_impersonating_one_event():
+    session = _session()
+    server._enqueue_prompt(session, "first", "ws-1", client_submitted_at=1000.0)
+    server._enqueue_prompt(session, "second", "ws-1", client_submitted_at=2000.0)
+
+    assert session["queued_prompt"] == {
+        "text": "first\n\nsecond",
+        "transport": "ws-1",
+    }
+
+
 def test_enqueue_preserves_order_after_an_image_turn():
     session = _session()
     server._enqueue_prompt(session, "B", "ws-1")
@@ -55,6 +100,30 @@ def test_enqueue_preserves_order_after_an_image_turn():
 
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────
+
+def test_busy_prompt_submit_preserves_client_submission_timestamp(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    session = _session(running=True)
+    server._sessions["sid-client-time"] = session
+    try:
+        response = server._methods["prompt.submit"](
+            "r-client-time",
+            {
+                "session_id": "sid-client-time",
+                "text": "run this next",
+                "client_submitted_at": 1700000000.75,
+            },
+        )
+    finally:
+        server._sessions.pop("sid-client-time", None)
+
+    assert response["result"]["status"] == "queued"
+    assert session["queued_prompt"] == {
+        "text": "run this next",
+        "transport": None,
+        "client_submitted_at": 1700000000.75,
+    }
+
 
 def test_busy_interrupt_mode_redirects_active_turn(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")

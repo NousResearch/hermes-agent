@@ -299,13 +299,18 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
             {
                 "id": "submit",
                 "method": "prompt.submit",
-                "params": {"session_id": "iso-sid", "text": "hello"},
+                "params": {
+                    "session_id": "iso-sid",
+                    "text": "hello",
+                    "client_submitted_at": 1700000000.125,
+                },
             }
         )
         assert resp["result"] == {"status": "streaming", "turn_isolation": True}
         assert fake_supervisor.frames[0]["type"] == "turn.start"
         assert fake_supervisor.frames[0]["sid"] == "iso-sid"
         assert fake_supervisor.frames[0]["text"] == "hello"
+        assert fake_supervisor.frames[0]["client_submitted_at"] == 1700000000.125
         assert fake_supervisor.frames[0]["history"] == seed_history
         assert server._sessions["iso-sid"]["history"] == seed_history
         assert parent_writes == {"ensure_session": 0, "persist_seed": 0}
@@ -18310,6 +18315,151 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_passes_client_submission_timestamp_to_supported_agent(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            persist_user_timestamp=None,
+            **_kwargs,
+        ):
+            captured["persist_user_timestamp"] = persist_user_timestamp
+            return {
+                "final_response": "reply",
+                "messages": [{"role": "assistant", "content": "reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid_timestamp"] = _session(agent=_Agent())
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        resp = server.handle_request(
+            {
+                "id": "timestamp",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid_timestamp",
+                    "text": "hi",
+                    "client_submitted_at": 1700000000.125,
+                },
+            }
+        )
+
+        assert resp.get("result")
+        assert captured["persist_user_timestamp"] == 1700000000.125
+    finally:
+        server._sessions.pop("sid_timestamp", None)
+
+
+def test_prompt_submit_deferred_agent_build_preserves_client_submission_timestamp(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            persist_user_timestamp=None,
+            **_kwargs,
+        ):
+            captured["persist_user_timestamp"] = persist_user_timestamp
+            return {
+                "final_response": "reply",
+                "messages": [{"role": "assistant", "content": "reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    session = _session()
+    session["agent"] = None
+    session["agent_ready"] = threading.Event()
+    server._sessions["sid_deferred_timestamp"] = session
+
+    def _build(_sid, target_session):
+        target_session["agent"] = _Agent()
+        target_session["agent_ready"].set()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_start_agent_build", _build)
+        monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *_args: None)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        resp = server.handle_request(
+            {
+                "id": "deferred-timestamp",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid_deferred_timestamp",
+                    "text": "wait for the agent",
+                    "client_submitted_at": 1700000000.5,
+                },
+            }
+        )
+
+        assert resp.get("result")
+        assert captured["persist_user_timestamp"] == 1700000000.5
+    finally:
+        server._sessions.pop("sid_deferred_timestamp", None)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param("1700000000.5", id="string"),
+        pytest.param(float("inf"), id="infinity"),
+        pytest.param(True, id="bool"),
+        pytest.param(-1, id="negative"),
+        pytest.param(0, id="zero"),
+        pytest.param(253_402_300_800, id="exclusive-upper-bound"),
+        pytest.param(1_700_000_000_000, id="milliseconds"),
+        pytest.param(10**1000, id="huge-integer"),
+        pytest.param(float("nan"), id="nan"),
+    ],
+)
+def test_prompt_submit_rejects_malformed_client_submission_timestamp(malformed):
+    server._sessions["sid_bad_timestamp"] = _session()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "bad-timestamp",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid_bad_timestamp",
+                    "text": "must not run",
+                    "client_submitted_at": malformed,
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid_bad_timestamp", None)
+
+    assert resp["error"]["code"] == 4004
+    assert "client_submitted_at" in resp["error"]["message"]
 
 
 def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):

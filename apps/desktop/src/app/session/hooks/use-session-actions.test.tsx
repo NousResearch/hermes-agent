@@ -1699,6 +1699,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
     setMessages([])
+    setSelectedStoredSessionId(null)
     setSessions([])
     vi.restoreAllMocks()
   })
@@ -1863,6 +1864,177 @@ describe('resumeSession warm-cache mapping integrity', () => {
       expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
     )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('keeps every structured stage when warm activation returns only a live inflight projection', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.messages = [
+      { id: 'user-local', role: 'user', parts: [{ type: 'text', text: 'do the work' }] },
+      {
+        id: 'assistant-stream-stage-1',
+        role: 'assistant',
+        parts: [{ type: 'reasoning', text: 'first checkpoint' }],
+        interim: true,
+        pending: false
+      },
+      {
+        id: 'assistant-stream-stage-2',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal', result: 'done' }],
+        interim: true,
+        pending: false
+      },
+      {
+        id: 'assistant-stream-stage-3',
+        role: 'assistant',
+        parts: [{ type: 'reasoning', text: 'current checkpoint' }],
+        pending: true
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+    let resumedState: ClientSessionState | undefined
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 0,
+          messages: [],
+          running: true,
+          inflight: { assistant: '', streaming: true, user: 'do the work' },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
+    )
+    expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(resumedState?.messages.map(message => message.id)).toEqual([
+      'user-inflight-rt-A',
+      'assistant-stream-stage-1',
+      'assistant-stream-stage-2',
+      'assistant-stream-stage-3'
+    ])
+    expect(resumedState?.busy).toBe(true)
+  })
+
+  it('keeps newer structured stages when same-session resume starts from an older cache', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const user = { id: 'user-local', role: 'user' as const, parts: [{ type: 'text' as const, text: 'do the work' }] }
+    const stageOne = {
+      id: 'assistant-stream-stage-1',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'reasoning' as const, text: 'first checkpoint' },
+        { type: 'text' as const, text: 'stage one' }
+      ],
+      interim: true,
+      pending: false
+    }
+    const stageTwo = {
+      id: 'assistant-stream-stage-2',
+      role: 'assistant' as const,
+      parts: [{ type: 'tool-call' as const, toolCallId: 'call-2', toolName: 'terminal', result: 'done' }],
+      interim: true,
+      pending: false
+    }
+    const stageThree = {
+      id: 'assistant-stream-stage-3',
+      role: 'assistant' as const,
+      parts: [{ type: 'reasoning' as const, text: 'current checkpoint' }],
+      pending: true
+    }
+
+    // The foreground view advanced while this same session's cache still held
+    // only the first stage. This local pre-merge has no durable authority.
+    setSelectedStoredSessionId('stored-A')
+    setMessages([user, stageOne, stageTwo, stageThree])
+
+    const olderCachedState = clientState('stored-A')
+    olderCachedState.busy = true
+    olderCachedState.messages = [user, stageOne]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', olderCachedState]])
+    }
+    let resumedState: ClientSessionState | undefined
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          // Activation can only restate the running turn as a flat projection;
+          // the renderer view is the sole source for stages two and three.
+          inflight: { assistant: 'stage one', streaming: true, user: 'do the work' },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="stored-A"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(resumedState?.messages.map(message => message.id)).toEqual([
+      'user-local',
+      'assistant-stream-stage-1',
+      'assistant-stream-stage-2',
+      'assistant-stream-stage-3'
+    ])
   })
 
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {

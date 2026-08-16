@@ -36,6 +36,17 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 
 import type { ClientSessionState } from '../../../types'
 
+// Timestamps arrive in seconds from the current Desktop/Gateway contract, but
+// older transcript adapters can still expose milliseconds. Normalize only the
+// numeric unit; do not infer event identity from clock proximity.
+function submissionEventSeconds(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return undefined
+  }
+
+  return value >= 10_000_000_000 ? value / 1000 : value
+}
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -485,9 +496,19 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+interface PreserveLocalPendingTurnMessagesOptions {
+  /**
+   * Durable transcript rows before a live inflight projection is appended.
+   * The final convergence gate may delete local stream rows only when these
+   * committed rows, not a flat runtime projection, supersede the current turn.
+   */
+  committedMessages?: ChatMessage[]
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
-  previousMessages: ChatMessage[]
+  previousMessages: ChatMessage[],
+  options: PreserveLocalPendingTurnMessagesOptions = {}
 ): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
@@ -519,14 +540,14 @@ export function preserveLocalPendingTurnMessages(
   // that started the turn. Widen to the run — but only the contiguous one: any
   // `user-*` row separated by an assistant reply is stale post-compression
   // history, which is what the newest-only rule exists to discard.
-  const liveOptimisticUsers = new Set<ChatMessage>()
+  const liveOptimisticRun = new Set<ChatMessage>()
 
   if (newestOptimisticUser) {
     for (let index = previousMessages.indexOf(newestOptimisticUser); index >= 0; index -= 1) {
       const candidate = previousMessages[index]
 
       if (candidate.role === 'user' && candidate.id.startsWith('user-')) {
-        liveOptimisticUsers.add(candidate)
+        liveOptimisticRun.add(candidate)
 
         continue
       }
@@ -536,6 +557,8 @@ export function preserveLocalPendingTurnMessages(
       // correction is still the same turn's run. Only a committed reply ends
       // it — that is the post-compression staleness the rule exists to catch.
       if (candidate.role === 'assistant' && isLiveTailRow(candidate)) {
+        liveOptimisticRun.add(candidate)
+
         continue
       }
 
@@ -543,13 +566,46 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+  // Compression rewrites the transcript below the current turn, so a settled
+  // `assistant-stream-*` row is a live tail only when it sits AFTER the newest
+  // local user row. Neither the stream-id prefix nor `pending` alone is
+  // sufficient liveness evidence across compression.
+  let newestLocalUserIndex = -1
+
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    if (previousMessages[index].role === 'user' && !isGatewaySystemMarker(previousMessages[index])) {
+      newestLocalUserIndex = index
+      break
+    }
+  }
+
+  const newestLocalUser = newestLocalUserIndex >= 0 ? previousMessages[newestLocalUserIndex] : undefined
+
+  // Already-polluted convergence: once the old implementation has appended the
+  // stale settled stream rows, they sit AFTER the newest local user and the
+  // positional exclusion above can no longer see them. They are leftovers of
+  // an earlier reconciliation whenever the newest local user is already the
+  // current committed turn and the durable transcript already carries an
+  // assistant after it — not the unique-copy sibling. A flat live projection
+  // cannot prove this convergence: it omits the structured interim/tool graph.
+  const hasCommittedAuthority = options.committedMessages !== undefined
+  const committedMessages = options.committedMessages ?? []
+  const latestNonMarkerAuthoritativeUser = [...committedMessages]
+    .reverse()
+    .find(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  const hasAuthoritativeAssistantAfterLatestUser =
+    latestNonMarkerAuthoritativeUser !== undefined &&
+    committedMessages
+      .slice(committedMessages.lastIndexOf(latestNonMarkerAuthoritativeUser) + 1)
+      .some(message => message.role === 'assistant')
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
 
-  for (const message of previousMessages) {
+  for (const [index, message] of previousMessages.entries()) {
     if (isGatewaySystemMarker(message)) {
       continue
     }
@@ -558,6 +614,7 @@ export function preserveLocalPendingTurnMessages(
     previousRoleCounts.set(message.role, ordinal + 1)
 
     const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
+    const optimisticSubmittedAt = isOptimisticUser ? submissionEventSeconds(message.timestamp) : undefined
 
     const isPendingAssistant =
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
@@ -580,17 +637,32 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (isOptimisticUser && !liveOptimisticUsers.has(message)) {
+    if (isOptimisticUser && !liveOptimisticRun.has(message)) {
       continue
     }
 
-    if (
-      isOptimisticUser &&
-      latestAuthoritativeUser &&
-      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
-        textWithoutReferenceLines(chatMessageText(message))
-    ) {
-      continue
+    // A live optimistic user row whose committed counterpart already sits in
+    // the authoritative transcript is stale — the backend has since moved on
+    // to a later user, so the newest-user check above can no longer recognise
+    // it. Re-appending the row paints the same message twice (#78499
+    // follow-up). The shared client submission timestamp is event identity:
+    // text alone, renderer/backend wall-clock proximity, and "latest user" are
+    // all ambiguous. Missing metadata therefore fails open and may briefly
+    // render a duplicate rather than deleting a fresh same-text resend.
+    if (isOptimisticUser) {
+      if (
+        hasCommittedAuthority &&
+        optimisticSubmittedAt !== undefined &&
+        committedMessages.some(
+          candidate =>
+            candidate.role === 'user' &&
+            submissionEventSeconds(candidate.timestamp) === optimisticSubmittedAt &&
+            textWithoutReferenceLines(chatMessageText(candidate)) ===
+              textWithoutReferenceLines(chatMessageText(message))
+        )
+      ) {
+        continue
+      }
     }
 
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
@@ -599,16 +671,36 @@ export function preserveLocalPendingTurnMessages(
     // the authoritative transcript already carries under its committed id is
     // stale: ordinal pairing can't see it, because the commit shifted the row
     // one ordinal earlier, and re-appending it renders the same answer twice
-    // (#70209). Only text-identical rows are dropped — a settled row the backend
+    // (#70209). Only non-empty text-identical rows are dropped — a settled row the backend
     // has NOT committed yet is the only copy of that reply and must survive.
+    if (isPendingAssistant && message.pending !== true) {
+      const settledText = textWithoutReferenceLines(chatMessageText(message))
+
+      // Empty answer text is not identity. Reasoning/tool-only interim rows can
+      // legitimately share it, so deleting on "" === "" truncates the task
+      // graph during warm activation.
+      if (
+        settledText.length > 0 &&
+        nextMessages.some(
+          candidate =>
+            candidate.role === 'assistant' && textWithoutReferenceLines(chatMessageText(candidate)) === settledText
+        )
+      ) {
+        continue
+      }
+    }
+
+    // A settled stream row before the newest local user — or with no local
+    // user anchor at all — is compressed-away history, not an uncommitted
+    // reply, and must not be appended after the authoritative transcript.
+    // The exception is a live-tail row crossed by the existing optimistic-run
+    // scan: arrival-ordered redirects can seal that output between the prompt
+    // and its correction, so its position is still inside the current run.
     if (
       isPendingAssistant &&
       message.pending !== true &&
-      nextMessages.some(
-        candidate =>
-          candidate.role === 'assistant' &&
-          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
-      )
+      !liveOptimisticRun.has(message) &&
+      (newestLocalUserIndex < 0 || index <= newestLocalUserIndex)
     ) {
       continue
     }
@@ -651,10 +743,10 @@ export function preserveLocalPendingTurnMessages(
     //     final version of the still-streaming local copy
     //  3. local extends authoritative text -> local is further along; replace
     //     the committed row with the richer body instead of appending
-    if (isPendingAssistant) {
+    if (isPendingAssistant && hasCommittedAuthority) {
       const nextText = textWithoutReferenceLines(chatMessageText(message))
 
-      const committedMatch = nextMessages.find(
+      const committedMatch = committedMessages.find(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
@@ -666,7 +758,7 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      const committedPrefix = nextMessages.find(
+      const committedPrefix = committedMessages.find(
         candidate =>
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
@@ -685,6 +777,31 @@ export function preserveLocalPendingTurnMessages(
 
         continue
       }
+    }
+
+    // Final convergence gate, AFTER the same-ordinal/same-id and committed-row
+    // richer-local replacement paths above so they still win: when the newest
+    // local user is already the current committed turn (same visible text) and
+    // the durable transcript already carries an assistant after it, an
+    // unmatched stream row was appended by an earlier polluted reconciliation
+    // or left behind by a disconnect, not by an uncommitted gateway turn, and
+    // must not be appended again. The `pending` flag is NOT a liveness signal
+    // here: a renderer that never saw message.complete can keep a committed
+    // turn's stream row `pending: true` (observed as "Connection error" then a
+    // resume), and with role ordinals shifted that dead row escapes both the
+    // ordinal pairing and the settled-only checks, re-rendering the same reply.
+    // Only the durable transcript can prove convergence; a flat live projection
+    // omits the structured interim/tool graph and must not delete its sole copy.
+    if (
+      isPendingAssistant &&
+      hasCommittedAuthority &&
+      newestLocalUser !== undefined &&
+      latestNonMarkerAuthoritativeUser !== undefined &&
+      textWithoutReferenceLines(chatMessageText(newestLocalUser)) ===
+        textWithoutReferenceLines(chatMessageText(latestNonMarkerAuthoritativeUser)) &&
+      hasAuthoritativeAssistantAfterLatestUser
+    ) {
+      continue
     }
 
     preserved.push(message)

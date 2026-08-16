@@ -345,6 +345,84 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
   })
 }
 
+interface CapturedGatewayCall {
+  method: string
+  params?: Record<string, unknown>
+}
+
+function rpcCallForAssertion<T extends CapturedGatewayCall>(call: T): T {
+  if (call.method !== 'prompt.submit' || !call.params) {
+    return call
+  }
+
+  const { client_submitted_at: clientSubmittedAt, ...params } = call.params
+
+  expect(clientSubmittedAt).toEqual(expect.any(Number))
+
+  return { ...call, params } as T
+}
+
+function rpcCallsForAssertion<T extends CapturedGatewayCall>(calls: T[]): T[] {
+  return calls.map(rpcCallForAssertion)
+}
+
+function rpcMockForAssertion(requestGateway: { mock: { calls: unknown[][] } }) {
+  const assertionMock = vi.fn()
+
+  for (const [method, params, ...rest] of requestGateway.mock.calls) {
+    const normalized = rpcCallForAssertion({
+      method: String(method),
+      params: params as Record<string, unknown> | undefined
+    })
+
+    assertionMock(normalized.method, normalized.params, ...rest)
+  }
+
+  return assertionMock
+}
+
+describe('usePromptActions submission event timestamp', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('sends the exact timestamp used by the optimistic user message', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_123)
+
+    const seededStates: Record<string, unknown>[] = []
+    const submitted: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit' && params) {
+        submitted.push(params)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={value => (handle = value)}
+        onSeedState={state => seededStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('one event, one timestamp')
+
+    const messages = seededStates
+      .flatMap(state => (Array.isArray(state.messages) ? state.messages : []))
+      .filter((message): message is { role: string; timestamp?: number } => Boolean(message))
+    const optimisticUser = messages.findLast(message => message.role === 'user')
+
+    expect(optimisticUser?.timestamp).toBe(1_700_000_000.123)
+    expect(submitted).toHaveLength(1)
+    expect(submitted[0]?.client_submitted_at).toBe(optimisticUser?.timestamp)
+  })
+})
+
 // The HUD floats over the app the user is really working in, so the gateway
 // turns this flag into a per-turn hint: read the window underneath and work in
 // it, rather than reaching for Hermes's own browser and panes.
@@ -1184,7 +1262,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       command: 'goal write the implementation plan',
       session_id: RUNTIME_SESSION_ID
     })
-    expect(calls[1]?.params).toEqual({
+    expect(rpcCallForAssertion(calls[1]!).params).toEqual({
       session_id: RUNTIME_SESSION_ID,
       text: 'write the implementation plan'
     })
@@ -1719,7 +1797,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // every delta of this brand-new turn.
     expect(seeds.length).toBeGreaterThan(0)
     expect(seeds.every(s => s.interrupted === false)).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         session_id: RUNTIME_SESSION_ID,
@@ -1795,7 +1873,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     await handle!.submitText('stop! rude interruption')
 
     // The latch is one-shot: the flag rides this submit, the next is clean.
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         session_id: RUNTIME_SESSION_ID,
@@ -1806,7 +1884,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
 
     await handle!.submitText('follow-up without a barge')
-    expect(requestGateway).toHaveBeenLastCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenLastCalledWith(
       'prompt.submit',
       {
         session_id: RUNTIME_SESSION_ID,
@@ -1835,7 +1913,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     const accepted = await handle!.submitText('queued message', { fromQueue: true })
 
     expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         queued: true,
@@ -1872,7 +1950,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
 
     expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         queued: true,
@@ -1927,7 +2005,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       source: 'desktop',
       omit_messages: true
     })
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         queued: true,
@@ -1971,7 +2049,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
 
     expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         queued: true,
@@ -2014,7 +2092,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
 
     expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         session_id: 'rt-tab',
@@ -2065,7 +2143,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       omit_messages: true
     })
     // The prompt must land in the resumed session, NOT the foreground.
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         queued: true,
@@ -2116,7 +2194,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     const second = await handle!.submitText('please send me', { fromQueue: true })
     expect(second).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         queued: true,
@@ -2643,7 +2721,7 @@ describe('usePromptActions file attachment sync', () => {
       name: 'report.txt',
       data_url: 'data:text/plain;base64,aGVsbG8='
     })
-    expect(calls[1]?.params).toEqual({
+    expect(rpcCallForAssertion(calls[1]!).params).toEqual({
       session_id: RUNTIME_SESSION_ID,
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
@@ -2697,7 +2775,7 @@ describe('usePromptActions file attachment sync', () => {
         session_id: RUNTIME_SESSION_ID
       }
     })
-    expect(calls[1]).toEqual({
+    expect(rpcCallForAssertion(calls[1]!)).toEqual({
       method: 'prompt.submit',
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize' }
     })
@@ -3075,7 +3153,7 @@ describe('usePromptActions file attachment sync', () => {
     expect(readFileDataUrl).not.toHaveBeenCalled()
     // Native Windows local mode shares the same path namespace.
     expect(calls[0]?.params).not.toHaveProperty('data_url')
-    expect(calls[1]).toEqual({
+    expect(rpcCallForAssertion(calls[1]!)).toEqual({
       method: 'prompt.submit',
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
@@ -3199,7 +3277,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    expect(rpcCallForAssertion(calls[2]!).params).toEqual({
+      session_id: RECOVERED_SESSION_ID,
+      text: 'message after wake'
+    })
   })
 
   // #67603 (second symptom): a recovery resume must re-register on the session's
@@ -3355,7 +3436,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({
+    expect(rpcCallForAssertion(calls[0]!).params).toEqual({
       queued: true,
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
@@ -3365,7 +3446,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       source: 'desktop',
       omit_messages: true
     })
-    expect(calls[2]?.params).toEqual({
+    expect(rpcCallForAssertion(calls[2]!).params).toEqual({
       queued: true,
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
@@ -3553,7 +3634,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       source: 'desktop',
       omit_messages: true
     })
-    expect(calls[2]?.params).toEqual({
+    expect(rpcCallForAssertion(calls[2]!).params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
     })
@@ -3674,7 +3755,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('follow-up while the profile route is rebinding')).toBe(true)
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
       1_800_000
@@ -3712,7 +3793,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(await handle!.submitText('stay in the routed profile session')).toBe(true)
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
       1_800_000
@@ -3744,7 +3825,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(await handle!.submitText('normal follow-up')).toBe(true)
     expect(resumeStoredSession).not.toHaveBeenCalled()
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
       1_800_000
@@ -3801,7 +3882,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // send can recover and submit instead of being silently rejected forever.
     recoverySucceeds = true
     expect(await handle!.submitText('retry after recovery')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
       1_800_000
@@ -4227,7 +4308,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     // The FULL RPC transcript: exactly one prompt.submit, addressed to the
     // created runtime session, carrying the user's text — no session.resume
     // detour and, critically, no silent drop before the submit.
-    expect(calls).toEqual([
+    expect(rpcCallsForAssertion(calls)).toEqual([
       {
         method: 'prompt.submit',
         params: { session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
@@ -4284,7 +4365,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     expect(await handle!.submitText('hello')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
+    expect(rpcMockForAssertion(requestGateway)).toHaveBeenCalledWith(
       'prompt.submit',
       {
         session_id: NEW_RUNTIME_ID,

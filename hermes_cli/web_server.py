@@ -11452,6 +11452,19 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     from utils import atomic_json_write
 
     atomic_json_write(oauth_file, payload, indent=2, mode=0o600)
+    # Clear a stale ANTHROPIC_API_KEY so it cannot keep shadowing this fresh
+    # OAuth login. resolve_anthropic_token() deliberately prefers an explicit
+    # ANTHROPIC_API_KEY over the credential-pool OAuth entry (priority 3 vs
+    # 5) — so without this, a leftover/forgotten API key from an earlier
+    # setup makes every subsequent OAuth login through the dashboard silently
+    # inert: the user re-authenticates with their Claude Pro/Max plan, but
+    # Hermes keeps billing pay-per-token against the old key. The CLI flow
+    # (save_anthropic_oauth_token in hermes_cli/config.py) already clears
+    # this slot on OAuth save; this mirrors that for the dashboard flow.
+    try:
+        save_env_value("ANTHROPIC_API_KEY", "")
+    except Exception as e:
+        _log.warning("anthropic dashboard oauth: failed to clear stale ANTHROPIC_API_KEY: %s", e)
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -11494,7 +11507,15 @@ def _start_anthropic_pkce(profile: Optional[str] = None) -> Dict[str, Any]:
     verifier, challenge = _generate_pkce_pair()
     sid, sess = _new_oauth_session("anthropic", "pkce", profile=profile)
     sess["verifier"] = verifier
-    sess["state"] = verifier  # Anthropic round-trips verifier as state
+    # Independent anti-CSRF token. Do NOT reuse the PKCE verifier as state:
+    # that leaks the (supposed to stay confidential, RFC 7636 SS7.2) verifier
+    # via the authorization URL (browser history, Referer headers, auth-server
+    # logs) and collapses the CSRF check to nothing, since anyone who
+    # observes the leaked verifier also "knows" the state. Mirrors the fix
+    # already applied to the CLI flow in agent/anthropic_adapter.py
+    # (run_hermes_oauth_login_pure) for PR #10699 / issue #10693.
+    oauth_state = secrets.token_urlsafe(32)
+    sess["state"] = oauth_state
     params = {
         "code": "true",
         "client_id": _ANTHROPIC_OAUTH_CLIENT_ID,
@@ -11503,7 +11524,7 @@ def _start_anthropic_pkce(profile: Optional[str] = None) -> Dict[str, Any]:
         "scope": _ANTHROPIC_OAUTH_SCOPES,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "state": verifier,
+        "state": oauth_state,
     }
     auth_url = f"{_ANTHROPIC_OAUTH_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
     return {
@@ -11535,11 +11556,23 @@ def _submit_anthropic_pkce(
         return {"ok": False, "status": "error", "message": "No code provided"}
     state_from_callback = parts[1] if len(parts) > 1 else ""
 
+    # CSRF guard (RFC 6749 SS10.12): the state echoed back on the callback
+    # must match the state this session issued. Without this check, an
+    # attacker who completes their OWN authorization can get the victim to
+    # paste that code/state pair, binding the attacker's Anthropic account
+    # to the victim's Hermes session. Mirrors the CLI flow's
+    # "received_state != oauth_state" guard in agent/anthropic_adapter.py.
+    if not state_from_callback or state_from_callback != sess["state"]:
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = "OAuth state mismatch"
+        return {"ok": False, "status": "error", "message": "OAuth state mismatch"}
+
     exchange_data = json.dumps({
         "grant_type": "authorization_code",
         "client_id": _ANTHROPIC_OAUTH_CLIENT_ID,
         "code": code,
-        "state": state_from_callback or sess["state"],
+        "state": state_from_callback,
         "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
         "code_verifier": sess["verifier"],
     }).encode()

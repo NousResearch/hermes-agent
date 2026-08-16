@@ -2672,17 +2672,31 @@ def cmd_chat(args):
                 print("Use 'hermes sessions list' to see available sessions.")
                 sys.exit(1)
         else:
-            # -c with no argument — continue the most recent session
-            source = "tui" if use_tui else "cli"
-            last_id = _resolve_last_session(source=source)
-            if not last_id and source == "tui":
-                last_id = _resolve_last_session(source="cli")
-            if last_id:
-                args.resume = last_id
+            # -c with no argument — prefer this terminal's own breadcrumb
+            # (written at session start / rotation) so side-by-side terminals
+            # each continue their own conversation. Falls back to the
+            # most-recent session when there is no valid breadcrumb, or when
+            # session.terminal_continue is false in config.yaml.
+            try:
+                from hermes_cli.terminal_breadcrumbs import resolve_breadcrumb_session
+
+                _crumb_id = resolve_breadcrumb_session()
+            except Exception:
+                _crumb_id = None
+            if _crumb_id:
+                args.resume = _crumb_id
             else:
-                kind = "TUI" if use_tui else "CLI"
-                print(f"No previous {kind} session found to continue.")
-                sys.exit(1)
+                # No valid breadcrumb — continue the most recent session
+                source = "tui" if use_tui else "cli"
+                last_id = _resolve_last_session(source=source)
+                if not last_id and source == "tui":
+                    last_id = _resolve_last_session(source="cli")
+                if last_id:
+                    args.resume = last_id
+                else:
+                    kind = "TUI" if use_tui else "CLI"
+                    print(f"No previous {kind} session found to continue.")
+                    sys.exit(1)
 
     # --resume @claude / --resume @codex: import a foreign session (Claude
     # Code / Codex CLI) and resume the newly created Hermes session.

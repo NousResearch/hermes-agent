@@ -9,6 +9,7 @@ point in ``_on_card_action_trigger``.
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -70,6 +71,12 @@ def _make_adapter() -> FeishuAdapter:
     config = PlatformConfig(enabled=True)
     adapter = FeishuAdapter(config)
     adapter._client = MagicMock()
+    # Default group policy is "allowlist" with an empty allowlist, which would
+    # block every picker action. Mirror the common setup (open access) so the
+    # dispatch tests exercise the main interaction flow; authorization guards
+    # are covered by dedicated tests below.
+    adapter._group_policy = "open"
+    adapter._default_group_policy = "open"
     return adapter
 
 
@@ -98,6 +105,8 @@ def _seed_picker_state(adapter, picker_id="mp_oc_12345", providers=None):
         "message_id": "om_card1",
         "chat_id": "oc_12345",
         "providers": providers if providers is not None else SAMPLE_PROVIDERS,
+        "switching": False,
+        "created_at": time.time(),
     }
 
 
@@ -146,9 +155,10 @@ class TestSendModelPicker:
         assert actions[0]["type"] == "primary"
         assert actions[1]["type"] == "default"
 
-        # State keyed by picker_id = mp_<chat_id>
-        assert "mp_oc_12345" in adapter._model_picker_state
-        assert adapter._model_picker_state["mp_oc_12345"]["message_id"] == "om_card1"
+        # State keyed by picker_id = mp_<chat_id>_<random token>
+        assert any(k.startswith("mp_oc_12345_") for k in adapter._model_picker_state)
+        picker_key = next(k for k in adapter._model_picker_state if k.startswith("mp_oc_12345_"))
+        assert adapter._model_picker_state[picker_key]["message_id"] == "om_card1"
 
     @pytest.mark.asyncio
     async def test_returns_failure_when_not_connected(self):
@@ -236,8 +246,12 @@ class TestModelPickerDispatch:
     def test_provider_selected_returns_model_card(self):
         adapter = _make_adapter()
         _seed_picker_state(adapter)
+        data = _make_card_action_data(
+            {"hermes_action": "model_pick_provider",
+             "picker_id": "mp_oc_12345", "provider_slug": "nvidia"},
+        )
         resp = adapter._handle_model_picker_card_action(
-            event=SimpleNamespace(),
+            event=data.event,
             action_value={"hermes_action": "model_pick_provider",
                           "picker_id": "mp_oc_12345", "provider_slug": "nvidia"},
             loop=MagicMock(),
@@ -253,8 +267,12 @@ class TestModelPickerDispatch:
     def test_unknown_picker_id_returns_empty_response(self):
         adapter = _make_adapter()
         _seed_picker_state(adapter)
+        data = _make_card_action_data(
+            {"hermes_action": "model_pick_provider",
+             "picker_id": "mp_missing", "provider_slug": "nvidia"},
+        )
         resp = adapter._handle_model_picker_card_action(
-            event=SimpleNamespace(),
+            event=data.event,
             action_value={"hermes_action": "model_pick_provider",
                           "picker_id": "mp_missing", "provider_slug": "nvidia"},
             loop=MagicMock(),
@@ -266,8 +284,11 @@ class TestModelPickerDispatch:
     def test_back_returns_provider_card(self):
         adapter = _make_adapter()
         _seed_picker_state(adapter)
+        data = _make_card_action_data(
+            {"hermes_action": "model_pick_back", "picker_id": "mp_oc_12345"},
+        )
         resp = adapter._handle_model_picker_card_action(
-            event=SimpleNamespace(),
+            event=data.event,
             action_value={"hermes_action": "model_pick_back", "picker_id": "mp_oc_12345"},
             loop=MagicMock(),
         )
@@ -283,8 +304,12 @@ class TestModelPickerDispatch:
             {"slug": "nvidia", "name": "NVIDIA",
              "models": [f"org/m{i}" for i in range(20)], "total_models": 20}
         ]
+        data = _make_card_action_data(
+            {"hermes_action": "model_pick_page", "picker_id": "mp_oc_12345",
+             "provider_slug": "nvidia", "page": 1},
+        )
         resp = adapter._handle_model_picker_card_action(
-            event=SimpleNamespace(),
+            event=data.event,
             action_value={"hermes_action": "model_pick_page", "picker_id": "mp_oc_12345",
                           "provider_slug": "nvidia", "page": 1},
             loop=MagicMock(),
@@ -292,14 +317,21 @@ class TestModelPickerDispatch:
         card = resp.card
         assert "(2/3)" in card.data["header"]["title"]["content"]
 
-    def test_model_selected_schedules_switch_and_returns_switching_card(self):
+    def test_model_selected_returns_switching_card_and_schedules(self):
         adapter = _make_adapter()
         _seed_picker_state(adapter)
-        # We must not actually run the scheduled coroutine synchronously;
-        # assert it was scheduled and a "switching" card is returned.
+        # The tap returns a "switching" callback card immediately (original
+        # PR interaction) and schedules the background switch. The final
+        # outcome is always confirmed with a visible text message by
+        # _execute_model_switch.
+        data = _make_card_action_data(
+            {"hermes_action": "model_pick_model",
+             "picker_id": "mp_oc_12345",
+             "model_id": "z-ai/glm-5.2", "provider_slug": "nvidia"},
+        )
         with patch.object(adapter, "_submit_on_loop", side_effect=_close) as mock_submit:
             resp = adapter._handle_model_picker_card_action(
-                event=SimpleNamespace(),
+                event=data.event,
                 action_value={"hermes_action": "model_pick_model",
                               "picker_id": "mp_oc_12345",
                               "model_id": "z-ai/glm-5.2", "provider_slug": "nvidia"},
@@ -309,6 +341,42 @@ class TestModelPickerDispatch:
         card = resp.card
         assert "⏳" in card.data["header"]["title"]["content"]
         assert "z-ai/glm-5.2" in card.data["elements"][0]["content"]
+        # Switching flag set so double-taps are ignored.
+        assert adapter._model_picker_state["mp_oc_12345"]["switching"] is True
+
+    def test_unauthorized_operator_gets_denied_card(self):
+        adapter = _make_adapter()
+        _seed_picker_state(adapter)
+        # No operator open_id -> _is_interactive_operator_authorized fails.
+        resp = adapter._handle_model_picker_card_action(
+            event=SimpleNamespace(),
+            action_value={"hermes_action": "model_pick_model",
+                          "picker_id": "mp_oc_12345",
+                          "model_id": "z-ai/glm-5.2", "provider_slug": "nvidia"},
+            loop=MagicMock(),
+        )
+        assert resp is not None
+        card = resp.card
+        assert card.data["header"]["template"] == "red"
+        assert "无权操作" in card.data["header"]["title"]["content"]
+
+    def test_expired_picker_gets_expired_card(self):
+        adapter = _make_adapter()
+        _seed_picker_state(adapter)
+        adapter._model_picker_state["mp_oc_12345"]["created_at"] = time.time() - 9999
+        data = _make_card_action_data(
+            {"hermes_action": "model_pick_provider",
+             "picker_id": "mp_oc_12345", "provider_slug": "nvidia"},
+        )
+        resp = adapter._handle_model_picker_card_action(
+            event=data.event,
+            action_value={"hermes_action": "model_pick_provider",
+                          "picker_id": "mp_oc_12345", "provider_slug": "nvidia"},
+            loop=MagicMock(),
+        )
+        card = resp.card
+        assert "过期" in card.data["header"]["title"]["content"]
+        assert "mp_oc_12345" not in adapter._model_picker_state
 
 
 # ===========================================================================
@@ -322,13 +390,29 @@ class TestExecuteModelSwitch:
         picker_id = "mp_oc_12345"
         state = adapter._model_picker_state[picker_id]
 
-        with patch.object(adapter, "_patch_model_picker_card", new_callable=AsyncMock) as mock_patch:
+        with patch.object(adapter, "_patch_model_picker_card", new_callable=AsyncMock) as mock_patch, \
+             patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock) as mock_send:
             await adapter._execute_model_switch(
                 picker_id=picker_id, model_id="z-ai/glm-5.2", provider_slug="nvidia", state=state,
             )
 
-        mock_patch.assert_awaited_once()
-        args = mock_patch.await_args
+        # A visible text message with the outcome is always sent.
+        mock_send.assert_awaited_once()
+        send_kwargs = mock_send.await_args.kwargs
+        assert send_kwargs["chat_id"] == "oc_12345"
+        assert send_kwargs["msg_type"] == "text"
+        assert "✅" in send_kwargs["payload"]
+
+        # Two PATCHes: the "switching" card first (message-update channel),
+        # then the final green confirmation.
+        assert mock_patch.await_count == 2
+        first_call = mock_patch.await_args_list[0]
+        assert first_call.args[0] == "oc_12345"
+        switch_card = first_call.args[1]
+        assert "⏳" in switch_card["header"]["title"]["content"]
+        assert first_call.kwargs.get("message_id") == "om_card1"
+
+        args = mock_patch.await_args_list[1]
         assert args.args[0] == "oc_12345"
         # final card is the green confirmation
         final_card = args.args[1]
@@ -347,13 +431,16 @@ class TestExecuteModelSwitch:
         state = adapter._model_picker_state[picker_id]
         state["on_model_selected"] = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with patch.object(adapter, "_patch_model_picker_card", new_callable=AsyncMock) as mock_patch:
+        with patch.object(adapter, "_patch_model_picker_card", new_callable=AsyncMock) as mock_patch, \
+             patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock) as mock_send:
             await adapter._execute_model_switch(
                 picker_id=picker_id, model_id="z-ai/glm-5.2", provider_slug="nvidia", state=state,
             )
-        final_card = mock_patch.await_args.args[1]
+        final_card = mock_patch.await_args_list[-1].args[1]
         assert final_card["header"]["template"] == "red"
         assert "切换失败" in final_card["elements"][0]["content"]
+        # Failure is also reported in the visible text message.
+        assert "❌" in mock_send.await_args.kwargs["payload"]
 
 
 # ===========================================================================

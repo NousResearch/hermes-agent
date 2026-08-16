@@ -243,3 +243,33 @@ Resultado atual (código não corrigido): **7 failed, 1 passed** — as 7 falhas
 | `agent/credential_pool.py` | 1307-1344 (`_refresh_entry`), 855-905 (`_sync_anthropic_entry_from_credentials_file`), 1442-1483 (fallback de recuperação), 1705 (`_mark_exhausted`) |
 | `agent/anthropic_adapter.py` | 1125-1186 (`refresh_anthropic_oauth_pure`), 1189-1239 (`_refresh_oauth_token`, docstring sobre single-use), 1531-1658 (`run_hermes_oauth_login_pure`, fluxo CLI correto) |
 | `tests/agent/test_anthropic_oauth_pkce.py` | Regressão histórica do bug 1/2 no fluxo CLI (já corrigido lá) |
+
+---
+
+## 7. Validação manual pós-fix (2026-08-17)
+
+Além da suíte automatizada (seção 5), o fix do Bug 3 (API-key shadowing) foi
+validado manualmente com um teste A/B real — mesma cena, duas versões do
+código, sem mocks:
+
+1. `.env` de teste com `ANTHROPIC_API_KEY` obsoleta (simulando um setup antigo
+   esquecido) + chamada real a `_save_anthropic_oauth_creds` (a função
+   disparada pelo login OAuth do dashboard), em `HERMES_HOME` isolado.
+2. **Sem o fix** (`main` @ `8c8d55b`, app instalado do usuário): depois do
+   login OAuth, o `.env` continuou com a key obsoleta e
+   `resolve_anthropic_token()` seguiu retornando a API key
+   (`is_oauth_token=False`) — bug reproduzido.
+3. **Com o fix** (commit `41b7aba875`, esta branch): depois do mesmo login, o
+   `.env` foi limpo automaticamente (`ANTHROPIC_API_KEY=`) e
+   `resolve_anthropic_token()` passou a retornar o token OAuth
+   (`sk-ant-oat...`, `is_oauth_token=True`).
+
+Em seguida, o usuário rodou o `hermes chat` real no terminal (CLI, não
+dashboard) com o binário instalado apontando para esta branch via
+`PYTHONPATH`, contra seu `HERMES_HOME` real, e confirmou visualmente que o
+app sobe e opera normalmente sob o código corrigido.
+
+**Ação pendente:** o app instalado do usuário (`%LOCALAPPDATA%\hermes\hermes-agent`)
+ainda está em `main` sem este commit — precisa dar merge no PR #87891 e
+atualizar (`hermes update`) para o fix valer em produção, não só na branch de
+teste.

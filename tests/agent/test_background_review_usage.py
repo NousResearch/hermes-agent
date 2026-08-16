@@ -167,15 +167,9 @@ def test_enabled_config_failure_logs_warning(caplog):
     )
 
 
-def test_spawn_reuses_provided_task_cfg_without_rereading(tmp_path):
-    """One config load per spawn — prompt + max_iterations share task_cfg."""
-    prompt_path = tmp_path / "review.md"
-    prompt_path.write_text("Custom review prompt only.\n", encoding="utf-8")
-    task = {
-        "enabled": True,
-        "max_iterations": 3,
-        "prompt_file": str(prompt_path),
-    }
+def test_spawn_reuses_provided_task_cfg_without_rereading():
+    """One config load per spawn — the worker shares task_cfg."""
+    task = {"enabled": True}
     agent = type("A", (), {})()
     with patch(
         "hermes_cli.config.load_config_readonly",
@@ -187,10 +181,8 @@ def test_spawn_reuses_provided_task_cfg_without_rereading(tmp_path):
             review_skills=True,
             task_cfg=task,
         )
-        assert "Custom review prompt only" in prompt
-        assert background_review._resolve_review_max_iterations(task) == 3
+        assert prompt  # built-in skill-review prompt selected
         assert callable(_target)
-
 
 def test_log_review_completion_emits_thread_tag(caplog):
     with caplog.at_level(logging.INFO, logger="agent.background_review"):

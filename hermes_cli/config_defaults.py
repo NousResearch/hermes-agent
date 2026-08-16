@@ -1150,16 +1150,6 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            # Tool-calling iteration budget for the review fork. Default 16
-            # matches historical behavior. The review has no hard "nothing to
-            # do" early-out — a session with nothing worth saving can still
-            # burn the full budget. Lower this to bound worst-case cost;
-            # clamped to [1, 64].
-            "max_iterations": 16,
-            # Optional path to a custom review prompt (replaces the built-in
-            # memory/skill/combined prompts). Relative paths resolve under
-            # HERMES_HOME. Empty = use built-in prompts.
-            "prompt_file": "",
         },
         "moa_reference": {
             "provider": "auto",

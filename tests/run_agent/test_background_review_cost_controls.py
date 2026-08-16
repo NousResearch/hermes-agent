@@ -164,37 +164,6 @@ def test_digest_records_tool_names_in_arc():
 # Cost / configurability controls (issue #87250)
 # ---------------------------------------------------------------------------
 
-def test_max_iterations_unset_falls_back_to_default():
-    with patch("hermes_cli.config.load_config_readonly", return_value={}):
-        assert br._resolve_review_max_iterations() == 16
-
-
-def test_max_iterations_honors_config_override():
-    cfg = {"auxiliary": {"background_review": {"max_iterations": 4}}}
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-        assert br._resolve_review_max_iterations() == 4
-
-
-def test_max_iterations_clamped_to_upper_bound():
-    cfg = {"auxiliary": {"background_review": {"max_iterations": 999}}}
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-        assert br._resolve_review_max_iterations() == 64
-
-
-def test_max_iterations_clamped_to_lower_bound():
-    cfg = {"auxiliary": {"background_review": {"max_iterations": 0}}}
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-        assert br._resolve_review_max_iterations() == 1
-
-
-def test_max_iterations_falls_back_to_default_on_config_error():
-    with patch(
-        "hermes_cli.config.load_config_readonly",
-        side_effect=RuntimeError("boom"),
-    ):
-        assert br._resolve_review_max_iterations() == 16
-
-
 def test_enabled_defaults_true():
     with patch("hermes_cli.config.load_config_readonly", return_value={}):
         assert br.is_background_review_enabled() is True
@@ -204,19 +173,3 @@ def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
     with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         assert br.is_background_review_enabled() is False
-
-
-def test_prompt_file_overrides_builtin(tmp_path):
-    prompt_path = tmp_path / "review.md"
-    prompt_path.write_text("Be conservative. Prefer Nothing to save.\n", encoding="utf-8")
-    cfg = {"auxiliary": {"background_review": {"prompt_file": str(prompt_path)}}}
-    agent = _FakeAgent()
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-        _target, prompt = br.spawn_background_review_thread(
-            agent,
-            messages_snapshot=[{"role": "user", "content": "hi"}],
-            review_skills=True,
-        )
-    assert "Be conservative" in prompt
-    assert "ACTIVE" not in prompt  # built-in skill prompt not used
-    assert callable(_target)

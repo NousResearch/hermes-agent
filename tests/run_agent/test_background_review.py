@@ -198,44 +198,6 @@ def test_background_review_runs_at_top_level(monkeypatch):
     assert len(forks) == 1, "top-level review must still spawn the fork"
 
 
-def test_background_review_honors_configured_max_iterations(monkeypatch):
-    """``auxiliary.background_review.max_iterations`` must reach the fork's
-    ``AIAgent(max_iterations=...)`` (#87250)."""
-    from unittest.mock import patch
-
-    forks = []
-
-    class FakeReviewAgent:
-        def __init__(self, **kwargs):
-            forks.append(kwargs)
-
-        def run_conversation(self, **kwargs):
-            pass
-
-        def shutdown_memory_provider(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
-    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
-
-    agent = _bare_agent()
-    agent._delegate_depth = 0
-
-    cfg = {"auxiliary": {"background_review": {"max_iterations": 4}}}
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-        AIAgent._spawn_background_review(
-            agent,
-            messages_snapshot=[{"role": "user", "content": "hello"}],
-            review_memory=True,
-        )
-
-    assert len(forks) == 1
-    assert forks[0]["max_iterations"] == 4
-
-
 def test_background_review_disabled_skips_automatic_spawn(monkeypatch):
     """``auxiliary.background_review.enabled: false`` must skip automatic
     post-turn forks while leaving ``/refine`` (focus set) working (#87250)."""

@@ -44,9 +44,8 @@ logger = logging.getLogger(__name__)
 # digest. That's the whole policy.
 # ---------------------------------------------------------------------------
 
-# Historical hardcoded value — kept as the default so existing behavior is
-# unchanged when the config key is unset.
-_DEFAULT_REVIEW_MAX_ITERATIONS = 16
+# Historical hardcoded iteration budget for the review fork.
+_REVIEW_MAX_ITERATIONS = 16
 
 
 def _background_review_task_config(
@@ -106,7 +105,7 @@ def is_background_review_enabled(
     refine working (issue #87250).
 
     Prefer :func:`load_background_review_settings` at the spawn call site so
-    the task block is not re-read for prompt / max_iterations on the same turn.
+    the task block is not re-read on the same turn.
     """
     if task_cfg is not None:
         try:
@@ -123,56 +122,6 @@ def is_background_review_enabled(
     enabled, _ = load_background_review_settings()
     return enabled
 
-
-def _resolve_review_max_iterations(
-    task_cfg: Optional[Dict[str, Any]] = None,
-) -> int:
-    """Resolve the review fork's tool-calling iteration budget.
-
-    Default 16 (unchanged historical behavior). Configurable via
-    ``auxiliary.background_review.max_iterations`` so operators can bound the
-    worst-case cost of a review that never concludes "nothing to save".
-    Clamped to [1, 64]; any config-read or parse failure falls back to the
-    default.
-    """
-    try:
-        val = _background_review_task_config(task_cfg).get("max_iterations")
-        if val is None:
-            return _DEFAULT_REVIEW_MAX_ITERATIONS
-        return max(1, min(int(val), 64))
-    except Exception:
-        return _DEFAULT_REVIEW_MAX_ITERATIONS
-
-
-def _load_review_prompt_file(
-    task_cfg: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
-    """Load ``auxiliary.background_review.prompt_file`` if configured.
-
-    Returns the file contents (stripped) or ``None`` when unset / unreadable.
-    Relative paths resolve against ``HERMES_HOME`` (same pattern as TTS
-    ``persona_prompt_file``).
-    """
-    raw = _background_review_task_config(task_cfg).get("prompt_file")
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    expanded = os.path.expandvars(raw.strip())
-    path = Path(expanded).expanduser()
-    if not path.is_absolute():
-        try:
-            from hermes_constants import get_hermes_home
-
-            path = get_hermes_home() / path
-        except Exception:
-            path = Path.cwd() / path
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.warning(
-            "background_review.prompt_file unavailable at %s: %s", path, exc
-        )
-        return None
-    return text or None
 
 
 def _resolve_review_runtime(
@@ -1070,7 +1019,7 @@ def _run_review_in_thread(
                         _fork_kwargs[_pref_attr] = _pref_val
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
-                max_iterations=_resolve_review_max_iterations(task_cfg),
+                max_iterations=_REVIEW_MAX_ITERATIONS,
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
@@ -1385,21 +1334,15 @@ def spawn_background_review_thread(
 
     ``task_cfg`` is the already-loaded ``auxiliary.background_review`` block
     from :func:`load_background_review_settings`. When omitted, config is
-    read once here and shared with the worker (prompt file, max_iterations,
-    aux routing) so a single turn does not re-parse the config file.
+    read once here and shared with the worker (aux routing) so a single
+    turn does not re-parse the config file.
     """
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
     # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    # ``auxiliary.background_review.prompt_file`` replaces the built-in text
-    # when set — operators can make the reviewer conservative or redefine
-    # "worth saving" without patching core (issue #87250).
-    prompt_override = _load_review_prompt_file(task_cfg)
-    if prompt_override:
-        prompt = prompt_override
-    elif review_memory and review_skills:
+    if review_memory and review_skills:
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)

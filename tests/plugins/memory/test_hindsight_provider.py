@@ -539,6 +539,25 @@ class TestPrefetch:
         assert "fresh memory" in result
         p._client.arecall.assert_called_once()
 
+    @pytest.mark.parametrize("strategy", ["prefix", "head_tail"])
+    def test_recall_sync_sends_composed_capped_query(
+        self, provider_with_config, strategy
+    ):
+        p = provider_with_config(
+            recall_sync=True,
+            recall_max_input_chars=64,
+            recall_query_strategy=strategy,
+            recall_query_head_chars=16,
+        )
+        query = "Zephyr context: " + ("x" * 200) + " Which rollback code is active?"
+
+        p.prefetch(query)
+
+        sent_query = p._client.arecall.call_args.kwargs["query"]
+        expected = query[:64] if strategy == "prefix" else query[:16] + "\n" + query[-47:]
+        assert sent_query == expected
+        assert len(sent_query) == 64
+
     def test_recall_sync_skips_background_queue(self, provider_with_config):
         # With sync recall there's nothing to prime in the background.
         p = provider_with_config(recall_sync=True)
@@ -595,7 +614,7 @@ class TestPrefetch:
 
         composed = p._compose_recall_query(query)
 
-        assert composed.startswith(query[:20])
+        assert composed == query[:20] + "\n" + query[-59:]
         assert composed.endswith("What is Project Zephyr's rollback code?")
         assert len(composed) == 80
 
@@ -603,8 +622,8 @@ class TestPrefetch:
         ("cap", "expected"),
         [
             (1, "f"),
-            (2, "af"),
-            (3, "abf"),
+            (2, "ef"),
+            (3, "a\nf"),
         ],
     )
     def test_head_tail_handles_tiny_caps(
@@ -617,6 +636,45 @@ class TestPrefetch:
         )
 
         assert p._compose_recall_query("abcdef") == expected
+
+    @pytest.mark.parametrize(
+        ("head_chars", "warning_fragment"),
+        [
+            (0, "does not preserve a head fragment"),
+            (8, "must be at most 6"),
+        ],
+    )
+    def test_head_tail_surfaces_degenerate_head_config(
+        self, provider_with_config, caplog, head_chars, warning_fragment
+    ):
+        with caplog.at_level("WARNING", logger="plugins.memory.hindsight"):
+            provider_with_config(
+                recall_max_input_chars=8,
+                recall_query_strategy="head_tail",
+                recall_query_head_chars=head_chars,
+            )
+
+        assert warning_fragment in caplog.text
+
+    @pytest.mark.parametrize(
+        ("strategy", "cap", "head_chars"),
+        [
+            ("prefix", 8, 0),
+            ("head_tail", 0, 0),
+            ("head_tail", 8, 3),
+        ],
+    )
+    def test_recall_query_config_does_not_warn_when_head_is_irrelevant_or_valid(
+        self, provider_with_config, caplog, strategy, cap, head_chars
+    ):
+        with caplog.at_level("WARNING", logger="plugins.memory.hindsight"):
+            provider_with_config(
+                recall_max_input_chars=cap,
+                recall_query_strategy=strategy,
+                recall_query_head_chars=head_chars,
+            )
+
+        assert "recall_query_head_chars" not in caplog.text
 
     def test_head_tail_counts_cjk_emoji_and_code_as_python_characters(
         self, provider_with_config
@@ -682,7 +740,7 @@ class TestPrefetch:
         p._prefetch_thread.join(timeout=5.0)
 
         sent_query = p._client.arecall.call_args.kwargs["query"]
-        assert sent_query.startswith(query[:16])
+        assert sent_query == query[:16] + "\n" + query[-47:]
         assert sent_query.endswith("Which rollback code is active?")
         assert len(sent_query) == 64
 

@@ -89,7 +89,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="Recall query head characters",
             kind=KIND_TEXT,
             default="200",
-            description="Characters reserved for the start of a truncated head + tail query.",
+            description="Characters reserved for the start; a newline separates it from the tail.",
             inline=True,
         ),
     ),

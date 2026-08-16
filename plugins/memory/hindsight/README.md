@@ -73,7 +73,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_query_strategy` | `prefix` | Long-query composition: `prefix` keeps the legacy prefix-only cap; opt-in `head_tail` preserves both the start and trailing intent |
-| `recall_query_head_chars` | `200` | Characters reserved for the start of a truncated `head_tail` query; the rest of `recall_max_input_chars` comes from the end |
+| `recall_query_head_chars` | `200` | Characters reserved for the start of a truncated `head_tail` query; a newline separates head and tail, and the remaining `recall_max_input_chars` budget comes from the end. Degenerate bounded values are warned about at initialization. |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |

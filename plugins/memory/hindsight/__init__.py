@@ -1740,6 +1740,32 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_query_head_chars = max(
             0, int(self._config.get("recall_query_head_chars", 200))
         )
+        if self._recall_query_strategy == "head_tail" and self._recall_max_input_chars:
+            cap = self._recall_max_input_chars
+            if cap < 3:
+                logger.warning(
+                    "Hindsight recall_max_input_chars=%d is too small to keep "
+                    "head_tail fragments separate; truncated queries will use "
+                    "trailing characters only.",
+                    cap,
+                )
+            elif self._recall_query_head_chars <= 0:
+                logger.warning(
+                    "Hindsight recall_query_head_chars=%d does not preserve a head "
+                    "fragment; truncated head_tail queries will use trailing "
+                    "characters only.",
+                    self._recall_query_head_chars,
+                )
+            elif self._recall_query_head_chars > cap - 2:
+                logger.warning(
+                    "Hindsight recall_query_head_chars=%d must be at most %d for "
+                    "recall_max_input_chars=%d; using %d so the newline separator "
+                    "and tail both fit.",
+                    self._recall_query_head_chars,
+                    cap - 2,
+                    cap,
+                    cap - 2,
+                )
         self._retain_async = self._config.get("retain_async", True)
         self._prefetch_waits_for_retain = self._config.get("prefetch_waits_for_retain", True)
         self._prefetch_retain_drain_timeout = float(
@@ -1880,9 +1906,7 @@ class HindsightMemoryProvider(MemoryProvider):
         text. Shared by the background prefetch worker (``queue_prefetch``) and
         the opt-in synchronous path (``prefetch`` when ``recall_sync`` is on).
         """
-        # Truncate query to max chars
-        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
-            query = query[:self._recall_max_input_chars]
+        query = self._compose_recall_query(query)
         try:
             if self._prefetch_method == "reflect":
                 logger.debug("Recall: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
@@ -1973,17 +1997,17 @@ class HindsightMemoryProvider(MemoryProvider):
         if not cap or original_len <= cap:
             composed = query
         elif self._recall_query_strategy == "head_tail":
-            if cap == 1:
-                composed = query[-1:]
+            if cap < 3 or self._recall_query_head_chars <= 0:
+                composed = query[-cap:]
             else:
-                head_chars = min(self._recall_query_head_chars, cap - 1)
-                tail_chars = cap - head_chars
-                composed = query[:head_chars] + query[-tail_chars:]
+                head_chars = min(self._recall_query_head_chars, cap - 2)
+                tail_chars = cap - head_chars - 1
+                composed = query[:head_chars] + "\n" + query[-tail_chars:]
         else:
             composed = query[:cap]
 
         logger.debug(
-            "Prefetch query composed: strategy=%s, original_query_len=%d, "
+            "Recall query composed: strategy=%s, original_query_len=%d, "
             "sent_query_len=%d, truncated=%s",
             self._recall_query_strategy,
             original_len,
@@ -1999,7 +2023,6 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         if self._recall_disabled():
             return
-        query = self._compose_recall_query(query)
 
         def _run():
             # Ensure the just-completed turn's retain is recall-visible on the

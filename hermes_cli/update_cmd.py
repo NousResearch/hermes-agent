@@ -773,6 +773,122 @@ def _print_update_completion(message: str) -> None:
         print(f"=== hermes-update completed {action_id} ===")
 
 
+def _is_git_update_failure(exc: subprocess.CalledProcessError) -> bool:
+    """Return whether ``exc`` came from the git update command.
+
+    The update pipeline also runs dependency installation inside the same
+    outer ``try``.  Exception type alone therefore cannot select the Windows
+    ZIP fallback: a failed ``uv``/``pip`` command is a ``CalledProcessError``
+    too, but the checkout has already been updated and must not be replaced
+    from a ZIP archive.
+    """
+    command = getattr(exc, "cmd", None)
+    if isinstance(command, (str, bytes)):
+        command = shlex.split(os.fsdecode(command))
+    if not command:
+        return False
+    executable = os.fsdecode(command[0]).replace("\\", "/").rsplit("/", 1)[-1]
+    return executable.lower() in {"git", "git.exe"}
+
+
+def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
+    """Return whether an update error may use the Windows ZIP fallback.
+
+    The fallback is specifically a recovery for Git file-I/O failures. Keeping
+    this policy separate from the broad exception handler makes it testable
+    and prevents later update stages from accidentally regaining access to the
+    destructive path.
+    """
+    return (
+        isinstance(exc, subprocess.CalledProcessError)
+        and _m()._is_windows()
+        and _is_git_update_failure(exc)
+    )
+
+
+def _ensure_zip_update_checkout_is_clean() -> None:
+    """Refuse the destructive ZIP replacement for a dirty git checkout.
+
+    ZIP replacement works at top-level entry granularity, so preserving only
+    ``venv``/``.git`` cannot preserve edits or untracked files nested below a
+    source directory.  Ignored files are included as well; an ignored source
+    file is still user data even though ordinary ``git status`` hides it.
+    A status failure is also fail-closed: inability to prove the tree is clean
+    must never authorize destructive replacement.
+    Non-git installs retain the existing ZIP fallback behavior.
+    """
+    project_root = _m().PROJECT_ROOT
+    if not (project_root / ".git").exists():
+        return
+
+    git_cmd = ["git"]
+    if _m()._is_windows():
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+    try:
+        status = subprocess.run(
+            git_cmd
+            + [
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--ignored=all",
+            ],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        print(f"✗ ZIP update refused: cannot verify checkout state ({exc}).")
+        print("  Resolve the git/filesystem problem and rerun `hermes update`.")
+        _m().sys.exit(1)
+
+    if status.returncode != 0:
+        detail = (status.stderr or "").strip().splitlines()
+        suffix = f" {detail[0]}" if detail else ""
+        print(f"✗ ZIP update refused: cannot verify checkout state.{suffix}")
+        print("  Resolve the git/filesystem problem and rerun `hermes update`.")
+        _m().sys.exit(1)
+
+    # The ZIP path intentionally preserves these top-level entries. Git
+    # commonly reports their ignored contents (especially ``venv`` and
+    # ``node_modules``), so do not turn those expected entries into a false
+    # dirty-tree refusal. Everything else, including ignored files, blocks.
+    preserved = {"venv", "node_modules", ".git", ".env"}
+
+    def _outside_preserved_entries(line: str) -> bool:
+        payload = line[3:].strip() if len(line) >= 3 else line.strip()
+        paths = payload.split(" -> ")
+        for path in paths:
+            normalized = path.replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            top_level = normalized.split("/", 1)[0]
+            if top_level not in preserved:
+                return True
+        return False
+
+    dirty = [
+        line
+        for line in (status.stdout or "").splitlines()
+        if line.strip() and _outside_preserved_entries(line)
+    ]
+    if dirty:
+        print("✗ ZIP update refused: the git checkout has local changes.")
+        print(
+            "  The ZIP fallback will not overwrite uncommitted, untracked, "
+            "or ignored files."
+        )
+        print("  Commit or save the work, then rerun `hermes update`.")
+        for line in dirty[:8]:
+            print(f"    {line}")
+        if len(dirty) > 8:
+            print(f"    … and {len(dirty) - 8} more")
+        _m().sys.exit(1)
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -804,6 +920,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
             f"--branch {branch}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
+    _ensure_zip_update_checkout_is_clean()
     zip_url = (
         f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
@@ -904,6 +1021,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
             raise
 
         try:
+            _ensure_zip_update_checkout_is_clean()
             _commit_staged_replacements(staged)
         except Exception:
             # The rollback already restored every swapped entry, but staging
@@ -6403,7 +6521,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if _m()._is_windows():
+        if _should_zip_fallback_on_update_error(e):
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
@@ -6412,7 +6530,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 had_desktop_app_before_update=had_desktop_app_before_update,
             )
         else:
-            print(f"✗ Update failed: {e}")
+            if _is_git_update_failure(e):
+                print(f"✗ Git update failed: {e}")
+            else:
+                print(f"✗ Update step failed (dependencies or post-update work): {e}")
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---

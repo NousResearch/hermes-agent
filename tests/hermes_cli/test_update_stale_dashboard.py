@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from unittest.mock import patch, MagicMock
 
@@ -254,18 +255,21 @@ class TestWindowsWmicEncoding:
     `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
     """
 
-    @pytest.mark.windows_only
-    def test_wmic_invoked_with_utf8_ignore_errors(self):
-        """The wmic subprocess.run call must pass encoding='utf-8' and
-        errors='ignore' so the subprocess reader thread cannot raise
-        UnicodeDecodeError on non-UTF-8 wmic output.
+    def test_wmic_routed_through_bounded_probe_run_with_ignore_errors(self):
+        """The wmic scan must go through ``bounded_probe_run`` — which owns
+        the deterministic UTF-8 decode (#17049) and the deadlock-safe
+        post-timeout cleanup (#87134) — with errors='ignore' so undecodable
+        bytes from a non-UTF-8 system code page (e.g. cp936 on zh-CN) don't
+        take down the reader thread, and with a finite timeout.
 
-        ``windows_only``: the branch also imports ``windows_hide_flags()`` and
-        the crash it guards is a real cp936/wmic decode — neither reproducible
-        with a patched ``sys.platform`` on Linux.
+        Cross-platform: nothing Windows-native executes once the probe is
+        mocked, so ``sys.platform`` is patched rather than gating the test
+        to the Windows-only CI job.
         """
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = subprocess.CompletedProcess(
+                args=["wmic"],
                 returncode=0,
                 stdout=(
                     "CommandLine=python -m hermes_cli.main dashboard\n"
@@ -273,21 +277,29 @@ class TestWindowsWmicEncoding:
                 ),
                 stderr="",
             )
-            _find_stale_dashboard_pids()
+            pids = _find_stale_dashboard_pids()
 
-        # The wmic call is the first subprocess.run invocation.
-        assert mock_run.called, "subprocess.run was not invoked"
-        wmic_call = mock_run.call_args_list[0]
+        assert mock_probe.called, "bounded_probe_run was not invoked"
+        wmic_call = mock_probe.call_args_list[0]
+        assert wmic_call.args[0][0] == "wmic"
         kwargs = wmic_call.kwargs
-        assert kwargs.get("encoding") == "utf-8", (
-            "encoding kwarg must be 'utf-8' so wmic output is decoded "
-            "deterministically rather than via the implicit reader-thread "
-            "default that crashes on non-UTF-8 locales (#17049)."
-        )
         assert kwargs.get("errors") == "ignore", (
             "errors kwarg must be 'ignore' so undecodable bytes don't take "
             "down the reader thread (#17049)."
         )
+        assert kwargs.get("timeout"), (
+            "the scan must carry a finite timeout — bounded_probe_run "
+            "guarantees the post-timeout cleanup is bounded too (#87134)."
+        )
+        assert pids == [12345]
+
+    def test_probe_failure_fails_open_to_empty_list(self):
+        """A spawn failure or timeout (bounded_probe_run → None) must yield
+        an empty scan, not an AttributeError on result.stdout (#87134)."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run",
+                   return_value=None):
+            assert _find_stale_dashboard_pids() == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")

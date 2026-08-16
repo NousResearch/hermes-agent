@@ -455,6 +455,7 @@ describe('configureTerminalKeybindings', () => {
 
   it('migrates legacy \\\r\n bindings to CSI u sequences', async () => {
     const mkdir = vi.fn().mockResolvedValue(undefined)
+
     const readFile = vi.fn().mockResolvedValue(
       JSON.stringify([
         {
@@ -477,6 +478,7 @@ describe('configureTerminalKeybindings', () => {
         }
       ])
     )
+
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const copyFile = vi.fn().mockResolvedValue(undefined)
 
@@ -491,10 +493,12 @@ describe('configureTerminalKeybindings', () => {
     expect(result.message).toContain('migrated 3 legacy bindings to CSI u encoding')
     const written = writeFile.mock.calls[0]?.[1] as string
     const parsed = JSON.parse(written)
+
     // All three Enter bindings should now use CSI u sequences
     const enterBindings = parsed.filter((b: { key: string }) =>
       ['shift+enter', 'ctrl+enter', 'cmd+enter'].includes(b.key)
     )
+
     expect(enterBindings).toHaveLength(3)
     expect(enterBindings.find((b: { key: string }) => b.key === 'shift+enter')?.args?.text).toBe('\u001b[13;2u')
     expect(enterBindings.find((b: { key: string }) => b.key === 'ctrl+enter')?.args?.text).toBe('\u001b[13;5u')

@@ -48,9 +48,19 @@ describe('shouldInsertNewlineOnReturn', () => {
 
   it('keeps plain Enter as submit on a plain non-macOS terminal', async () => {
     const prev = { ...process.env }
-    for (const k of ['SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY', 'WT_SESSION', 'GHOSTTY_RESOURCES_DIR', 'GHOSTTY_BIN_DIR', 'WSL_DISTRO_NAME']) {
+
+    for (const k of [
+      'SSH_CONNECTION',
+      'SSH_CLIENT',
+      'SSH_TTY',
+      'WT_SESSION',
+      'GHOSTTY_RESOURCES_DIR',
+      'GHOSTTY_BIN_DIR',
+      'WSL_DISTRO_NAME'
+    ]) {
       delete process.env[k]
     }
+
     process.env.TERM = 'xterm-256color'
     process.env.TERM_PROGRAM = ''
 

@@ -406,6 +406,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
   it('FIX: primary sleep/wake reconnect dials the window backend, not the active secondary profile', async () => {
     const desktop = fakeDesktop()
+
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
 
     render(<Harness />)
@@ -440,6 +441,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     const primaryReconnectSockets = FakeWebSocket.instances
       .slice(socketsBeforeDrop)
       .filter(socket => socket.url === primaryConn.wsUrl)
+
     expect(primaryReconnectSockets.length).toBeGreaterThan(0)
     expect($connection.get()?.profile).toBe('coder')
     expect($connection.get()?.baseUrl).toBe(coderConn.baseUrl)

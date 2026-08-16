@@ -903,6 +903,16 @@ class TestSyncTurn:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
         assert item["timestamp"] == event_time.isoformat(timespec="seconds")
 
+    def test_retain_timestamp_normalizes_a_naive_clock(self, provider, monkeypatch):
+        event_time = datetime(2026, 8, 10, 11, 9)
+        monkeypatch.setattr("plugins.memory.hindsight._hermes_now", lambda: event_time)
+
+        timestamp = provider._build_retain_kwargs("hello")["timestamp"]
+        parsed = datetime.fromisoformat(timestamp)
+
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() is not None
+
     @pytest.mark.asyncio
     async def test_retain_timestamp_is_serialized_by_pinned_client(self, provider):
         from hindsight_client import Hindsight

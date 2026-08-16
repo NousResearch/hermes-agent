@@ -10,6 +10,7 @@ import pytest
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 
 from gateway.runtime_footer import (
+    _compact_reset,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -188,6 +189,24 @@ def test_format_footer_compacts_reset_times_for_quota():
         fields=("quota",),
     )
     assert out.startswith("5h 68% 2h")
+
+
+def test_compact_reset_omits_zero_day_and_minute_components(monkeypatch):
+    import gateway.runtime_footer as runtime_footer
+
+    fixed_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(runtime_footer, "datetime", FixedDateTime)
+    fixed_target = FixedDateTime(2026, 1, 1, tzinfo=timezone.utc)
+
+    assert _compact_reset(fixed_target + timedelta(days=1)) == "1d"
+    assert _compact_reset(fixed_target + timedelta(hours=1)) == "1h"
+    assert _compact_reset(fixed_target + timedelta(seconds=30)) == "<1m"
 
 
 

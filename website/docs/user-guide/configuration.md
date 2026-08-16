@@ -1706,6 +1706,11 @@ display:
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 
+When `quota` is enabled for DeepSeek, Hermes queries the balance endpoint using
+that provider's configured `base_url`. If the URL points to a third-party
+OpenAI-compatible proxy, the proxy receives the balance request and the
+configured API credential just as it receives normal model requests.
+
 ### Per-turn summary and spinner token flow
 
 `display.turn_summary` (default `true`) prints one dim accounting line after each **interactive CLI** turn, summarising what that turn actually did:

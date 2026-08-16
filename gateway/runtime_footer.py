@@ -178,10 +178,10 @@ def _compact_reset(dt: Any) -> str:
     minutes = rem // 60
     if hours >= 24:
         days, rem_hours = divmod(math.ceil(seconds / 3600), 24)
-        return f"{days}d{rem_hours}h"
+        return f"{days}d" + (f"{rem_hours}h" if rem_hours else "")
     if hours > 0:
-        return f"{hours}h{minutes}m"
-    return f"{minutes}m"
+        return f"{hours}h" + (f"{minutes}m" if minutes else "")
+    return f"{minutes}m" if minutes else "<1m"
 
 
 def _quota_label(window: Any, provider: Optional[str] = None, model: Optional[str] = None) -> str:

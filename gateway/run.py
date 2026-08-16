@@ -2478,13 +2478,14 @@ def _footer_account_usage_cache_key(
     *,
     base_url: str | None = None,
     api_key: str | None = None,
+    hermes_home: str | Path | None = None,
 ) -> tuple[str, str, str, str]:
     import hashlib
 
     token = str(api_key or "").strip()
     digest = hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
     return (
-        str(get_hermes_home()),
+        str(hermes_home if hermes_home is not None else get_hermes_home()),
         str(provider or "").strip().lower(),
         str(base_url or "").strip().rstrip("/").lower(),
         digest,
@@ -2574,6 +2575,7 @@ def _fetch_footer_account_usage_cached(
     *,
     base_url: str | None = None,
     api_key: str | None = None,
+    hermes_home: str | Path | None = None,
 ):
     """Return cached usage and schedule refresh without blocking the caller."""
     normalized = str(provider or "").strip().lower()
@@ -2583,6 +2585,7 @@ def _fetch_footer_account_usage_cached(
         provider,
         base_url=base_url,
         api_key=api_key,
+        hermes_home=hermes_home,
     )
     now = time.monotonic()
     should_refresh = False
@@ -5699,8 +5702,11 @@ class TurnRunner:
 
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
+        _footer_profile_home = None
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
         try:
+            if _want_footer_usage:
+                _footer_profile_home = get_hermes_home()
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
             # content list. Consume-and-clear so subsequent turns on the same
@@ -5794,12 +5800,13 @@ class TurnRunner:
                 _resolved_provider,
                 base_url=_resolved_base_url,
                 api_key=getattr(_agent, "api_key", None),
+                hermes_home=_footer_profile_home,
             )
 
         # Sync session_id immediately after run_conversation(). Compression
         # can rotate before a follow-up model call fails; the failure return
         # below must still point the gateway at the compressed child.
-        agent = ctx.agent_holder[0]
+        agent = _agent
         _session_was_split = False
         # In-place compaction (compression.in_place / #38763) compacts the
         # transcript WITHOUT rotating the id, so the id-change diff below

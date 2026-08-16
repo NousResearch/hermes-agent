@@ -45,6 +45,19 @@ def test_footer_account_usage_cache_key_is_profile_and_credential_scoped(monkeyp
     assert "token-a" not in repr(a)
 
 
+def test_footer_account_usage_cache_key_accepts_captured_profile_home(monkeypatch):
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: Path("/profiles/default"))
+
+    key = gateway_run._footer_account_usage_cache_key(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="token-a",
+        hermes_home=Path("/profiles/alice"),
+    )
+
+    assert key[0] == "/profiles/alice"
+
+
 def test_cold_cache_schedules_once_and_returns_immediately(monkeypatch):
     _reset_cache()
     started = []

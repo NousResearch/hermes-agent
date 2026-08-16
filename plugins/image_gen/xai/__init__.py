@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -126,29 +125,17 @@ def _resolve_resolution() -> str:
 def _xai_image_field(source: str) -> Dict[str, str]:
     """Build the xAI ``image`` field for an edit request.
 
-    xAI's ``/v1/images/edits`` accepts a public HTTPS URL or a base64 data URI.
-    Local file paths are read and encoded into a ``data:`` URI.
+    xAI's ``/v1/images/edits`` accepts ``{"url": <ref>, "type": "image_url"}``
+    where ``<ref>`` is a public URL or a base64 data URI. The sanctioned
+    resolver (:mod:`tools.image_source`) validates the source: the
+    credential-read denylist, sandbox confinement under a non-local terminal
+    backend, and magic-byte typing. Public URLs pass through unchanged;
+    local files and ``data:`` URIs come back as a ``data:`` URI whose
+    content type comes from the bytes, not the label or extension.
     """
-    source = source.strip()
-    lower = source.lower()
-    if lower.startswith(("http://", "https://", "data:")):
-        return {"url": source, "type": "image_url"}
-    # Local file path → base64 data URI.
-    import base64
-    import os as _os
+    from tools.image_source import resolve_source_to_url_sync
 
-    # Enforce the shared credential-read guard before reading local bytes
-    # (same boundary the OpenAI / OpenRouter / Codex image providers apply).
-    from agent.file_safety import raise_if_read_blocked
-
-    raise_if_read_blocked(source)
-    with open(_os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
-        raw = fh.read()
-    ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
-    if ext == "jpg":
-        ext = "jpeg"
-    b64 = base64.b64encode(raw).decode("utf-8")
-    return {"url": f"data:image/{ext};base64,{b64}", "type": "image_url"}
+    return {"url": resolve_source_to_url_sync(source), "type": "image_url"}
 
 
 # ---------------------------------------------------------------------------
@@ -260,23 +247,6 @@ class XAIImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
-        for index, source in enumerate(source_images):
-            field = "image_url" if index == 0 and image_url and image_url.strip() == source else "reference_image_urls"
-            lower = source.lower()
-            if not lower.startswith(("http://", "https://", "data:")):
-                path = Path(source).expanduser()
-                if not path.is_file():
-                    return error_response(
-                        error=(
-                            f"{field} must be a public HTTPS URL or data URI "
-                            "(e.g. the `image`/`public_url` from a prior Imagine result)"
-                        ),
-                        error_type="invalid_image_url",
-                        provider=provider_name,
-                        model="grok-imagine-image-quality",
-                        prompt=prompt,
-                        aspect_ratio=aspect,
-                    )
         is_edit = bool(source_images)
         modality = "image" if is_edit else "text"
 

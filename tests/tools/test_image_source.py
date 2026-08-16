@@ -57,6 +57,40 @@ class TestDataUrl:
             await isrc.resolve_image_source(
                 f"data:text/plain;base64,{b64}", isrc.ResolveContext())
 
+    @pytest.mark.asyncio
+    async def test_uppercase_data_scheme_resolves(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        b64 = base64.b64encode(PNG).decode()
+
+        res = await isrc.resolve_image_source(
+            f"DATA:image/png;base64,{b64}", isrc.ResolveContext()
+        )
+
+        assert res.data == PNG
+        assert res.mime == "image/png"
+        assert res.origin == "data"
+
+
+class TestHttpUrl:
+    @pytest.mark.asyncio
+    async def test_uppercase_http_scheme_resolves(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+
+        async def fake_download(url):
+            assert url == "HTTP://example.com/cat.png"
+            return PNG
+
+        monkeypatch.setattr(isrc, "_http_block_reason", lambda _url: None)
+        monkeypatch.setattr(isrc, "_download_to_bytes", fake_download)
+
+        res = await isrc.resolve_image_source(
+            "HTTP://example.com/cat.png", isrc.ResolveContext()
+        )
+
+        assert res.data == PNG
+        assert res.mime == "image/png"
+        assert res.origin == "http"
+
 
 class TestLocalBackend:
     @pytest.mark.asyncio
@@ -381,3 +415,209 @@ class TestLazySandboxBringUp:
 
         with pytest.raises(isrc.SourceNotFound):
             await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))
+
+
+GIF = b"GIF89a" + b"\x00" * 64
+BMP = b"BM" + b"\x00" * 64
+
+
+def _data_url(raw: bytes, mime: str = "image/png") -> str:
+    return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+
+class TestFileUriSources:
+    """file:// references parse per RFC 8089 instead of a naive prefix strip."""
+
+    @pytest.mark.asyncio
+    async def test_file_uri_resolves_local(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "cat.gif"
+        img.write_bytes(GIF)
+        res = await isrc.resolve_image_source(f"file://{img}", isrc.ResolveContext())
+        assert res.data == GIF
+        assert res.mime == "image/gif"
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_localhost_file_uri_resolves(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "cat.png"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(
+            f"file://localhost{img}", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_remote_file_uri_host_rejected(self, tmp_path, monkeypatch):
+        """A remote host must be refused, not silently dropped so that
+        file://server/share/x reads the local /share/x."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        with pytest.raises(isrc.SourceUnsafe, match="Unsupported remote file:// host"):
+            await isrc.resolve_image_source(
+                "file://server/share/cat.png", isrc.ResolveContext())
+
+
+class TestErrorHierarchy:
+    def test_resolution_errors_are_value_errors(self):
+        """Provider plugins surface source failures as ValueError; the resolver
+        hierarchy must be catchable there without importing this module."""
+        import tools.image_source as isrc
+
+        assert issubclass(isrc.ImageResolutionError, ValueError)
+
+
+class TestBackendNarrowing:
+    """max_bytes and accepted_mimes let a backend narrow the resolver to what
+    its own API accepts, so unsupported input fails locally with a clear
+    message instead of an opaque server-side rejection. Both default to None,
+    which keeps every pre-existing call site byte-identical."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["local", "data"])
+    async def test_oversized_source_rejected(self, tmp_path, monkeypatch, shape):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        raw = PNG + b"\x00" * 4096
+        if shape == "local":
+            src = str(tmp_path / "big.png")
+            (tmp_path / "big.png").write_bytes(raw)
+        else:
+            src = _data_url(raw)
+        with pytest.raises(isrc.SourceTooLarge, match="exceeds the .*MB limit"):
+            await isrc.resolve_image_source(
+                src, isrc.ResolveContext(), max_bytes=1024)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["local", "data"])
+    async def test_source_within_cap_accepted(self, tmp_path, monkeypatch, shape):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        if shape == "local":
+            src = str(tmp_path / "small.png")
+            (tmp_path / "small.png").write_bytes(PNG)
+        else:
+            src = _data_url(PNG)
+        res = await isrc.resolve_image_source(
+            src, isrc.ResolveContext(), max_bytes=1024)
+        assert res.data == PNG
+        assert res.mime == "image/png"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["local", "data"])
+    async def test_mime_outside_allowlist_rejected(self, tmp_path, monkeypatch, shape):
+        """The sniffer knows BMP, but a backend whose API takes PNG only must
+        see it fail here with the readable format list."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        if shape == "local":
+            src = str(tmp_path / "logo.bmp")
+            (tmp_path / "logo.bmp").write_bytes(BMP)
+        else:
+            src = _data_url(BMP, "image/bmp")
+        with pytest.raises(isrc.NotAnImage, match="not supported here.*PNG"):
+            await isrc.resolve_image_source(
+                src, isrc.ResolveContext(), accepted_mimes=frozenset({"image/png"}))
+
+    @pytest.mark.asyncio
+    async def test_mime_inside_allowlist_accepted(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "ok.png"
+        img.write_bytes(PNG)
+        res = await isrc.resolve_image_source(
+            str(img), isrc.ResolveContext(),
+            accepted_mimes=frozenset({"image/png", "image/gif"}))
+        assert res.mime == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_defaults_are_no_ops(self, tmp_path, monkeypatch):
+        """Without the new arguments a BMP still resolves: the narrowing is
+        strictly opt-in and existing callers see identical behaviour."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "logo.bmp"
+        img.write_bytes(BMP)
+        res = await isrc.resolve_image_source(str(img), isrc.ResolveContext())
+        assert res.mime == "image/bmp"
+        assert res.data == BMP
+
+
+class TestDataUrlLenience:
+    @pytest.mark.asyncio
+    async def test_whitespace_wrapped_base64_accepted(self, tmp_path, monkeypatch):
+        """RFC 2397 permits whitespace in the payload (encoders wrap at 76
+        columns); it must not break decoding or the sniff."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        b64 = base64.b64encode(PNG).decode()
+        wrapped = "\n" + "\n".join(b64[i:i + 12] for i in range(0, len(b64), 12))
+        res = await isrc.resolve_image_source(
+            f"data:image/png;base64,{wrapped}", isrc.ResolveContext())
+        assert res.data == PNG
+        assert res.mime == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_lying_mime_label_rejected(self, tmp_path, monkeypatch):
+        """A non-image payload under an image/png label must be refused; the
+        content type comes from the bytes, never the header."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        lying = _data_url(b"-----BEGIN OPENSSH PRIVATE KEY-----\n", "image/png")
+        with pytest.raises(isrc.NotAnImage, match="not a recognized image"):
+            await isrc.resolve_image_source(lying, isrc.ResolveContext())
+
+
+class TestSyncProviderWrappers:
+    """The packaging seam for synchronous provider plugins: the same pipeline,
+    bridged via model_tools._run_async."""
+
+    def test_resolve_source_sync_local_file(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "cat.png"
+        img.write_bytes(PNG)
+
+        res = isrc.resolve_source_sync(str(img))
+
+        assert res.data == PNG
+        assert res.mime == "image/png"
+        assert res.origin == "file"
+        assert res.path == img
+
+    def test_resolve_source_sync_applies_narrowing(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "big.png"
+        img.write_bytes(PNG + b"\x00" * 4096)
+
+        with pytest.raises(ValueError, match="exceeds the .*MB limit"):
+            isrc.resolve_source_sync(str(img), max_bytes=1024)
+
+    @pytest.mark.parametrize("url", [
+        "https://example.com/cat.png",
+        "http://example.com/cat.png",
+        "  https://example.com/spaced.png  ",
+    ])
+    def test_to_url_sync_http_passes_through(self, tmp_path, monkeypatch, url):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+
+        assert isrc.resolve_source_to_url_sync(url) == url.strip()
+
+    def test_to_url_sync_local_file_becomes_data_url(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "cat.png"
+        img.write_bytes(PNG)
+
+        assert isrc.resolve_source_to_url_sync(str(img)) == _data_url(PNG)
+
+    def test_to_url_sync_rebuilds_under_sniffed_mime(self, tmp_path, monkeypatch):
+        """A data: URL whose label lies about a real image is rebuilt under the
+        sniffed mime, so the mislabel never reaches a provider API."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+
+        out = isrc.resolve_source_to_url_sync(_data_url(PNG, "image/gif"))
+
+        assert out == _data_url(PNG, "image/png")

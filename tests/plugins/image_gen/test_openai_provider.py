@@ -240,3 +240,49 @@ class TestGenerate:
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 
+    def test_url_response_falls_back_to_bare_url_when_download_fails(self, provider):
+        """Cache failure must not turn into a tool error — symmetric with xAI."""
+        import requests as req_lib
+
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(
+            b64=None, url="https://example.com/img.png",
+        )
+
+        with _patched_openai(fake_client), patch(
+            "plugins.image_gen.openai.save_url_image",
+            side_effect=req_lib.HTTPError("404 from CDN"),
+        ):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert result["image"] == "https://example.com/img.png"
+
+
+class TestSourceImageHardening:
+    """_load_image_bytes delegates local/data-URI validation to the resolver."""
+
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def test_local_image_bytes_and_name(self, tmp_path):
+        path = tmp_path / "cat.png"
+        path.write_bytes(self._PNG)
+
+        data, name = openai_plugin._load_image_bytes(str(path))
+
+        assert data == self._PNG
+        assert name == "cat.png"
+
+    def test_denylisted_local_rejected(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(self._PNG)
+
+        with pytest.raises(ValueError, match="Access denied"):
+            openai_plugin._load_image_bytes(str(env_file))
+
+    def test_non_image_local_rejected(self, tmp_path):
+        path = tmp_path / "notes.txt"
+        path.write_text("not an image")
+
+        with pytest.raises(ValueError, match="not a recognized image"):
+            openai_plugin._load_image_bytes(str(path))

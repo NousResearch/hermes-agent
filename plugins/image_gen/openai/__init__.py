@@ -124,37 +124,49 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
-    """Load image bytes from a URL or local file path.
+# Filename extensions for the sniffable image types, for the fallback name
+# handed to ``images.edit`` when the source has no path or URL basename.
+_MIME_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+}
 
-    Returns ``(data, filename)``. Raises on any network / IO error so the
-    caller can surface a clean error_response.
+
+def _source_filename(resolved, ref: str) -> str:
+    """A plausible filename for the multipart file object.
+
+    The SDK derives the multipart part name from the file object's ``name``,
+    so give it the URL basename for downloads, the real basename for local
+    files, and a mime-derived fallback for ``data:`` URIs and sandbox reads.
     """
-    ref = ref.strip()
-    lower = ref.lower()
-    if lower.startswith(("http://", "https://")):
-        import requests
+    if resolved.origin == "http":
+        name = ref.split("?", 1)[0].rsplit("/", 1)[-1]
+        if name:
+            return name
+    if resolved.path is not None:
+        return os.path.basename(str(resolved.path)) or "image.png"
+    ext = _MIME_EXTENSIONS.get(resolved.mime or "", "png")
+    return f"image.{ext}"
 
-        resp = requests.get(ref, timeout=60)
-        resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
-        return resp.content, name
-    if lower.startswith("data:"):
-        import base64
 
-        header, _, b64 = ref.partition(",")
-        ext = "png"
-        if "image/" in header:
-            ext = header.split("image/", 1)[1].split(";", 1)[0] or "png"
-        return base64.b64decode(b64), f"image.{ext}"
-    # Local file path — enforce the shared credential-read guard before reading.
-    from agent.file_safety import raise_if_read_blocked
+def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
+    """Load image bytes from a URL, local file path, or data URI.
 
-    raise_if_read_blocked(ref)
-    with open(ref, "rb") as fh:
-        data = fh.read()
-    name = os.path.basename(ref) or "image.png"
-    return data, name
+    gpt-image-2's ``images.edit`` endpoint needs the raw bytes as a multipart
+    file, so every shape resolves through the sanctioned resolver
+    (:mod:`tools.image_source`): remote URLs download behind the SSRF and
+    website-policy guards, local files pass the credential-read denylist and
+    sandbox confinement, and everything is typed by magic bytes. Returns
+    ``(data, filename)``; raises on any network / IO / validation error so
+    the caller surfaces a clean error_response.
+    """
+    from tools.image_source import resolve_source_sync
+
+    resolved = resolve_source_sync(ref)
+    return resolved.data, _source_filename(resolved, ref.strip())
 
 
 # ---------------------------------------------------------------------------

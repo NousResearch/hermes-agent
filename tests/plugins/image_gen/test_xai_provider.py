@@ -259,7 +259,7 @@ class TestGenerate:
             f"resolution must be the literal '1k' or '2k', got {payload['resolution']!r}"
         )
 
-    def test_image_edit_rejects_bare_file_id_input(self):
+    def test_image_edit_reports_bare_file_id_resolution_error(self):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         mock_resp = MagicMock()
@@ -276,11 +276,11 @@ class TestGenerate:
             )
 
         assert result["success"] is False
-        assert result["error_type"] == "invalid_image_url"
+        assert result["error_type"] == "io_error"
         mock_post.assert_not_called()
 
 
-    def test_multi_image_edit_rejects_bare_file_id_inputs(self):
+    def test_multi_image_edit_reports_bare_file_id_resolution_error(self):
         from plugins.image_gen.xai import XAIImageGenProvider
 
         mock_resp = MagicMock()
@@ -301,8 +301,36 @@ class TestGenerate:
             )
 
         assert result["success"] is False
-        assert result["error_type"] == "invalid_image_url"
+        assert result["error_type"] == "io_error"
         mock_post.assert_not_called()
+
+    def test_image_edit_accepts_file_uri(self, tmp_path):
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        image = tmp_path / "source.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"url": "https://xai.image/edited.png"}]
+        }
+
+        with patch(
+            "plugins.image_gen.xai.requests.post", return_value=mock_resp
+        ) as mock_post, patch(
+            "plugins.image_gen.xai.save_url_image",
+            return_value="/tmp/edited.png",
+        ):
+            result = XAIImageGenProvider().generate(
+                prompt="make it red",
+                image_url=image.as_uri(),
+            )
+
+        assert result["success"] is True
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["image"]["type"] == "image_url"
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
 
 
     def test_storage_options_are_sent_by_default(self):
@@ -404,3 +432,44 @@ class TestXAIImageFieldReadGuard:
             _xai_image_field(str(auth_json))
 
 
+class TestSourceImageHardening:
+    """_xai_image_field delegates validation to the shared resolver."""
+
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def test_remote_url_passes_through(self):
+        from plugins.image_gen.xai import _xai_image_field
+
+        assert _xai_image_field("https://x.com/a.png") == {
+            "url": "https://x.com/a.png",
+            "type": "image_url",
+        }
+
+    def test_local_image_inlined_as_data_uri(self, tmp_path):
+        from plugins.image_gen.xai import _xai_image_field
+
+        path = tmp_path / "cat.png"
+        path.write_bytes(self._PNG)
+
+        field = _xai_image_field(str(path))
+
+        assert field["type"] == "image_url"
+        assert field["url"].startswith("data:image/png;base64,")
+
+    def test_denylisted_local_rejected(self, tmp_path):
+        from plugins.image_gen.xai import _xai_image_field
+
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(self._PNG)
+
+        with pytest.raises(ValueError, match="Access denied"):
+            _xai_image_field(str(env_file))
+
+    def test_non_image_local_rejected(self, tmp_path):
+        from plugins.image_gen.xai import _xai_image_field
+
+        path = tmp_path / "notes.txt"
+        path.write_text("not an image")
+
+        with pytest.raises(ValueError, match="not a recognized image"):
+            _xai_image_field(str(path))

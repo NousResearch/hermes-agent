@@ -67,6 +67,7 @@ export function localRouteFallbackProfiles(
       .filter(agent => agent.connectionId === localConnectionId)
       .map(agent => normalizeProfile(agent.profile))
   )
+
   const fallback: string[] = []
 
   for (const raw of profileNames) {
@@ -79,6 +80,25 @@ export function localRouteFallbackProfiles(
   }
 
   return fallback
+}
+
+/** Credential-free seed routes let a plugin be the first caller to lazily dial
+ * an SSH source. Once a source has roster agents, those live profiles are the
+ * inventory and no speculative seed is needed. */
+export function undialedSshRouteSeeds(
+  agents: RegistryProfileRouteAgent[],
+  sources: RegistryProfileRouteSource[]
+): Array<{ connectionId: string; profile: string }> {
+  const dialed = new Set(agents.map(agent => agent.connectionId))
+
+  return sources
+    .filter(source => source.kind === 'ssh' && !dialed.has(source.id))
+    .map(source => ({
+      connectionId: source.id,
+      // remoteProfile is the backend target, not the source-local route. Keep
+      // identity stable when the first lazy dial later inventories `default`.
+      profile: 'default'
+    }))
 }
 
 function normalizeProfile(name: null | string | undefined): string {
@@ -107,7 +127,20 @@ async function connectionScope(
   resolveSsh: BuildOpaqueProfileRoutesOptions['resolveSsh']
 ): Promise<{ key: string; mode: 'local' | 'remote' }> {
   if (config.mode === 'ssh') {
-    const effective = await resolveSsh(config)
+    let effective: EffectiveSshRoute
+
+    try {
+      effective = await resolveSsh(config)
+    } catch {
+      // `ssh -G` may time out or fail for one stale alias. Keep route inventory
+      // available for every other profile and derive this opaque id from the
+      // configured target; the actual lazy dial will still surface its error.
+      effective = {
+        hostname: config.sshHost,
+        port: config.sshPort,
+        user: config.sshUser
+      }
+    }
 
     // Remote profile is intentionally excluded: profiles mapped into the same
     // remote Hermes home form one interaction scope. Key/identity-file paths are

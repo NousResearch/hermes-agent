@@ -20,6 +20,7 @@ import {
   disposeSecondariesForConnection,
   ensureGatewayForProfile,
   isActivePrimary,
+  gatewayActivationEpoch,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
@@ -416,9 +417,25 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
+      onActiveConnectionChanged: publish,
       onEvent: event => {
         recordSessionEventScope(event)
         callbacksRef.current.handleGatewayEvent(event)
+      },
+      onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
+        $activeGatewayProfile.set(fallbackProfile)
+        void desktop
+          .getConnection(fallbackProfile)
+          .then(connection => {
+            if (!cancelled && gatewayActivationEpoch() === invalidationEpoch) {
+              publish(connection)
+            }
+          })
+          .catch(() => {
+            if (!cancelled && gatewayActivationEpoch() === invalidationEpoch) {
+              publish(null)
+            }
+          })
       }
     })
 

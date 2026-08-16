@@ -5,7 +5,8 @@ import {
   buildRegistryProfileRoutes,
   localRouteFallbackProfiles,
   type ProfileRouteConfig,
-  registryGatewayWsUrl
+  registryGatewayWsUrl,
+  undialedSshRouteSeeds
 } from './plugin-profile-routes'
 
 function config(overrides: Partial<ProfileRouteConfig> = {}): ProfileRouteConfig {
@@ -103,6 +104,33 @@ describe('buildOpaqueProfileRoutes', () => {
     const second = await buildOpaqueProfileRoutes({ ...options, installationId: 'install-b-secret' })
 
     expect(first[1].connectionId).not.toBe(second[1].connectionId)
+  })
+
+  it('isolates an SSH resolution failure to its configured route', async () => {
+    const options = {
+      getProfileConfig: (profile: string) =>
+        profile === 'broken'
+          ? config({ mode: 'ssh', sshHost: 'unreachable', sshPort: 2222, sshUser: 'hermes' })
+          : config(),
+      globalConfig: config(),
+      installationId: 'install-a-secret',
+      primaryProfile: 'default',
+      profileNames: ['default', 'broken']
+    }
+
+    const routes = await buildOpaqueProfileRoutes({
+      ...options,
+      resolveSsh: async route => {
+        if (route.sshHost === 'unreachable') {
+          throw new Error('ssh -G timed out')
+        }
+
+        return { hostname: route.sshHost, port: route.sshPort, user: route.sshUser }
+      }
+    })
+
+    expect(routes).toHaveLength(2)
+    expect(routes.find(route => route.profile === 'broken')).toMatchObject({ mode: 'remote', profile: 'broken' })
   })
 
   it('inherits the global remote gateway and deduplicates profile names', async () => {
@@ -246,5 +274,25 @@ describe('localRouteFallbackProfiles', () => {
 
   it('does not synthesize local routes after a successful local enumeration', () => {
     expect(localRouteFallbackProfiles([], 'local', ['default'], false)).toEqual([])
+  })
+})
+
+describe('undialedSshRouteSeeds', () => {
+  it('keeps a stable default route while retaining the configured backend target', () => {
+    expect(
+      undialedSshRouteSeeds([], [
+        { id: 'homelab', kind: 'ssh', remoteProfile: 'venture' },
+        { id: 'cloud-prod', kind: 'cloud' }
+      ])
+    ).toEqual([{ connectionId: 'homelab', profile: 'default' }])
+  })
+
+  it('does not add a speculative seed after the source has roster agents', () => {
+    expect(
+      undialedSshRouteSeeds(
+        [{ connectionId: 'homelab', profile: 'research' }],
+        [{ id: 'homelab', kind: 'ssh', remoteProfile: 'venture' }]
+      )
+    ).toEqual([])
   })
 })

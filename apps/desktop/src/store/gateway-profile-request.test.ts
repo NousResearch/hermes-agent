@@ -48,7 +48,11 @@ const {
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  ensureGatewayForAgent,
   ensureGatewayForProfile,
+  gatewayActivationEpoch,
+  disposeSecondariesForConnection,
+  openGatewayForAgent,
   pruneSecondaryGateways,
   requestGatewayForAgent,
   requestGatewayForProfile,
@@ -98,6 +102,7 @@ describe('requestGatewayForProfile', () => {
     expect(result).toEqual({ method: 'profiles.list', params: { include_sessions: true } })
     expect(secondaryGateways).toHaveLength(1)
     expect(secondaryGateways[0].request).toHaveBeenCalledWith('profiles.list', { include_sessions: true })
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
     expect($gateway.get()).toBe(primary)
   })
 
@@ -150,6 +155,7 @@ describe('requestGatewayForProfile', () => {
     expect(secondResult).toEqual({ method: 'profiles.list', params: {} })
     expect(secondaryGateways[0].connect).toHaveBeenCalledOnce()
     expect(secondaryGateways[0].request).toHaveBeenCalledTimes(2)
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
     expect($gateway.get()).toBe(primary)
   })
 
@@ -175,7 +181,7 @@ describe('requestGatewayForProfile', () => {
     releaseConnect()
 
     await expect(request).resolves.toEqual({ method: 'profiles.list', params: {} })
-    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
 
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
@@ -221,6 +227,8 @@ describe('requestGatewayForAgent', () => {
     expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'source-b', profile: 'research' })
     expect(getConnection).not.toHaveBeenCalled()
     expect(secondaryGateways).toHaveLength(2)
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+    expect(secondaryGateways[1].close).toHaveBeenCalledOnce()
     expect($gateway.get()).toBe(primary)
   })
 
@@ -243,6 +251,106 @@ describe('requestGatewayForAgent', () => {
     })
     expect(getConnection).toHaveBeenCalledWith('worker')
     expect(getConnectionFor).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('evicts registry sockets when their source is edited or removed', async () => {
+    const primary = makePrimary()
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile }))
+    const onActiveConnectionInvalidated = vi.fn()
+
+    setPrimaryGateway(primary as never, 'default')
+    configureGatewayRegistry({ onActiveConnectionInvalidated, onEvent: vi.fn() })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    await openGatewayForAgent('source-a', 'research')
+    await requestGatewayForAgent('source-a', 'research', 'session.list')
+    disposeSecondariesForConnection('source-a')
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
+    expect(onActiveConnectionInvalidated).not.toHaveBeenCalled()
+
+    await requestGatewayForAgent('source-a', 'research', 'session.list')
+    expect(secondaryGateways).toHaveLength(2)
+    expect(getConnectionFor).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidates an active pinned source with its window profile and a route epoch', async () => {
+    const primary = makePrimary()
+    const onActiveConnectionChanged = vi.fn()
+    const onActiveConnectionInvalidated = vi.fn()
+
+    setPrimaryGateway(primary as never, 'pinned')
+    configureGatewayRegistry({ onActiveConnectionChanged, onActiveConnectionInvalidated, onEvent: vi.fn() })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+
+    await ensureGatewayForAgent('source-a', 'pinned')
+    disposeSecondariesForConnection('source-a')
+
+    const invalidationEpoch = gatewayActivationEpoch()
+    expect(onActiveConnectionInvalidated).toHaveBeenCalledWith('pinned', invalidationEpoch)
+    expect($gateway.get()).toBe(primary)
+
+    // Same profile, different source advances the guard as soon as activation
+    // starts, before its deferred socket connect can finish.
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const sourceBActivation = ensureGatewayForAgent('source-b', 'pinned')
+    await vi.waitFor(() => expect(secondaryGateways[1]?.connect).toHaveBeenCalledOnce())
+    expect(gatewayActivationEpoch()).toBeGreaterThan(invalidationEpoch)
+    releaseConnect()
+    await sourceBActivation
+    expect(onActiveConnectionChanged).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: 'source-b' }))
+  })
+
+  it('does not activate or publish a source invalidated while its dial is pending', async () => {
+    const primary = makePrimary()
+    const onActiveConnectionChanged = vi.fn()
+
+    setPrimaryGateway(primary as never, 'default')
+    configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async profile => ({ port: 4242, profile })),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
+      touchBackend: vi.fn(async () => undefined)
+    }
+    await ensureGatewayForProfile('default')
+
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+    const pendingActivation = ensureGatewayForAgent('source-b', 'default')
+    await vi.waitFor(() => expect(secondaryGateways[0]?.connect).toHaveBeenCalledOnce())
+
+    disposeSecondariesForConnection('source-b')
+    releaseConnect()
+    await pendingActivation
+
+    expect(secondaryGateways[0].close).toHaveBeenCalled()
+    expect(onActiveConnectionChanged).not.toHaveBeenCalled()
     expect($gateway.get()).toBe(primary)
   })
 })

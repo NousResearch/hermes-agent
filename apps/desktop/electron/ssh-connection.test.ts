@@ -260,6 +260,24 @@ test('open() establishes the master when not already alive', async () => {
   assert.deepEqual(ops, ['check', 'master'], 'probes liveness first, then opens the master')
 })
 
+test('open() abort kills an in-flight SSH child instead of waiting for timeout', async () => {
+  const child = fakeChild({ hang: true })
+
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: () => child, controlDir: '/tmp/d', connectTimeoutMs: 1000 }
+  )
+
+  const controller = new AbortController()
+  const opening = conn.open({ signal: controller.signal })
+
+  await Promise.resolve()
+  controller.abort()
+
+  await assert.rejects(opening, (error: any) => error.kind === 'superseded')
+  assert.equal(child._killed, true)
+})
+
 test('open() is a no-op when the master is already alive and execs verify', async () => {
   const ops: string[] = []
 

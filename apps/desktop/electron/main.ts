@@ -214,15 +214,16 @@ import {
   electronProcessStartMarker,
   parentWatchdogEnv
 } from './parent-process-identity'
-import { selectPoolEvictions } from './pool-eviction'
 import {
   buildOpaqueProfileRoutes,
   buildRegistryProfileRoutes,
   type EffectiveSshRoute,
   localRouteFallbackProfiles,
   type ProfileRouteConfig,
-  registryGatewayWsUrl
+  registryGatewayWsUrl,
+  undialedSshRouteSeeds
 } from './plugin-profile-routes'
+import { selectPoolEvictions } from './pool-eviction'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -8048,7 +8049,7 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
  * stored envelope on edit; switching auth away from 'token' clears it
  * (normalizeConnectionInput drops tokens on non-token entries).
  */
-function saveRegistryConnection(input: any = {}) {
+async function saveRegistryConnection(input: any = {}) {
   const registry = readDesktopConnectionsRegistry()
   const existing = input.id ? registry.connections.find(c => c.id === input.id) : null
   const incomingToken = typeof input.token === 'string' ? input.token.trim() : ''
@@ -8078,7 +8079,7 @@ function saveRegistryConnection(input: any = {}) {
   // connection's pooled backends/tunnels and tell renderers to dispose+redial
   // their secondaries for this connection id.
   if (existing && connectionDialFieldsChanged(existing, entry)) {
-    stopRegistryConnectionBackends(entry.id)
+    await stopRegistryConnectionBackends(entry.id)
     broadcastConnectionsChanged({ connectionId: entry.id, reason: 'updated' })
   }
 
@@ -8646,7 +8647,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       }
     )
     removeForceCleanup = lease.onForceCleanup(() => ssh.close())
-    await ssh.open()
+    await ssh.open({ signal: lease.signal })
   }
 
   let result
@@ -9511,7 +9512,7 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
 
 // Stop every pooled backend and ssh scope owned by a registry connection —
 // called when the connection is removed from the registry.
-function stopRegistryConnectionBackends(connectionId) {
+async function stopRegistryConnectionBackends(connectionId) {
   const prefix = backendScopePrefix(connectionId)
 
   for (const key of [...backendPool.keys()]) {
@@ -9520,11 +9521,19 @@ function stopRegistryConnectionBackends(connectionId) {
     }
   }
 
-  for (const scope of [...sshConnections.keys()]) {
-    if (String(scope).startsWith(prefix)) {
-      void teardownSshConnection(scope)
-    }
-  }
+  const sshScopes = new Set([
+    ...[...sshConnections.keys()].filter(scope => String(scope).startsWith(prefix)),
+    ...[...sshBootstrapCoordinator.active]
+      .map(entry => entry.scope)
+      .filter(scope => String(scope).startsWith(prefix))
+  ])
+
+  await Promise.all(
+    [...sshScopes].map(async scope => {
+      await sshBootstrapCoordinator.cancelAndWait(scope)
+      await teardownSshConnection(scope)
+    })
+  )
 }
 
 // Mark a pool profile as recently used so the idle reaper spares it. The
@@ -12002,13 +12011,37 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
   const enumerations = await enumerateRegistryAgentSources(registry)
   let agents = buildAgentRoster(enumerations)
 
+  // Roster enumeration deliberately does not dial connect-on-demand SSH
+  // sources. Publish one credential-free seed route so a plugin can be the
+  // first caller that opens the tunnel.
+  const sshSeeds = undialedSshRouteSeeds(agents, registry.connections)
+
+  if (sshSeeds.length > 0) {
+    agents = [
+      ...agents,
+      ...sshSeeds.map(seed => {
+        const source = registry.connections.find(connection => connection.id === seed.connectionId)!
+
+        return {
+          connectionId: source.id,
+          connectionKind: source.kind,
+          connectionLabel: source.label,
+          handle: seed.profile,
+          profile: seed.profile
+        }
+      })
+    ]
+  }
+
   // A local enumeration can fail while remote/cloud sources succeed. Preserve
   // cached v1 profile names as explicitly-local rows so those valid routes do
   // not disappear and duplicate names remain source-qualified.
   const localSource = registry.connections.find(source => source.kind === 'local')
+
   const localEnumeration = localSource
     ? enumerations.find(({ connection }) => connection.id === localSource.id)
     : undefined
+
   const localFallbackProfiles = localSource
     ? localRouteFallbackProfiles(agents, localSource.id, fallbackProfileNames, Boolean(localEnumeration?.error))
     : []
@@ -12093,7 +12126,7 @@ ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testD
 // list, so they are safe to ship ahead of the switchover.
 ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
 ipcMain.handle('hermes:connections:save', async (_event, payload) => {
-  const saved = saveRegistryConnection(payload)
+  const saved = await saveRegistryConnection(payload)
 
   return { ok: true, connection: saved, registry: sanitizeConnectionsRegistry() }
 })
@@ -12103,7 +12136,7 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   writeDesktopConnectionsRegistry(registry)
   // Tear down anything the removed connection still had running: pooled
   // backends under its composite keys and any ssh tunnel scopes it owned.
-  stopRegistryConnectionBackends(key)
+  await stopRegistryConnectionBackends(key)
   // And the renderer side: without this push, secondaries scoped to the
   // removed connection keep their WebSocket open (remote/cloud have no local
   // process to kill) and stream ghost events until page reload.

@@ -137,9 +137,13 @@ async function requestPluginProfile<T>(
 
   const roster = await getAgentRoster()
   const profile = route.trim() || 'default'
-  const matches = roster.agents.filter(agent => agent.profile === profile)
+  const soleLocalSource = roster.sources.length === 1 && roster.sources[0]?.kind === 'local'
 
-  if (matches.length === 1 && matches[0].connectionId === 'local') {
+  // The string overload is compatibility-only. A sole local registry is the
+  // one topology where a profile name is intrinsically unambiguous, even when
+  // its live enumeration transiently failed. Any additional source requires a
+  // descriptor because an undialed/unreachable source may expose the same name.
+  if (soleLocalSource) {
     return requestGatewayForProfile<T>(profile, method, params)
   }
 

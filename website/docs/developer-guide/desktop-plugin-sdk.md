@@ -421,13 +421,17 @@ host.request<T>(method, params?)           // active-gateway JSON-RPC — the re
 cron, kanban, …). `host.requestProfile` accepts a descriptor from
 `host.profileRoutes()` and routes that RPC through its exact registry source and
 profile without changing the active chat or gateway. The profile-only overload is
-retained for unambiguous legacy v1/local callers; registry-aware plugins should pass
+retained only for the sole-local/legacy topology; registry-aware plugins should pass
 the descriptor so two sources exposing the same profile name cannot collide.
 
-`host.profileRoutes()` inventories every reachable source in the current connection
-registry. `connectionId` is the registry routing identity; pair it with `profile`
-for keys and persistence. Endpoint, token, SSH host/key, and other raw connection
-fields never cross the plugin IPC boundary. `profile` is the source-local route used
+`host.profileRoutes()` inventories every registered source in the current connection
+registry. Connect-on-demand SSH sources expose a credential-free `default` seed
+route without opening a tunnel, so a plugin can be the first caller that dials them;
+an SSH `remoteProfile` remains the route's backend `targetProfile`. `connectionId`
+is the registry routing identity;
+pair it with `profile` for keys and persistence. Endpoint, token, SSH host/key, and
+other raw connection fields never cross the plugin IPC boundary. `profile` is the
+source-local route used
 for requests; `targetProfile` is the backend Hermes profile served by that route.
 They differ when a route explicitly maps to another backend profile (for example an
 SSH `remoteProfile` override or a legacy per-profile URL alias). This distinction

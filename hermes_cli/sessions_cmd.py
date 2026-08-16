@@ -39,8 +39,8 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
-def _session_browse_picker(sessions):
-    return _m()._session_browse_picker(sessions)
+def _session_browse_picker(sessions, session_db=None):
+    return _m()._session_browse_picker(sessions, session_db=session_db)
 
 
 def _size_delta_label(saved_mb):
@@ -1076,12 +1076,17 @@ def cmd_sessions(args, sessions_parser=None):
         sessions = db.list_sessions_rich(
             source=source, exclude_sources=_browse_exclude, limit=limit
         )
-        db.close()
         if not sessions:
+            db.close()
             print("No sessions found.")
             return
 
-        selected_id = _session_browse_picker(sessions)
+        # Keep the DB open: the picker uses it for lifecycle status tags and
+        # the 'd' delete-with-confirmation action.
+        try:
+            selected_id = _session_browse_picker(sessions, session_db=db)
+        finally:
+            db.close()
         if not selected_id:
             print("Cancelled.")
             return

@@ -78,12 +78,13 @@ _PROMPT_HEADERS = {
 }
 
 # (context key, section header) for the injected base-context block, in display order.
+# (injection.sessionStart name, context key, heading). Render order is fixed here, not by config order.
 _CONTEXT_SECTIONS = (
-    ("summary", "Session Summary"),
-    ("representation", "User Representation"),
-    ("card", "User Peer Card"),
-    ("ai_representation", "AI Self-Representation"),
-    ("ai_card", "AI Identity Card"),
+    ("summary", "summary", "Session Summary"),
+    ("peerRepresentation", "representation", "User Representation"),
+    ("peerCard", "card", "User Peer Card"),
+    ("aiRepresentation", "ai_representation", "AI Self-Representation"),
+    ("aiCard", "ai_card", "AI Identity Card"),
 )
 
 _PREWARM_QUERY = "Summarize what you know about this user. Focus on preferences, current projects, and working style."
@@ -124,6 +125,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # Injection audit. Off unless the logging key enables it: the record holds the user's representation.
         self._injection_log_path: Optional[str] = None
         self._injection_log_lock = threading.Lock()
+        # Pinned injection.sessionStart names; None means unpinned and everything renders.
+        self._session_start_components: Optional[frozenset] = None
         self._query_rewrite_enabled = False
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
@@ -214,6 +217,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             raw = getattr(cfg, "raw", None) or {}
             look = _HostLookup(_host_block(raw, getattr(cfg, "host", "") or ""), raw)
             self._injection_log_path = self._resolve_injection_log_path(look)
+            self._session_start_components = self._resolve_session_start(look)
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
             for name in ("injection_frequency", "context_cadence", "dialectic_cadence",
                          "dialectic_depth_levels", "reasoning_heuristic"):
@@ -375,9 +379,35 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     # ----- Prompt / prefetch -----
 
+    @staticmethod
+    def _resolve_session_start(look: _HostLookup) -> Optional[frozenset]:
+        """The pinned ``injection.sessionStart`` list as a set, or None when unpinned.
+        An explicit empty list means inject nothing and stays distinct from unset."""
+        injection = look.present("injection")
+        if not isinstance(injection, dict):
+            return None
+        listed = injection.get("sessionStart")
+        if not isinstance(listed, (list, tuple)):
+            return None
+        return frozenset(str(x) for x in listed)
+
     def _format_first_turn_context(self, ctx: dict) -> str:
-        """Format the prefetch context dict into a readable system prompt block."""
-        return "\n\n".join(f"## {header}\n{ctx.get(key, '')}" for key, header in _CONTEXT_SECTIONS if ctx.get(key, ""))
+        """Render the prefetch context, keeping only the ``injection.sessionStart`` components when pinned."""
+        allowed = self._session_start_components
+        parts, suppressed = [], []
+        for name, key, header in _CONTEXT_SECTIONS:
+            value = ctx.get(key, "")
+            if not value:
+                continue
+            if allowed is not None and name not in allowed:
+                suppressed.append(f"{name} ({len(value)}B)")
+                continue
+            parts.append(f"## {header}\n{value}")
+        if suppressed:
+            logger.debug("Honcho session-start injection filtered by config: kept %s, suppressed %s",
+                         [n for n, k, _ in _CONTEXT_SECTIONS if ctx.get(k) and (allowed is None or n in allowed)],
+                         suppressed)
+        return "\n\n".join(parts)
 
     def system_prompt_block(self) -> str:
         """Static mode header + tool instructions (prompt-cache friendly).

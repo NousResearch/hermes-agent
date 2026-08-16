@@ -11626,6 +11626,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+
+    def _should_handle_goal_command_inline(
+        self, text: str, has_images: bool = False
+    ) -> bool:
+        """Return True when /goal control commands or /subgoal should be dispatched while the agent runs.
+
+        Commands like `/goal gate add ...`, `/goal wait ...`, `/goal unwait`,
+        `/goal pause`, `/goal resume`, `/goal show`, `/goal status`, and `/subgoal`
+        control the active GoalState while an iterative goal loop is executing.
+        Queuing them through `_pending_input` defers execution until the goal turn or
+        entire goal is over, leading to 'no active goal' errors (#87446).
+        Dispatching inline allows quality gates to be attached immediately during
+        in-progress goal execution.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            tokens = text.strip().split(None, 2)
+            base = tokens[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            if not cmd:
+                return False
+            if cmd.name == "subgoal":
+                return True
+            if cmd.name == "goal":
+                sub = tokens[1].lower() if len(tokens) > 1 else ""
+                if sub in {"gate", "wait", "unwait", "pause", "resume", "status", "show"}:
+                    return True
+                if len(tokens) == 1:
+                    return True
+                return False
+            return False
+        except Exception:
+            return False
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -17839,33 +17876,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # blocked inside self.chat()), which turns /steer into a
                 # post-run next-turn message — defeating mid-run injection.
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
-                if self._should_handle_steer_command_inline(text, has_images=has_images):
-                    self.process_command(text)
-                    event.app.current_buffer.reset(append_to_history=True)
-                    # Force a repaint after clearing the buffer.  /steer is
-                    # dispatched mid-run while the agent streams output through
-                    # patch_stdout; process_command() never invalidates the
-                    # app, so without this the submitted "/steer <text>" can
-                    # linger in the input area (looking unsent) and invite an
-                    # accidental re-submit. See issue #34569.
-                    event.app.invalidate()
-                    return
-
-                # Same treatment for /background (/bg, /btw) while the agent is
-                # running.  Queuing it defeats the entire point of the command:
-                # process_loop is blocked inside self.chat(), so the background
-                # task would only start once the foreground turn it was meant to
-                # run alongside has already finished (#75221).  The foreground
-                # turn is left alone: no interrupt, no steer.
-                if self._should_handle_background_command_inline(
-                    text, has_images=has_images
+                if (
+                    self._should_handle_steer_command_inline(text, has_images=has_images)
+                    or self._should_handle_background_command_inline(text, has_images=has_images)
+                    or self._should_handle_goal_command_inline(text, has_images=has_images)
                 ):
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
-                    # Repaint for the same reason as the /steer branch above:
-                    # process_command() prints through patch_stdout and never
-                    # invalidates the app, so the submitted text can linger in
-                    # the input area looking unsent.
                     event.app.invalidate()
                     return
 

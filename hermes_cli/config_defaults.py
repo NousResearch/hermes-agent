@@ -1753,6 +1753,11 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Durable per-event delivery receipts survive subscription removal for
+        # retry deduplication and auditability. Once their task is terminal or
+        # deleted, prune receipts older than this many days. Active-task
+        # receipts are retained regardless of age. Set 0 to disable.
+        "notify_delivery_retention_days": 90,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

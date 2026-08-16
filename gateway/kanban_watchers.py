@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from pathlib import Path
-from typing import Any, Optional
+from functools import partial
+from typing import Any, Optional, cast
 
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
@@ -31,8 +31,6 @@ from gateway.kanban_watchers_dispatcher import (
     _resolve_dispatcher_settings,
 )
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
 
@@ -121,6 +119,62 @@ class GatewayKanbanWatchersMixin:
         finally:
             conn.close()
 
+    def _kanban_record_delivery(
+        self,
+        sub: dict,
+        *,
+        event_id: int,
+        event_kind: str,
+        message_id: Optional[str],
+        delivery_key: str = "text",
+        board: Optional[str] = None,
+    ) -> None:
+        """Persist a successful platform send receipt. Runs in ``to_thread``."""
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli import kanban_db_notify as _kb
+
+        conn = _kbc.connect(board=board)
+        try:
+            _kb.record_notify_delivery(
+                conn,
+                task_id=sub["task_id"],
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "",
+                event_id=event_id,
+                event_kind=event_kind,
+                message_id=message_id,
+                delivery_key=delivery_key,
+            )
+        finally:
+            conn.close()
+
+    def _kanban_delivery_recorded(
+        self,
+        sub: dict,
+        *,
+        event_id: int,
+        delivery_key: str,
+        board: Optional[str] = None,
+    ) -> bool:
+        """Check the durable ledger before retrying an already-sent part."""
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli import kanban_db_notify as _kb
+
+        conn = _kbc.connect(board=board)
+        try:
+            return _kb.has_notify_delivery(
+                conn,
+                task_id=sub["task_id"],
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "",
+                event_id=event_id,
+                delivery_key=delivery_key,
+            )
+        finally:
+            conn.close()
+
     def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor)
 
@@ -131,56 +185,178 @@ class GatewayKanbanWatchersMixin:
         """Undo a claimed notification cursor after send failure."""
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
 
-    async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
+    async def _deliver_kanban_artifacts(
+        self,
+        *,
+        adapter,
+        chat_id: str,
+        metadata: dict,
+        event_payload: Optional[dict],
+        task,
+        sub: dict,
+        event_id: int,
+        event_kind: str,
+        board: Optional[str] = None,
+    ) -> None:
         """Upload artifact files referenced by a completed kanban task.
 
-        Sources, in priority order: ``event_payload['artifacts']``,
-        ``event_payload['summary']``, then ``task.result`` (legacy). Paths are
-        deduplicated, missing files are skipped (may be mentioned for
-        reference only), and upload errors are logged, never raised.
+        Workers passing ``kanban_complete(artifacts=[...])`` ship absolute
+        file paths through the completion event so downstream humans get
+        the deliverable as a native upload instead of a path printed in
+        chat.
+
+        Sources scanned, in priority order:
+          1. ``event_payload['artifacts']`` (explicit list — preferred)
+          2. ``event_payload['summary']`` (truncated first line)
+          3. ``task.result`` (legacy fallback)
+
+        Files are deduplicated and missing files are silently skipped (the path
+        may have been mentioned for reference only). Each confirmed upload is
+        receipted separately; an exception or ``SendResult(success=False)`` is
+        propagated so the notifier rewinds and retries only missing parts.
         """
-        raw_paths: list[str] = []
+        from pathlib import Path as _Path
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+        import hashlib
+
+        # Test doubles and older third-party adapters may not expose the
+        # convenience parser even though the gateway can still deliver their
+        # files. Use the base implementation rather than turning an ordinary
+        # completion summary into a notifier failure.
+        extract_local_files = getattr(
+            adapter, "extract_local_files", BasePlatformAdapter.extract_local_files,
+        )
+
+        def _delivery_key(paths: list[str]) -> str:
+            digest = hashlib.sha256("\0".join(paths).encode()).hexdigest()
+            return f"artifact:{digest}"
+
+        async def _record_artifact(key: str, result) -> None:
+            if not isinstance(result, SendResult) or result.success is not True:
+                raise RuntimeError(
+                    "adapter media send did not return a confirmed success: "
+                    f"{getattr(result, 'error', None) or 'unknown error'}"
+                )
+            await _to_thread_process_service(partial(
+                self._kanban_record_delivery,
+                sub,
+                event_id=event_id,
+                event_kind=event_kind,
+                message_id=result.message_id,
+                delivery_key=key,
+                board=board,
+            ))
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(path: str) -> None:
+            if not path:
+                return
+            expanded = os.path.expanduser(path)
+            if expanded in seen:
+                return
+            if not os.path.isfile(expanded):
+                return
+            seen.add(expanded)
+            candidates.append(expanded)
+
+        # 1. Explicit artifacts list in payload.
         if isinstance(event_payload, dict):
             raw = event_payload.get("artifacts")
             if isinstance(raw, (list, tuple)):
-                raw_paths += [item for item in raw if isinstance(item, str)]
+                for item in raw:
+                    if isinstance(item, str):
+                        _add(item)
+
+            # 2. Paths embedded in the payload summary.
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
-                raw_paths += adapter.extract_local_files(summary)[0]
+                paths, _ = extract_local_files(summary)
+                for p in paths:
+                    _add(p)
+
+        # 3. Legacy: paths embedded in task.result.
         if task is not None and getattr(task, "result", None):
-            raw_paths += adapter.extract_local_files(str(task.result))[0]
-        candidates: list[str] = []
-        for path in raw_paths:
-            expanded = os.path.expanduser(path) if path else ""
-            if expanded and expanded not in candidates and os.path.isfile(expanded):
-                candidates.append(expanded)
+            result_text = str(task.result)
+            paths, _ = extract_local_files(result_text)
+            for p in paths:
+                _add(p)
+
         if not candidates:
             return
 
-        from gateway.platforms.base import BasePlatformAdapter
         candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
         if not candidates:
             return
 
-        from urllib.parse import quote as _quote
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 
-        # Images ride one send_multiple_images call (batch uploads on Signal/Slack).
-        image_paths = [p for p in candidates if Path(p).suffix.lower() in _IMAGE_EXTS]
-        other_paths = [p for p in candidates if Path(p).suffix.lower() not in _IMAGE_EXTS]
-        if image_paths:
-            try:
-                batch = [(f"file://{_quote(p)}", "") for p in image_paths]
-                await adapter.send_multiple_images(chat_id=chat_id, images=batch, metadata=metadata)
-            except Exception as exc:
-                logger.warning("kanban notifier: image batch upload failed: %s", exc)
-        for path in other_paths:
-            try:
-                if Path(path).suffix.lower() in _VIDEO_EXTS:
-                    await adapter.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
-                else:
-                    await adapter.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
-            except Exception as exc:
-                logger.warning("kanban notifier: artifact upload (%s) failed: %s", path, exc)
+        async def _send_image_artifact(path: str):
+            per_file_send = getattr(adapter, "send_image_file", None)
+            if callable(per_file_send):
+                return await cast(Any, per_file_send)(
+                    chat_id=chat_id, image_path=path, metadata=metadata,
+                )
+
+            # Compatibility for older third-party adapters that predate
+            # send_image_file but implement the legacy batch API. Send a
+            # one-image batch so the durable key still maps to one path. The
+            # old API's successful return contract is ``None``; exceptions
+            # remain failures. Standard/current adapters stay on the concrete
+            # SendResult path above.
+            batch_send = getattr(adapter, "send_multiple_images", None)
+            if not callable(batch_send):
+                return SendResult(
+                    success=False,
+                    error="adapter supports neither send_image_file nor send_multiple_images",
+                )
+            logger.warning(
+                "kanban notifier: adapter %s lacks send_image_file; using legacy one-image batch fallback",
+                type(adapter).__name__,
+            )
+            legacy_result = await cast(Any, batch_send)(
+                chat_id=chat_id,
+                images=[(_Path(path).as_uri(), "")],
+                metadata=metadata,
+            )
+            if isinstance(legacy_result, SendResult):
+                return legacy_result
+            if legacy_result is None:
+                return SendResult(success=True)
+            return SendResult(
+                success=False,
+                error="legacy send_multiple_images returned an unsupported result",
+            )
+
+        # Deliver each artifact through an operation that returns a concrete
+        # SendResult. ``send_multiple_images`` has a legacy void contract, may
+        # swallow per-item failures, and may split a batch into several sends.
+        # One receipt per path makes partial retries safe and auditable.
+        for path in candidates:
+            key = _delivery_key([path])
+            delivered = await _to_thread_process_service(partial(
+                self._kanban_delivery_recorded,
+                sub,
+                event_id=event_id,
+                delivery_key=key,
+                board=board,
+            ))
+            if delivered:
+                continue
+            ext = _Path(path).suffix.lower()
+            if ext in _IMAGE_EXTS:
+                result = await _send_image_artifact(path)
+            elif ext in _VIDEO_EXTS:
+                result = await adapter.send_video(
+                    chat_id=chat_id, video_path=path, metadata=metadata,
+                )
+            else:
+                result = await adapter.send_document(
+                    chat_id=chat_id, file_path=path, metadata=metadata,
+                )
+            await _record_artifact(key, result)
 
     def _kanban_dispatcher_boot(self) -> Optional[tuple]:
         """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.

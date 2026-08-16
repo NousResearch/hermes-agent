@@ -900,6 +900,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     "WHERE platform != 'tui'"
                 )
 
+        for column, definition in (
+            ("last_delivery_event_id", "last_delivery_event_id INTEGER"),
+            ("last_delivery_kind", "last_delivery_kind TEXT"),
+            ("last_delivery_message_id", "last_delivery_message_id TEXT"),
+            ("last_delivered_at", "last_delivered_at INTEGER"),
+        ):
+            if column not in notify_cols:
+                _add_column_if_missing(conn, "kanban_notify_subs", column, definition)
+
     if _table_exists(conn, "task_runs"):
         _backfill_legacy_inflight_runs(conn)
 
@@ -1018,6 +1027,8 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " last_delivery_event_id INTEGER, last_delivery_kind TEXT,"
+        " last_delivery_message_id TEXT, last_delivered_at INTEGER,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),

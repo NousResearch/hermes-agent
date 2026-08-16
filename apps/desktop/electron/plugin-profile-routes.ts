@@ -63,9 +63,7 @@ export function localRouteFallbackProfiles(
   }
 
   const existing = new Set(
-    agents
-      .filter(agent => agent.connectionId === localConnectionId)
-      .map(agent => normalizeProfile(agent.profile))
+    agents.filter(agent => agent.connectionId === localConnectionId).map(agent => normalizeProfile(agent.profile))
   )
 
   const fallback: string[] = []

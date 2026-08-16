@@ -9490,9 +9490,7 @@ async function stopRegistryConnectionBackends(connectionId) {
 
   const sshScopes = new Set([
     ...[...sshConnections.keys()].filter(scope => String(scope).startsWith(prefix)),
-    ...[...sshBootstrapCoordinator.active]
-      .map(entry => entry.scope)
-      .filter(scope => String(scope).startsWith(prefix))
+    ...[...sshBootstrapCoordinator.active].map(entry => entry.scope).filter(scope => String(scope).startsWith(prefix))
   ])
 
   await Promise.all(
@@ -12772,9 +12770,8 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
   if (registryConnectionId) {
     const connection: any = await ensureRegistryBackend(registryConnectionId, request?.profile)
-    const requestPath = connection.sharedRemote
-      ? pathWithProfileScope(request.path, request?.profile)
-      : request.path
+
+    const requestPath = connection.sharedRemote ? pathWithProfileScope(request.path, request?.profile) : request.path
 
     return fetchJsonForBackend(connection, requestPath, {
       method: request?.method,

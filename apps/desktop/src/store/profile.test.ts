@@ -20,8 +20,14 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, invalidateProfileListFetches, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $profiles,
+  ensureGatewayProfile,
+  invalidateProfileListFetches,
+  prewarmProfileBackend,
+  refreshProfiles
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -181,9 +187,7 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     // The soft re-home fetches backend B's list, then A's late (often empty /
     // default-only) response lands LAST and collapses the rail.
     let resolveOld: (value: { profiles: ProfileInfo[] }) => void = () => undefined
-    vi.mocked(getProfiles).mockImplementationOnce(
-      () => new Promise(resolve => (resolveOld = resolve))
-    )
+    vi.mocked(getProfiles).mockImplementationOnce(() => new Promise(resolve => (resolveOld = resolve)))
 
     const oldFetch = refreshProfiles() // in flight against backend A
 
@@ -218,9 +222,7 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     // routing to another backend mid-fetch. The $activeGatewayProfile
     // subscriber must bump the epoch exactly like the connection-apply wipe.
     let resolveOld: (value: { profiles: ProfileInfo[] }) => void = () => undefined
-    vi.mocked(getProfiles).mockImplementationOnce(
-      () => new Promise(resolve => (resolveOld = resolve))
-    )
+    vi.mocked(getProfiles).mockImplementationOnce(() => new Promise(resolve => (resolveOld = resolve)))
 
     const oldFetch = refreshProfiles() // in flight against the old profile's backend
 

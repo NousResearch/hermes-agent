@@ -29,7 +29,12 @@ import {
 } from '@/store/gateway'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey, refreshActiveProfile, touchActiveGatewayBackend } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  normalizeProfileKey,
+  refreshActiveProfile,
+  touchActiveGatewayBackend
+} from '@/store/profile'
 import {
   $activeSessionId,
   $connection,

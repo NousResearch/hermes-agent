@@ -699,12 +699,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     }
   }
 
-  if (
-    entry.wantOpen &&
-    g.secondaries.get(key) === entry &&
-    applyActive(key, activationEpoch) &&
-    entry.connection
-  ) {
+  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
     publishActiveConnection(entry.connection)
   }
 }

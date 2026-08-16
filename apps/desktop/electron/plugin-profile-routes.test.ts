@@ -57,7 +57,9 @@ describe('buildOpaqueProfileRoutes', () => {
       resolveSsh
     })
 
-    expect(routes.map(route => ({ mode: route.mode, profile: route.profile, targetProfile: route.targetProfile }))).toEqual([
+    expect(
+      routes.map(route => ({ mode: route.mode, profile: route.profile, targetProfile: route.targetProfile }))
+    ).toEqual([
       { mode: 'local', profile: 'default', targetProfile: 'default' },
       { mode: 'remote', profile: 'research', targetProfile: 'remote-research' },
       { mode: 'remote', profile: 'writing', targetProfile: 'remote-writing' }
@@ -152,9 +154,7 @@ describe('buildOpaqueProfileRoutes', () => {
   it('reports the backend root for a per-profile URL alias', async () => {
     const routes = await buildOpaqueProfileRoutes({
       getProfileConfig: profile =>
-        profile === 'barry'
-          ? config({ mode: 'remote', remoteUrl: 'https://tower.example' })
-          : config(),
+        profile === 'barry' ? config({ mode: 'remote', remoteUrl: 'https://tower.example' }) : config(),
       globalConfig: config(),
       installationId: 'install-a-secret',
       primaryProfile: 'default',
@@ -207,9 +207,7 @@ describe('buildRegistryProfileRoutes', () => {
         { connectionId: 'local', profile: 'research' },
         { connectionId: 'homelab', profile: 'research' }
       ],
-      legacyRoutes: [
-        { connectionId: 'legacy-hash', mode: 'local', profile: 'research', targetProfile: 'research' }
-      ],
+      legacyRoutes: [{ connectionId: 'legacy-hash', mode: 'local', profile: 'research', targetProfile: 'research' }],
       sources: [
         { id: 'local', kind: 'local', label: 'This device' },
         {
@@ -238,27 +236,20 @@ describe('buildRegistryProfileRoutes', () => {
   it('keeps the registry local source genuinely local when legacy v1 routing is remote', () => {
     const routes = buildRegistryProfileRoutes({
       agents: [{ connectionId: 'local', profile: 'barry' }],
-      legacyRoutes: [
-        { connectionId: 'legacy-hash', mode: 'remote', profile: 'barry', targetProfile: 'default' }
-      ],
+      legacyRoutes: [{ connectionId: 'legacy-hash', mode: 'remote', profile: 'barry', targetProfile: 'default' }],
       sources: [{ id: 'local', kind: 'local', label: 'This device' }]
     })
 
-    expect(routes).toEqual([
-      { connectionId: 'local', mode: 'local', profile: 'barry', targetProfile: 'barry' }
-    ])
+    expect(routes).toEqual([{ connectionId: 'local', mode: 'local', profile: 'barry', targetProfile: 'barry' }])
   })
 
   it('scopes registry-shared remote websocket URLs to the requested profile', () => {
     expect(
-      registryGatewayWsUrl(
-        { profile: 'research', sharedRemote: true },
-        'wss://gateway.example/api/ws?token=secret'
-      )
+      registryGatewayWsUrl({ profile: 'research', sharedRemote: true }, 'wss://gateway.example/api/ws?token=secret')
     ).toBe('wss://gateway.example/api/ws?token=secret&profile=research')
-    expect(
-      registryGatewayWsUrl({ profile: 'research' }, 'ws://127.0.0.1:5151/api/ws?token=local')
-    ).toBe('ws://127.0.0.1:5151/api/ws?token=local')
+    expect(registryGatewayWsUrl({ profile: 'research' }, 'ws://127.0.0.1:5151/api/ws?token=local')).toBe(
+      'ws://127.0.0.1:5151/api/ws?token=local'
+    )
   })
 })
 
@@ -266,10 +257,7 @@ describe('localRouteFallbackProfiles', () => {
   it('restores failed local profiles when another source returned agents', () => {
     const agents = [{ connectionId: 'cloud-prod', profile: 'default' }]
 
-    expect(localRouteFallbackProfiles(agents, 'local', ['default', 'venture'], true)).toEqual([
-      'default',
-      'venture'
-    ])
+    expect(localRouteFallbackProfiles(agents, 'local', ['default', 'venture'], true)).toEqual(['default', 'venture'])
   })
 
   it('does not synthesize local routes after a successful local enumeration', () => {
@@ -280,10 +268,13 @@ describe('localRouteFallbackProfiles', () => {
 describe('undialedSshRouteSeeds', () => {
   it('keeps a stable default route while retaining the configured backend target', () => {
     expect(
-      undialedSshRouteSeeds([], [
-        { id: 'homelab', kind: 'ssh', remoteProfile: 'venture' },
-        { id: 'cloud-prod', kind: 'cloud' }
-      ])
+      undialedSshRouteSeeds(
+        [],
+        [
+          { id: 'homelab', kind: 'ssh', remoteProfile: 'venture' },
+          { id: 'cloud-prod', kind: 'cloud' }
+        ]
+      )
     ).toEqual([{ connectionId: 'homelab', profile: 'default' }])
   })
 

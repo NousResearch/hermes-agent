@@ -58,7 +58,7 @@ interface ScopedEntry<T> {
 }
 
 let activeSuffix = ''
- 
+
 const registry: ScopedEntry<any>[] = []
 const scopeListeners = new Set<() => void>()
 

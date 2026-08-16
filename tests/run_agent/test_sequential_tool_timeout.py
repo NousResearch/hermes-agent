@@ -14,6 +14,41 @@ from run_agent import AIAgent
 from tools.clarify_gateway import resolve_clarify_timeout
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_worker_start(monkeypatch):
+    """Deadline must race the TOOL, not the thread scheduler.
+
+    The sequential timeout path computes ``deadline = now + timeout_s``
+    immediately after ``executor.submit()``. These tests run with a 0.1s
+    deadline, so on a loaded CI box (xdist, slice 4) the pool thread could
+    take longer than the whole deadline just to START — the future got
+    cancelled before the tool ever dispatched and ``first_started`` stayed
+    unset (flaked twice on unrelated PRs, Aug 2026). Wrapping submit() to
+    block until the worker callable has actually begun makes the deadline
+    countdown start only once the tool is running, which is the behavior
+    these tests mean to pin — without inflating the timeouts.
+    """
+    import tools.daemon_pool as daemon_pool
+
+    real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+    class _StartSyncedExecutor(real_executor):
+        def submit(self, fn, *args, **kwargs):
+            begun = threading.Event()
+
+            def _traced(*fa, **fk):
+                begun.set()
+                return fn(*fa, **fk)
+
+            future = super().submit(_traced, *args, **kwargs)
+            # Bounded: a wedged pool must fail the test loudly, not hang it.
+            assert begun.wait(timeout=10), "tool worker thread never started"
+            return future
+
+    monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _StartSyncedExecutor)
+    yield
+
+
 def _make_agent(tmp_path: Path) -> AIAgent:
     with (
         patch(

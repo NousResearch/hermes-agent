@@ -108,6 +108,7 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
+import { selectPoolEvictions } from './pool-eviction'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
@@ -9420,31 +9421,22 @@ function touchPoolBackend(profile) {
   }
 }
 
-// Evict least-recently-used pool backends until at most `keep` remain — but only
-// ever evict backends without a live renderer socket (stale beyond the keepalive
-// window). When every backend is actively kept alive we let the pool exceed the
-// soft cap rather than kill a running session.
+// Evict least-recently-used SPAWNED pool backends until at most `keep` remain —
+// but only ever evict backends without a live renderer socket (stale beyond the
+// keepalive window). When every backend is actively kept alive we let the pool
+// exceed the soft cap rather than kill a running session. Process-less
+// descriptor entries (remote/cloud registry sources, per-profile remote
+// overrides — `entry.process === null`) are excluded from the cap entirely:
+// they hold no local process, so counting them used to let a roster refresh
+// across N registered remote connections LRU-evict a REAL local backend that
+// was merely idle past the keepalive window. Descriptors are still reclaimed
+// by the idle reaper.
 function evictLruPoolBackends(keep) {
-  if (backendPool.size <= keep) {
-    return
-  }
+  const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 
-  const now = Date.now()
-
-  const evictable = [...backendPool.entries()]
-    .filter(([, entry]) => now - (entry.lastActiveAt || 0) > POOL_KEEPALIVE_FRESH_MS)
-    .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
-
-  let removable = backendPool.size - Math.max(0, keep)
-
-  for (const [profile] of evictable) {
-    if (removable <= 0) {
-      break
-    }
-
+  for (const profile of evictions) {
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
     stopPoolBackend(profile)
-    removable -= 1
   }
 }
 

@@ -23,17 +23,20 @@ def _reset_agent_browser_caches():
         bt._agent_browser_resolved,
         bt._cached_pin_tab_agent_browser,
         bt._pin_tab_agent_browser_resolved,
+        bt._pin_tab_failure_cache,
     )
     bt._cached_agent_browser = None
     bt._agent_browser_resolved = False
     bt._cached_pin_tab_agent_browser = None
     bt._pin_tab_agent_browser_resolved = False
+    bt._pin_tab_failure_cache = None
     yield
     (
         bt._cached_agent_browser,
         bt._agent_browser_resolved,
         bt._cached_pin_tab_agent_browser,
         bt._pin_tab_agent_browser_resolved,
+        bt._pin_tab_failure_cache,
     ) = original
 
 
@@ -119,6 +122,8 @@ def _configure_resolution(
 def test_runnable_033_remains_generic_but_is_rejected_for_pin(monkeypatch, tmp_path):
     old_cli = _fake_agent_browser(tmp_path / "old", "0.33.1", 24)
     _configure_resolution(monkeypatch, current_agent_browser=old_cli)
+    clock = [100.0]
+    monkeypatch.setattr(bt.time, "monotonic", lambda: clock[0])
 
     assert bt._find_agent_browser() == old_cli
     with pytest.raises(bt.AgentBrowserCapabilityError) as exc_info:
@@ -130,9 +135,19 @@ def test_runnable_033_remains_generic_but_is_rejected_for_pin(monkeypatch, tmp_p
     assert "ordinary non-CDP browser commands remain supported" in message
     assert bt._find_agent_browser() == old_cli
 
-    # Capability failures are not cached: upgrading the same executable makes
-    # the next explicit user command succeed without restarting Hermes.
+    # The negative cache suppresses repeated subprocess probes, but expires
+    # quickly enough that an in-place upgrade works without restarting Hermes.
     _fake_agent_browser(tmp_path / "old", "0.34.0", 24)
+    real_probe = bt._probe_agent_browser_version
+    monkeypatch.setattr(
+        bt,
+        "_probe_agent_browser_version",
+        lambda _path: pytest.fail("negative cache should suppress a second probe"),
+    )
+    with pytest.raises(bt.AgentBrowserCapabilityError, match="agent-browser >=0.34.0"):
+        bt._find_agent_browser(require_pin_tab=True)
+    clock[0] += bt.AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS + 0.01
+    monkeypatch.setattr(bt, "_probe_agent_browser_version", real_probe)
     assert bt._find_agent_browser(require_pin_tab=True) == old_cli
 
 

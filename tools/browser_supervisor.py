@@ -1563,7 +1563,10 @@ class _SupervisorRegistry:
         """Ensure a supervisor runs for ``(task_id, cdp_url, target_id)``.
 
         If a supervisor exists for this task but was bound to a different
-        ``cdp_url``, the old one is stopped and a fresh one is started.
+        ``cdp_url`` or ``target_id``, the old one is stopped and a fresh one
+        is started. An evaluation already in flight on the displaced binding
+        may fail with a structured ``supervisor_unavailable`` or
+        ``cdp_evaluate_failed`` result; it is never replayed on the new target.
         """
         supervisor: CDPSupervisor
         with self._lock:

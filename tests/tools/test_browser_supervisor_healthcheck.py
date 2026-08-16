@@ -221,6 +221,49 @@ def test_concurrent_different_targets_leave_one_live_supervisor(
     isolated_registry.stop("race-task")
 
 
+def test_start_failure_is_stopped_and_never_published(
+    isolated_registry, monkeypatch
+):
+    """A missing pinned target must fail visibly without leaking a starter."""
+    created = []
+
+    class _FailingSupervisor:
+        def __init__(
+            self,
+            *,
+            task_id,
+            cdp_url,
+            target_id,
+            dialog_policy,
+            dialog_timeout_s,
+        ):
+            self.task_id = task_id
+            self.cdp_url = cdp_url
+            self.target_id = target_id
+            self.stop_calls = 0
+            created.append(self)
+
+        def start(self, timeout=15.0):
+            raise RuntimeError("requested pinned target is absent")
+
+        def stop(self):
+            self.stop_calls += 1
+
+    monkeypatch.setattr(bs, "CDPSupervisor", _FailingSupervisor)
+
+    with pytest.raises(RuntimeError, match="requested pinned target is absent"):
+        isolated_registry.get_or_start(
+            "missing-target",
+            "ws://shared",
+            target_id="GONE",
+        )
+
+    assert isolated_registry.get("missing-target") is None
+    assert "missing-target" not in isolated_registry._starting
+    assert len(created) == 1
+    assert created[0].stop_calls == 1
+
+
 def test_stop_fences_inflight_starter_publication(isolated_registry, monkeypatch):
     """A starter that completes after stop must be stopped, never published."""
     started = threading.Event()

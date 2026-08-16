@@ -631,6 +631,11 @@ def _ensure_cdp_supervisor(
       2. ``_active_sessions[task_id]["cdp_url"]`` — covers Browserbase + any
          other cloud provider whose ``create_session`` returns a raw CDP URL.
 
+    A fixed shared-CDP endpoint deliberately waits for ``target_id`` instead
+    of adopting its first page. The command path resolves the task-owned
+    pinned target before calling again; if pinning never succeeds, supervisor
+    features stay unavailable rather than observing another task's page.
+
     Swallows all errors — failing to attach the supervisor must not break
     the browser session itself.  The agent simply won't see
     ``pending_dialogs`` / ``frame_tree`` fields in snapshots.
@@ -759,6 +764,7 @@ _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 _cached_pin_tab_agent_browser: Optional[str] = None
 _pin_tab_agent_browser_resolved = False
+_pin_tab_failure_cache: Optional[tuple[float, str]] = None
 
 # Lightpanda engine support — cached like _get_cloud_provider().
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
@@ -983,6 +989,10 @@ AGENT_BROWSER_PIN_TAB_NPX_SPEC = "agent-browser@0.34.0"
 AGENT_BROWSER_PIN_TAB_MIN_VERSION = (0, 34, 0)
 AGENT_BROWSER_PIN_TAB_MIN_NODE_MAJOR = 24
 AGENT_BROWSER_NPX_MIN_RELEASE_AGE_DAYS = 14
+
+# Failed capability probes are briefly cached so an unsupported shared-CDP
+# setup does not fork agent-browser + Node probes on every model command.
+AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS = 5.0
 
 
 class AgentBrowserCapabilityError(RuntimeError):
@@ -2314,7 +2324,10 @@ def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
     No target discovery is performed. If the exact close cannot be confirmed,
     return False so the caller preserves both daemon and ownership metadata for
     a later retry instead of converting a sensitive page leak into an
-    untracked one.
+    untracked one. There is deliberately no age-based daemon-kill fallback:
+    the target belongs to an external shared browser, so killing its helper
+    daemon cannot close the page and would destroy the last automatic
+    exact-close path.
     """
     try:
         browser_cmd = _find_agent_browser(require_pin_tab=True)
@@ -3249,12 +3262,18 @@ def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False)
     """
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+    global _pin_tab_failure_cache
     if (
         require_pin_tab
         and _pin_tab_agent_browser_resolved
         and _cached_pin_tab_agent_browser is not None
     ):
         return _cached_pin_tab_agent_browser
+    if require_pin_tab and _pin_tab_failure_cache is not None:
+        retry_at, message = _pin_tab_failure_cache
+        if time.monotonic() < retry_at:
+            raise AgentBrowserCapabilityError(message)
+        _pin_tab_failure_cache = None
     if _agent_browser_resolved:
         if not require_pin_tab and _cached_agent_browser is None:
             raise FileNotFoundError(
@@ -3279,9 +3298,11 @@ def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False)
     def cache_candidate(path: str) -> str:
         global _cached_agent_browser, _agent_browser_resolved
         global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+        global _pin_tab_failure_cache
         if require_pin_tab:
             _cached_pin_tab_agent_browser = path
             _pin_tab_agent_browser_resolved = True
+            _pin_tab_failure_cache = None
             if not _agent_browser_resolved:
                 _cached_agent_browser = path
                 _agent_browser_resolved = True
@@ -3353,9 +3374,12 @@ def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False)
             return cache_candidate(NPX_AGENT_BROWSER_SENTINEL)
 
     if require_pin_tab:
-        raise AgentBrowserCapabilityError(
-            _pin_tab_capability_error(detected_node_major)
+        message = _pin_tab_capability_error(detected_node_major)
+        _pin_tab_failure_cache = (
+            time.monotonic() + AGENT_BROWSER_PIN_TAB_FAILURE_TTL_SECONDS,
+            message,
         )
+        raise AgentBrowserCapabilityError(message)
 
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
@@ -6287,6 +6311,7 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_pin_tab_agent_browser, _pin_tab_agent_browser_resolved
+    global _pin_tab_failure_cache
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
@@ -6294,6 +6319,7 @@ def cleanup_all_browsers() -> None:
     _agent_browser_resolved = False
     _pin_tab_agent_browser_resolved = False
     _cached_pin_tab_agent_browser = None
+    _pin_tab_failure_cache = None
     _discover_homebrew_node_dirs.cache_clear()
     # Flip the resolved flag BEFORE nulling the cache so a concurrent
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).

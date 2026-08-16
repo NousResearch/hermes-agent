@@ -9,13 +9,22 @@ Why Long Polling instead of webhooks:
 - Long Polling works from anywhere: the adapter polls platform-api2.max.ru
 
 TLS: MAX uses Russian Trusted Root CA. Set MAX_CA_CERT_PATH to the PEM file,
-or the adapter falls back to the default trust store.
+or the adapter falls back to the default trust store. The cert is
+auto-downloaded from the official source (gu-st.ru) on first use, with a
+bounded timeout and PEM structure validation.
+
+Security note: trusting the Russian Trusted Root CA is inherent to using the
+MAX platform (its API is served with certificates chained to that CA). The
+cert is fetched over HTTPS from the official Ministry source (gu-st.ru) and
+validated as a PEM certificate before being used.
 """
 
 import asyncio
 import json
 import logging
 import os
+import random
+import ssl
 import time
 import uuid
 from datetime import datetime, timezone
@@ -51,6 +60,9 @@ RECONNECT_BACKOFF = [1, 2, 5, 10, 30]
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 2000
 _ECHO_MARKER = "hermes-agent-max"  # appended to outgoing text for echo-loop prevention
+CA_DOWNLOAD_TIMEOUT = 10  # seconds
+MAX_SEND_RATE_PER_CHAT = 2.0  # MAX: max 2 messages/sec per chat
+_TRUNCATION_NOTICE = "\n\n✂️ (сообщение обрезано — лимит MAX 4000 симв.)"
 
 
 def _get_scoped_secret(name, default=None):
@@ -62,12 +74,27 @@ def _get_scoped_secret(name, default=None):
     return val if val is not None else default
 
 
+def _is_valid_pem_cert(path: str) -> bool:
+    """Validate that a file is a PEM certificate (not HTML/truncated junk)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if b"-----BEGIN CERTIFICATE-----" not in data:
+            return False
+        # Try loading it as an X.509 certificate
+        ssl.PEM_cert_to_DER_cert(data.decode("utf-8", errors="replace"))
+        return True
+    except Exception:
+        return False
+
+
 def _default_ca_path() -> Optional[str]:
     """Return the Russian Trusted Root CA path if present (honors HERMES_HOME).
 
     Auto-downloads the official Russian Trusted Root CA from gu-st.ru on
     first use if no local copy exists, so a fresh install works out of the
-    box without manual certificate setup.
+    box without manual certificate setup. Download uses a bounded timeout
+    and the file is validated as a PEM certificate.
     """
     hermes_home = os.getenv("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
     candidates = [
@@ -77,7 +104,7 @@ def _default_ca_path() -> Optional[str]:
         os.path.expanduser("~/.hermes/max/certs/russian_trusted_root_ca_pem.crt"),
     ]
     for c in candidates:
-        if c and os.path.isfile(c):
+        if c and os.path.isfile(c) and _is_valid_pem_cert(c):
             return c
 
     # Auto-download the official cert (gu-st.ru is the Ministry's official source)
@@ -88,10 +115,18 @@ def _default_ca_path() -> Optional[str]:
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, "russian_trusted_root_ca_pem.crt")
         url = "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt"
-        urllib.request.urlretrieve(url, dest)
-        if os.path.isfile(dest) and os.path.getsize(dest) > 500:
+        with urllib.request.urlopen(url, timeout=CA_DOWNLOAD_TIMEOUT) as resp:
+            data = resp.read()
+        with open(dest, "wb") as f:
+            f.write(data)
+        if _is_valid_pem_cert(dest):
             logger.info("[max] Auto-downloaded Russian Trusted Root CA to %s", dest)
             return dest
+        logger.warning("[max] Downloaded file is not a valid PEM certificate; removing")
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
     except Exception as e:
         logger.warning("[max] Auto-download of Russian Trusted Root CA failed: %s", e)
     return None
@@ -136,6 +171,41 @@ class MaxAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._ca_path = _default_ca_path()
         self._last_user_id: str = ""
+        # Health/status tracking
+        self._last_poll_at: Optional[float] = None
+        self._last_poll_error: Optional[str] = None
+        self._last_error_at: Optional[float] = None
+        # Marker persistence
+        self._marker_path = os.path.join(
+            os.getenv("HERMES_HOME", "") or os.path.expanduser("~/.hermes"),
+            "max", "marker.json",
+        )
+        self._load_marker()
+        # Send rate limiting: chat_id -> [timestamps]
+        self._send_history: Dict[str, List[float]] = {}
+
+    # -- Marker persistence ------------------------------------------------
+
+    def _load_marker(self) -> None:
+        """Load the last-known marker from disk (if any)."""
+        try:
+            if os.path.isfile(self._marker_path):
+                with open(self._marker_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._marker = int(data.get("marker") or 0) or None
+        except Exception as e:
+            logger.debug("[%s] Could not load marker: %s", self.name, e)
+
+    def _save_marker(self) -> None:
+        """Persist the marker to disk so restarts don't replay old updates."""
+        if not self._marker:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._marker_path), exist_ok=True)
+            with open(self._marker_path, "w", encoding="utf-8") as f:
+                json.dump({"marker": self._marker, "saved_at": time.time()}, f)
+        except Exception as e:
+            logger.debug("[%s] Could not save marker: %s", self.name, e)
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -159,7 +229,8 @@ class MaxAdapter(BasePlatformAdapter):
             await self._register_commands()
             self._poll_task = asyncio.create_task(self._run_poll_loop())
             self._mark_connected()
-            logger.info("[%s] Connected — Long Polling %s://%s/updates", self.name, API_SCHEME, API_HOST)
+            logger.info("[%s] Connected — Long Polling %s://%s/updates (marker=%s)",
+                        self.name, API_SCHEME, API_HOST, self._marker)
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)
@@ -219,20 +290,22 @@ class MaxAdapter(BasePlatformAdapter):
     async def _run_poll_loop(self) -> None:
         """Long Poll GET /updates with marker cursor and reconnect backoff."""
         backoff_idx = 0
-        last_ok: float = 0.0
 
         while self._running:
             try:
                 await self._poll_once()
                 backoff_idx = 0
-                last_ok = time.monotonic()
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 if not self._running:
                     return
+                self._last_poll_error = str(e)
+                self._last_error_at = time.time()
                 logger.warning("[%s] Poll error: %s", self.name, e)
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
+                # Jitter avoids thundering-herd when many clients reconnect at once
+                delay += random.uniform(0, 1.0)
                 await asyncio.sleep(delay)
                 backoff_idx += 1
                 continue
@@ -251,11 +324,18 @@ class MaxAdapter(BasePlatformAdapter):
         if self._marker:
             params["marker"] = self._marker
 
-        resp = await self._http_client.get(
-            f"{API_SCHEME}://{API_HOST}/updates",
-            params=params,
-            headers={"Authorization": self._token},
-        )
+        try:
+            resp = await self._http_client.get(
+                f"{API_SCHEME}://{API_HOST}/updates",
+                params=params,
+                headers={"Authorization": self._token},
+            )
+        except Exception as e:
+            self._last_poll_error = str(e)
+            self._last_error_at = time.time()
+            raise
+        self._last_poll_at = time.time()
+        self._last_poll_error = None
 
         if resp.status_code == 401:
             logger.error("[%s] Auth failed (401) — token invalid. Stopping.", self.name)
@@ -279,6 +359,7 @@ class MaxAdapter(BasePlatformAdapter):
         updates = data.get("updates") or []
         if data.get("marker") is not None:
             self._marker = int(data["marker"])
+            self._save_marker()
         for upd in updates:
             await self._handle_update(upd)
 
@@ -377,6 +458,63 @@ class MaxAdapter(BasePlatformAdapter):
 
     # -- Outbound messaging -------------------------------------------------
 
+    async def _rate_limit_send(self, chat_id: str) -> None:
+        """Enforce MAX rate limit: max 2 messages/sec per chat."""
+        now = time.time()
+        history = self._send_history.setdefault(chat_id, [])
+        # Keep only the last second
+        history[:] = [t for t in history if now - t < 1.0]
+        if len(history) >= 2:
+            sleep_for = 1.0 - (now - history[0])
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+        self._send_history[chat_id].append(time.time())
+
+    @staticmethod
+    def _split_text(
+        text: str, limit: int = MAX_MESSAGE_LENGTH
+    ) -> List[str]:
+        """Split long text into ≤limit chunks, preferring line/word breaks.
+
+        MAX hard-caps a single message at MAX_MESSAGE_LENGTH chars; instead of
+        silently truncating (old behaviour), split into several messages. The
+        caller spaces the sends to respect MAX's ~2 msg/sec dialog limit.
+        """
+        if len(text) <= limit:
+            return [text]
+        chunks: List[str] = []
+        remaining = text
+        while len(remaining) > limit:
+            cut = remaining.rfind("\n", 0, limit)
+            if cut <= 0:
+                cut = remaining.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            chunks.append(remaining[:cut])
+            remaining = remaining[cut:].lstrip("\n")
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    def _smart_truncate(self, content: str) -> str:
+        """Truncate to MAX limit, cutting at a markdown-friendly boundary.
+
+        Legacy fallback: used only when a single chunk still exceeds the
+        limit (e.g. an unbreakable 5000-char word). Normal long messages are
+        split by ``_split_text`` instead.
+        """
+        if len(content) <= MAX_MESSAGE_LENGTH:
+            return content
+        limit = MAX_MESSAGE_LENGTH - len(_TRUNCATION_NOTICE)
+        cut = content[:limit]
+        # Cut at last newline or space if possible
+        last_nl = cut.rfind("\n")
+        last_sp = cut.rfind(" ")
+        boundary = max(last_nl, last_sp)
+        if boundary > limit * 0.5:  # only if it's a reasonable cut point
+            cut = cut[:boundary]
+        return cut.rstrip() + _TRUNCATION_NOTICE
+
     async def send(
         self,
         chat_id: str,
@@ -384,7 +522,11 @@ class MaxAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a MAX user (user_id) or chat (chat_id)."""
+        """Send a message to a MAX user (user_id) or chat (chat_id).
+
+        Long content (>4000 chars) is split into several sequential messages,
+        respecting MAX's ~2 msg/sec limit via ``_rate_limit_send``.
+        """
         if self._http_client is None:
             return SendResult(success=False, error="HTTP client not initialized")
 
@@ -398,28 +540,35 @@ class MaxAdapter(BasePlatformAdapter):
         else:
             params["chat_id"] = chat_id
 
-        text = content[:MAX_MESSAGE_LENGTH]
-        # MAX supports markdown formatting for bot messages
-        payload = {"text": text, "attachments": [], "format": "markdown"}
-        body = json.dumps(payload).encode("utf-8")
-        try:
-            resp = await self._http_client.post(
-                f"{API_SCHEME}://{API_HOST}/messages",
-                params=params,
-                content=body,
-                headers={
-                    "Authorization": self._token,
-                    "Content-Type": "application/json",
-                },
-                timeout=15.0,
-            )
-            if resp.status_code < 300:
-                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            logger.warning("[%s] Send failed HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
-            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
-        except Exception as e:
-            logger.error("[%s] Send error: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+        chunks = self._split_text(content)
+        last: SendResult = SendResult(success=False, error="no chunks")
+        for chunk in chunks:
+            # MAX supports markdown formatting for bot messages
+            payload = {"text": chunk, "attachments": [], "format": "markdown"}
+            body = json.dumps(payload).encode("utf-8")
+            try:
+                await self._rate_limit_send(str(chat_id))
+                resp = await self._http_client.post(
+                    f"{API_SCHEME}://{API_HOST}/messages",
+                    params=params,
+                    content=body,
+                    headers={
+                        "Authorization": self._token,
+                        "Content-Type": "application/json",
+                    },
+                    timeout=15.0,
+                )
+                if resp.status_code < 300:
+                    last = SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+                else:
+                    logger.warning("[%s] Send failed HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+                    last = SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+                    break
+            except Exception as e:
+                logger.error("[%s] Send error: %s", self.name, e)
+                last = SendResult(success=False, error=str(e))
+                break
+        return last
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator via POST /chats/{chatId}/actions.
@@ -460,7 +609,7 @@ class MaxAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm"}
 
     async def disconnect(self) -> None:
-        """Stop polling and close the HTTP client."""
+        """Stop polling (gracefully) and close the HTTP client."""
         self._running = False
         self._mark_disconnected()
         if self._poll_task:
@@ -469,11 +618,14 @@ class MaxAdapter(BasePlatformAdapter):
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                pass
             self._poll_task = None
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
         self._seen_messages.clear()
+        self._save_marker()
         logger.info("[%s] Disconnected", self.name)
 
 
@@ -510,6 +662,8 @@ async def _standalone_send(
     token = extra.get("token") or _get_scoped_secret("MAX_BOT_TOKEN", "")
     if not token:
         return {"error": "max standalone send: MAX_BOT_TOKEN not configured"}
+    if media_files:
+        logger.warning("[max] standalone send: media_files are not supported yet, sending text only")
     ca_path = _default_ca_path()
     text = (message or "")[:MAX_MESSAGE_LENGTH]
     body = json.dumps({"text": text, "attachments": []}).encode("utf-8")

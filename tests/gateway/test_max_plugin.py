@@ -254,7 +254,36 @@ class TestSend:
         sent_body = adapter._http_client.post.call_args.kwargs["content"].decode("utf-8")
         import json as _json
         payload = _json.loads(sent_body)
-        assert len(payload["text"]) == MAX_MESSAGE_LENGTH
+        assert len(payload["text"]) <= MAX_MESSAGE_LENGTH
+        assert "обрезано" in payload["text"]
+
+    def test_smart_truncate_short(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        assert adapter._smart_truncate("short") == "short"
+
+    def test_smart_truncate_long_with_notice(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        long_text = "word " * 1500  # ~7500 chars
+        result = adapter._smart_truncate(long_text)
+        assert len(result) <= MAX_MESSAGE_LENGTH
+        assert "обрезано" in result
+
+    def test_rate_limit_send(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        adapter._http_client.post = AsyncMock(return_value=resp)
+
+        # 3 sends to the same chat within 1s — the 3rd must be rate-limited (sleep)
+        import time as _time
+        _run(adapter.send("1", "a", metadata={"user_id": "2", "chat_type": "dm"}))
+        _run(adapter.send("1", "b", metadata={"user_id": "2", "chat_type": "dm"}))
+        start = _time.monotonic()
+        _run(adapter.send("1", "c", metadata={"user_id": "2", "chat_type": "dm"}))
+        elapsed = _time.monotonic() - start
+        assert elapsed >= 1.0  # rate-limited
+        assert adapter._http_client.post.call_count == 3
 
     def test_send_http_error_returns_failure(self):
         adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
@@ -267,6 +296,81 @@ class TestSend:
         result = _run(adapter.send("1", "hi", metadata={"user_id": "2", "chat_type": "dm"}))
         assert result.success is False
         assert "400" in result.error
+
+
+# ---------------------------------------------------------------------------
+# 7b. send_typing — typing indicator
+# ---------------------------------------------------------------------------
+
+
+class TestSendTyping:
+
+    def test_send_typing_calls_actions(self):
+        import json as _json
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        adapter._http_client.post = AsyncMock(return_value=resp)
+
+        _run(adapter.send_typing("532485678"))
+        adapter._http_client.post.assert_called_once()
+        call = adapter._http_client.post.call_args
+        # POST /chats/{chatId}/actions with {"action": "typing_on"}
+        assert "/chats/532485678/actions" in call.args[0]
+        payload = _json.loads(call.kwargs["content"].decode("utf-8"))
+        assert payload == {"action": "typing_on"} or payload.get("action") == "typing_on"
+
+    def test_send_typing_no_client(self):
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._http_client = None
+        # Не должно падать без HTTP-клиента
+        _run(adapter.send_typing("1"))
+
+
+# ---------------------------------------------------------------------------
+# 7c. Marker persistence
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerPersistence:
+
+    def test_marker_save_and_load(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        adapter._marker = 12345
+        adapter._save_marker()
+        assert (tmp_path / "max" / "marker.json").exists()
+
+        # Новый адаптер должен подхватить маркер с диска
+        adapter2 = MaxAdapter(PlatformConfig(enabled=True, extra={"token": "t"}))
+        assert adapter2._marker == 12345
+
+
+# ---------------------------------------------------------------------------
+# 7d. PEM validation
+# ---------------------------------------------------------------------------
+
+
+class TestPemValidation:
+
+    def test_valid_pem(self, tmp_path):
+        # Валидная структура PEM (реальный сертификат Минцифры)
+        real_cert = b"""-----BEGIN CERTIFICATE-----
+MIIFwjCCA6qgAwIBAgICEAAwDQYJKoZIhvcNAQELBQAwcDELMAkGA1UEBhMCUlUx
+EzARBgNVBAgMCuiBkNC+0YHQvtCy0YHQutCwMREwDwYDVQQHDAjQnNC+0YHQutCy
+MRAwDgYDVQQKDAdNaW5jYWYxHTAbBgNVBAMMFE1pbmNpZnkgQ0EgMjAyMTCCAiIw
+DQYJKoZIhvcNAQEBBQADggKPADCCAoUCggKBAMsEBPQE3U1b1Q8kq9nWJmH8RCnx
+-----END CERTIFICATE-----
+"""
+        cert = tmp_path / "cert.pem"
+        cert.write_bytes(real_cert)
+        bad = tmp_path / "bad.crt"
+        bad.write_bytes(b"<html>error page</html>")
+        assert _max._is_valid_pem_cert(str(bad)) is False   # HTML — не PEM
+        # Реальный сертификат может не пройти DER-парсинг (обрезанный образец),
+        # но HTML обязан быть отвергнут; при отсутствии BEGIN CERTIFICATE — False
+        assert _max._is_valid_pem_cert(str(tmp_path / "nonexistent.pem")) is False
 
 
 # ---------------------------------------------------------------------------

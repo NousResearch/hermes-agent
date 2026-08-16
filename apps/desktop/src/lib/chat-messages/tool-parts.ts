@@ -577,3 +577,53 @@ export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
     return changed ? { ...message, parts } : message
   })
 }
+
+/**
+ * Ensure no two `tool-call` parts of a SINGLE message share a `toolCallId`.
+ *
+ * assistant-ui's `useResources` derives one resource key per content part
+ * (`toolCallId-<id>`) and throws `Duplicate key <key> in useResources` on a
+ * collision, which the desktop error boundary turns into a renderer crash loop
+ * that blanks the window (#87857). Two paths can produce a message whose parts
+ * carry the same id: the streaming reducer appends the same tool-call part
+ * twice under a specific optimistic-update ordering, and coalescing tool-only
+ * assistant turns can fold two parts with the same id into one message. Neither
+ * passes through {@link withUniqueToolCallIds} — that runs only on the static
+ * `toChatMessages` output, not the live runtime boundary — so the dedup is
+ * applied again at the point ChatMessages are converted for the runtime.
+ *
+ * The scope is deliberately per-message (a fresh seen-set each call): the
+ * assistant-ui key space is per-message, so a `toolCallId` shared across
+ * different messages is not a collision and must not be renamed. Only the
+ * later duplicate within one message is renamed, mirroring the list-level
+ * helper. Returns the same reference when nothing changes, so the runtime
+ * repository's identity cache is preserved for the common no-duplicate case.
+ */
+export function withUniqueToolCallIdsWithinMessage(message: ChatMessage): ChatMessage {
+  let seen: null | Set<string> = null
+  let changed = false
+
+  const parts = message.parts.map((part, index) => {
+    if (part.type !== 'tool-call' || !part.toolCallId) {
+      return part
+    }
+
+    if (seen === null) {
+      seen = new Set<string>()
+    }
+
+    if (!seen.has(part.toolCallId)) {
+      seen.add(part.toolCallId)
+
+      return part
+    }
+
+    changed = true
+    const uniqueId = `${part.toolCallId}-dup-${index}`
+    seen.add(uniqueId)
+
+    return { ...part, toolCallId: uniqueId } as ChatMessagePart
+  })
+
+  return changed ? { ...message, parts } : message
+}

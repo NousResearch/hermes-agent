@@ -175,6 +175,12 @@ platforms:
 
 With this on, the startup pre-fill is skipped and any UNSEEN message already in the inbox is picked up on the next poll. Leave it off (the default) to keep the historical "ignore everything already there" behaviour.
 
+Every message in that backlog becomes a full agent turn — and a reply — on the first poll. The adapter logs how large the backlog is before processing it, so check that line before pointing this at a busy inbox:
+
+```
+[Email] IMAP connection test passed. process_existing is enabled — 137 pre-existing UNSEEN message(s) will be processed on the first poll.
+```
+
 ---
 
 ## Access Control

@@ -357,6 +357,15 @@ def _empty_discovery_reason() -> str:
         )
     if sys.platform == "linux" and not os.environ.get("DISPLAY"):
         return "no DISPLAY is set — X11/XWayland is not reachable from this process"
+    if sys.platform == "darwin":
+        # Headless Mac / asleep panel: ScreenCaptureKit has 0 shareable
+        # displays while TCC grants look fine (#67165, #52925 lineage).
+        return (
+            "window discovery returned no windows; on macOS this usually "
+            "means no shareable display (headless Mac or panel asleep) — "
+            "wake the display or attach a monitor/HDMI dummy, then run "
+            "`hermes computer-use doctor`"
+        )
     return (
         "window discovery returned no windows; run `hermes computer-use "
         "doctor` (display reachability, AX capability)"

@@ -1422,6 +1422,9 @@ Subcommands:
 | `install` | Run the upstream cua-driver installer (macOS, Windows, and Linux). |
 | `install --upgrade` | Re-run the installer even if cua-driver is already on PATH. The upstream script always pulls the latest release, so this performs an in-place upgrade. |
 | `status` | Print whether `cua-driver` is on `$PATH` and which version is installed. |
+| `doctor [--include CHECK] [--skip CHECK] [--json]` | Run cua-driver's health report and show its platform checks. |
+| `permissions status [--json]` | Report macOS Accessibility and Screen Recording grants. |
+| `permissions grant` | Ask macOS to grant Accessibility and Screen Recording to Cua Driver. |
 
 `hermes computer-use install` is the stable entry point for installing the
 [cua-driver](https://github.com/trycua/cua) binary used by the
@@ -1429,6 +1432,17 @@ Subcommands:
 `hermes tools` invokes when you first enable Computer Use, so it's safe
 to use for re-running the install if the toolset toggle didn't trigger
 it (for example, on returning-user setups).
+
+The built-in `computer_use` toolset is the recommended Hermes integration.
+Registering raw Cua MCP tools is an alternative when you need Cua's low-level
+tool vocabulary. `cua-driver skills install` detects Hermes and links Cua's
+skill pack into the Hermes skills directory automatically.
+
+Permission mode, capability-manifest approval, and the existing-profile grant
+belong to runtime launch. In bounded mode Hermes passes Cua's canonical
+`--capability-manifest` and `--approve-capability-manifest` flags. Every MCP
+transport owns a private lifecycle session inside its runtime. Public session
+names label cursor and session state; they do not own or share the runtime.
 
 `hermes update` automatically re-runs the upstream installer at the end
 of the update if cua-driver is on PATH, so most users will not need to

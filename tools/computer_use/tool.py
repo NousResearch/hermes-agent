@@ -673,10 +673,11 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             ("query", "query"),
             ("scope_ref", "scope_ref"),
             ("continuation", "continuation"),
+            ("include_screenshot", "include_screenshot"),
         ):
             if args.get(public) is not None:
                 state_args[internal] = args[public]
-        return json.dumps(backend.typed_browser_state(**state_args))
+        return _browser_state_response(backend.typed_browser_state(**state_args))
 
     if action == "cua_browser_prepare":
         return json.dumps(backend.typed_browser_prepare(
@@ -685,7 +686,6 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             profile_mode=args.get("profile_mode", "isolated_new"),
             profile_name=args.get("profile_name"),
             allow_launch=bool(args.get("allow_launch")),
-            approval_token=args.get("approval_token"),
         ))
 
     browser_tools = {
@@ -703,7 +703,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         allowed_fields = {
             "browser_navigate": ("url",),
             "browser_click": ("ref", "input_route", "x", "y"),
-            "browser_type": ("ref", "text"),
+            "browser_type": ("ref", "text", "replace"),
             "browser_pointer": (
                 "ref", "destination_ref", "input_route", "x", "y",
                 "to_x", "to_y", "delta_x", "delta_y",
@@ -871,6 +871,41 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 # ---------------------------------------------------------------------------
 # Response shaping
 # ---------------------------------------------------------------------------
+
+def _browser_state_response(payload: Dict[str, Any]) -> Any:
+    """Return browser state as JSON, preserving requested MCP image parts."""
+    state = dict(payload)
+    raw_images = state.pop("_mcp_images", None)
+    if not isinstance(raw_images, list) or not raw_images:
+        return json.dumps(state)
+
+    text_summary = json.dumps(state)
+    content: List[Dict[str, Any]] = [
+        {"type": "text", "text": text_summary},
+    ]
+    image_count = 0
+    for image in raw_images:
+        if not isinstance(image, dict):
+            continue
+        data = image.get("data")
+        if not isinstance(data, str) or not data:
+            continue
+        mime_type = image.get("mime_type")
+        if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
+            mime_type = "image/jpeg" if data.startswith("/9j/") else "image/png"
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{data}"},
+        })
+        image_count += 1
+    if image_count == 0:
+        return text_summary
+    return {
+        "_multimodal": True,
+        "content": content,
+        "text_summary": text_summary,
+        "meta": {"action": "cua_browser_state", "images": image_count},
+    }
 
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     """Choose the next ladder step from semantic evidence, in precedence order.

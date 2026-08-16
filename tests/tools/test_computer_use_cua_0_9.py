@@ -788,7 +788,6 @@ def test_namespaced_state_and_prepare_actions_use_typed_backend_wrappers():
         profile_mode="isolated_new",
         profile_name=None,
         allow_launch=True,
-        approval_token=None,
     )
 
 

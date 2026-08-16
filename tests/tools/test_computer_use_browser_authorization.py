@@ -1,11 +1,8 @@
 """Authorization plumbing for the cua-driver typed browser route.
 
-Covers the three rungs that let ``existing_profile`` attachment (and bounded
-automation generally) actually work from Hermes:
+Covers the authorization modes that let ``existing_profile`` attachment (and
+bounded automation generally) work from Hermes:
 
-* ``approval_token`` passthrough — the user-minted single-use token from
-  ``hermes computer-use browser-approve`` reaches ``browser_prepare`` and is
-  never fabricated by the wrapper.
 * ``bounded`` permission mode — a private embedded daemon launched with a
   user-reviewed capability manifest (``--capability-manifest`` +
   ``--approve-capability-manifest``), failing loudly when the manifest is
@@ -47,16 +44,15 @@ def _route(driver: _PrepareDriver) -> CuaTypedBrowserRoute:
     )
 
 
-# ── approval_token passthrough ──────────────────────────────────────────
+# ── existing-profile authorization ownership ───────────────────────────
 
 
-def test_existing_profile_prepare_forwards_user_minted_approval_token():
+def test_existing_profile_prepare_delegates_authorization_to_driver():
     driver = _PrepareDriver()
     result = _route(driver).prepare(
         pid=101,
         window_id=202,
         profile_mode="existing_profile",
-        approval_token="tok-from-user-terminal",
     )
 
     assert result["status"] == "ok"
@@ -67,51 +63,13 @@ def test_existing_profile_prepare_forwards_user_minted_approval_token():
                 "pid": 101,
                 "window_id": 202,
                 "strategy": {"kind": "existing_profile"},
-                "approval_token": "tok-from-user-terminal",
                 "session": "hermes-a",
             },
         )
     ]
 
 
-def test_existing_profile_prepare_without_token_sends_none():
-    """No token → the field is absent; the driver's own gate decides."""
-    driver = _PrepareDriver()
-    _route(driver).prepare(pid=101, window_id=202, profile_mode="existing_profile")
-
-    (_, args), = driver.calls
-    assert "approval_token" not in args
-
-
-@pytest.mark.parametrize("bogus", ["", None, 7, True])
-def test_non_string_or_empty_token_is_never_forwarded(bogus):
-    driver = _PrepareDriver()
-    _route(driver).prepare(
-        pid=101,
-        window_id=202,
-        profile_mode="existing_profile",
-        approval_token=bogus,
-    )
-
-    (_, args), = driver.calls
-    assert "approval_token" not in args
-
-
-def test_isolated_prepare_ignores_approval_token():
-    """The token authorizes existing-profile attachment only."""
-    driver = _PrepareDriver()
-    _route(driver).prepare(
-        pid=101,
-        profile_mode="isolated_new",
-        allow_launch=True,
-        approval_token="tok",
-    )
-
-    (_, args), = driver.calls
-    assert "approval_token" not in args
-
-
-def test_dispatch_forwards_approval_token_to_backend():
+def test_dispatch_does_not_forward_removed_approval_token():
     from unittest.mock import Mock
 
     from tools.computer_use.tool import _dispatch
@@ -126,22 +84,18 @@ def test_dispatch_forwards_approval_token_to_backend():
             "pid": 101,
             "window_id": 202,
             "profile_mode": "existing_profile",
-            "approval_token": "tok-abc",
         },
     )
 
     kwargs = backend.typed_browser_prepare.call_args.kwargs
-    assert kwargs["approval_token"] == "tok-abc"
+    assert "approval_token" not in kwargs
     assert kwargs["profile_mode"] == "existing_profile"
 
 
-def test_schema_documents_approval_token_as_user_minted():
+def test_schema_does_not_expose_approval_token():
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA
 
-    prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["approval_token"]
-    desc = prop["description"]
-    assert "browser-approve" in desc
-    assert "never invent" in desc.lower()
+    assert "approval_token" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
 
 # ── bounded embedded daemon ─────────────────────────────────────────────
@@ -215,13 +169,12 @@ def test_bounded_daemon_serves_with_approved_manifest(tmp_path, monkeypatch):
     command = captured["command"]
     assert "--permission-mode" in command
     assert command[command.index("--permission-mode") + 1] == "bounded"
-    # Flag names live-verified against cua-driver 0.19.3.
-    assert "--session-policy" in command
+    assert "--capability-manifest" in command
     assert (
-        command[command.index("--session-policy") + 1]
+        command[command.index("--capability-manifest") + 1]
         == str(manifest)
     )
-    assert "--approve-session-policy" in command
+    assert "--approve-capability-manifest" in command
     assert "--dangerously-bypass-approvals" not in command
 
 
@@ -255,7 +208,7 @@ def test_unrestricted_daemon_serve_command_unchanged(monkeypatch):
 
     command = captured["command"]
     assert "--dangerously-bypass-approvals" in command
-    assert "--session-policy" not in command
+    assert "--capability-manifest" not in command
 
 
 # ── standard-mode --grant existing-profile ──────────────────────────────

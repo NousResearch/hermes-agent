@@ -1089,6 +1089,77 @@ class TestCuaDriverSessionReconnect:
         assert bridge.calls[1][0] == ("call", "list_apps", {})
         assert len(bridge.calls) == 2
 
+    def test_mutation_is_not_replayed_after_closed_transport(self):
+        """A lost response cannot prove whether a click already happened."""
+        from anyio import ClosedResourceError
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise ClosedResourceError()
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("click", {"x": 20, "y": 30})
+
+        assert result["isError"] is True
+        assert result["structuredContent"]["code"] == "transport_outcome_unknown"
+        assert result["structuredContent"]["next_step"] == "fresh_state"
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 1
+
+    def test_mutation_does_not_cross_to_cli_on_transient_proxy_error(self):
+        class FakeBridge:
+            def run(self, value, timeout=None):
+                raise RuntimeError("daemon proxy: Resource temporarily unavailable")
+
+        session = self._make_session(FakeBridge())
+        session._call_tool_via_cli = MagicMock()
+        reset = MagicMock()
+        session._transport_reset_callback = reset
+
+        result = session.call_tool("type_text", {"text": "hello"})
+
+        assert result["structuredContent"]["code"] == "transport_outcome_unknown"
+        session._call_tool_via_cli.assert_not_called()
+        reset.assert_called_once_with()
+
+    def test_reconnect_restores_public_label_before_replaying_read(self):
+        from anyio import ClosedResourceError
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.effects = [
+                    ClosedResourceError(),
+                    {"isError": False},
+                    {"isError": False, "structuredContent": {"apps": []}},
+                ]
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+        session._declared_session_id = "hermes-label"
+
+        result = session.call_tool("list_apps", {})
+
+        assert result["isError"] is False
+        assert bridge.calls == [
+            ("call", "list_apps", {}),
+            ("call", "start_session", {"session": "hermes-label"}),
+            ("call", "list_apps", {}),
+        ]
+
 
     def test_cli_fallback_reads_screenshot_from_file(self, tmp_path, monkeypatch):
         """_call_tool_via_cli must base64-read a screenshot written to disk

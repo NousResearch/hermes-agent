@@ -39,7 +39,7 @@ def _positive_int(value: Any) -> Optional[int]:
 
 
 def _tool_payload(out: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the structured driver payload without discarding refusals."""
+    """Return structured data without discarding refusals or MCP images."""
     structured = out.get("structuredContent")
     data = out.get("data")
     payload: Dict[str, Any] = {}
@@ -49,6 +49,23 @@ def _tool_payload(out: Dict[str, Any]) -> Dict[str, Any]:
         payload["message"] = data
     if isinstance(structured, dict):
         payload.update(structured)
+    images = out.get("images")
+    mime_types = out.get("image_mime_types")
+    if isinstance(images, list):
+        preserved_images = []
+        for index, image in enumerate(images):
+            if not isinstance(image, str) or not image:
+                continue
+            mime_type = ""
+            if (
+                isinstance(mime_types, list)
+                and index < len(mime_types)
+                and isinstance(mime_types[index], str)
+            ):
+                mime_type = mime_types[index]
+            preserved_images.append({"data": image, "mime_type": mime_type})
+        if preserved_images:
+            payload["_mcp_images"] = preserved_images
     if out.get("isError") is True:
         payload.setdefault("isError", True)
     return payload
@@ -225,6 +242,7 @@ class CuaTypedBrowserRoute:
         query: Optional[str] = None,
         scope_ref: Optional[str] = None,
         continuation: Optional[str] = None,
+        include_screenshot: bool = False,
     ) -> Dict[str, Any]:
         """Bind an exact native window or snapshot a bound tab."""
         missing = self._require_tool("get_browser_state")
@@ -242,10 +260,13 @@ class CuaTypedBrowserRoute:
                     "Typed browser binding requires an exact positive pid and window_id pair.",
                     native_fallback=True,
                 )
-            payload = self._call(
-                "get_browser_state",
-                {"pid": exact_pid, "window_id": exact_window},
-            )
+            bind_args: Dict[str, Any] = {
+                "pid": exact_pid,
+                "window_id": exact_window,
+            }
+            if include_screenshot:
+                bind_args["include_screenshot"] = True
+            payload = self._call("get_browser_state", bind_args)
             if payload.get("status") != "ok":
                 code = _refusal_code(payload)
                 payload.setdefault("ok", False)
@@ -318,6 +339,8 @@ class CuaTypedBrowserRoute:
             args["scope_ref"] = scope_ref
         if continuation:
             args["continuation"] = continuation
+        if include_screenshot:
+            args["include_screenshot"] = True
 
         continuing = continuation is not None
         if not continuing:
@@ -351,7 +374,6 @@ class CuaTypedBrowserRoute:
         profile_mode: str,
         profile_name: Optional[str] = None,
         allow_launch: bool = False,
-        approval_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run explicit setup through the driver's authoritative mode gate."""
         missing = self._require_tool("browser_prepare")
@@ -370,21 +392,15 @@ class CuaTypedBrowserRoute:
                     "Existing-profile attachment requires an exact positive pid and window_id pair.",
                 )
             # The driver owns the immutable standard/bounded/unrestricted
-            # decision. Standard fails closed without a certified host,
-            # a user-minted single-use approval token, or an approved
-            # bounded manifest; explicit Hermes YOLO owns a private
-            # unrestricted daemon.
+            # decision. Standard fails closed without a certified host;
+            # bounded mode uses its approved capability manifest and explicit
+            # Hermes YOLO owns a private unrestricted daemon.
             self.state.clear()
             args: Dict[str, Any] = {
                 "pid": exact_pid,
                 "window_id": exact_window,
                 "strategy": {"kind": "existing_profile"},
             }
-            if isinstance(approval_token, str) and approval_token:
-                # Minted out-of-band by `hermes computer-use browser-approve`
-                # (cua-driver browser-approve): five-minute, single-use. The
-                # user, never the model, is the source of this value.
-                args["approval_token"] = approval_token
             return self._call("browser_prepare", args)
         if profile_mode not in {"isolated_new", "isolated_named"}:
             return _refusal(

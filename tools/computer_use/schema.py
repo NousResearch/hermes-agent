@@ -283,6 +283,13 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "enum": ["semantic_v2", "dom_refs_v1"],
                 "description": "Typed-browser snapshot format; semantic_v2 is the default.",
             },
+            "include_screenshot": {
+                "type": "boolean",
+                "description": (
+                    "For cua_browser_state, include the current browser screenshot "
+                    "as image content in the tool result. Defaults to false."
+                ),
+            },
             "query": {"type": "string", "description": "Optional browser-state query."},
             "scope_ref": {"type": "string", "description": "Optional current ref to scope a snapshot."},
             "continuation": {"type": "string", "description": "Continuation minted by the current snapshot."},
@@ -301,16 +308,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 ),
             },
             "profile_name": {"type": "string", "description": "Name for isolated_named setup."},
-            "approval_token": {
-                "type": "string",
-                "description": (
-                    "Optional single-use setup token the USER minted with "
-                    "`hermes computer-use browser-approve` and pasted to you; "
-                    "never invent one. Legacy path on current cua-driver "
-                    "builds — the supported existing-profile route is the "
-                    "computer_use.grant_existing_profile config opt-in."
-                ),
-            },
             "allow_launch": {
                 "type": "boolean",
                 "description": "Explicitly allow launch of a driver-owned isolated browser.",
@@ -329,6 +326,14 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["insert_text", "keystrokes"],
                 "description": "Delivery form for cua_browser_type; defaults to insert_text.",
+            },
+            "replace": {
+                "type": "boolean",
+                "description": (
+                    "For cua_browser_type, select the target's complete value "
+                    "before typing so the supplied text replaces it. Defaults "
+                    "to false; true with empty text clears the field."
+                ),
             },
             "dialog_id": {"type": "string", "description": "Opaque page-dialog capability."},
             "prompt_text": {"type": "string", "description": "Optional text for a page prompt dialog."},

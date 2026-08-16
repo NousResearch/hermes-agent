@@ -40,11 +40,12 @@ Everything here works with any tool-capable model — Claude, GPT, Gemini,
 or an open model on a local OpenAI-compatible endpoint. There is no
 Anthropic-native schema to learn.
 
-Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood
-for the platform plumbing. The Hermes-side `computer_use` tool exposed
-in this skill is a higher-level Hermes vocabulary; the raw cua-driver
-MCP tools (which a different agent harness would see) are NOT what you
-call — call the `computer_use` actions documented below.
+Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood.
+This wrapper skill teaches the Hermes `computer_use` workflow and action
+vocabulary. Call the actions documented below instead of raw cua-driver MCP
+tools. For driver internals and platform-specific behavior, follow the Cua
+skill installed by `cua-driver skills install`; that command detects Hermes
+and links the skill pack automatically.
 
 ## The canonical workflow
 
@@ -196,11 +197,33 @@ browser tools. The contract is capability-based:
 `cua_browser_prepare` is a separate approved setup action. Driver-owned
 `isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
 An `existing_profile` is decided by cua-driver's immutable permission mode.
-Normal Hermes sessions use `standard`, which requires a certified protected
-host and fails closed when Hermes has none. Explicit Hermes YOLO (`--yolo`,
-`/yolo`, or `approvals.mode: off`) launches a private embedded cua-driver in
-`unrestricted` after that risk acceptance, so there are no runtime Cua
-approval prompts. Never invent, store, log, or reuse a grant token.
+Prefer `isolated_new` unless the task genuinely needs the user's signed-in
+session. Attaching to an existing profile exposes its live pages, cookies,
+and storage over the browser protocol.
+
+Authorization paths for `existing_profile`, in preference order:
+
+1. **Config grant (standard mode).** When
+   `computer_use.grant_existing_profile: true` is set, the runtime is
+   launched pre-authorized (`--grant existing-profile`) and the prepare
+   succeeds against the exact proven `(pid, window_id)`. If it is unset,
+   the prepare fails closed. Tell the user to set that config key and restart
+   the session if they want this. Do not retry or work around it.
+2. **Bounded manifest.** When `computer_use.permission_mode: bounded` is
+   configured with a reviewed `capability_manifest`, prepares inside the
+   manifest's scope succeed without prompts and everything else fails closed.
+3. **Explicit Hermes YOLO** (`--yolo`, `/yolo`, or `approvals.mode: off`)
+   launches a private cua-driver runtime in `unrestricted` after that risk
+   acceptance, so there are no runtime Cua approval prompts.
+
+These settings belong to runtime launch. The agent cannot add or change them
+after the runtime starts. Without one of these paths, `existing_profile` fails
+closed. Report the refusal and name the config key; do not retry, downgrade
+trust, or work around it.
+
+Every MCP transport owns a private lifecycle session inside the runtime. The
+public session name only labels cursor identity and session-scoped state. It
+does not select, share, or keep a runtime alive.
 
 Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
 permission UI, OS prompts, native dialogs, extension surfaces, unsupported

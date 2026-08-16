@@ -33,11 +33,20 @@ def _auth_env(name: str, default: str = "") -> str:
     if not name:
         return default
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import (
+            current_secret_scope,
+            get_secret,
+            is_multiplex_active,
+        )
 
         val = get_secret(name)
         if val is not None and str(val).strip():
             return str(val).strip()
+        # A multiplex profile scope is authoritative. The process environment
+        # may contain the active profile's allowlist/allow-all value, so a
+        # scoped miss must not borrow it for a secondary profile.
+        if current_secret_scope() is not None and is_multiplex_active():
+            return default
     except Exception:
         pass
     return (os.getenv(name) or default).strip()

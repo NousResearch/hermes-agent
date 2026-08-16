@@ -13,10 +13,15 @@ import type { HermesConnection } from '@/global'
 //  2. Agent activations share the gatewaySwitch mutex with profile switches —
 //     without it, two rapid activations could complete out of order and the
 //     EARLIER setActive() landed last.
-//  3. An activation publishes the gateway, the profile pointer and the
-//     connection descriptor in ONE synchronous frame. Activating first and
-//     awaiting the descriptor after left $gateway on the new backend while
-//     $connection still described the old one.
+//  3. A SUCCEEDING activation publishes the gateway, the profile pointer and
+//     the connection descriptor with no asynchronous gap between them.
+//     Activating first and awaiting the descriptor after left $gateway on the
+//     new backend while $connection still described the old one.
+//  4. A FAILING descriptor lookup publishes none of the three. Swallowing the
+//     rejection and publishing anyway produced the same mixed state as (3),
+//     except permanent: (3) closes when the descriptor arrives, whereas a
+//     failed lookup never arrives and the split survived until an unrelated
+//     reconnect or switch repaired it.
 //
 // Both doors go through the prepare/publish seam (prepareGatewayFor*, which
 // dial without publishing and return the activation thunk), so these mocks
@@ -115,14 +120,22 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     expect($connection.get()?.profile).toBe('research')
   })
 
-  it('leaves the prior connection intact when the descriptor fetch fails', async () => {
+  it('fails the switch closed when the descriptor lookup rejects', async () => {
+    // Previously this path swallowed the rejection and published anyway, which
+    // left $gateway and $activeGatewayProfile on the NEW backend while
+    // $connection still described the old one. Unlike the pending-descriptor
+    // race below, that state did not close on its own: it survived until some
+    // later reconnect or switch happened to repair it.
     getConnectionFor.mockRejectedValue(new Error('source unreachable'))
 
-    await ensureGatewayAgent('homelab', 'research')
+    await expect(ensureGatewayAgent('homelab', 'research')).rejects.toThrow('source unreachable')
 
-    expect($activeGatewayProfile.get()).toBe('research')
-    // Best-effort: boot/reconnect resyncs later; we must not null it out here.
+    // Nothing published: all three still describe the previous backend, and the
+    // caller can retry the switch.
+    expect(activateAgent).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
+    expect($connection.get()?.profile).toBe('default')
   })
 
   it('does not republish a registry identity invalidated during activation', async () => {

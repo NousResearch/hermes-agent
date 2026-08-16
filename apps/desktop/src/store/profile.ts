@@ -372,27 +372,24 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
 // Registry-aware sibling of syncConnectionToActiveProfile: a connection-scoped
 // agent's descriptor comes from getConnectionFor (its SOURCE connection), not
-// getConnection (the local pool). Same best-effort contract.
+// getConnection (the local pool).
 // Resolve only — publication is the caller's, so the descriptor can be in hand
-// BEFORE the activation frame rather than an await after it. Null means "no
-// descriptor to publish" (no desktop bridge, or the lookup failed): the caller
-// leaves the prior connection in place and boot/reconnect resyncs it later,
-// which is this path's established best-effort contract.
+// BEFORE the activation frame rather than an await after it.
+//
+// Null means "no desktop bridge" (plain browser) and nothing else, matching
+// resolveConnectionForProfile. A bridge REJECTION propagates so the caller
+// aborts the whole switch. Collapsing the two into null instead let a failed
+// lookup publish the new gateway and profile while $connection kept describing
+// the OLD backend, and unlike the pending-descriptor race that state did not
+// close on its own: it survived until some later reconnect or switch happened
+// to repair it, which is the same invariant this path exists to establish.
 async function resolveConnectionForActiveAgent(
   connectionId: string,
   profile: string
 ): Promise<null | HermesConnection> {
   const getConnectionFor = window.hermesDesktop?.getConnectionFor
 
-  if (!getConnectionFor) {
-    return null
-  }
-
-  try {
-    return await getConnectionFor({ connectionId, profile })
-  } catch {
-    return null
-  }
+  return getConnectionFor ? getConnectionFor({ connectionId, profile }) : null
 }
 
 // Activate a connection-scoped agent's gateway — the (connectionId, profile)
@@ -456,8 +453,9 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
       $activeGatewayProfile.set(target)
 
       // Remote-aware paths (image.attach_bytes vs image.attach, /api/fs/*,
-      // /api/media) follow $connection. A null descriptor keeps the previous
-      // one rather than clearing it, per resolveConnectionForActiveAgent.
+      // /api/media) follow $connection. Null here is only the no-bridge case,
+      // so keeping the previous descriptor is correct; a failed lookup
+      // rejected above and never reached this frame.
       if (descriptor) {
         setConnection(descriptor)
       }

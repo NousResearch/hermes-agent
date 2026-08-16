@@ -204,7 +204,7 @@ def summarized_region(compressor_module, messages):
 
 def generate_questions(messages, n: int, cache_path: Path) -> list:
     if cache_path.exists():
-        return json.loads(cache_path.read_text())
+        return json.loads(cache_path.read_text(encoding="utf-8"))
     import agent.context_compressor as cc
 
     region = summarized_region(cc, messages)
@@ -212,7 +212,7 @@ def generate_questions(messages, n: int, cache_path: Path) -> list:
     raw = _call(QUESTION_PROMPT.format(n=n, transcript=text), max_tokens=4000)
     questions = _extract_json(raw)[:n]
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(questions, indent=1))
+    cache_path.write_text(json.dumps(questions, indent=1), encoding="utf-8")
     return questions
 
 
@@ -289,7 +289,7 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
         "summary_error": getattr(comp, "_last_summary_error", None),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{label.replace('+', '_')}.json").write_text(json.dumps({"summary": summary, "results": results}, indent=1))
+    (out_dir / f"{label.replace('+', '_')}.json").write_text(json.dumps({"summary": summary, "results": results}, indent=1), encoding="utf-8")
     return summary
 
 
@@ -333,7 +333,7 @@ def main():
             "scores": scored,
         }
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "uncompacted_control.json").write_text(json.dumps({"summary": ctl, "results": results}, indent=1))
+        (out_dir / "uncompacted_control.json").write_text(json.dumps({"summary": ctl, "results": results}, indent=1), encoding="utf-8")
         summaries.append(ctl)
         print(json.dumps(ctl, indent=1))
 
@@ -348,7 +348,7 @@ def main():
         summaries.append(s)
         print(json.dumps(s, indent=1))
 
-    (out_dir / "scorecard.json").write_text(json.dumps(summaries, indent=1))
+    (out_dir / "scorecard.json").write_text(json.dumps(summaries, indent=1), encoding="utf-8")
     print(f"\nscorecard -> {out_dir}/scorecard.json")
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 def main():
     out_dir = Path(sys.argv[1])
-    card = json.loads((out_dir / "scorecard.json").read_text())
+    card = json.loads((out_dir / "scorecard.json").read_text(encoding="utf-8"))
     card.sort(key=lambda s: -s["recall_pct"])
 
     rows = []
@@ -35,7 +35,7 @@ def main():
     md = ["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]
     for r in rows:
         md.append("| " + " | ".join(r) + " |")
-    (out_dir / "scorecard.md").write_text("\n".join(md) + "\n")
+    (out_dir / "scorecard.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"\nmarkdown -> {out_dir}/scorecard.md")
 
 

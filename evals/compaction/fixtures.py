@@ -30,7 +30,7 @@ def load_transcript(path: str, cap_tokens: int | None = None) -> List[Dict[str, 
     The cap takes the chronological prefix, then drops trailing assistant
     tool_calls whose results were cut off so the input is well-formed.
     """
-    data = json.load(open(path))
+    data = json.load(open(path, encoding="utf-8"))
     msgs = data["messages"] if isinstance(data, dict) else data
     if cap_tokens is None:
         return msgs

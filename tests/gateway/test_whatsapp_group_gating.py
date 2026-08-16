@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -170,7 +170,13 @@ async def test_authorized_unmentioned_message_is_observed_without_dispatch():
 
     assert event is not None
     assert event.metadata["_whatsapp_observed_only"] is True
-    await adapter._dispatch_or_observe_inbound_event(event)
+    with patch(
+        "plugins.platforms.whatsapp.adapter.asyncio.to_thread",
+        new_callable=AsyncMock,
+        side_effect=lambda func, *args: func(*args),
+    ) as to_thread:
+        await adapter._dispatch_or_observe_inbound_event(event)
+    to_thread.assert_awaited_once_with(adapter._observe_unmentioned_group_event, event)
     enqueue_mock = adapter.__dict__["_enqueue_text_event"]
     handler_mock = adapter.__dict__["_message_handler"]
     enqueue_mock.assert_not_called()

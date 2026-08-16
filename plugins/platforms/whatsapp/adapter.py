@@ -1673,7 +1673,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _dispatch_or_observe_inbound_event(self, event: MessageEvent) -> None:
         """Route an accepted event to exactly one deterministic inbound path."""
         if event.metadata.pop("_whatsapp_observed_only", False):
-            self._observe_unmentioned_group_event(event)
+            await asyncio.to_thread(self._observe_unmentioned_group_event, event)
         elif event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
         else:

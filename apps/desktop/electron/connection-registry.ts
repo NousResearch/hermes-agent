@@ -414,6 +414,43 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   return merged
 }
 
+/**
+ * True when an edit changes how a connection is DIALED — endpoint, auth, or
+ * ssh routing fields — as opposed to a cosmetic label rename. Callers use
+ * this to decide whether live pooled backends / renderer sockets for the
+ * connection must be recycled after a save: a label-only edit keeps traffic
+ * flowing, while a url/token/host change means everything currently open
+ * points at the OLD target and must be torn down and re-dialed.
+ */
+export function connectionDialFieldsChanged(before: RegistryConnection, after: RegistryConnection): boolean {
+  if (before.kind !== after.kind) {
+    return true
+  }
+
+  const fields: (keyof RegistryConnection)[] = [
+    'url',
+    'authMode',
+    'org',
+    'host',
+    'user',
+    'port',
+    'keyPath',
+    'remoteHermesPath',
+    'remoteProfile'
+  ]
+
+  for (const field of fields) {
+    if ((before[field] ?? null) !== (after[field] ?? null)) {
+      return true
+    }
+  }
+
+  // Token envelopes are opaque here (main.ts encrypts). An edit that carries
+  // no new token inherits the stored envelope verbatim, so structural
+  // equality is exact for the label-only case.
+  return JSON.stringify(before.token ?? null) !== JSON.stringify(after.token ?? null)
+}
+
 // ── Registry-level operations (all pure: return a new registry) ────────────
 
 function localEntry(label = 'This device'): RegistryConnection {

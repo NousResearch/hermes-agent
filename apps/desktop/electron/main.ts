@@ -86,6 +86,7 @@ import {
   backendScopeKey,
   backendScopePrefix,
   buildAgentRoster,
+  connectionDialFieldsChanged,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
@@ -108,7 +109,6 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
-import { selectPoolEvictions } from './pool-eviction'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
@@ -213,6 +213,7 @@ import {
   electronProcessStartMarker,
   parentWatchdogEnv
 } from './parent-process-identity'
+import { selectPoolEvictions } from './pool-eviction'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -8061,6 +8062,16 @@ function saveRegistryConnection(input: any = {}) {
   }
 
   writeDesktopConnectionsRegistry(upsertConnection(registry, entry))
+
+  // A dial-material edit (endpoint/auth/ssh routing — NOT a label rename)
+  // leaves pooled backends under `conn:<id>::*` and renderer sockets pointing
+  // at the OLD target while the UI shows the new one. Recycle them: stop this
+  // connection's pooled backends/tunnels and tell renderers to dispose+redial
+  // their secondaries for this connection id.
+  if (existing && connectionDialFieldsChanged(existing, entry)) {
+    stopRegistryConnectionBackends(entry.id)
+    broadcastConnectionsChanged({ connectionId: entry.id, reason: 'updated' })
+  }
 
   return sanitizeRegistryConnection(entry)
 }

@@ -74,6 +74,48 @@ def test_sample_from_datasets_does_not_sample_from_full_materialized_pool(monkey
     assert len(sampled) == 5
 
 
+def test_iter_dataset_entries_labels_non_streaming_fallback(monkeypatch, capsys):
+    """TypeError from streaming=True must warn and say Loaded, not Streamed."""
+    import sys
+    import types
+
+    sac = _load_sample_and_compress()
+
+    def fake_load_dataset(name, split="train", streaming=False):
+        if streaming:
+            raise TypeError("streaming is not supported")
+        return [{"conversations": [{"value": "row"}]}]
+
+    fake_datasets = types.ModuleType("datasets")
+    fake_datasets.load_dataset = fake_load_dataset
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+
+    rows = list(sac.iter_dataset_entries("fake/ds"))
+    captured = capsys.readouterr().out
+    assert len(rows) == 1
+    assert "does not support streaming" in captured
+    assert "Loaded 1 entries" in captured
+    assert "Streamed" not in captured
+
+
+def test_merge_output_normalizes_pretty_json_to_jsonl(tmp_path):
+    sac = _load_sample_and_compress()
+    src_dir = tmp_path / "parts"
+    src_dir.mkdir()
+    (src_dir / "pretty.jsonl").write_text(
+        '{ "id": 1 }\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "merged.jsonl"
+
+    sac.merge_output_to_single_jsonl(src_dir, out)
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert lines[0] == '{"id": 1}'
+    assert json.loads(lines[0]) == {"id": 1}
+
+
 def test_merge_output_streams_jsonl(tmp_path):
     sac = _load_sample_and_compress()
     src_dir = tmp_path / "parts"

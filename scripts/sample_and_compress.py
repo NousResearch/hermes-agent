@@ -50,11 +50,17 @@ def iter_dataset_entries(dataset_name: str) -> Iterator[Dict[str, Any]]:
     from datasets import load_dataset
 
     print(f"   Loading {dataset_name}...")
+    streamed = False
 
     try:
         try:
             dataset = load_dataset(dataset_name, split="train", streaming=True)
+            streamed = True
         except TypeError:
+            print(
+                f"   ⚠️  {dataset_name} does not support streaming; "
+                "falling back to a non-streaming load (higher RAM)."
+            )
             dataset = load_dataset(dataset_name, split="train")
     except Exception as exc:
         print(f"   ⚠️  Error loading {dataset_name}: {exc}")
@@ -64,7 +70,8 @@ def iter_dataset_entries(dataset_name: str) -> Iterator[Dict[str, Any]]:
     for item in dataset:
         yield _entry_from_hf_item(item)
         count += 1
-    print(f"   ✅ Streamed {count:,} entries from {dataset_name}")
+    verb = "Streamed" if streamed else "Loaded"
+    print(f"   ✅ {verb} {count:,} entries from {dataset_name}")
 
 
 def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
@@ -308,7 +315,9 @@ def merge_output_to_single_jsonl(input_dir: Path, output_file: Path):
                     for line in handle:
                         if not line.strip():
                             continue
-                        out.write(line if line.endswith("\n") else line + "\n")
+                        # Re-serialize so pretty-printed / multi-line JSON
+                        # becomes one valid JSONL row without holding the file.
+                        out.write(json.dumps(json.loads(line), ensure_ascii=False) + "\n")
                         count += 1
             out.flush()
             os.fsync(out.fileno())

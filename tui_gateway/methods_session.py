@@ -523,6 +523,14 @@ def _(rid, params: dict) -> dict:
         # transcript through the paginated REST endpoint. Register the runtime now,
         # then load model history and initialize optional providers in background.
         # Repeated requests reuse the record through the live fast path above.
+        #
+        # Precedence vs omit_messages: defer_history SUPERSEDES omit_messages.
+        # Desktop sends both flags on a cold resume; when defer_history is set the
+        # response never carries a transcript (messages is always []) and the ONE
+        # history read happens in the background hydration worker — the synchronous
+        # omit_messages read below (cold resume default) is skipped entirely, so
+        # the transcript is never loaded twice for one resume. omit_messages only
+        # governs the response shape of the non-deferred paths.
         if defer_history and not is_truthy_value(params.get("eager_build", False)):
             sid = uuid.uuid4().hex[:8]
             source = _resolve_session_source(str(params.get("source") or "").strip() or None)

@@ -31,11 +31,11 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _context_usage_fields,
     _derive_chat_session_id,
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _turn_usage_fields,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -356,17 +356,24 @@ def auth_adapter():
 # ---------------------------------------------------------------------------
 
 
-class TestContextUsageFields:
-    """usage.context_tokens / context_window — the gauge numbers a remote
-    client cannot compute from the cumulative token counts."""
+class TestTurnUsageFields:
+    """The turn's usage block: the cumulative cost counters, plus the gauge
+    numbers (context_tokens / context_window) a remote client cannot compute
+    from them."""
 
-    def test_reports_compressor_numbers(self):
+    def test_reports_cost_counters_and_compressor_numbers(self):
         agent = types.SimpleNamespace(
+            session_prompt_tokens=1200,
+            session_completion_tokens=300,
+            session_total_tokens=1500,
             context_compressor=types.SimpleNamespace(
                 last_prompt_tokens=35019, context_length=1050000
-            )
+            ),
         )
-        assert _context_usage_fields(agent) == {
+        assert _turn_usage_fields(agent) == {
+            "input_tokens": 1200,
+            "output_tokens": 300,
+            "total_tokens": 1500,
             "context_tokens": 35019,
             "context_window": 1050000,
         }
@@ -379,21 +386,30 @@ class TestContextUsageFields:
                 last_prompt_tokens=-1, context_length=272000
             )
         )
-        assert _context_usage_fields(agent)["context_tokens"] == 0
+        assert _turn_usage_fields(agent)["context_tokens"] == 0
 
     def test_missing_compressor_is_zeroed(self):
-        assert _context_usage_fields(types.SimpleNamespace()) == {
+        assert _turn_usage_fields(types.SimpleNamespace()) == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
             "context_tokens": 0,
             "context_window": 0,
         }
 
     def test_non_numeric_attributes_are_zeroed(self):
         agent = types.SimpleNamespace(
+            session_prompt_tokens=None,
+            session_completion_tokens=None,
+            session_total_tokens=None,
             context_compressor=types.SimpleNamespace(
                 last_prompt_tokens=None, context_length="unknown"
-            )
+            ),
         )
-        assert _context_usage_fields(agent) == {
+        assert _turn_usage_fields(agent) == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
             "context_tokens": 0,
             "context_window": 0,
         }

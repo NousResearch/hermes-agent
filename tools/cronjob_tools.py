@@ -1164,6 +1164,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    allow_messaging: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1254,6 +1255,7 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    allow_messaging=bool(allow_messaging),
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1509,6 +1511,8 @@ def cronjob(
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
+            if allow_messaging is not None:
+                updates["allow_messaging"] = bool(allow_messaging)
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
             if workdir is not None:
@@ -1660,6 +1664,10 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                 "items": {"type": "string"},
                 "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
             },
+            "allow_messaging": {
+                "type": "boolean",
+                "description": "When true, this cron job may send multiple native messages through send_message to its bound origin only. Default false. After those sends, return [SILENT] so the scheduler does not add a duplicate summary."
+            },
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
@@ -1727,6 +1735,7 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+        allow_messaging=args.get("allow_messaging"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

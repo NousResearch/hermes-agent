@@ -312,14 +312,12 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
-def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
+def _resolve_cron_disabled_toolsets(cfg: dict, job: Optional[dict] = None) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three toolsets are always disabled in cron context regardless of config:
-      - ``messaging`` — interactive, needs a live gateway session
-      - ``clarify`` — interactive, blocks waiting for user input
-      - ``memory`` — cron agents are constructed with ``skip_memory=True``, so
-        exposing this tool only gives the model an unbacked tool that fails
+    ``clarify`` and ``memory`` are always disabled in cron context. The
+    ``messaging`` toolset is disabled unless this individual job has
+    ``allow_messaging=true``.
 
     ``cronjob`` is policy-denied by default (loop prevention, not a security
     boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
@@ -332,11 +330,14 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
+    job = job or {}
     cron_cfg = (cfg or {}).get("cron") or {}
     if cron_cfg.get("allow_agent_scheduling"):
         disabled = ["messaging", "clarify", "memory"]
     else:
         disabled = ["cronjob", "messaging", "clarify", "memory"]
+    if job.get("allow_messaging"):
+        disabled.remove("messaging")
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:
@@ -3495,17 +3496,33 @@ def _build_job_prompt(
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    from cron.outbound import job_allows_messaging
+
+    if job_allows_messaging(job):
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: You may send multiple native messages with "
+            "send_message. Each call needs a unique message_key and "
+            "target='origin'. The scheduler sends through this Hermes "
+            "profile's adapter identity only. Do not use a shell, "
+            "provider CLI, or any other account. After those native "
+            "sends, respond with exactly \"[SILENT]\" so the scheduler "
+            "does not add a duplicate summary. If there is nothing to "
+            "send, respond with exactly \"[SILENT]\". Never combine "
+            "[SILENT] with leftover content.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -4581,6 +4598,9 @@ def run_job(
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
         "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+        "HERMES_CRON_ALLOW_MESSAGING",
+        "HERMES_CRON_JOB_ID",
+        "HERMES_CRON_RUN_ID",
     )
     for _var_name in _cron_delivery_vars:
         _VAR_MAP[_var_name].set("")
@@ -4703,6 +4723,14 @@ def run_job(
                 if delivery_target.get("thread_id") is None
                 else str(delivery_target["thread_id"])
             )
+
+        from cron.outbound import job_allows_messaging
+
+        _VAR_MAP["HERMES_CRON_JOB_ID"].set(str(job_id or ""))
+        _VAR_MAP["HERMES_CRON_RUN_ID"].set(str(uuid.uuid4()))
+        _VAR_MAP["HERMES_CRON_ALLOW_MESSAGING"].set(
+            "1" if job_allows_messaging(job) and delivery_target else ""
+        )
 
         # Model resolution precedence: per-job override > cron.model (the
         # cron-fleet default) > HERMES_MODEL env > config.yaml ``model:``
@@ -5156,7 +5184,7 @@ def run_job(
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg, job),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

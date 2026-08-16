@@ -19735,6 +19735,66 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         server._sessions.pop(sid, None)
 
 
+def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
+    monkeypatch, tmp_path
+):
+    """The bounded map classifies physical active IDs before user;user repair."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "rowid-repaired-wedge.db")
+    session_key = "real-db-rowid-repaired-wedge"
+    db.create_session(session_key, "cli")
+    physical = [
+        {"role": "user", "content": "first fragment"},
+        {"role": "user", "content": "second fragment"},
+        {"role": "assistant", "content": "combined reply"},
+        {"role": "user", "content": "target"},
+        {"role": "assistant", "content": "target reply"},
+    ]
+    with db._lock:
+        db._insert_message_rows(db._conn, session_key, physical)
+        db._conn.commit()
+    physical_ids = [message["_row_id"] for message in physical]
+    repaired = db.get_messages_as_conversation(
+        session_key, repair_alternation=True, include_row_ids=True
+    )
+    # Provider repair merges the wedge and necessarily drops the second
+    # physical user's row identity from the replay view.
+    assert physical_ids[1] not in {
+        server._message_row_id(message) for message in repaired
+    }
+
+    sess = _session(
+        history=[dict(message) for message in repaired], session_key=session_key
+    )
+    sid = "rowid-repaired-wedge-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "retry target",
+                    "truncate_before_row_id": physical_ids[3],
+                    "rebind_survivor_row_ids": [*physical_ids, 999_999],
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert response.get("error") is None, response
+        row_id_map = response["result"]["survivor_row_id_map"]
+        assert row_id_map[str(physical_ids[1])] is None
+        assert "999999" not in row_id_map
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_prompt_submit_unconfirmed_truncation_refuses_before_target_resolution(
     monkeypatch,
 ):

@@ -85,7 +85,11 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
     return None
 
 
-def _load_durable_truncation_history(session: dict, fallback_sid: str = ""):
+def _load_durable_truncation_history(
+    session: dict,
+    fallback_sid: str = "",
+    repair_alternation: bool = True,
+):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
     session_key = str(session.get("session_key") or fallback_sid or "")
     if not session_key:
@@ -96,7 +100,9 @@ def _load_durable_truncation_history(session: dict, fallback_sid: str = ""):
             if not callable(get_conv):
                 return None
             history = get_conv(
-                session_key, repair_alternation=True, include_row_ids=True
+                session_key,
+                repair_alternation=repair_alternation,
+                include_row_ids=True,
             )
     except Exception:
         logger.debug(
@@ -695,16 +701,18 @@ def _(rid, params: dict) -> dict:
                         for message in history
                         if isinstance((row_id := _message_row_id(message)), int)
                     }
-                    if requested_rebind_ids is not None and any(
-                        _message_row_id(message) is None for message in history
-                    ):
+                    if requested_rebind_ids is not None:
                         # Row-id fallback can resolve a durable target even
-                        # when the live list is too misaligned to stamp safely.
-                        # Read the authoritative pre-write active-id set so a
-                        # rewritten row is never mistaken for an untouched
+                        # when the live list is too misaligned to stamp safely,
+                        # and alternation repair can merge a physical user;user
+                        # pair while preserving only the first row id. Read the
+                        # authoritative un-repaired pre-write active-id set so
+                        # a rewritten row is never mistaken for an untouched
                         # archived/ancestor row by the bounded client map.
                         durable_rebind_history = _load_durable_truncation_history(
-                            session, truncation_key
+                            session,
+                            truncation_key,
+                            repair_alternation=False,
                         )
                         if durable_rebind_history is None:
                             raise RuntimeError(

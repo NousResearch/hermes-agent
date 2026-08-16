@@ -3282,6 +3282,221 @@ def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch,
     assert texts == ["child prompt", "child substantive answer", "child terse reply"]
 
 
+def test_session_resume_deferred_history_acknowledges_and_reuses(monkeypatch):
+    history_started = threading.Event()
+    release_history = threading.Event()
+    build_started = threading.Event()
+    history_calls = []
+    auto_continue_calls = []
+    ancestor = {"role": "assistant", "content": "ancestor"}
+    loaded = {"role": "user", "content": "loaded"}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1200}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, target):
+            assert target == "large-session"
+
+        def get_resume_conversations(self, target):
+            history_calls.append(("resume", target))
+            history_started.set()
+            assert release_history.wait(timeout=2.0)
+            return [loaded], [ancestor, loaded]
+
+        def get_ancestor_display_prefix(self, target):
+            history_calls.append(("prefix", target))
+            return [ancestor]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, _session: build_started.set(),
+    )
+    monkeypatch.setattr(
+        server,
+        "_maybe_schedule_auto_continue",
+        lambda sid, session, stored_id: auto_continue_calls.append(
+            (sid, session, stored_id)
+        ),
+    )
+
+    try:
+        first = server._methods["session.resume"](
+            "r1",
+            {
+                "session_id": "large-session",
+                "source": "desktop",
+                "defer_history": True,
+            },
+        )
+
+        assert first["result"]["hydrating"] is True
+        assert first["result"]["messages"] == []
+        assert first["result"]["message_count"] == 1200
+        assert history_started.wait(timeout=1.0)
+
+        second = server._methods["session.resume"](
+            "r2",
+            {"session_id": "large-session", "defer_history": True},
+        )
+        assert second["result"]["session_id"] == first["result"]["session_id"]
+        assert second["result"]["hydrating"] is True
+        assert second["result"]["messages"] == []
+
+        release_history.set()
+        sid = first["result"]["session_id"]
+        assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
+        assert build_started.wait(timeout=1.0)
+        assert history_calls == [
+            ("resume", "large-session"),
+            ("prefix", "large-session"),
+        ]
+        assert server._sessions[sid]["history"] == [loaded]
+        assert server._sessions[sid]["display_history_prefix"] == [ancestor]
+        assert server._sessions[sid]["resume_message_count"] == 2
+        assert auto_continue_calls == [(sid, server._sessions[sid], "large-session")]
+    finally:
+        release_history.set()
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == "large-session":
+                lease = session.get("active_session_lease")
+                if lease is not None:
+                    lease.release()
+                server._sessions.pop(sid, None)
+
+
+def test_session_resume_deferred_history_failure_can_retry(monkeypatch):
+    first_released = threading.Event()
+    build_started = threading.Event()
+    attempts = 0
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, _target):
+            pass
+
+        def get_resume_conversations(self, _target):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                first_released.set()
+                raise RuntimeError("sqlite read failed")
+            loaded = [{"role": "user", "content": "retry loaded"}]
+            return loaded, loaded
+
+        def get_ancestor_display_prefix(self, _target):
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(
+        server,
+        "_claim_active_session_slot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "resume must not claim a session slot before the first prompt"
+        ),
+    )
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, _session: build_started.set(),
+    )
+
+    try:
+        first = server._methods["session.resume"](
+            "r1",
+            {"session_id": "retry-session", "defer_history": True},
+        )
+        first_sid = first["result"]["session_id"]
+        assert first_released.wait(timeout=1.0)
+        assert first_sid not in server._sessions
+
+        second = server._methods["session.resume"](
+            "r2",
+            {"session_id": "retry-session", "defer_history": True},
+        )
+        second_sid = second["result"]["session_id"]
+        assert second_sid != first_sid
+        assert server._sessions[second_sid]["resume_history_ready"].wait(timeout=1.0)
+        assert build_started.wait(timeout=1.0)
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session.get("session_key") == "retry-session":
+                lease = session.get("active_session_lease")
+                if lease is not None:
+                    lease.release()
+                server._sessions.pop(sid, None)
+
+
+def test_session_resume_deferred_history_close_cancels_build(monkeypatch):
+    history_started = threading.Event()
+    release_history = threading.Event()
+    build_started = threading.Event()
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "message_count": 1}
+
+        def resolve_resume_session_id(self, target):
+            return target
+
+        def reopen_session(self, _target):
+            pass
+
+        def get_resume_conversations(self, _target):
+            history_started.set()
+            assert release_history.wait(timeout=2.0)
+            loaded = [{"role": "user", "content": "late"}]
+            return loaded, loaded
+
+        def get_ancestor_display_prefix(self, _target):
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, _session: build_started.set(),
+    )
+
+    response = {}
+    try:
+        response = server._methods["session.resume"](
+            "r1",
+            {"session_id": "cancel-session", "defer_history": True},
+        )
+        sid = response["result"]["session_id"]
+        session = server._sessions[sid]
+        assert history_started.wait(timeout=1.0)
+
+        assert server._close_session_by_id(sid, end_reason="tui_close") is True
+        assert session["resume_history_ready"].is_set()
+        assert session["resume_history_error"] == "session resume cancelled"
+
+        release_history.set()
+        time.sleep(0.05)
+        assert not build_started.is_set()
+        assert sid not in server._sessions
+    finally:
+        release_history.set()
+        server._sessions.pop(response.get("result", {}).get("session_id", ""), None)
+
+
 def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     """Resuming a rotated-out parent id must load the continuation's messages.
 
@@ -11184,6 +11399,255 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
+    """Full-lineage Desktop ordinals must truncate the tip segment (#82462).
+
+    After compression, session["history"] is the tip while display_history_prefix
+    still holds ancestor user turns the UI shows. A client ordinal that includes
+    those ancestors must map into the tip, not 4018.
+    """
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "edited reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "edited reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    tip_history = [
+        {"role": "user", "content": "post-compress A"},
+        {"role": "assistant", "content": "reply A"},
+        {"role": "user", "content": "post-compress B"},
+        {"role": "assistant", "content": "reply B"},
+    ]
+    display_prefix = [
+        {"role": "user", "content": "pre-compress 1"},
+        {"role": "assistant", "content": "pre reply 1"},
+        {"role": "user", "content": "pre-compress 2"},
+        {"role": "assistant", "content": "pre reply 2"},
+    ]
+    # Desktop lineage: pre1=0, pre2=1, postA=2, postB=3
+    desktop_ordinal_for_post_b = 3
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        history=tip_history,
+        display_history_prefix=display_prefix,
+    )
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def get_messages_as_conversation(self, *_args, **_kwargs):
+            # Empty durable transcript: proves this ephemeral-style session
+            # may take the ordinal-only path past the durability gate.
+            return []
+
+        def replace_messages(
+            self,
+            session_id,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
+            assert reject_active_turn_lease is True
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited post B",
+                    "truncate_before_user_ordinal": desktop_ordinal_for_post_b,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert seen["prompt"] == "edited post B"
+        assert seen["history"] == tip_history[:2]
+        assert stub_db.replaced == [("session-key", tip_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_truncate_oor_includes_structured_user_turn_count(monkeypatch):
+    """4018 after compaction must carry recovery fields for Desktop (#82462)."""
+
+    tip_history = [
+        {"role": "user", "content": "post-compress A"},
+        {"role": "assistant", "content": "reply A"},
+    ]
+    display_prefix = [
+        {"role": "user", "content": "pre-compress 1"},
+        {"role": "assistant", "content": "pre reply 1"},
+    ]
+    # Ordinal 0 points at the ancestor prefix — not editable from the tip.
+    server._sessions["sid"] = _session(
+        history=tip_history,
+        display_history_prefix=display_prefix,
+    )
+
+    try:
+        monkeypatch.setattr(
+            server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+        )
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edit ancestor",
+                    "truncate_before_user_ordinal": 0,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        err = resp.get("error") or {}
+        assert err.get("code") == 4018
+        assert "no longer in session history" in (err.get("message") or "")
+        data = err.get("data") or {}
+        assert data.get("user_turn_count") == 1
+        assert data.get("ordinal") == 0
+        assert data.get("segment_ordinal") == -1
+        assert data.get("prefix_user_count") == 1
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
+    """Desktop sends rowId + a full-lineage ordinal; both must agree (#82462).
+
+    After compression the client's visible-user ordinal counts the ancestor
+    prefix turns while the gateway resolves the row id tip-relative. The
+    reconcile cross-check must treat `tip_ordinal + prefix_user_count` as
+    agreement, not #82756 drift — and the cut stays aimed by the row id.
+    """
+    from agent.context_compressor import (
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+
+    tip_history = [
+        {"_row_id": 501, "role": "user", "content": "post-compress A"},
+        {"_row_id": 502, "role": "assistant", "content": "reply A"},
+        {"_row_id": 503, "role": "user", "content": "post-compress B"},
+        {"_row_id": 504, "role": "assistant", "content": "reply B"},
+    ]
+    display_prefix = [
+        {"role": "user", "content": "pre-compress 1"},
+        {"role": "assistant", "content": "pre reply 1"},
+        {
+            # Legacy pure handoffs did not always carry display_kind=hidden.
+            # They are physically user rows but not visible/user-originated
+            # turns, so they must not shift the Desktop lineage ordinal.
+            "role": "user",
+            "content": (
+                f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+                f"{_SUMMARY_END_MARKER}"
+            ),
+        },
+        {"role": "user", "content": "pre-compress 2"},
+        {"role": "assistant", "content": "pre reply 2"},
+    ]
+
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(
+            self,
+            key,
+            messages,
+            active_only=False,
+            archive_dropped=False,
+            reject_active_turn_lease=False,
+        ):
+            assert reject_active_turn_lease is True
+            replaced.append((key, list(messages)))
+
+    sess = _session(history=list(tip_history), display_history_prefix=display_prefix)
+    server._sessions["lineage-row-sid"] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "lineage-row-sid",
+                    "text": "edited post B",
+                    # Row id resolves to tip ordinal 1; the client counted the
+                    # 2 ancestor user turns, so its lineage ordinal is 3.
+                    "truncate_before_row_id": 503,
+                    "truncate_before_user_ordinal": 3,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is None, f"got error: {resp.get('error')}"
+        assert sess["history"] == tip_history[:2]
+    finally:
+        server._sessions.pop("lineage-row-sid", None)
+
+    # A genuinely stale ordinal (matches neither the tip space nor the
+    # lineage space) must still refuse with the #82756 mismatch.
+    sess2 = _session(history=list(tip_history), display_history_prefix=display_prefix)
+    server._sessions["lineage-row-sid-2"] = sess2
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "lineage-row-sid-2",
+                    "text": "edited post B",
+                    "truncate_before_row_id": 503,
+                    "truncate_before_user_ordinal": 2,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is not None
+        assert resp["error"]["code"] == 4030
+    finally:
+        server._sessions.pop("lineage-row-sid-2", None)
+
+
 # ---------------------------------------------------------------------------
 # session.interrupt must only cancel pending prompts owned by the calling
 # session — it must not blast-resolve clarify/sudo/secret prompts on
@@ -13120,6 +13584,42 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         assert any("from-profile" in t for t in texts) or resp["result"]["count"] == 1
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_session_history_ships_durable_row_ids(monkeypatch):
+    """session.history must request row-id stamps — clients resolve truncation
+    targets by content against this projection (#87059 client half)."""
+    seen: dict = {}
+
+    class _Db:
+        def get_messages_as_conversation(self, _key, include_ancestors=False, include_row_ids=False, **_kwargs):
+            seen["include_row_ids"] = include_row_ids
+
+            return [
+                {"role": "user", "content": "hello", "_row_id": 41},
+                {"role": "assistant", "content": "hi"},
+            ]
+
+    server._sessions["rowid-hist-sid"] = {
+        "session_key": "rowid-sess",
+        "history": [],
+        "history_lock": __import__("threading").Lock(),
+        "running": False,
+        "agent": None,
+        "created_at": 1.0,
+        "last_active": 1.0,
+    }
+    monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.history", "params": {"session_id": "rowid-hist-sid"}}
+        )
+        assert "result" in resp, resp
+        assert seen.get("include_row_ids") is True
+        user_rows = [m for m in resp["result"]["messages"] if m.get("role") == "user"]
+        assert user_rows and user_rows[0].get("row_id") == 41
+    finally:
+        server._sessions.pop("rowid-hist-sid", None)
 
 
 def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
@@ -18910,6 +19410,7 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
         db._insert_message_rows(db._conn, session_key, msgs)
         db._conn.commit()
     rid_b = msgs[2]["_row_id"]
+    original_row_ids = [message["_row_id"] for message in msgs]
 
     # Same length + same role pattern, but content positions swapped: a
     # positional stamp would mark live "B" with durable A's row id and the
@@ -18941,6 +19442,7 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
                     "session_id": sid,
                     "text": "rewind B",
                     "truncate_before_row_id": rid_b,
+                    "rebind_survivor_row_ids": [*original_row_ids, 999_999],
                     "confirm_truncate": True,
                 },
             }
@@ -18979,6 +19481,7 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
         db._insert_message_rows(db._conn, session_key, msgs)
         db._conn.commit()
     rid_b = msgs[2]["_row_id"]
+    original_row_ids = [message["_row_id"] for message in msgs]
 
     live_history = [
         {"role": "user", "content": "A"},
@@ -19002,6 +19505,7 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
                     "session_id": sid,
                     "text": "rewind B",
                     "truncate_before_row_id": rid_b,
+                    "rebind_survivor_row_ids": [*original_row_ids, 999_999],
                     "confirm_truncate": True,
                 },
             }
@@ -19018,6 +19522,13 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
             ("assistant", "ra"),
             ("assistant", "rb"),
         ]
+        # The live list was too misaligned to bind old survivors to their new
+        # physical rows safely. All requested IDs known to the pre-write active
+        # transcript are therefore cleared; an unrelated archived/ancestor ID
+        # remains absent from the bounded map and keeps its identity.
+        assert resp["result"]["survivor_row_id_map"] == {
+            str(row_id): None for row_id in original_row_ids
+        }
     finally:
         server._sessions.pop(sid, None)
 
@@ -19098,8 +19609,9 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
         server._sessions.pop(sid, None)
 
 
+@pytest.mark.parametrize("turn_isolation", [False, True])
 def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, turn_isolation
 ):
     """#83202 review (consecutive-rewind staleness): replace_messages re-inserts
     the surviving prefix as NEW rows, so the pre-rewind client row ids die on
@@ -19128,6 +19640,16 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     sid = "real-db-consec-rewind-sid"
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"dashboard": {"turn_isolation": turn_isolation}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_submit_prompt_to_compute_host",
+        lambda *_args, **_kwargs: server._ok("host", {"status": "streaming"}),
+    )
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
@@ -19143,17 +19665,30 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
                     "text": "rewound third",
                     "truncate_before_row_id": original_row_ids[4],
                     "truncate_before_user_ordinal": 2,
+                    "rebind_survivor_row_ids": [*original_row_ids, 999_999],
                     "confirm_truncate": True,
                 },
             }
         )
         assert resp1.get("error") is None, resp1
-        survivors = resp1["result"].get("survivor_user_row_ids")
-        # Fresh ids for the two surviving user turns, in visible-user order.
-        assert isinstance(survivors, list) and len(survivors) == 2
-        assert all(isinstance(r, int) for r in survivors)
+        assert "survivor_user_row_ids" not in resp1["result"]
+        row_id_map = resp1["result"].get("survivor_row_id_map")
+        assert isinstance(row_id_map, dict)
+        survivors = [
+            row_id_map[str(original_row_ids[0])],
+            row_id_map[str(original_row_ids[2])],
+        ]
         # They must be NEW rows — the old ids are archived (active=0) now.
         assert set(survivors).isdisjoint(set(original_row_ids))
+        assert row_id_map == {
+            str(original_row_ids[0]): survivors[0],
+            str(original_row_ids[1]): sess["history"][1]["_row_id"],
+            str(original_row_ids[2]): survivors[1],
+            str(original_row_ids[3]): sess["history"][3]["_row_id"],
+            str(original_row_ids[4]): None,
+            str(original_row_ids[5]): None,
+        }
+        assert "999999" not in row_id_map
         sess["running"] = False
 
         # Rewind 2a: the STALE pre-rewind id for "second" must fail closed.
@@ -19415,3 +19950,55 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
     finally:
         reset_hermes_home_override(outer_token)
     assert get_hermes_home_override() is None
+
+
+def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
+    """An explicit Move-to-project must win for a RUNNING session: the stored
+    row and the live runtime session re-anchor together, never a UI-vs-db
+    disagreement (#86626)."""
+    target = "stored-running-session"
+    new_cwd = tmp_path / "dest-project"
+    new_cwd.mkdir()
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def update_session_cwd(self, session_id, cwd, branch=None, root=None, replace_git_meta=True):
+            captured["row_update"] = (session_id, cwd)
+
+        def close(self):
+            pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_db(_params):
+        yield FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", _fake_db)
+    monkeypatch.setattr(
+        server,
+        "_git_branch_for_cwd",
+        lambda cwd: "main",
+    )
+    monkeypatch.setattr(
+        server,
+        "_git_common_repo_root_for_cwd",
+        lambda cwd: str(new_cwd),
+    )
+
+    live = {"session_key": target, "running": True, "cwd": str(tmp_path / "old-project")}
+    server._sessions["live-sid"] = live
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+
+    res = server._methods["session.workspace.move"](
+        "rid",
+        {"session_key": target, "cwd": str(new_cwd)},
+    )
+
+    assert "error" not in res, res
+    assert captured["row_update"] == (target, str(new_cwd))
+    assert live["cwd"] == str(new_cwd)
+    assert live.get("explicit_cwd") is True

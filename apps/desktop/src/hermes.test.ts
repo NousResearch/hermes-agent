@@ -13,9 +13,12 @@ import {
   getGlobalModelOptions,
   getHermesConfig,
   getHermesConfigDefaults,
+  getLatestSessionMessages,
+  getOlderSessionMessages,
   getProfiles,
   getSessionMessages,
   getStatus,
+  LATEST_SESSION_MESSAGES_LIMIT,
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
@@ -26,6 +29,7 @@ import {
   triggerCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
+import { $transcriptTailBySessionId, transcriptTailState } from './store/transcript-tail'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -346,6 +350,47 @@ describe('Hermes REST helpers', () => {
 
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('hydrates the latest transcript with a small tail page (120, latest, compacted rows included)', async () => {
+    api.mockResolvedValue({
+      messages: [],
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 0 },
+      session_id: 'session-1'
+    })
+
+    await getLatestSessionMessages('session-1', 'xiaoxuxu')
+
+    expect(LATEST_SESSION_MESSAGES_LIMIT).toBe(120)
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&order=latest&include_compacted=true',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('records tail truncation state under the requested and resolved session ids', async () => {
+    $transcriptTailBySessionId.set({})
+    api.mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => ({ content: `m${index}`, id: index, role: 'user' })),
+      pagination: { limit: 120, offset: 0, order: 'latest', returned: 120 },
+      session_id: 'resolved-1'
+    })
+
+    await getLatestSessionMessages('prefix-1')
+
+    expect(transcriptTailState('prefix-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
+    expect(transcriptTailState('resolved-1')).toMatchObject({ nextOffset: 120, possiblyTruncated: true })
+  })
+
+  it('requests older pages backwards from the newest message', async () => {
+    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
+
+    await getOlderSessionMessages('session-1', 'xiaoxuxu', 240)
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&offset=240&order=latest&include_compacted=true',
       profile: 'xiaoxuxu'
     })
   })

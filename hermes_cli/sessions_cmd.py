@@ -39,8 +39,8 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
-def _session_browse_picker(sessions):
-    return _m()._session_browse_picker(sessions)
+def _session_browse_picker(sessions, session_db=None):
+    return _m()._session_browse_picker(sessions, session_db=session_db)
 
 
 def _size_delta_label(saved_mb):
@@ -301,6 +301,12 @@ def cmd_sessions(args, sessions_parser=None):
         print("✗ Recovery output did not pass every verification check.")
         print("  Do not install it. Review the JSON report for partial data or errors.")
         return 1
+
+    if action == "import":
+        from hermes_cli.foreign_sessions import run_sessions_import
+
+        run_sessions_import(args)
+        return
 
     try:
         from hermes_state import SessionDB
@@ -936,6 +942,20 @@ def cmd_sessions(args, sessions_parser=None):
             filters["archived"] = False
 
         candidates = db.list_prune_candidates(**filters)
+        # Archive expands each selected row to its compression lineage, which
+        # can include open continuations; a direct-open count would therefore
+        # describe the eventual archive effect inaccurately.
+        skipped_open = (
+            db.count_open_prune_matches(**filters) if action == "prune" else 0
+        )
+        if skipped_open:
+            suffix = "" if skipped_open == 1 else "s"
+            print(
+                f"Note: {skipped_open} open session{suffix} also match these "
+                "filters but will be skipped because prune only deletes ended "
+                "sessions. Use `hermes sessions delete <id>` "
+                "to remove one explicitly."
+            )
         verb = "Delete" if action == "prune" else "Archive"
         if not candidates:
             print(f"No sessions match ({describe_filters(filters)}).")
@@ -1070,12 +1090,17 @@ def cmd_sessions(args, sessions_parser=None):
         sessions = db.list_sessions_rich(
             source=source, exclude_sources=_browse_exclude, limit=limit
         )
-        db.close()
         if not sessions:
+            db.close()
             print("No sessions found.")
             return
 
-        selected_id = _session_browse_picker(sessions)
+        # Keep the DB open: the picker uses it for lifecycle status tags and
+        # the 'd' delete-with-confirmation action.
+        try:
+            selected_id = _session_browse_picker(sessions, session_db=db)
+        finally:
+            db.close()
         if not selected_id:
             print("Cancelled.")
             return

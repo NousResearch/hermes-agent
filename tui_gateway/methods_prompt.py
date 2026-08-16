@@ -179,38 +179,53 @@ def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
         return None, _err(rid, 4004, f"{param_name} must be an integer")
 
 
-def _reconcile_client_ordinal(rid, sid, client_ordinal, msg_ordinal, param_name, target_repr):
+def _reconcile_client_ordinal(
+    rid, sid, client_ordinal, msg_ordinal, param_name, target_repr,
+    prefix_user_count=0,
+):
     """Cross-check a client ordinal against a resolved durable target.
 
-    Returns ``(ordinal, error_response)``: the target's ordinal when the
-    client sent none or agreed, else the 4004/4030 refusal. A stale ordinal
-    alongside a *resolved* durable id is the #82756 drift class — refuse
-    rather than guess which address the user meant.
+    Returns ``(ordinal, error_response)``: the target's tip-relative ordinal
+    when the client sent none or agreed, else the 4004/4030 refusal. A stale
+    ordinal alongside a *resolved* durable id is the #82756 drift class —
+    refuse rather than guess which address the user meant.
+
+    Desktop/TUI ordinals count the full displayed lineage: after context
+    compression the client still renders the ancestor turns from
+    ``display_history_prefix`` while ``msg_ordinal`` is relative to the tip
+    segment only (#82462). A client ordinal that equals
+    ``msg_ordinal + prefix_user_count`` is therefore the SAME turn counted in
+    lineage space, not drift — accept it. The cut itself is always aimed by
+    the resolved durable target, never by the client ordinal, so this wider
+    acceptance can never re-aim a truncation.
     """
     if client_ordinal is None:
         return msg_ordinal, None
     ordinal, err = _coerce_truncate_int(rid, client_ordinal)
     if err is not None:
         return None, err
-    if ordinal != msg_ordinal:
-        logger.warning(
-            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
-            "(ordinal=%d, %s_ordinal=%d, %s=%s). "
-            "Stale truncate_before_user_ordinal detected.",
-            sid,
-            ordinal,
-            param_name,
-            msg_ordinal,
-            param_name,
-            target_repr,
-        )
-        return None, _err(
-            rid,
-            4030,
-            f"truncate_before_user_ordinal ({ordinal}) does not match "
-            f"{param_name} target turn ({msg_ordinal})",
-        )
-    return ordinal, None
+    if ordinal == msg_ordinal:
+        return msg_ordinal, None
+    if prefix_user_count > 0 and ordinal == msg_ordinal + prefix_user_count:
+        return msg_ordinal, None
+    logger.warning(
+        "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
+        "(ordinal=%d, %s_ordinal=%d, %s=%s, prefix_user_count=%d). "
+        "Stale truncate_before_user_ordinal detected.",
+        sid,
+        ordinal,
+        param_name,
+        msg_ordinal,
+        param_name,
+        target_repr,
+        prefix_user_count,
+    )
+    return None, _err(
+        rid,
+        4030,
+        f"truncate_before_user_ordinal ({ordinal}) does not match "
+        f"{param_name} target turn ({msg_ordinal})",
+    )
 
 
 def _pending_reaction_notes(session: dict) -> str:
@@ -362,6 +377,17 @@ def _(rid, params: dict) -> dict:
     # the fresh post-rewrite row ids of the surviving user turns, for client
     # rowId rebinding (see comment at the assignment site).
     survivor_user_row_ids = None
+    survivor_row_id_map = None
+    raw_rebind_ids = params.get("rebind_survivor_row_ids")
+    requested_rebind_ids = (
+        {
+            row_id
+            for row_id in raw_rebind_ids
+            if isinstance(row_id, int) and not isinstance(row_id, bool)
+        }
+        if isinstance(raw_rebind_ids, list)
+        else None
+    )
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
@@ -439,8 +465,38 @@ def _(rid, params: dict) -> dict:
                     "an ordinary prompt.submit must not drop session history "
                     "(update your Hermes client if a rewind was intended)",
                 )
+            # Desktop/TUI ordinals count the full displayed lineage. After
+            # compression, session["history"] holds only the tip segment while
+            # display_history_prefix holds the immutable ancestor display rows
+            # still shown in the transcript (#82462 / #69107). Count the
+            # ancestor user turns once so every comparison between a client
+            # ordinal and a tip-relative ordinal below can translate, instead
+            # of loading ancestors into the tip (which would duplicate
+            # compressed history on later resumes).
+            prefix_user_count = len(
+                _history_user_indices(
+                    session.get("display_history_prefix") or []
+                )
+            )
 
             user_indices = _history_user_indices(history)
+
+            def _stale_target_data(resolved_ordinal=None):
+                # Structured recovery fields for clients (#82462): Desktop
+                # resyncs + retries on a stale target, and shows an explicit
+                # "compressed away" state when segment_ordinal < 0 (the target
+                # only exists in the immutable ancestor prefix).
+                segment = (
+                    client_ordinal - prefix_user_count
+                    if client_ordinal is not None
+                    else resolved_ordinal
+                )
+                return {
+                    "user_turn_count": len(user_indices),
+                    "ordinal": client_ordinal,
+                    "segment_ordinal": segment,
+                    "prefix_user_count": prefix_user_count,
+                }
 
             ordinal = None
 
@@ -464,12 +520,14 @@ def _(rid, params: dict) -> dict:
                         rid,
                         4018,
                         "target user message is no longer in session history",
+                        data=_stale_target_data(),
                     )
 
                 msg_ordinal, _ = found_match
                 ordinal, err = _reconcile_client_ordinal(
                     rid, sid, client_ordinal, msg_ordinal,
                     "truncate_before_row_id", target_row_id,
+                    prefix_user_count=prefix_user_count,
                 )
                 if err is not None:
                     return err
@@ -496,19 +554,31 @@ def _(rid, params: dict) -> dict:
                         rid,
                         4018,
                         "target user message is no longer in session history",
+                        data=_stale_target_data(),
                     )
 
                 msg_ordinal, _ = found_match
                 ordinal, err = _reconcile_client_ordinal(
                     rid, sid, client_ordinal, msg_ordinal,
                     "truncate_before_message_id", msg_id_str,
+                    prefix_user_count=prefix_user_count,
                 )
                 if err is not None:
                     return err
             else:
-                if client_ordinal < 0 or client_ordinal >= len(user_indices):
+                # Client ordinals count the full displayed lineage; translate
+                # into the tip segment before the bounds check (#82462). An
+                # ancestor-only target (segment_ordinal < 0) is not editable
+                # from this continuation segment — same stale-target refusal,
+                # with the structured fields so the client can tell the
+                # "compressed away" case apart from plain drift.
+                segment_ordinal = client_ordinal - prefix_user_count
+                if segment_ordinal < 0 or segment_ordinal >= len(user_indices):
                     return _err(
-                        rid, 4018, "target user message is no longer in session history"
+                        rid,
+                        4018,
+                        "target user message is no longer in session history",
+                        data=_stale_target_data(),
                     )
                 # Durability is a state.db property, not an optional annotation
                 # on the live copy. Resume/reload paths historically omitted
@@ -538,7 +608,7 @@ def _(rid, params: dict) -> dict:
                         "ordinal-only truncation is unsafe for durable session history; "
                         "include truncate_before_row_id",
                     )
-                ordinal = client_ordinal
+                ordinal = segment_ordinal
 
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
@@ -546,7 +616,12 @@ def _(rid, params: dict) -> dict:
             # truncating history to everything before it and persisting that loss
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
+                return _err(
+                    rid,
+                    4018,
+                    "target user message is no longer in session history",
+                    data=_stale_target_data(resolved_ordinal=ordinal),
+                )
             from agent.context_compressor import history_before_user_originated_turn
 
             truncated, _live_view = history_before_user_originated_turn(
@@ -615,6 +690,36 @@ def _(rid, params: dict) -> dict:
                     # sessions created before the session_key default fix have no
                     # key, and replace_messages(None) triggers an FK violation.
                     truncation_key = session.get("session_key") or sid
+                    old_active_row_ids = {
+                        row_id
+                        for message in history
+                        if isinstance((row_id := _message_row_id(message)), int)
+                    }
+                    if requested_rebind_ids is not None and any(
+                        _message_row_id(message) is None for message in history
+                    ):
+                        # Row-id fallback can resolve a durable target even
+                        # when the live list is too misaligned to stamp safely.
+                        # Read the authoritative pre-write active-id set so a
+                        # rewritten row is never mistaken for an untouched
+                        # archived/ancestor row by the bounded client map.
+                        durable_rebind_history = _load_durable_truncation_history(
+                            session, truncation_key
+                        )
+                        if durable_rebind_history is None:
+                            raise RuntimeError(
+                                "could not load durable row identities for truncation"
+                            )
+                        old_active_row_ids.update(
+                            row_id
+                            for message in durable_rebind_history
+                            if isinstance(
+                                (row_id := _message_row_id(message)), int
+                            )
+                        )
+                    old_survivor_row_ids = [
+                        _message_row_id(message) for message in truncated
+                    ]
                     db.replace_messages(
                         truncation_key,
                         truncated,
@@ -644,6 +749,21 @@ def _(rid, params: dict) -> dict:
                     _message_row_id(truncated[i])
                     for i in _history_user_indices(truncated)
                 ]
+                if requested_rebind_ids is not None:
+                    survivor_row_id_map = {
+                        str(old_row_id): new_row_id
+                        for old_row_id, new_row_id in zip(
+                            old_survivor_row_ids,
+                            (_message_row_id(message) for message in truncated),
+                        )
+                        if isinstance(old_row_id, int)
+                        and isinstance(new_row_id, int)
+                        and old_row_id in requested_rebind_ids
+                    }
+                    for dropped_row_id in requested_rebind_ids.intersection(
+                        old_active_row_ids
+                    ):
+                        survivor_row_id_map.setdefault(str(dropped_row_id), None)
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -652,13 +772,15 @@ def _(rid, params: dict) -> dict:
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
         if not isolated_response.get("error"):
-            if survivor_user_row_ids is not None:
+            if survivor_user_row_ids is not None and requested_rebind_ids is None:
                 # The truncation already happened inline above (memory + DB),
                 # before compute-host dispatch — the rebind payload applies to
                 # this path exactly as it does to the inline one.
                 isolated_response["result"][
                     "survivor_user_row_ids"
                 ] = survivor_user_row_ids
+            if survivor_row_id_map is not None:
+                isolated_response["result"]["survivor_row_id_map"] = survivor_row_id_map
             return isolated_response
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s",
@@ -750,6 +872,12 @@ def _(rid, params: dict) -> dict:
             **(
                 {"survivor_user_row_ids": survivor_user_row_ids}
                 if survivor_user_row_ids is not None
+                and requested_rebind_ids is None
+                else {}
+            ),
+            **(
+                {"survivor_row_id_map": survivor_row_id_map}
+                if survivor_row_id_map is not None
                 else {}
             ),
         },

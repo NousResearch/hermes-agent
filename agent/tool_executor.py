@@ -590,10 +590,11 @@ def _run_agent_tool_execution_middleware(
             block_error_type = "plugin_block"
 
             def _resolve_pre_tool_block():
+                nonlocal final_args
                 try:
-                    from hermes_cli.plugins import resolve_pre_tool_block
+                    from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
-                    return resolve_pre_tool_block(
+                    block_msg, modified_args = _dispatch_pre_tool_call_hooks(
                         function_name,
                         final_args,
                         task_id=effective_task_id or "",
@@ -604,6 +605,10 @@ def _run_agent_tool_execution_middleware(
                         or "",
                         middleware_trace=list(state["middleware_trace"]),
                     )
+                    if modified_args is not None:
+                        final_args = modified_args
+                        state["args"] = modified_args
+                    return block_msg
                 except Exception:
                     return None
 

@@ -23,10 +23,18 @@ import { atom, type ReadableAtom } from 'nanostores'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
-import { getLogs, getStatus, type HermesGateway } from '@/hermes'
+import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
 import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  ensureGatewayProfile,
+  newSessionInProfile,
+  normalizeProfileKey,
+  selectProfile,
+  setActiveProfile,
+  setShowAllProfiles
+} from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -111,6 +119,40 @@ export const host = {
     }
 
     void openGatewayForProfile(name).catch(() => undefined)
+  },
+
+  /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
+   *  same door core surfaces use (DeleteProfileDialog). Electron intercepts
+   *  the DELETE, tears down that profile's pool/primary backend first, and
+   *  routes the follow-up request away from it, so a live (or hover-warmed)
+   *  backend can't hold the profile dir open or respawn mid-delete and
+   *  resurrect the directory (issue #52279). Plugins must prefer this over
+   *  `cli.exec ['profile','delete',…]`, which bypasses that interception
+   *  entirely. When the deleted profile was the live gateway's, the app is
+   *  re-homed to the default profile — same semantics as the core dialog.
+   *  Rejects with the backend's error when the delete fails. */
+  deleteProfile: async (profile: string): Promise<void> => {
+    const name = (profile ?? '').trim()
+
+    if (!name) {
+      throw new Error('deleteProfile: profile name required')
+    }
+
+    if (normalizeProfileKey(name) === 'default') {
+      throw new Error('The default profile cannot be deleted.')
+    }
+
+    // Capture before the delete; re-home after so our write is the last one
+    // (mirrors DeleteProfileDialog — a refreshActiveProfile racing the dying
+    // backend can't clobber the pill back to the deleted profile).
+    const wasActive = normalizeProfileKey(name) === normalizeProfileKey($activeGatewayProfile.get())
+
+    await deleteProfile(name)
+
+    if (wasActive) {
+      selectProfile('default')
+      setActiveProfile('default')
+    }
   },
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
@@ -253,6 +295,13 @@ export {
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
+/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
+ *  lists, full-skill detail pane, embedded hub picker with one-click
+ *  installs). For plugin dialogs pass `embedded` (tab state stays local —
+ *  never touches the page router) and `fixedProfile` to pin every tab to one
+ *  bot's backend; the internal profile selector hides itself. Bot Mode's
+ *  Advanced section is the reference consumer. */
+export { SkillsView } from '@/app/skills'
 /** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
  *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
  *  renders anywhere (a plugin dialog); pass a live `gateway` (see

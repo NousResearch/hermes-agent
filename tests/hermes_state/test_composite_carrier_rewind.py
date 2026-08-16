@@ -102,6 +102,60 @@ def test_composite_rewind_archives_tail_and_inserts_its_hidden_scaffold(db):
     assert _session_counts(db, sid) == (4, 1, 1)
 
 
+def test_lineage_display_prefers_tip_carrier_over_replayed_parent_ask(db):
+    parent = "carrier-parent"
+    child = "carrier-child"
+    db.create_session(parent, source="tui")
+    db.append_message(parent, "user", "REAL ASK")
+    db.end_session(parent, "compression")
+    db.create_session(child, source="tui", parent_session_id=parent)
+    carrier_id = db.append_message(child, "user", _carrier())
+
+    model_history, display_history = db.get_resume_conversations(child)
+
+    from agent.context_compressor import user_originated_turn_view
+
+    visible_users = [
+        user_originated_turn_view(message)
+        for message in display_history
+        if user_originated_turn_view(message) is not None
+    ]
+    assert [message["content"] for message in visible_users] == ["REAL ASK"]
+    assert display_history[-1]["_row_id"] == carrier_id
+    assert model_history[-1]["_row_id"] == carrier_id
+    assert db.get_ancestor_display_prefix(child) == []
+
+
+def test_lineage_display_dedupes_multimodal_ask_in_tip_carrier(db):
+    parent = "media-carrier-parent"
+    child = "media-carrier-child"
+    ask = [
+        {"type": "text", "text": "inspect this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+    ]
+    carrier = [
+        {"type": "text", "text": f"{_carrier('')}\n"},
+        *ask,
+    ]
+    db.create_session(parent, source="tui")
+    db.append_message(parent, "user", ask)
+    db.end_session(parent, "compression")
+    db.create_session(child, source="tui", parent_session_id=parent)
+    carrier_id = db.append_message(child, "user", carrier)
+
+    _, display_history = db.get_resume_conversations(child)
+
+    from agent.context_compressor import user_originated_turn_view
+
+    visible_users = [
+        user_originated_turn_view(message)
+        for message in display_history
+        if user_originated_turn_view(message) is not None
+    ]
+    assert [message["content"] for message in visible_users] == [ask]
+    assert display_history[-1]["_row_id"] == carrier_id
+
+
 def test_default_rewind_return_shape_and_active_counters_remain_compatible(db):
     sid = "default-rewind"
     db.create_session(sid, source="cli")
@@ -286,6 +340,27 @@ def test_guarded_replace_rejects_foreign_turn_lease_without_any_change(db):
         reject_active_turn_lease=True,
     )
     assert [m[2] for m in _row_state(db, sid) if m[3] == 1] == ["replacement"]
+
+
+def test_guarded_replace_rejects_foreign_live_compression_without_any_change(db):
+    sid = "compression-locked-replace"
+    db.create_session(sid, source="tui")
+    db.append_message(sid, "user", "old ask")
+    assert db.try_acquire_compression_lock(sid, "foreign-writer", ttl_seconds=60)
+    before_rows = _row_state(db, sid)
+    before_counts = _session_counts(db, sid)
+
+    with pytest.raises(SessionCompressionInProgressError):
+        db.replace_messages(
+            sid,
+            [{"role": "user", "content": "replacement"}],
+            active_only=True,
+            archive_dropped=True,
+            reject_active_turn_lease=True,
+        )
+
+    assert _row_state(db, sid) == before_rows
+    assert _session_counts(db, sid) == before_counts
 
 
 def test_rewind_guard_rejects_compression_ended_parent_without_any_change(db):

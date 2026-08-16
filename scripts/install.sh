@@ -1384,6 +1384,13 @@ EOF
     cd "$INSTALL_DIR"
 
     if [ -n "$INSTALL_COMMIT" ]; then
+        # Validate the commit argument: must look like a hex SHA (full 40-char
+        # or abbreviated 7-39 char). Reject anything else early so the user
+        # gets a clear error instead of a misleading git message (#87268).
+        if ! printf '%s' "$INSTALL_COMMIT" | grep -qE '^[0-9a-fA-F]{7,40}$'; then
+            log_error "--commit expects a hex SHA (7-40 chars), got: $INSTALL_COMMIT"
+            return 1
+        fi
         # A commit pin must never move an existing install BACKWARDS. The
         # bootstrap installer bakes its build-time commit into the binary
         # (BUILD_PIN_COMMIT) and passes it as --commit on every install-mode
@@ -1393,21 +1400,32 @@ EOF
         # current venv. Only pin when the target is not already an ancestor of
         # HEAD; a fresh clone has no such ancestry and pins normally.
         if ! git cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
-            git fetch origin "$INSTALL_COMMIT" || true
+            if ! git fetch origin "$INSTALL_COMMIT"; then
+                log_error "Could not fetch commit $INSTALL_COMMIT from origin."
+                log_error "Abbreviated SHAs are not supported — use the full 40-char hash."
+                log_error "Find it with: git ls-remote origin | grep <short-sha>"
+                return 1
+            fi
         fi
         if git rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
            && git merge-base --is-ancestor "$INSTALL_COMMIT" HEAD 2>/dev/null \
            && [ "$(git rev-parse "$INSTALL_COMMIT^{commit}" 2>/dev/null)" != "$(git rev-parse HEAD)" ]; then
             if [ "$FORCE_COMMIT" = true ]; then
                 log_warn "--force-commit: rolling this install back to $INSTALL_COMMIT."
-                git checkout --detach "$INSTALL_COMMIT"
+                if ! git checkout --detach "$INSTALL_COMMIT"; then
+                    log_error "Failed to detach at $INSTALL_COMMIT"
+                    return 1
+                fi
             else
                 log_warn "Ignoring --commit $INSTALL_COMMIT: the checkout is already newer."
                 log_warn "Pinning to it would roll this install back. Pass --force-commit to override."
             fi
         else
             log_info "Pinning checkout to commit $INSTALL_COMMIT..."
-            git checkout --detach "$INSTALL_COMMIT"
+            if ! git checkout --detach "$INSTALL_COMMIT"; then
+                log_error "Failed to detach at $INSTALL_COMMIT"
+                return 1
+            fi
         fi
     fi
 
@@ -2308,11 +2326,21 @@ install_node_deps() {
         # A failed npm install used to still print "✓ Node.js dependencies
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent; then
+        # Capture npm output so failures are diagnosable (#87340).
+        local npm_log
+        npm_log="$(mktemp)"
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
+                >"$npm_log" 2>&1; then
             log_error "npm install failed or timed out; Node.js dependencies were not installed"
+            if [ -s "$npm_log" ]; then
+                log_error "npm output:"
+                cat "$npm_log" >&2
+            fi
+            rm -f "$npm_log"
             restore_dirty_lockfiles "$INSTALL_DIR"
             return 1
         fi
+        rm -f "$npm_log"
         log_success "Node.js dependencies installed"
 
         # Install Playwright browser + system dependencies.
@@ -2414,11 +2442,21 @@ install_node_deps() {
         # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
         # Report success only on actual success, same as node-deps above
         # (#77003) — and fail the install outright (#85297).
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent; then
+        # Capture npm output so failures are diagnosable (#87340).
+        local tui_npm_log
+        tui_npm_log="$(mktemp)"
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
+                >"$tui_npm_log" 2>&1; then
             log_error "TUI npm install failed or timed out; TUI dependencies were not installed"
+            if [ -s "$tui_npm_log" ]; then
+                log_error "npm output:"
+                cat "$tui_npm_log" >&2
+            fi
+            rm -f "$tui_npm_log"
             restore_dirty_lockfiles "$INSTALL_DIR"
             return 1
         fi
+        rm -f "$tui_npm_log"
         log_success "TUI dependencies installed"
     fi
 

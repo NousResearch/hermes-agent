@@ -124,6 +124,34 @@ def _canon_key_combo(keys: str) -> frozenset:
     return frozenset(parts)
 
 
+# Native input actions that deliver to the backend's sticky target. `app=`
+# on these calls is NOT a targeting parameter — see the mismatch guard in
+# _dispatch. Kept in sync with the dispatch branches below.
+_INPUT_ACTIONS = frozenset({
+    "click", "double_click", "right_click", "middle_click",
+    "drag", "scroll", "type", "key", "set_value",
+})
+
+
+def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
+    """Current sticky-target app when it clearly differs from *requested_app*.
+
+    Returns the CURRENT target's app name only for a provable mismatch:
+    both names known and neither a substring of the other (list_windows
+    app names are localized/variant — 'Google-chrome' vs 'chrome'). An
+    unknown current target returns None (fail open: legacy flows that
+    never pass app= on input keep working; wrong-window delivery there is
+    caught by the verify ladder instead).
+    """
+    current = (getattr(backend, "_last_app", None) or "").strip().lower()
+    wanted = requested_app.strip().lower()
+    if not current or not wanted:
+        return None
+    if wanted in current or current in wanted:
+        return None
+    return getattr(backend, "_last_app", None)
+
+
 # Dangerous text patterns for the `type` action. Same list as #4562.
 _BLOCKED_TYPE_PATTERNS = [
     re.compile(r"curl\s+[^|]*\|\s*bash", re.IGNORECASE),
@@ -195,7 +223,15 @@ def _cua_permission_mode(session_id: str) -> str:
     except Exception:
         # Approval state must fail closed if it cannot be resolved.
         pass
-    return "standard"
+    try:
+        # Without YOLO, honor the configured mode (standard | bounded).
+        # bounded requires computer_use.capability_manifest; the backend
+        # fails loudly at session start when the manifest is missing.
+        from tools.computer_use.cua_backend import _cua_configured_permission_mode
+
+        return _cua_configured_permission_mode()
+    except Exception:
+        return "standard"
 
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
@@ -649,6 +685,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             profile_mode=args.get("profile_mode", "isolated_new"),
             profile_name=args.get("profile_name"),
             allow_launch=bool(args.get("allow_launch")),
+            approval_token=args.get("approval_token"),
         ))
 
     browser_tools = {
@@ -714,6 +751,31 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     # model can escalate background → foreground per cua-driver's ladder.
     delivery_mode = args.get("delivery_mode")
     bring_to_front = bool(args.get("bring_to_front"))
+
+    # ── app= mismatch guard for input actions ──────────────────────────
+    # Input goes to the backend's sticky target (set by the last capture/
+    # focus_app). Models routinely pass app= on the input call itself —
+    # live QA (Aug 2026) proved `type(text=..., app="kate")` typed into
+    # kcalc while reporting ok:true, because the argument was silently
+    # dropped. Refuse the clear mismatch instead of delivering input to
+    # the wrong window; the fix instruction keeps the flow one call long.
+    if action in _INPUT_ACTIONS:
+        requested_app = args.get("app")
+        if isinstance(requested_app, str) and requested_app.strip():
+            mismatch = _input_target_mismatch(backend, requested_app)
+            if mismatch is not None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "input_target_mismatch",
+                    "error": (
+                        f"{action} would go to the current target "
+                        f"{mismatch!r}, not {requested_app.strip()!r} — input "
+                        "actions always hit the sticky target from the last "
+                        f"capture/focus_app. Call capture(app={requested_app.strip()!r}) "
+                        "or focus_app first, then retry."
+                    ),
+                })
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -785,6 +847,24 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.set_value(value=str(value), element=args.get("element"))
         return _maybe_follow_capture(backend, res, capture_after)
 
+    # Do NOT alias unknown actions (we never repair bad model output), but
+    # name the nearest real action: live QA showed a model emitting
+    # "hotkey"/"press_key" and getting zero guidance from the bare error.
+    _suggestions = {
+        "hotkey": "key", "press_key": "key", "keypress": "key",
+        "key_combo": "key", "shortcut": "key",
+        "type_text": "type", "input_text": "type",
+        "screenshot": "capture", "get_window_state": "capture",
+        "left_click": "click", "mouse_click": "click",
+    }
+    hint = _suggestions.get(str(action))
+    if hint:
+        return json.dumps({
+            "error": (
+                f"unknown action {action!r} — did you mean {hint!r}? "
+                "See the action enum in the tool schema."
+            )
+        })
     return json.dumps({"error": f"unknown action {action!r}"})
 
 
@@ -1421,11 +1501,26 @@ def _maybe_follow_capture(
     return json.dumps(data)
 
 
+def _bounds_unknown(bounds) -> bool:
+    """True when the AX tree reported no real geometry for an element.
+
+    KDE/Qt apps commonly report ``[0, 0, 0, 0]`` for elements that are
+    perfectly clickable by index (live QA, Aug 2026: all of kcalc's radio
+    buttons). Serializing that as a plausible-looking rect invites a model
+    to derive ``coordinate=[0, 0]`` from it and click the screen corner.
+    """
+    try:
+        return all(int(v) == 0 for v in bounds)
+    except (TypeError, ValueError):
+        return False
+
+
 def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str]:
     out: List[str] = []
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
-        out.append(f"  #{e.index} {e.role} {label!r} @ {e.bounds}"
+        where = "@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}"
+        out.append(f"  #{e.index} {e.role} {label!r} {where}"
                    + (f" [{e.app}]" if e.app else ""))
     if len(elements) > max_lines:
         out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")
@@ -1593,7 +1688,9 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
         "index": e.index,
         "role": e.role,
         "label": label,
-        "bounds": list(e.bounds),
+        # A zero rect is "geometry unknown", not a position — null it so no
+        # coordinate= is ever derived from it. The element index still works.
+        "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds),
         "app": e.app,
     }
     if truncated:

@@ -240,6 +240,49 @@ def _cua_telemetry_disabled() -> bool:
     return not bool(_computer_use_cfg().get("cua_telemetry", False))
 
 
+def _cua_configured_permission_mode() -> str:
+    """The user-configured cua-driver permission mode.
+
+    Reads ``computer_use.permission_mode`` (default ``standard``).  Only
+    ``standard`` and ``bounded`` are honored here — ``unrestricted`` is
+    deliberately NOT a config value: it stays tied to the explicit
+    per-session Hermes YOLO toggle so a stale config line can never
+    silently bypass approvals. Unknown values fall closed to ``standard``.
+    """
+    raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
+    return raw if raw in {"standard", "bounded"} else "standard"
+
+
+def _cua_capability_manifest() -> Optional[str]:
+    """Path of the reviewed capability manifest for bounded mode, or None.
+
+    Reads ``computer_use.capability_manifest``.  Existence is validated by
+    ``_EmbeddedCuaDaemon`` so a missing file fails loudly at session start
+    instead of silently degrading the authorization story.
+    """
+    raw = _computer_use_cfg().get("capability_manifest")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _cua_grant_existing_profile() -> bool:
+    """True when the user pre-authorized existing-profile browser attachment.
+
+    Reads ``computer_use.grant_existing_profile`` (default False). This is
+    cua-driver's trusted-launcher grant: Hermes appends
+    ``--grant existing-profile`` when spawning the standard-mode runtime, so
+    ``browser_prepare`` with ``strategy: existing_profile`` succeeds without
+    a per-use token (live-verified against cua-driver 0.19.3, where the
+    interactive ``browser-approve`` token is a legacy compatibility path
+    that is disabled by default). The user flips this in config.yaml — a
+    deliberate, durable statement that agents on this machine may attach to
+    their signed-in browser. It never applies to bounded (the manifest owns
+    that decision) or unrestricted (already bypassed) daemons.
+    """
+    return bool(_computer_use_cfg().get("grant_existing_profile", False))
+
+
 def _computer_use_max_image_dimension() -> Optional[int]:
     """Longest-edge cap for cua-driver screenshots, or None to leave unset.
 
@@ -266,6 +309,67 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     return env
+
+
+def _linux_session_locked() -> Optional[bool]:
+    """Best-effort: is the graphical session locked? (Linux only.)
+
+    A locked KDE/GNOME session freezes app renderers and half-disables the
+    AX tree, so window discovery legitimately returns nothing — but a bare
+    empty result reads as a driver bug (live QA, Aug 2026: every capture
+    came back 0x0 with no hint). True/False when loginctl answers, None
+    when unavailable (non-Linux, no systemd-logind, probe failure).
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        proc = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        if proc.returncode != 0:
+            return None
+        any_seat = False
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2 or "seat" not in line:
+                continue
+            any_seat = True
+            probe = subprocess.run(
+                ["loginctl", "show-session", parts[0], "-p", "LockedHint"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if "LockedHint=no" in probe.stdout:
+                return False
+        return True if any_seat else None
+    except Exception:
+        return None
+
+
+def _empty_discovery_reason() -> str:
+    """One-line diagnosis for 'window discovery found nothing'."""
+    locked = _linux_session_locked()
+    if locked is True:
+        return (
+            "the desktop session is LOCKED (loginctl LockedHint=yes) — "
+            "unlock the screen; a locked compositor hides windows and "
+            "freezes app renderers"
+        )
+    if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+        return "no DISPLAY is set — X11/XWayland is not reachable from this process"
+    if sys.platform == "darwin":
+        # Headless Mac / asleep panel: ScreenCaptureKit has 0 shareable
+        # displays while TCC grants look fine (#67165, #52925 lineage).
+        return (
+            "window discovery returned no windows; on macOS this usually "
+            "means no shareable display (headless Mac or panel asleep) — "
+            "wake the display or attach a monitor/HDMI dummy, then run "
+            "`hermes computer-use doctor`"
+        )
+    return (
+        "window discovery returned no windows; run `hermes computer-use "
+        "doctor` (display reachability, AX capability)"
+    )
 
 
 def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:
@@ -381,19 +485,48 @@ def _wsl_windows_path_to_posix(path: str) -> str:
 
 
 class _EmbeddedCuaDaemon:
-    """Private host-owned daemon used for an explicit unrestricted session.
+    """Private host-owned daemon for a non-standard permission mode.
 
     Cua Driver permission mode is immutable after daemon startup.  Reusing the
     machine-wide daemon would therefore let one Hermes session's YOLO choice
     affect another session.  A private embedded daemon gives the requesting
-    session its own socket, process, and launch-time risk acknowledgement.
+    session its own socket, process, and launch-time authorization:
+
+    * ``unrestricted`` — explicit Hermes YOLO; launch-time risk
+      acknowledgement via ``--dangerously-bypass-approvals``.
+    * ``bounded`` — a user-reviewed capability manifest
+      (``computer_use.capability_manifest`` in config.yaml) approved at
+      launch via ``--approve-capability-manifest``.  The manifest, not a
+      runtime prompt, is the authorization boundary; calls outside it fail
+      closed inside cua-driver.
     """
 
     _START_TIMEOUT_SECONDS = 15.0
 
-    def __init__(self, driver_cmd: str, permission_mode: str) -> None:
-        if permission_mode != "unrestricted":
-            raise ValueError("embedded permission override supports unrestricted only")
+    def __init__(
+        self,
+        driver_cmd: str,
+        permission_mode: str,
+        capability_manifest: Optional[str] = None,
+    ) -> None:
+        if permission_mode not in {"unrestricted", "bounded"}:
+            raise ValueError(
+                "embedded permission override supports unrestricted or bounded only"
+            )
+        if permission_mode == "bounded":
+            manifest = str(capability_manifest or "").strip()
+            if not manifest:
+                raise ValueError(
+                    "bounded permission mode requires computer_use.capability_manifest"
+                )
+            manifest = os.path.abspath(os.path.expanduser(manifest))
+            if not os.path.isfile(manifest):
+                raise ValueError(
+                    f"capability manifest not found: {manifest}"
+                )
+            self.capability_manifest: Optional[str] = manifest
+        else:
+            self.capability_manifest = None
         self.permission_mode = permission_mode
         self._driver_cmd = driver_cmd
         self._command = driver_cmd
@@ -411,8 +544,9 @@ class _EmbeddedCuaDaemon:
 
     def child_env(self) -> Dict[str, str]:
         env = cua_driver_child_env()
-        env["CUA_DRIVER_PERMISSION_MODE"] = "unrestricted"
-        env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
+        env["CUA_DRIVER_PERMISSION_MODE"] = self.permission_mode
+        if self.permission_mode == "unrestricted":
+            env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
 
     def _drain_stderr(self, process: Any) -> None:
@@ -447,9 +581,21 @@ class _EmbeddedCuaDaemon:
             self.socket_path,
             "--no-permissions-gate",
             "--permission-mode",
-            "unrestricted",
-            "--dangerously-bypass-approvals",
+            self.permission_mode,
         ]
+        if self.permission_mode == "unrestricted":
+            command.append("--dangerously-bypass-approvals")
+        else:  # bounded — manifest validated in __init__
+            # Live-verified against cua-driver 0.19.3: the serve flags are
+            # --session-policy/--approve-session-policy (the docs' older
+            # --capability-manifest names are not accepted).
+            command.extend(
+                [
+                    "--session-policy",
+                    str(self.capability_manifest),
+                    "--approve-session-policy",
+                ]
+            )
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -1166,6 +1312,15 @@ class _CuaDriverSession:
                 child_env = self._embedded_daemon.child_env()
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
+                # Standard-mode trusted-launcher grant: the user opted in via
+                # config.yaml (computer_use.grant_existing_profile), so the
+                # runtime is launched pre-authorized for existing-profile
+                # browser attachment (`cua-driver mcp --grant
+                # existing-profile`, live-verified on 0.19.3). Never applied
+                # to embedded daemons: bounded's manifest and unrestricted's
+                # bypass own that decision.
+                if _cua_grant_existing_profile():
+                    args = [*args, "--grant", "existing-profile"]
                 child_env = cua_driver_child_env()
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
@@ -1590,6 +1745,19 @@ class _CuaDriverSession:
 
                 out = (proc.stdout or "").strip()
                 last_err = out[:200] or (proc.stderr or "")[:200]
+                # "daemon is not running" is a PERMANENT condition for this
+                # invocation (`cua-driver call` requires the machine-wide
+                # daemon socket, which Linux installs typically never start —
+                # Hermes talks to the direct `cua-driver mcp` runtime
+                # instead). Retrying with backoff burns ~3.5s of sleeps per
+                # fallback for an outcome that cannot change; fail fast so
+                # callers surface a diagnosable error immediately.
+                if "daemon is not running" in out or "daemon is not running" in (proc.stderr or ""):
+                    raise RuntimeError(
+                        f"cua-driver CLI fallback for {name} unavailable: the "
+                        "machine-wide cua-driver daemon is not running (the "
+                        "CLI transport requires it; the MCP runtime does not)."
+                    )
                 start = min(
                     (i for i in (out.find("{"), out.find("[")) if i != -1),
                     default=-1,
@@ -1820,6 +1988,24 @@ def _positive_int(value: Any) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+def _is_placeholder_id(value: Any) -> bool:
+    """True when *value* is a schema-filler id rather than a real target.
+
+    Several providers emit every declared schema property on every tool call,
+    filling unused optional integers with ``0``. A non-positive id cannot name
+    a window, so treating it as a targeting request drops the caller's ``app=``
+    and fails the capture. Malformed non-numeric values are deliberately NOT
+    placeholders: those still reach the existing validation error rather than
+    being silently ignored.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return False
+    try:
+        return int(value) <= 0
+    except ValueError:
+        return False
+
+
 def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
 
@@ -1917,14 +2103,23 @@ class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self, permission_mode: str = "standard") -> None:
-        if permission_mode not in {"standard", "unrestricted"}:
+        if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
-        self._embedded_daemon = (
-            _EmbeddedCuaDaemon(resolve_cua_driver_cmd() or "", permission_mode)
-            if permission_mode == "unrestricted"
-            else None
-        )
+        if permission_mode == "unrestricted":
+            self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = _EmbeddedCuaDaemon(
+                resolve_cua_driver_cmd() or "", permission_mode
+            )
+        elif permission_mode == "bounded":
+            # Manifest path comes from config.yaml; _EmbeddedCuaDaemon
+            # validates existence and raises a clear error otherwise.
+            self._embedded_daemon = _EmbeddedCuaDaemon(
+                resolve_cua_driver_cmd() or "",
+                permission_mode,
+                capability_manifest=_cua_capability_manifest(),
+            )
+        else:
+            self._embedded_daemon = None
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
         # Sticky context — updated by capture(), used by action tools.
@@ -2246,6 +2441,13 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
+        # Drop schema-filler ids before they can be read as a targeting
+        # request, so `capture(app=...)` and frontmost capture still work for
+        # models that emit every optional property zero-filled.
+        if _is_placeholder_id(pid):
+            pid = None
+        if _is_placeholder_id(window_id):
+            window_id = None
         # An exact pid/window pair is both the stable capture_after target and
         # the escape hatch when app/window discovery is unavailable on X11.
         if pid is not None or window_id is not None:
@@ -2274,7 +2476,9 @@ class CuaDriverBackend(ComputerUseBackend):
                 self._clear_active_target()
                 raise
             if not windows:
-                return self._failed_capture(mode)
+                # Diagnose instead of returning a bare 0x0: the dominant
+                # real-world cause on Linux is a locked desktop session.
+                return self._failed_capture(mode, _empty_discovery_reason())
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of

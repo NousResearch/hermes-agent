@@ -50,8 +50,10 @@ export {
   type GatewayEvent,
   type GatewayEventName,
   type GatewayRequestId,
+  type JsonRpcErrorPayload,
   type JsonRpcFrame,
   JsonRpcGatewayClient,
+  JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
 export { skillInvocationText } from './skill-scaffold'

@@ -405,6 +405,11 @@ export interface ModelOptionProvider {
   key_env?: string
   /** True for providers defined via the user's `providers:` config block. */
   is_user_defined?: boolean
+  /** User-defined providers only: every accepted identity for this endpoint
+   *  (bare config key, `custom:<key>`, normalized display name, …). A session's
+   *  `model.options` reports the canonical `custom:<key>` form, so "is this row
+   *  the current provider?" must check membership here, not slug equality. */
+  aliases?: string[]
   /** OpenAI-compatible endpoint for a user-defined provider. The backend
    *  exposes this as `api_url`; model assignments send it back as `base_url`
    *  so switching providers does not discard the selected local endpoint. */
@@ -556,6 +561,8 @@ export interface SessionMessage {
   args?: unknown
   codex_reasoning_items?: unknown
   content: unknown
+  /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
+  display_content?: unknown
   context?: unknown
   name?: string
   reasoning?: null | string
@@ -606,6 +613,7 @@ export interface SessionResumeResponse {
     attempt: number
     interrupted_at: number
   }
+  hydrating?: boolean
   inflight?: null | {
     assistant?: string
     /** Mid-turn redirect corrections, oldest first. The turn's original prompt

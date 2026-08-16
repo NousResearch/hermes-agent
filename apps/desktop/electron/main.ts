@@ -207,6 +207,11 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import {
+  createParentStartMarkerResolver,
+  electronProcessStartMarker,
+  parentWatchdogEnv
+} from './parent-process-identity'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -268,7 +273,12 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from './updater-process'
-import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
+import {
+  formatBlockerMessage,
+  formatProbeFailedMessage,
+  scanVenvBlockers,
+  stopSafeVenvBlockers
+} from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
@@ -2952,9 +2962,9 @@ function writeBackendOwnership(contents) {
   }
 }
 
-function execText(command, args) {
+function execText(command, args, { timeout = 3000 } = {}) {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 3000 }), (error, stdout) => {
+    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
       if (error) {
         reject(error)
       } else {
@@ -2981,12 +2991,25 @@ async function processStartMarker(pid) {
   }
 
   if (IS_WINDOWS) {
-    const ticks = await execText('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().Ticks`
-    ])
+    const electronMarker =
+      pid === process.pid ? electronProcessStartMarker(pid, process.pid, process.getCreationTime?.()) : null
+
+    if (electronMarker) {
+      return electronMarker
+    }
+
+    const ticks = await execText(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().Ticks`
+      ],
+      // PowerShell 5.1 cold starts routinely exceed the default 3s execText
+      // budget (2.4-8s observed in #87169); give the marker probe headroom.
+      { timeout: 30_000 }
+    )
 
     if (!/^\d+$/.test(ticks)) {
       throw new Error(`Invalid Windows start marker for PID ${pid}`)
@@ -3043,6 +3066,22 @@ async function backendIdentityMatches(identity) {
   return command === null ? undefined : backendCommandMatches(command)
 }
 
+// True when the recorded parent Electron is still running (same PID AND start
+// marker); false when it is gone or its PID was reused; undefined when the
+// ownership record predates parent tracking. Undefined deliberately falls back
+// to the pre-parent reap behaviour so legacy orphan cleanup keeps working.
+async function backendParentMatches(entry) {
+  if (!Number.isInteger(entry.parentPid) || typeof entry.parentStartMarker !== 'string' || !entry.parentStartMarker) {
+    return undefined
+  }
+
+  try {
+    return (await processStartMarker(entry.parentPid)) === entry.parentStartMarker
+  } catch (error) {
+    return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
+  }
+}
+
 async function stopOwnedBackend(identity) {
   if ((await processIdentityMatches(identity)) !== true) {
     return
@@ -3092,6 +3131,7 @@ async function stopOwnedBackend(identity) {
 
 const backendOwnership = createBackendOwnership({
   matchesIdentity: backendIdentityMatches,
+  matchesParent: backendParentMatches,
   stop: stopOwnedBackend,
   store: {
     read: () => {
@@ -3105,13 +3145,16 @@ const backendOwnership = createBackendOwnership({
   }
 })
 
-let desktopParentStartMarkerPromise = null
+const desktopParentStartMarker = createParentStartMarkerResolver({
+  load: () => processStartMarker(process.pid),
+  onError: error => {
+    const detail = error instanceof Error ? error.message : String(error)
 
-function desktopParentStartMarker() {
-  desktopParentStartMarkerPromise ??= processStartMarker(process.pid)
-
-  return desktopParentStartMarkerPromise
-}
+    rememberLog(
+      `Could not resolve the Desktop process start marker; starting the backend with PID-only parent tracking: ${detail}`
+    )
+  }
+})
 
 async function claimBackendChild(child, command, profile, nonce) {
   try {
@@ -3120,7 +3163,12 @@ async function claimBackendChild(child, command, profile, nonce) {
       nonce,
       pid: child.pid,
       profile,
-      startMarker: await processStartMarker(child.pid)
+      startMarker: await processStartMarker(child.pid),
+      // Record the spawning Electron so reapOrphans can tell an orphaned
+      // backend (parent gone) from one owned by a live instance — a live
+      // parent's backend is never reaped (#87295).
+      parentPid: process.pid,
+      parentStartMarker: await desktopParentStartMarker()
     })
 
     child.hermesBackendIdentity = identity
@@ -3265,7 +3313,7 @@ async function releaseBackendLock(updateRoot, tag) {
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(opts = {}) {
+async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
@@ -3402,7 +3450,18 @@ async function applyUpdates(opts = {}) {
     // malformed output, missing psutil) abort the handoff — never proceed
     // to the detached updater when the venv state is unknown.
     if (IS_WINDOWS) {
-      const scanOutcome = await scanVenvBlockers(updateRoot)
+      let scanOutcome = await scanVenvBlockers(updateRoot)
+
+      if (scanOutcome.kind === 'blocked' && opts.stopSafeBlockers) {
+        const stopResult = await stopSafeVenvBlockers(updateRoot, scanOutcome.result)
+        rememberLog(
+          `[updates] user-approved blocker cleanup: stopped=${stopResult.stopped.join(',') || 'none'} failed=${stopResult.failed.join(',') || 'none'}`
+        )
+        // Let verified process-tree termination finish unwinding wrapper shells,
+        // then make the scanner — not the stale renderer payload — authoritative.
+        await new Promise(resolve => setTimeout(resolve, 300))
+        scanOutcome = await scanVenvBlockers(updateRoot)
+      }
 
       if (scanOutcome.kind === 'blocked') {
         const message = formatBlockerMessage(scanOutcome.result)
@@ -3411,7 +3470,7 @@ async function applyUpdates(opts = {}) {
         emitUpdateProgress({ stage: 'error', message, percent: null })
         startHermes().catch(() => {})
 
-        return { ok: false, error: 'venv-blocked', message }
+        return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
       }
 
       if (scanOutcome.kind === 'probe-failure') {
@@ -9479,6 +9538,7 @@ async function spawnPoolBackend(profile, entry) {
 
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
+  const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
   const child = spawn(
     backend.command,
@@ -9498,10 +9558,9 @@ async function spawnPoolBackend(profile, entry) {
         // scheduler tick loop (the gateway isn't running under the app).
         HERMES_DESKTOP: '1',
         // Exact parent identity lets the backend self-exit after an unclean
-        // Desktop death without mistaking a reused PID for its owner.
-        HERMES_PARENT_PID: String(process.pid),
-        HERMES_PARENT_START_MARKER: parentStartMarker,
-        HERMES_PARENT_NONCE: backendNonce,
+        // Desktop death without mistaking a reused PID for its owner. If the
+        // optional marker probe fails, retain legacy PID-only tracking.
+        ...parentIdentityEnv,
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
@@ -9673,6 +9732,15 @@ async function prepareProfileDeleteRequest(request) {
 }
 
 async function startHermes() {
+  // Only the single-instance lock holder may reap/spawn/claim the desktop
+  // backend. A lock-losing instance must stay inert even if some path reaches
+  // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
+  // otherwise SIGTERMs the running instance's live backend (#87295).
+  if (!isPrimaryInstance) {
+    rememberLog('[boot] non-primary instance: skipping backend machinery')
+    throw new Error('Hermes Desktop is already running in another window.')
+  }
+
   await reapOrphanedBackendsOnce()
 
   // Latched-failure short-circuit: once bootstrap has failed in this
@@ -9801,6 +9869,7 @@ async function startHermes() {
     const profile = primaryProfileKey()
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
+    const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
     const hermesProcess = spawn(
       backend.command,
@@ -9825,10 +9894,9 @@ async function startHermes() {
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
           // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner.
-          HERMES_PARENT_PID: String(process.pid),
-          HERMES_PARENT_START_MARKER: parentStartMarker,
-          HERMES_PARENT_NONCE: backendNonce,
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
           HERMES_WEB_DIST: webDist,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },
@@ -14010,9 +14078,12 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
+// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00, or
+// hermes://mcp/install?name=NAME&config=B64 — the vendor "Add to Hermes"
+// button). Parsing is generic ({kind, name, params}); the renderer routes per
+// kind and anything install-shaped requires explicit user confirmation there.
 // A docs/dashboard "Send to App" button opens this URL; we route it into the
-// running app's chat composer. Three delivery paths: macOS 'open-url',
+// running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
 const HERMES_PROTOCOL = 'hermes'
@@ -14105,9 +14176,17 @@ function registerDeepLinkProtocol() {
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
+const isPrimaryInstance = _gotSingleInstanceLock
 
-if (!_gotSingleInstanceLock) {
-  app.quit()
+if (!isPrimaryInstance) {
+  // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
+  // plain quit (event.preventDefault + async backend shutdown), and in that
+  // window `ready` still fires — the lock-losing instance then runs the full
+  // startup (shortcut registration, createWindow → startHermes), whose
+  // reapOrphans() SIGTERMs the running instance's live backend (#87295).
+  // app.exit() terminates immediately, before `ready`, so a second launch
+  // routes into the running window and never touches backend machinery.
+  app.exit(0)
 } else {
   app.on('second-instance', (_event, argv) => {
     const url = _extractDeepLink(argv)

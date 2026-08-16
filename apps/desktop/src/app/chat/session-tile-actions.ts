@@ -13,7 +13,6 @@ import { useCallback, useMemo, useRef } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { ClientSessionState } from '@/app/types'
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
@@ -43,10 +42,9 @@ import {
   planReload,
   planRestore,
   rebindSurvivorRowIds,
+  durableRowIdsForRebind,
   runRewindSubmit,
-  survivorRowIdsFrom,
-  type SurvivorUserRowIds,
-  truncateSubmitParams
+  type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
 import {
@@ -394,7 +392,9 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       truncateOrdinal: number | undefined,
       interruptFirst: boolean,
       truncateMessageId?: string,
-      truncateRowId?: number
+      truncateRowId?: number,
+      sourceText?: string,
+      rebindRowIds?: readonly number[]
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -409,7 +409,9 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
             runtimeIdRef.current = recoveredId
           }
         },
-        truncateRowId
+        truncateRowId,
+        sourceText,
+        rebindRowIds
       ),
     [requestGateway]
   )
@@ -447,23 +449,23 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(current => applyReloadOptimistic(current, plan))
 
       try {
-        const result = await requestGateway<{ survivor_user_row_ids?: unknown }>(
-          'prompt.submit',
-          {
-            session_id: runtimeIdRef.current,
-            text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal, plan.truncateMessageId, plan.truncateRowId)
-          },
-          PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+        applySurvivorRowIds(
+          await submitRewind(
+            plan.text,
+            plan.truncateOrdinal,
+            false,
+            plan.truncateMessageId,
+            plan.truncateRowId,
+            plan.sourceText,
+            durableRowIdsForRebind(state.messages)
+          )
         )
-
-        applySurvivorRowIds(survivorRowIdsFrom(result))
       } catch (err) {
         update(current => ({ ...current, busy: false, awaitingResponse: false }))
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [applySurvivorRowIds, copy.regenerateFailed, readState, requestGateway, update]
+    [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, update]
   )
 
   const restoreToMessage = useCallback(
@@ -490,7 +492,9 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
             plan.truncateOrdinal,
             interruptFirst,
             plan.truncateMessageId,
-            plan.truncateRowId
+            plan.truncateRowId,
+            plan.sourceText,
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {
@@ -530,7 +534,9 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
             plan.truncateOrdinal,
             interruptFirst,
             plan.truncateMessageId,
-            plan.truncateRowId
+            plan.truncateRowId,
+            plan.sourceText,
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {

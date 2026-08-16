@@ -87,6 +87,7 @@ from agent.retry_utils import (
     jittered_backoff,
     zai_coding_overload_retry_ceiling,
 )
+from agent.repetition_guard import is_repetition_dominated
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
@@ -3516,6 +3517,60 @@ def run_conversation(
                             "completed": False,
                             "partial": True,
                             "error": _exhaust_error,
+                        }
+
+                    # ── Detect repetition-dominated truncation (#86581) ──
+                    # A model in a degenerate repetition loop can spend its
+                    # ENTIRE output budget echoing one fragment.  The
+                    # continuation nudge below would then stitch the
+                    # pathological fragment into the final response — in the
+                    # #86581 incident one turn produced a 60,698-char
+                    # response delivered as 31 Discord messages.  Abort with
+                    # a clear user-facing error instead, mirroring the
+                    # _thinking_exhausted guard above.  Reasoning blocks are
+                    # stripped first (repeated scratchpad lines are not
+                    # evidence of a degenerate visible response).
+                    _visible_trunc = (
+                        agent._strip_think_blocks(_trunc_content)
+                        if isinstance(_trunc_content, str)
+                        else _trunc_content
+                    )
+                    _repetition_dominated = (
+                        not _trunc_has_tool_calls
+                        and bool(_visible_trunc)
+                        and is_repetition_dominated(_visible_trunc)
+                    )
+                    if _repetition_dominated:
+                        _rep_error = (
+                            "Model output entered a repetition loop and was "
+                            "truncated mid-loop; refusing to continue a "
+                            "degenerate response."
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}🔁 Response dominated by "
+                            f"repeated text — stopping instead of "
+                            f"continuing a degenerate response.",
+                            force=True,
+                        )
+                        _rep_response = (
+                            "⚠️ **Response Stopped — Repetition Detected**\n\n"
+                            "The model fell into a repetition loop while "
+                            "writing this response, so continuing would only "
+                            "produce more repeated text. The partial response "
+                            "was discarded.\n\n"
+                            "→ Switch to a different model with `/model`\n"
+                            "→ Or resend your message (your conversation "
+                            "history is preserved)"
+                        )
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": _rep_response,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": _rep_error,
                         }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:

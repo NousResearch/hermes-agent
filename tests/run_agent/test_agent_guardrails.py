@@ -7,6 +7,7 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
   - _uniquify_tool_call_ids()   — Phase 2c: duplicate-id repair (lossless pairing)
 """
 
+import json
 import types
 
 import pytest
@@ -180,6 +181,67 @@ class TestDeduplicateToolCalls:
         ]
         out = AIAgent._deduplicate_tool_calls(tcs)
         assert len(out) == 1
+
+    def test_duplicate_json_objects_with_reordered_keys_deduplicated(self):
+        first = make_tc(
+            "terminal",
+            '{"command":"printf hello >> out.log","timeout":10}',
+        )
+        second = make_tc(
+            "terminal",
+            '{"timeout":10,"command":"printf hello >> out.log"}',
+        )
+
+        out = AIAgent._deduplicate_tool_calls([first, second])
+
+        assert out == [first]
+
+    def test_distinct_json_arguments_are_preserved(self):
+        first = make_tc("terminal", '{"command":"one","timeout":10}')
+        second = make_tc("terminal", '{"timeout":10,"command":"two"}')
+
+        out = AIAgent._deduplicate_tool_calls([first, second])
+
+        assert out == [first, second]
+
+    def test_malformed_arguments_use_raw_string_for_deduplication(self):
+        first = make_tc("terminal", '{"command":"one"')
+        duplicate = make_tc("terminal", '{"command":"one"')
+        distinct = make_tc("terminal", '{ "command":"one"')
+
+        out = AIAgent._deduplicate_tool_calls([first, duplicate, distinct])
+
+        assert out == [first, distinct]
+
+    def test_recursion_error_uses_raw_string_for_deduplication(self, monkeypatch):
+        def raise_recursion_error(_arguments):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr("run_agent.json.loads", raise_recursion_error)
+        first = make_tc("terminal", '{"command":"one"}')
+        duplicate = make_tc("terminal", '{"command":"one"}')
+
+        out = AIAgent._deduplicate_tool_calls([first, duplicate])
+
+        assert out == [first]
+
+    def test_byte_identical_duplicate_is_parsed_only_once(self, monkeypatch):
+        original_loads = json.loads
+        calls = 0
+
+        def track_loads(arguments):
+            nonlocal calls
+            calls += 1
+            return original_loads(arguments)
+
+        monkeypatch.setattr("run_agent.json.loads", track_loads)
+        first = make_tc("terminal", '{"command":"one"}')
+        duplicate = make_tc("terminal", '{"command":"one"}')
+
+        out = AIAgent._deduplicate_tool_calls([first, duplicate])
+
+        assert out == [first]
+        assert calls == 1
 
 
 

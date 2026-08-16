@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -889,7 +890,14 @@ export function useSessionActions({
                   persistedMatchesActivatedSession &&
                   (persisted.messages.length || !activatedMessages.length)
                 ) {
-                  const persistedMessages = toChatMessages(persisted.messages)
+                  // The REST hydration is a newest-tail page; graft it onto any
+                  // older pages the previous view already backfilled so
+                  // re-activating a scrolled-back session keeps its history.
+                  const persistedMessages = graftRefreshedTailOntoBackfill(
+                    toChatMessages(persisted.messages),
+                    cachedViewState.messages
+                  )
+
                   const runtimeMessages = toChatMessages(activated.messages)
                   const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
 
@@ -1030,6 +1038,7 @@ export function useSessionActions({
           session_id: storedSessionId,
           cols: 96,
           source: 'desktop',
+          defer_history: !watchWindow,
           // REST is the transcript authority for Desktop. Avoid duplicating a
           // potentially huge compression lineage in the WebSocket response.
           // Watch windows attach lazily (live mirror). Every other cold resume
@@ -1074,8 +1083,14 @@ export function useSessionActions({
             ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
             : $messages.get()
 
-          prefetchedTranscriptMessages = toChatMessages(prefetchedResult.messages)
-          localSnapshot = reconcileAuthoritativeChatMessages(prefetchedTranscriptMessages, previousMessages)
+          // Tail page + previously backfilled prefix (same-session re-resume).
+          const graftedPrefetch = graftRefreshedTailOntoBackfill(
+            toChatMessages(prefetchedResult.messages),
+            previousMessages
+          )
+
+          prefetchedTranscriptMessages = graftedPrefetch
+          localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
           prefetchApplied = true
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }

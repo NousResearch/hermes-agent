@@ -632,6 +632,43 @@ def _format_time_ago(iso_ts: str) -> str:
     except Exception:
         return "recently"
 
+def _reload_process_scan_modules() -> None:
+    """Force-reload the process-scan modules from disk after an update.
+
+    ``_finish_dashboard_update_cleanup`` runs in the PRE-update Python
+    process, but ``_scan_dashboard_processes`` does a function-level
+    ``from hermes_cli._subprocess_compat import bounded_probe_run``. If the
+    update added a new symbol to ``_subprocess_compat`` (as #87134 did with
+    ``bounded_probe_run``), the cached OLD module object doesn't have it and
+    the cleanup step crashes with ImportError — after the code update itself
+    already succeeded. Reload dependency-first so ``dashboard_procs`` binds
+    against the fresh ``_subprocess_compat``.
+
+    Lives here (called from the cleanup entry point) rather than only in
+    ``_reload_config_modules`` so EVERY caller — the git-update path, the
+    Windows ZIP fallback path, and any future one — is covered.
+    """
+    import importlib
+
+    importlib.invalidate_caches()
+    for mod_name in (
+        "hermes_cli._subprocess_compat",
+        "hermes_cli.dashboard_procs",
+    ):
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            try:
+                importlib.reload(mod)
+            except Exception as exc:
+                # warning, not debug: a failed reload here surfaces seconds
+                # later as an ImportError in the same process — leave a trail.
+                logger.warning(
+                    "Could not reload %s for post-update cleanup: %s",
+                    mod_name,
+                    exc,
+                )
+
+
 def _finish_dashboard_update_cleanup(node_failures: list[str]) -> None:
     """Refresh managed dashboards or stop stale manual ones after an update."""
     if node_failures:
@@ -639,6 +676,10 @@ def _finish_dashboard_update_cleanup(node_failures: list[str]) -> None:
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
         return
+
+    # The scan path lazy-imports symbols from _subprocess_compat; make sure
+    # both modules reflect the freshly-updated source before touching them.
+    _reload_process_scan_modules()
 
     stop_result = _m()._kill_stale_dashboard_processes(restart_managed=True)
     if not stop_result.get("unrecovered"):

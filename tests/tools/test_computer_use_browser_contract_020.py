@@ -74,6 +74,30 @@ def test_browser_state_forwards_screenshot_request_and_preserves_mcp_image():
     assert result["_mcp_images"] == [
         {"data": "/9j/browser-shot", "mime_type": "image/jpeg"}
     ]
+    assert "screenshot_deferred" not in result
+
+
+def test_browser_bind_reports_screenshot_deferred_only_when_no_image_returned():
+    driver = _Driver([
+        {
+            "structuredContent": {
+                "status": "ok",
+                "target_id": "target-a",
+                "binding_quality": "exact",
+                "mutation_allowed": True,
+                "tabs": [{"tab_id": "tab-a"}],
+            },
+        }
+    ])
+
+    result = _route(driver).observe(
+        pid=101,
+        window_id=202,
+        include_screenshot=True,
+    )
+
+    assert result["screenshot_deferred"] is True
+    assert "_mcp_images" not in result
 
 
 def test_browser_state_dispatch_returns_mcp_image_as_multimodal_content():
@@ -81,9 +105,7 @@ def test_browser_state_dispatch_returns_mcp_image_as_multimodal_content():
     backend.typed_browser_state.return_value = {
         "status": "ok",
         "url": "https://example.test/",
-        "_mcp_images": [
-            {"data": "iVBORbrowser-shot", "mime_type": "image/png"}
-        ],
+        "_mcp_images": [{"data": "iVBORbrowser-shot", "mime_type": "image/png"}],
     }
 
     result = _dispatch(

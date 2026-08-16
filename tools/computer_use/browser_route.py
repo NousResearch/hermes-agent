@@ -309,9 +309,10 @@ class CuaTypedBrowserRoute:
                 "snapshot_format, include_screenshot) to take the snapshot "
                 "this binding requires before any mutation."
             )
-            if include_screenshot:
-                # A bind carries no page content, so the flag had nothing to
-                # attach to. Surface that instead of dropping it silently.
+            if include_screenshot and not payload.get("_mcp_images"):
+                # A bind normally carries no page content. Report deferral
+                # only when the driver did not attach the requested image;
+                # some driver versions do return a native screenshot here.
                 payload["screenshot_deferred"] = True
             payload["exact_binding"] = quality == "exact"
             if quality != "exact" or not mutation_allowed:

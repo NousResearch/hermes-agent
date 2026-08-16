@@ -96,3 +96,35 @@ def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeyp
 
     assert installed, "force=True must reach the install step"
     assert any("mem0ai>=2.0.10,<3" in specs for specs in installed)
+
+
+def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
+    """When both memory stores are disabled, Memory status reports memory tool as disabled."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": False, "user_profile_enabled": False}},
+    )
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [])
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    captured = capsys.readouterr().out
+    assert "Memory tool:        disabled ✗" in captured
+    assert "Memory injection:   disabled ✗" in captured
+    assert "User profile:       disabled ✗" in captured
+
+
+def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
+    """When at least one memory store is enabled, Memory status reports memory tool as enabled."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": True, "user_profile_enabled": False}},
+    )
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [])
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    captured = capsys.readouterr().out
+    assert "Memory tool:        enabled ✓" in captured
+    assert "Memory injection:   enabled ✓" in captured
+    assert "User profile:       disabled ✗" in captured

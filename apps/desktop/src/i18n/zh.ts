@@ -1876,6 +1876,7 @@ export const zh: Translations = {
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
     manageProfiles: '管理配置档案…',
+    connectGateway: '连接另一个 Hermes 网关…',
     actions: '操作',
     color: '颜色…',
     colorFor: '颜色',

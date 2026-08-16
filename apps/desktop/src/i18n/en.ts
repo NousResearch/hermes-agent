@@ -1688,6 +1688,7 @@ export const en: Translations = {
     showAllProfiles: 'Show all profiles',
     switchToProfile: name => `Switch to ${name}`,
     manageProfiles: 'Manage profiles…',
+    connectGateway: 'Connect another Hermes gateway…',
     actions: 'Actions',
     color: 'Color…',
     colorFor: 'Color',

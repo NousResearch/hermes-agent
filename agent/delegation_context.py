@@ -130,12 +130,19 @@ def is_delegated_child_process_context() -> bool:
     )
 
 
-def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
+def scrub_kanban_env(
+    env: Mapping[str, str] | MutableMapping[str, str],
+    *,
+    is_delegated: bool = True,
+) -> dict[str, str]:
     """Return *env* with dispatcher-only Kanban variables removed."""
     cleaned = dict(env)
     for key in KANBAN_ENV_KEYS:
         cleaned.pop(key, None)
-    cleaned[DELEGATED_CHILD_ENV_MARKER] = "1"
+    if is_delegated:
+        cleaned[DELEGATED_CHILD_ENV_MARKER] = "1"
+    else:
+        cleaned.pop(DELEGATED_CHILD_ENV_MARKER, None)
     return cleaned
 
 
@@ -152,10 +159,14 @@ def delegated_child_subprocess_env(
     marker must be propagated across a child-process boundary.
     """
     if not is_delegated_child_process_context():
-        return None if env is None else dict(env)
+        if env is None:
+            return None
+        cleaned = dict(env)
+        cleaned.pop(DELEGATED_CHILD_ENV_MARKER, None)
+        return cleaned
 
     if env is None:
         import os
 
         env = os.environ
-    return scrub_kanban_env(env)
+    return scrub_kanban_env(env, is_delegated=True)

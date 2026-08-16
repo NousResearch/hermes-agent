@@ -2060,9 +2060,10 @@ def _clear_planned_restart_notification() -> None:
 
 
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
-# knows not to clobber TERMINAL_CWD if lazily imported.
+# Strip any stale delegated-child marker inherited from a parent shell (#87650):
+# a long-lived gateway process is never a delegated child.
+os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
 os.environ["_HERMES_GATEWAY"] = "1"
-
 _ensure_ssl_certs()
 
 # Add parent directory to path
@@ -11464,10 +11465,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
             # This watcher is intentionally outside the running gateway. If it
             # inherits the gateway marker, `hermes gateway restart` refuses to
-            # run as a self-restart loop guard and the gateway stays stopped.
             watcher_env.pop("_HERMES_GATEWAY", None)
+            watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
             project_root = Path(__file__).resolve().parent.parent
-            # The watcher runs sys.executable (console python) under the
             # CREATE_NO_WINDOW detach kwargs below: it owns one hidden
             # console, inherited by the `hermes gateway restart` child, so
             # nothing flashes. Do NOT swap in GUI-subsystem pythonw.exe —
@@ -11553,7 +11553,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_HERMES_GATEWAY", None)
-        setsid_bin = shutil.which("setsid")
+        watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
         if setsid_bin:
             subprocess.Popen(
                 [setsid_bin, "bash", "-lc", shell_cmd],

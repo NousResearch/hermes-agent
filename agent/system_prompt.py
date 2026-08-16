@@ -584,20 +584,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Probe failure must never block prompt build.
             pass
 
-    # Bot Mode teammate protocol — when the desktop's Bot Mode manages this
-    # install (any profile carries ui_meta['hermes-bots']), every session of
-    # every profile learns the bot-to-bot messaging protocol, including
-    # headless `hermes -p <bot> chat` sessions started by a teammate. Silent
-    # on non-Bot-Mode installs and when the profile's SOUL.md already carries
-    # the section (legacy plugin-side append). Deterministic per (process,
-    # home) — cache-safe. Gated by config.yaml ``agent.bot_mode_protocol``
-    # (default True).
+    # Bot Mode teammate protocol — injected ONLY into a bot's canonical
+    # "Bot Chat" session (the conversation teammate bots message into via
+    # `hermes -p <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), on
+    # installs where Bot Mode manages profiles (ui_meta['hermes-bots']).
+    # Regular sessions never carry it — the desktop's composer middleware
+    # owns the @mention send path. Title is read once at first build and the
+    # rendered prompt is cached + DB-restored, so this is cache-safe.
+    # Gated by config.yaml ``agent.bot_mode_protocol`` (default True).
     if getattr(agent, "_bot_mode_protocol", True):
         try:
-            from tools.bot_mode_probe import get_bot_mode_protocol_section
-            _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
-            if _bot_section:
-                post_workspace_parts.append(_bot_section)
+            from tools.bot_mode_probe import BOT_CHAT_TITLE, get_bot_mode_protocol_section
+            _sdb = getattr(agent, "_session_db", None)
+            _sid = getattr(agent, "session_id", None)
+            _title = _sdb.get_session_title(_sid) if (_sdb and _sid) else None
+            if (_title or "").strip() == BOT_CHAT_TITLE:
+                _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
+                if _bot_section:
+                    post_workspace_parts.append(_bot_section)
         except Exception:
             pass
 

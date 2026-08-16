@@ -176,9 +176,11 @@ them into sections, and open group chats where several bots deliberate.
 Bots message each other: type `@researcher have a look at this` in any chat
 and the active bot hands the message off and reports back, and bots reach
 each other's Bot Chats directly (`hermes -p <bot> chat`). The backend teaches
-every session the messaging protocol automatically (config
-`agent.bot_mode_protocol`, default on) — including headless CLI sessions a
-teammate bot starts — so handoffs work without touching your SOUL.md.
+each bot's canonical **Bot Chat** session the messaging protocol
+automatically (config `agent.bot_mode_protocol`, default on) — including
+when a teammate bot opens it headlessly from the CLI — so bot-to-bot
+replies and handoffs work without touching your SOUL.md, and your regular
+sessions stay untouched.
 
 Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.

@@ -1,10 +1,15 @@
-"""Bot Mode roster probe — stable-tier system prompt section.
+"""Bot Mode roster probe — canonical Bot Chat system prompt section.
 
 When the desktop's Bot Mode manages this install (any profile carries a
-``ui_meta['hermes-bots']`` block in its profile.yaml), every session of every
-profile gets a short "Messaging other agents" section so bots can hand off
-@mentions and reply to bot-to-bot DMs — including headless CLI sessions
-started by another bot via ``hermes -p <name> chat``.
+``ui_meta['hermes-bots']`` block in its profile.yaml), a bot's canonical
+"Bot Chat" session — and ONLY that session — gets a short "Messaging other
+agents" section so the bot can receive teammate DMs, reply with attribution,
+and hand off @mentions.  Regular sessions never carry the section; the
+desktop's composer middleware owns the @mention send path there.
+
+The caller (agent/system_prompt.py) enforces the session-title gate against
+``BOT_CHAT_TITLE``; this module answers "is this install Bot-Mode-managed,
+and what should the section say for this profile".
 
 This replaces the plugin-side SOUL.md backfill: the protocol is injected by
 the core at prompt-build time instead of appended to user-authored SOUL
@@ -29,6 +34,11 @@ import threading
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
+
+# The canonical per-bot conversation title — the only session shape that
+# receives the protocol section. Must match the desktop plugin's
+# createCanonicalChat title and the `-c "Bot Chat"` resume target.
+BOT_CHAT_TITLE = "Bot Chat"
 
 _lock = threading.Lock()
 _cached: dict[str, str] = {}

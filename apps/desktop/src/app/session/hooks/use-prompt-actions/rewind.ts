@@ -341,7 +341,9 @@ export async function runRewindSubmit(
         // first-active-tip cut; the gateway ignores this when the prefix is
         // non-empty.
         ...(resolvedRowId !== undefined && resolvedOrdinal === undefined ? { confirm_empty_truncate: true } : {}),
-        ...(rebindRowIds ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] } : {})
+        ...(rebindRowIds?.length
+          ? { rebind_survivor_row_ids: [...new Set(rebindRowIds.filter(Number.isInteger))] }
+          : {})
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )

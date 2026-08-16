@@ -3193,6 +3193,17 @@ def _run_single_child(
             # legacy/mock results that omit the structured failure fields.
             # (Community report Aug 2026; #97655.)
             status = "failed"
+        elif _schema_valid is False:
+            # T1-24 follow-up: a schema was declared and the final answer —
+            # after the one bounded retry — still violates it (empty `{}`
+            # fallback included). A summary exists, but it is unusable under
+            # the contract the caller asked for, so it must not be reported
+            # as a completed delegation: the batch line would print ✓ and
+            # orchestrators that read only status/icon would accept an
+            # empty verdict. schema_valid/schema_errors (below) carry the
+            # detail; status has to agree with them. _schema_valid stays
+            # None on schema-less runs, which never take this branch.
+            status = "failed"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -3316,7 +3327,22 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            if _schema_valid is False and summary and not _empty_sentinel:
+                # The child DID respond — the response just violates the
+                # declared contract. Name that instead of the generic
+                # "no response" error; schema_errors (below) hold the
+                # validator's specifics verbatim.
+                entry["error"] = (
+                    "Final answer does not satisfy the declared "
+                    "output_schema (after 1 retry)."
+                    if _schema_retries
+                    else "Final answer does not satisfy the declared "
+                    "output_schema."
+                )
+            else:
+                entry["error"] = result.get(
+                    "error", "Subagent did not produce a response."
+                )
             # Classified reason from the child loop (e.g. "rate_limit",
             # "billing", "server_error") — lets the parent distinguish a
             # quota wall from a real task error without parsing prose.

@@ -12378,18 +12378,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile needs the same whole-handler runtime scope as a
             # secondary profile: authorization and prompt rendering both run
             # before the narrower agent-turn scope is installed.
-            adapter.set_message_handler(self._primary_message_handler())
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            _set_reaction = getattr(adapter, "set_reaction_handler", None)
-            if callable(_set_reaction):
-                _set_reaction(self._handle_reaction_event)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
-            adapter.set_platform_event_handler(self._primary_platform_event_handler())
-            adapter.set_callback_auth_resolver(self._authorize_platform_callback)
-            adapter._busy_text_mode = self._busy_text_mode
+            self._wire_primary_adapter_handlers(adapter)
             _pending_connects.append((platform, platform_config, adapter))
 
         if await self._abort_startup_if_shutdown_requested():
@@ -13860,18 +13849,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         del self._failed_platforms[platform]
                         continue
 
-                    adapter.set_message_handler(self._primary_message_handler())
-                    adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-                    adapter.set_session_store(self.session_store)
-                    adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-                    _set_reaction = getattr(adapter, "set_reaction_handler", None)
-                    if callable(_set_reaction):
-                        _set_reaction(self._handle_reaction_event)
-                    adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-                    adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
-                    adapter.set_platform_event_handler(self._primary_platform_event_handler())
-                    adapter.set_callback_auth_resolver(self._authorize_platform_callback)
-                    adapter._busy_text_mode = self._busy_text_mode
+                    self._wire_primary_adapter_handlers(adapter)
 
                     # Reconnect after an outage: preserve the platform's
                     # server-side update queue so messages sent while the bot
@@ -14923,6 +14901,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if isinstance(text_modes, dict)
             else self._busy_text_mode
         )
+        # NB: no callback-auth resolver is installed here. #86296 is the
+        # shared-primary-bot topology (one bot, many routed profiles) where the
+        # primary event handler is a routing closure with no bound __self__.
+        # A direct secondary adapter owns exactly one profile, so a resolver
+        # would have to *bind* that profile rather than route from the source
+        # (the shared-primary ``_authorize_platform_callback`` resolves the
+        # route and would fall back to the default store for an unrouted
+        # callback source). That is a distinct fix; secondary-adapter callback
+        # auth stays on the env fallback here and is left for a follow-up.
 
     async def _run_secondary_profile_reconnect(
         self, profile_name: str, platform: Platform
@@ -15191,6 +15178,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
+
+    def _wire_primary_adapter_handlers(self, adapter):
+        """Install the primary-transport handler set on a freshly created adapter.
+
+        Both the initial connect (``start``) and the reconnect watcher wire an
+        adapter the same way; the shared block lives here so the callback-auth
+        resolver registration (#86296) has a single, testable choke point that a
+        regression test can drive without standing up the whole async connect
+        flow. Any handler added here is picked up by both call sites.
+        """
+        adapter.set_message_handler(self._primary_message_handler())
+        adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        _set_reaction = getattr(adapter, "set_reaction_handler", None)
+        if callable(_set_reaction):
+            _set_reaction(self._handle_reaction_event)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+        adapter.set_platform_event_handler(self._primary_platform_event_handler())
+        adapter.set_callback_auth_resolver(self._authorize_platform_callback)
+        adapter._busy_text_mode = self._busy_text_mode
 
     def _primary_platform_event_handler(self):
         if getattr(self.config, "multiplex_profiles", False):

@@ -514,3 +514,36 @@ class TestFullyWiredPairingStoreDispatch:
         assert "not authorized" in query.answers[-1].lower()
         assert denial_marker in query.answers[-1].lower()
         assert key in getattr(adapter, registry_attr)
+
+
+class TestProductionWiringRegistersResolver:
+    """Guard the *production* registration, not just a hand-installed resolver.
+
+    ``start`` and ``_platform_reconnect_watcher`` both wire the primary adapter
+    through ``_wire_primary_adapter_handlers``. The dispatch tests above call
+    ``set_callback_auth_resolver`` themselves, so they would stay green if that
+    single production line were deleted — the exact regression #86296 guards
+    against. This drives the real helper and asserts the runner installs its own
+    ``_authorize_platform_callback`` as the adapter's callback-auth resolver.
+    """
+
+    def test_wire_primary_adapter_handlers_installs_callback_auth_resolver(self):
+        from gateway.run import GatewayRunner
+
+        runner = MagicMock()
+        # Bind only the real method under test; every collaborator stays a mock.
+        runner._wire_primary_adapter_handlers = (
+            GatewayRunner._wire_primary_adapter_handlers.__get__(runner)
+        )
+        adapter = MagicMock()
+
+        runner._wire_primary_adapter_handlers(adapter)
+
+        # The production choke point must register the runner's own resolver
+        # (both start and reconnect route through this same helper).
+        adapter.set_callback_auth_resolver.assert_called_once_with(
+            runner._authorize_platform_callback
+        )
+        # Sibling sanity: the primary event handler is still wired here too, so
+        # the helper is the genuine primary-adapter setup path.
+        adapter.set_platform_event_handler.assert_called_once()

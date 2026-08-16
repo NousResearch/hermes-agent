@@ -3124,12 +3124,22 @@ def _windows_cron_bootstrap_argv(
     Bootstrap with ``site.addsitedir()`` on the venv ``site-packages``, then
     exec the script as ``__main__``.  ``runpy.run_path`` keeps ``__file__``
     correct; ``sys.path[0]`` is set to the script's directory to preserve the
-    ``python script.py`` import semantics.  Falls back to a plain invocation
-    if the venv layout is unresolvable — the pre-existing PYTHONPATH
-    behaviour is strictly better than failing to run at all.
+    ``python script.py`` import semantics.  Note: ``runpy`` does not set
+    ``__package__``/``__spec__`` the way a direct invocation does, so
+    package-relative imports (``from . import x``) may behave differently.
+    Falls back to a plain invocation if the venv layout is unresolvable —
+    the pre-existing PYTHONPATH behaviour is strictly better than failing
+    to run at all.
     """
     site_packages = Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
     if not site_packages.is_dir():
+        # Silent here would make the "editable installs invisible" failure
+        # undiagnosable; the pre-existing PYTHONPATH-only behaviour applies.
+        logger.warning(
+            "Windows cron script: venv site-packages %s not found; running "
+            "without .pth processing (editable installs may be unimportable)",
+            site_packages,
+        )
         return [python_exe, script_path]
     bootstrap = (
         "import os, runpy, site, sys;"

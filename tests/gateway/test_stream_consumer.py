@@ -304,6 +304,62 @@ class TestBeforeFinalizeHook:
 
         assert events == ["send", "pause", "edit"]
 
+    @pytest.mark.asyncio
+    async def test_final_delivery_barrier_precedes_post_tool_progressive_send(self):
+        """Post-tool answer deltas stay hidden until progress has settled."""
+        first_sent = asyncio.Event()
+        segment_finalized = asyncio.Event()
+        barrier_started = asyncio.Event()
+        barrier_release = asyncio.Event()
+        final_sent = asyncio.Event()
+        sent_texts = []
+
+        async def send(**kwargs):
+            content = kwargs["content"]
+            sent_texts.append(content)
+            if "Prelude" in content:
+                first_sent.set()
+            if "Final answer" in content:
+                final_sent.set()
+            return SimpleNamespace(
+                success=True,
+                message_id=f"msg-{len(sent_texts)}",
+            )
+
+        async def edit_message(**kwargs):
+            if kwargs.get("finalize"):
+                segment_finalized.set()
+            return SimpleNamespace(success=True, message_id=kwargs["message_id"])
+
+        async def wait_for_progress():
+            barrier_started.set()
+            await barrier_release.wait()
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=send)
+        adapter.edit_message = AsyncMock(side_effect=edit_message)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+            on_before_final_delivery=wait_for_progress,
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("Prelude")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        consumer.on_segment_break()
+        await asyncio.wait_for(segment_finalized.wait(), timeout=2)
+        consumer.on_delta("Final answer")
+
+        await asyncio.wait_for(barrier_started.wait(), timeout=2)
+        assert not final_sent.is_set()
+        barrier_release.set()
+        await asyncio.wait_for(final_sent.wait(), timeout=2)
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=2)
+
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────
 

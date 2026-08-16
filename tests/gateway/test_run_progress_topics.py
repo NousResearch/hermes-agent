@@ -2,9 +2,12 @@
 
 import asyncio
 import importlib
+import queue
 import sys
+import threading
 import time
 import types
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +16,27 @@ import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
+
+
+_single_progress_sent = threading.Event()
+_overflow_initial_sent = threading.Event()
+_overflow_send_failed = threading.Event()
+_overflow_missing_id_seen = threading.Event()
+_initial_send_failed = threading.Event()
+_initial_no_id_delivered = threading.Event()
+_retryable_overflow_initial_sent = threading.Event()
+_retryable_overflow_edit_failed = threading.Event()
+_cancelled_overflow_initial_sent = threading.Event()
+_cancelled_overflow_send_started = threading.Event()
+_interim_content_sent = threading.Event()
+_retained_tail_flushed = threading.Event()
+_grouped_initial_sent = threading.Event()
+_grouped_continuation_edited = threading.Event()
+_ordering_draft_sent = threading.Event()
+_ordering_initial_progress_failed = threading.Event()
+_ordering_progress_retry_started = threading.Event()
+_ordering_progress_retry_release = threading.Event()
+_ordering_final_sent = threading.Event()
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -180,6 +204,12 @@ class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
         super().__init__(platform=platform)
         self.retryable_edit_failures = 0
 
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if len(self.sent) == 1:
+            _retryable_overflow_initial_sent.set()
+        return result
+
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         if self.retryable_edit_failures == 0:
             self.retryable_edit_failures += 1
@@ -190,6 +220,7 @@ class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
                     "content": content,
                 }
             )
+            _retryable_overflow_edit_failed.set()
             return SendResult(
                 success=False,
                 error="temporary network failure",
@@ -197,6 +228,415 @@ class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
                 error_kind="transient",
             )
         return await super().edit_message(chat_id, message_id, content)
+
+
+class AmbiguousOverflowEditProgressAdapter(SmallLimitProgressAdapter):
+    """Keep every overflow edit ACK-ambiguous to test stable retries."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if len(self.sent) == 1:
+            _retryable_overflow_initial_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        _retryable_overflow_edit_failed.set()
+        return SendResult(
+            success=False,
+            error="relay acknowledgement timed out",
+            retryable=True,
+            error_kind="transient",
+            ambiguous=True,
+        )
+
+
+class TooLongOverflowEditProgressAdapter(SmallLimitProgressAdapter):
+    """Reject the first progress edit with Slack's size-limit error."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.too_long_edit_failures = 0
+        self.visible = {}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if result.success and result.message_id:
+            self.sent[-1]["message_id"] = result.message_id
+            self.visible[result.message_id] = content
+            if len(self.sent) == 1:
+                _grouped_initial_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        if self.too_long_edit_failures == 0:
+            self.too_long_edit_failures += 1
+            self.edits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                }
+            )
+            return SendResult(success=False, error="Slack API error: msg_too_long")
+        result = await super().edit_message(chat_id, message_id, content)
+        if result.success:
+            self.visible[message_id] = content
+            if message_id != "progress-1":
+                _grouped_continuation_edited.set()
+        return result
+
+
+class TooLongFinalEditProgressAdapter(SmallLimitProgressAdapter):
+    """Synchronize one delivered line, then reject its identical final edit."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.too_long_edit_failures = 0
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to, metadata)
+        _single_progress_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.too_long_edit_failures += 1
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=False, error="Slack API error: msg_too_long")
+
+
+class TypedTransientTooLongEditProgressAdapter(SmallLimitProgressAdapter):
+    """Return a typed transient whose detail happens to say ``too long``."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to, metadata)
+        _single_progress_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(
+            success=False,
+            error="relay request took too long awaiting acknowledgement",
+            retryable=True,
+            error_kind="transient",
+        )
+
+
+class AmbiguousEditProgressAdapter(SmallLimitProgressAdapter):
+    """Lose an edit ACK without classifying the result as retryable."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to, metadata)
+        _single_progress_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(
+            success=False,
+            error="relay outbound timed out",
+            ambiguous=True,
+        )
+
+
+class RetryFreshSendAfterTooLongAdapter(SmallLimitProgressAdapter):
+    """Fail the first continuation send after a final ``msg_too_long`` edit."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) == 2:
+            return SendResult(
+                success=False,
+                error="temporary continuation send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if len(self.send_attempts) == 1:
+            _single_progress_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=False, error="Slack API error: msg_too_long")
+
+
+class RaisingFreshSendAfterTooLongAdapter(RetryFreshSendAfterTooLongAdapter):
+    """Post the first continuation, then raise before its ACK can be decoded."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) == 2:
+            self.sent.append(
+                {
+                    "chat_id": chat_id,
+                    "content": content,
+                    "reply_to": reply_to,
+                    "metadata": metadata,
+                }
+            )
+            raise RuntimeError("temporary continuation send exception")
+        result = await SmallLimitProgressAdapter.send(
+            self, chat_id, content, reply_to, metadata
+        )
+        if len(self.send_attempts) == 1:
+            _single_progress_sent.set()
+        return result
+
+
+class AmbiguousFreshSendAfterTooLongAdapter(RetryFreshSendAfterTooLongAdapter):
+    """Lose the ACK for the first non-idempotent continuation send."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) == 2:
+            return SendResult(
+                success=False,
+                error="relay outbound timed out",
+                ambiguous=True,
+            )
+        result = await SmallLimitProgressAdapter.send(
+            self, chat_id, content, reply_to, metadata
+        )
+        if len(self.send_attempts) == 1:
+            _single_progress_sent.set()
+        return result
+
+
+class FailedOverflowGroupAdapter(SmallLimitProgressAdapter):
+    """Fail one overflow group and expose the successfully visible messages."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+        self.visible = {}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if content == "content between progress groups":
+            result = await SmallLimitProgressAdapter.send(
+                self, chat_id, content, reply_to, metadata
+            )
+            if result.success:
+                _interim_content_sent.set()
+            return result
+        if len(self.send_attempts) == 2:
+            _overflow_send_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary overflow group failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if result.success and result.message_id:
+            self.visible[result.message_id] = content
+            if _interim_content_sent.is_set():
+                _retained_tail_flushed.set()
+        if len(self.send_attempts) == 1:
+            _overflow_initial_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        result = await super().edit_message(chat_id, message_id, content)
+        if result.success:
+            self.visible[message_id] = content
+        return result
+
+
+class MissingIdOverflowGroupAdapter(SmallLimitProgressAdapter):
+    """Deliver one continuation successfully without an editable message ID."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+        self.visible = {}
+        self.visible_without_ids = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) == 2:
+            self.visible_without_ids.append(content)
+            _overflow_missing_id_seen.set()
+            return SendResult(success=True, message_id=None)
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if result.success and result.message_id:
+            self.visible[result.message_id] = content
+        if len(self.send_attempts) == 1:
+            _overflow_initial_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        result = await super().edit_message(chat_id, message_id, content)
+        if result.success:
+            self.visible[message_id] = content
+        return result
+
+
+class CancelledOverflowGroupAdapter(SmallLimitProgressAdapter):
+    """Pause an overflow split after one successful no-ID continuation."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+        self.visible = {}
+        self.visible_without_ids = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        attempt = len(self.send_attempts)
+        if attempt == 2:
+            self.visible_without_ids.append(content)
+            return SendResult(success=True, message_id=None)
+        if attempt == 3:
+            # The relay frame reached the wire before cancellation interrupted
+            # its acknowledgement wait.  Treat this as possibly visible.
+            self.visible_without_ids.append(content)
+            _cancelled_overflow_send_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("blocked continuation send should be cancelled")
+        result = await super().send(chat_id, content, reply_to, metadata)
+        if result.success and result.message_id:
+            self.visible[result.message_id] = content
+        if attempt == 1:
+            _cancelled_overflow_initial_sent.set()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        result = await super().edit_message(chat_id, message_id, content)
+        if result.success:
+            self.visible[message_id] = content
+        return result
+
+
+class WedgedCancellationDrainAdapter(SmallLimitProgressAdapter):
+    """Hang until a bounded cleanup wait cancels the finalizer send."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) == 1:
+            _initial_send_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary progress send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        await asyncio.Event().wait()
+        raise AssertionError("wedged finalizer send should be cancelled")
+
+
+class OrderedFinalProgressAdapter(ProgressCaptureAdapter):
+    """Capture whether cancellation progress drains before streamed final text."""
+
+    def __init__(self, platform=Platform.SLACK):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+        self.visible_order = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if "ordering progress" in content and not _ordering_initial_progress_failed.is_set():
+            _ordering_initial_progress_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary progress send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        if "ordering progress" in content:
+            _ordering_progress_retry_started.set()
+            while not _ordering_progress_retry_release.is_set():
+                await asyncio.sleep(0)
+        if "ordering progress" in content:
+            self.visible_order.append("progress")
+        elif "draft" in content:
+            self.visible_order.append("draft")
+            _ordering_draft_sent.set()
+        elif content == "done":
+            self.visible_order.append("final")
+            _ordering_final_sent.set()
+        return await super().send(chat_id, content, reply_to, metadata)
+
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
+        result = await super().edit_message(chat_id, message_id, content)
+        if result.success and content == "done":
+            self.visible_order.append("final")
+            _ordering_final_sent.set()
+        return result
+
+
+class RetryNoIdDrainAdapter(SmallLimitProgressAdapter):
+    """Fail the initial send and first cancellation-drain retry."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) <= 2:
+            if len(self.send_attempts) == 1:
+                _initial_send_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary progress send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        return await super().send(chat_id, content, reply_to, metadata)
+
+
+class SuccessfulInitialNoIdAdapter(SmallLimitProgressAdapter):
+    """Deliver the first progress bubble without returning an editable ID."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.send_attempts = []
+        self.visible_without_ids = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.send_attempts.append(content)
+        if len(self.send_attempts) == 1:
+            self.visible_without_ids.append(content)
+            _initial_no_id_delivered.set()
+            return SendResult(success=True, message_id=None)
+        return await super().send(chat_id, content, reply_to, metadata)
 
 
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
@@ -448,6 +888,270 @@ class DelayedInterimAgent:
         time.sleep(0.45)
         self.interim_assistant_callback("second interim")
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class GroupedProgressLinesAgent:
+    """Emit short lines so several fit in each continuation bubble."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "grouped-seed", {})
+        assert _grouped_initial_sent.wait(timeout=2)
+        for index in range(1, 9):
+            callback("tool.started", "terminal", f"grouped-item-{index}", {})
+        assert _grouped_continuation_edited.wait(timeout=4)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 9,
+        }
+
+
+class SingleProgressLineAgent:
+    """Leave one already-delivered line for the cancellation finalizer."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "only command", {})
+        assert _single_progress_sent.wait(timeout=2)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PendingProgressLineAgent:
+    """Queue one unseen line immediately before cancellation finalization."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "first command", {})
+        assert _single_progress_sent.wait(timeout=2)
+        callback("tool.started", "terminal", "second command", {})
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class OrderedFinalProgressAgent:
+    """Finish a streamed answer while one definite progress failure is pending."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        progress = self.tool_progress_callback
+        assert progress is not None
+        if self.stream_delta_callback:
+            self.stream_delta_callback("draft")
+            assert _ordering_draft_sent.wait(timeout=2)
+        progress("tool.started", "terminal", "ordering progress", {})
+        assert _ordering_initial_progress_failed.wait(timeout=2)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class RetryableOverflowLinesAgent:
+    """Drive a transient overflow edit using acknowledgements, not sleeps."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "first-short", {})
+        assert _retryable_overflow_initial_sent.wait(timeout=2)
+        for index in range(1, 8):
+            callback(
+                "tool.started",
+                "terminal",
+                f"overflow-line-{index}-" + ("x" * 45),
+                {},
+            )
+        assert _retryable_overflow_edit_failed.wait(timeout=4)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class OverflowSendFailureAgent:
+    """Force a grouped overflow send, then return after one group fails."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "base command", {})
+        assert _overflow_initial_sent.wait(timeout=2)
+        for index in range(1, 7):
+            callback(
+                "tool.started",
+                "terminal",
+                f"overflow-item-{index}-" + ("x" * 45),
+                {},
+            )
+        assert _overflow_send_failed.wait(timeout=4)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class OverflowSendFailureThenInterimAgent:
+    """Land content after a grouped overflow leaves an undelivered tail."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        progress = self.tool_progress_callback
+        interim = self.interim_assistant_callback
+        assert progress is not None
+        assert interim is not None
+        progress("tool.started", "terminal", "reset-base", {})
+        assert _overflow_initial_sent.wait(timeout=2)
+        for index in range(1, 7):
+            progress(
+                "tool.started",
+                "terminal",
+                f"reset-item-{index}-" + ("x" * 45),
+                {},
+            )
+        assert _overflow_send_failed.wait(timeout=4)
+        interim("content between progress groups")
+        assert _interim_content_sent.wait(timeout=2)
+        assert _retained_tail_flushed.wait(timeout=2)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class OverflowMissingIdAgent:
+    """Force grouped overflow and wait for a successful no-ID continuation."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "base command", {})
+        assert _overflow_initial_sent.wait(timeout=2)
+        for index in range(1, 7):
+            callback(
+                "tool.started",
+                "terminal",
+                f"no-id-item-{index}-" + ("x" * 45),
+                {},
+            )
+        assert _overflow_missing_id_seen.wait(timeout=4)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CancelledOverflowGroupAgent:
+    """Finish while a later continuation group is still being sent."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "cancel-base", {})
+        assert _cancelled_overflow_initial_sent.wait(timeout=2)
+        for index in range(1, 7):
+            callback(
+                "tool.started",
+                "terminal",
+                f"cancel-item-{index}-" + ("x" * 45),
+                {},
+            )
+        assert _cancelled_overflow_send_started.wait(timeout=4)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FailedInitialProgressSendAgent:
+    """Return once the initial progress send has failed without an ID."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "retry me", {})
+        assert _initial_send_failed.wait(timeout=2)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class InitialNoIdThenProgressAgent:
+    """Emit another line after a successful uneditable initial delivery."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        callback("tool.started", "terminal", "first no-id command", {})
+        assert _initial_no_id_delivered.wait(timeout=2)
+        callback("tool.started", "terminal", "second command", {})
         return {
             "final_response": "done",
             "messages": [],
@@ -1057,6 +1761,58 @@ async def _run_with_agent(
     return adapter, result
 
 
+@asynccontextmanager
+async def _running_progress_worker(adapter, *, grouping="accumulate"):
+    """Run the direct progress worker with the shared minimal test context."""
+    gateway_run = importlib.import_module("gateway.run")
+    progress_queue = queue.Queue()
+    ctx = SimpleNamespace(
+        progress_queue=progress_queue,
+        _native_slack_task_cards=False,
+        source=SimpleNamespace(chat_id="C123"),
+        progress_grouping=grouping,
+        _run_still_current=lambda: True,
+        _progress_reply_to=None,
+        _progress_metadata=None,
+        _cleanup_progress=False,
+        _cleanup_msg_ids=[],
+        agent_holder=[],
+        last_progress_msg=[None],
+        repeat_count=[0],
+    )
+    runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+    task = asyncio.create_task(
+        gateway_run.TurnRunner(runner, ctx).send_progress_messages()
+    )
+    try:
+        yield progress_queue, task
+    finally:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_oversized_single_progress_line_is_split_before_adapter_delivery():
+    adapter = SmallLimitProgressAdapter(platform=Platform.SLACK)
+    progress_line = "x" * (adapter.MAX_MESSAGE_LENGTH + 50)
+
+    async with _running_progress_worker(adapter) as (progress_queue, _task):
+        progress_queue.put(progress_line)
+        for _ in range(100):
+            if sum(len(call["content"]) for call in adapter.sent) >= len(progress_line):
+                break
+            await asyncio.sleep(0.01)
+
+    sent_chunks = [call["content"] for call in adapter.sent]
+    assert "".join(sent_chunks) == progress_line
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+
+
 @pytest.mark.asyncio
 async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id(
     monkeypatch, tmp_path
@@ -1134,10 +1890,11 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
 @pytest.mark.asyncio
 async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatch, tmp_path):
     """A transient split edit must retain can_edit and the current message ID."""
+    _retryable_overflow_initial_sent.clear()
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
-        ManyProgressLinesAgent,
+        RetryableOverflowLinesAgent,
         session_id="sess-progress-retry-overflow-same-message",
         config_data={
             "display": {
@@ -1160,6 +1917,1020 @@ async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatc
     assert any(call["message_id"] == "progress-1" for call in adapter.edits[1:])
     assert adapter.oversized_sends == []
     assert adapter.oversized_edits == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_overflow_edit_retries_exact_payload(monkeypatch, tmp_path):
+    """Later lines must not mutate an unresolved same-ID edit retry."""
+    _retryable_overflow_initial_sent.clear()
+    _retryable_overflow_edit_failed.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        RetryableOverflowLinesAgent,
+        session_id="sess-progress-ambiguous-overflow-stable-payload",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=AmbiguousOverflowEditProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.edits) >= 2
+    assert {edit["message_id"] for edit in adapter.edits} == {"progress-1"}
+    assert {edit["content"] for edit in adapter.edits} == {
+        adapter.edits[0]["content"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_too_long_overflow_edit_starts_fresh_editable_bubble(
+    monkeypatch, tmp_path
+):
+    """Slack ``msg_too_long`` should roll over, not disable edits for the turn."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        GroupedProgressLinesAgent,
+        session_id="sess-progress-too-long-overflow-rollover",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+                "tool_preview_length": 60,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=TooLongOverflowEditProgressAdapter,
+    )
+    assert isinstance(adapter, TooLongOverflowEditProgressAdapter)
+
+    assert result["final_response"] == "done"
+    assert adapter.too_long_edit_failures == 1
+    assert adapter.edits[0]["message_id"] == "progress-1"
+    continuation_ids = {call["message_id"] for call in adapter.sent[1:]}
+    assert any(call["message_id"] in continuation_ids for call in adapter.edits[1:]), (
+        "expected later progress to edit a fresh continuation bubble"
+    )
+    assert len(adapter.sent) < 9, "progress fell back to one fresh send per tool line"
+    assert any("\n" in call["content"] for call in adapter.sent[1:])
+    visible_text = "\n".join(adapter.visible.values())
+    assert visible_text.count("grouped-seed") == 1
+    for index in range(1, 9):
+        assert visible_text.count(f"grouped-item-{index}") == 1
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+
+
+@pytest.mark.asyncio
+async def test_identical_final_too_long_edit_does_not_duplicate_delivered_line(
+    monkeypatch, tmp_path
+):
+    """A no-op final edit rejection must freeze the bubble without resending it."""
+    _single_progress_sent.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SingleProgressLineAgent,
+        session_id="sess-progress-too-long-identical-final",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=TooLongFinalEditProgressAdapter,
+    )
+    assert isinstance(adapter, TooLongFinalEditProgressAdapter)
+
+    assert result["final_response"] == "done"
+    assert adapter.too_long_edit_failures == 1
+    sent_contents = [call["content"] for call in adapter.sent]
+    assert len(sent_contents) == 1
+    assert sent_contents[0].endswith("Running only command")
+
+
+@pytest.mark.asyncio
+async def test_typed_transient_edit_error_text_does_not_trigger_size_rollover(
+    monkeypatch, tmp_path
+):
+    """A populated error_kind is authoritative over ambiguous human text."""
+    _single_progress_sent.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PendingProgressLineAgent,
+        session_id="sess-progress-typed-transient-not-overflow",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=TypedTransientTooLongEditProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, TypedTransientTooLongEditProgressAdapter)
+    assert len(adapter.edits) == 2
+    assert adapter.edits[0]["content"] == adapter.edits[1]["content"]
+    sent_contents = [call["content"] for call in adapter.sent]
+    assert len(sent_contents) == 2
+    assert sent_contents[0].endswith("Running first command")
+    assert sent_contents[1].endswith("Running second command"), (
+        "only the unseen tail may be fresh-sent after bounded transient edit retries"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_edit_does_not_fall_back_to_fresh_send(monkeypatch, tmp_path):
+    """An ACK-lost edit may have landed and must never trigger a duplicate bubble."""
+    _single_progress_sent.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PendingProgressLineAgent,
+        session_id="sess-progress-ambiguous-edit",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=AmbiguousEditProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.edits) == 2
+    assert adapter.edits[0]["content"] == adapter.edits[1]["content"]
+    assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_content_reset_retries_ambiguous_edit_in_place(monkeypatch):
+    """A reset settles an ACK-lost edit before opening a fresh bubble."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    first_sent = asyncio.Event()
+    first_edit_attempted = asyncio.Event()
+    edit_retry_succeeded = asyncio.Event()
+    third_sent = asyncio.Event()
+    original_send = adapter.send
+
+    async def tracking_send(chat_id, content, reply_to=None, metadata=None):
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if content == "first":
+            first_sent.set()
+        elif content == "third":
+            third_sent.set()
+        return result
+
+    async def ambiguous_then_successful_edit(chat_id, message_id, content):
+        adapter.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        if len(adapter.edits) == 1:
+            first_edit_attempted.set()
+            return SendResult(
+                success=False,
+                error="relay acknowledgement timed out",
+                retryable=True,
+                error_kind="transient",
+                ambiguous=True,
+            )
+        edit_retry_succeeded.set()
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.send = tracking_send
+    adapter.edit_message = ambiguous_then_successful_edit
+    async with _running_progress_worker(adapter) as (progress_queue, _task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put("second")
+        await asyncio.wait_for(first_edit_attempted.wait(), timeout=2)
+        progress_queue.put(("__reset__",))
+        await asyncio.wait_for(edit_retry_succeeded.wait(), timeout=2)
+        progress_queue.put("third")
+        await asyncio.wait_for(third_sent.wait(), timeout=2)
+
+    assert [call["content"] for call in adapter.sent] == ["first", "third"]
+    assert [edit["content"] for edit in adapter.edits[:2]] == [
+        "first\nsecond",
+        "first\nsecond",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("adapter_cls", "attempt_count", "visible_count"),
+    [
+        (RetryFreshSendAfterTooLongAdapter, 3, 2),
+        (RaisingFreshSendAfterTooLongAdapter, 2, 2),
+        (AmbiguousFreshSendAfterTooLongAdapter, 2, 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_continuation_send_outcome_controls_bounded_retry(
+    monkeypatch, tmp_path, adapter_cls, attempt_count, visible_count
+):
+    """Retry definite failures once, but never replay an ambiguous send."""
+    _single_progress_sent.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PendingProgressLineAgent,
+        session_id=f"sess-progress-{adapter_cls.__name__}",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=adapter_cls,
+    )
+
+    assert result["final_response"] == "done"
+    send_attempts = getattr(adapter, "send_attempts")
+    assert len(send_attempts) == attempt_count
+    assert send_attempts[1].endswith("Running second command")
+    if attempt_count == 3:
+        assert send_attempts[1] == send_attempts[2]
+    successful_contents = [call["content"] for call in adapter.sent]
+    assert len(successful_contents) == visible_count
+    assert successful_contents[0].endswith("Running first command")
+    if visible_count == 2:
+        assert successful_contents[1].endswith("Running second command")
+
+
+@pytest.mark.parametrize("outcome", ["ambiguous", "cancelled", "raised"])
+@pytest.mark.asyncio
+async def test_unknown_initial_send_is_never_replayed(monkeypatch, outcome):
+    """An attempted non-idempotent send is never replayed after an unknown outcome."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    send_attempts = []
+    first_attempted = asyncio.Event()
+    second_attempted = asyncio.Event()
+
+    async def unknown_send(chat_id, content, reply_to=None, metadata=None):
+        send_attempts.append(content)
+        if len(send_attempts) == 1:
+            first_attempted.set()
+        else:
+            second_attempted.set()
+        if outcome == "cancelled":
+            await asyncio.Event().wait()
+        if outcome == "raised" and len(send_attempts) == 1:
+            raise RuntimeError("response decode failed after send became visible")
+        return SendResult(
+            success=False,
+            error="relay outbound timed out",
+            ambiguous=True,
+        )
+
+    adapter.send = unknown_send
+    async with _running_progress_worker(adapter) as (progress_queue, task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_attempted.wait(), timeout=2)
+        if outcome == "raised":
+            progress_queue.put("second")
+            await asyncio.wait_for(second_attempted.wait(), timeout=2)
+        else:
+            await asyncio.sleep(0)
+            task.cancel()
+
+    assert send_attempts == (["first", "second"] if outcome == "raised" else ["first"])
+
+
+@pytest.mark.asyncio
+async def test_separate_progress_is_not_replayed_after_content_reset(monkeypatch):
+    """A reset must not resend a separate progress line that is already visible."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    first_sent = asyncio.Event()
+    second_sent = asyncio.Event()
+    original_send = adapter.send
+
+    async def tracking_send(chat_id, content, reply_to=None, metadata=None):
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if content == "first":
+            first_sent.set()
+        elif content == "second":
+            second_sent.set()
+        return result
+
+    adapter.send = tracking_send
+    async with _running_progress_worker(adapter, grouping="separate") as (
+        progress_queue,
+        _task,
+    ):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put(("__reset__",))
+        progress_queue.put("second")
+        await asyncio.wait_for(second_sent.wait(), timeout=2)
+
+    sent_contents = [call["content"] for call in adapter.sent]
+    assert sent_contents.count("first") == 1
+
+
+@pytest.mark.parametrize("edit_failure", ["not_found", "flood"])
+@pytest.mark.parametrize("fallback_outcome", ["success", "ambiguous", "raised"])
+@pytest.mark.asyncio
+async def test_edit_fallback_is_not_replayed_after_content_reset(
+    monkeypatch,
+    fallback_outcome,
+    edit_failure,
+):
+    """A visible or unknown fresh fallback must leave the replay ledger."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    first_sent = asyncio.Event()
+    fallback_sent = asyncio.Event()
+    third_sent = asyncio.Event()
+    fourth_sent = asyncio.Event()
+    send_attempts = []
+    original_send = adapter.send
+
+    async def tracking_send(chat_id, content, reply_to=None, metadata=None):
+        send_attempts.append(content)
+        if content == "second" and fallback_outcome == "ambiguous":
+            fallback_sent.set()
+            return SendResult(
+                success=False,
+                error="relay acknowledgement timed out",
+                error_kind="transient",
+                retryable=True,
+                ambiguous=True,
+            )
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if content == "first":
+            first_sent.set()
+        elif content == "second":
+            fallback_sent.set()
+        elif "third" in content.splitlines():
+            third_sent.set()
+        elif "fourth" in content.splitlines():
+            fourth_sent.set()
+        if content == "second" and fallback_outcome == "raised":
+            raise RuntimeError("response decode failed after fallback became visible")
+        return result
+
+    async def permanently_failing_edit(chat_id, message_id, content):
+        adapter.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        if edit_failure == "flood":
+            return SendResult(
+                success=False,
+                error="flood control: retry after 1",
+                error_kind="rate_limit",
+            )
+        return SendResult(
+            success=False,
+            error="message not found",
+            error_kind="not_found",
+        )
+
+    adapter.send = tracking_send
+    adapter.edit_message = permanently_failing_edit
+    async with _running_progress_worker(adapter) as (progress_queue, _task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put("second")
+        await asyncio.wait_for(fallback_sent.wait(), timeout=2)
+        progress_queue.put("third")
+        await asyncio.wait_for(third_sent.wait(), timeout=2)
+        progress_queue.put(("__reset__",))
+        progress_queue.put("fourth")
+        await asyncio.wait_for(fourth_sent.wait(), timeout=2)
+
+    visible_lines = "\n".join(send_attempts).splitlines()
+    assert visible_lines.count("first") == 1
+    assert visible_lines.count("second") == 1
+    assert visible_lines.count("third") == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_edit_fallback_blocks_later_progress_until_retried(monkeypatch):
+    """A definite failed fallback remains ahead of later progress lines."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    first_sent = asyncio.Event()
+    fallback_failed = asyncio.Event()
+    third_sent = asyncio.Event()
+    send_attempts = []
+    original_send = adapter.send
+
+    async def fail_fallback_once(chat_id, content, reply_to=None, metadata=None):
+        send_attempts.append(content)
+        if content == "second" and send_attempts.count("second") == 1:
+            fallback_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary progress send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if content == "first":
+            first_sent.set()
+        elif content == "third":
+            third_sent.set()
+        return result
+
+    async def permanently_failing_edit(chat_id, message_id, content):
+        adapter.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        return SendResult(
+            success=False,
+            error="message not found",
+            error_kind="not_found",
+        )
+
+    adapter.send = fail_fallback_once
+    adapter.edit_message = permanently_failing_edit
+    async with _running_progress_worker(adapter) as (progress_queue, _task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put("second")
+        await asyncio.wait_for(fallback_failed.wait(), timeout=2)
+        progress_queue.put("third")
+        await asyncio.wait_for(third_sent.wait(), timeout=2)
+
+    assert send_attempts == ["first", "second", "second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_failed_separate_progress_blocks_newer_line_until_retry(monkeypatch):
+    """Separate-mode retries preserve FIFO order after a definite failure."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    older_failed = asyncio.Event()
+    newer_sent = asyncio.Event()
+    send_attempts = []
+
+    async def fail_older_once(chat_id, content, reply_to=None, metadata=None):
+        send_attempts.append(content)
+        if len(send_attempts) == 1:
+            older_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary progress send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        if content == "newer":
+            newer_sent.set()
+        return SendResult(success=True, message_id=f"progress-{len(send_attempts)}")
+
+    adapter.send = fail_older_once
+    async with _running_progress_worker(adapter, grouping="separate") as (
+        progress_queue,
+        _task,
+    ):
+        progress_queue.put("older")
+        await asyncio.wait_for(older_failed.wait(), timeout=2)
+        progress_queue.put("newer")
+        await asyncio.wait_for(newer_sent.wait(), timeout=2)
+
+    assert send_attempts == ["older", "older", "newer"]
+
+
+@pytest.mark.asyncio
+async def test_failed_separate_progress_is_retried_during_cancellation_drain(
+    monkeypatch,
+):
+    """A definite failed separate send remains pending for the bounded drain."""
+    gateway_run = importlib.import_module("gateway.run")
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 2.0
+        return clock[0]
+
+    monkeypatch.setattr(gateway_run.time, "monotonic", monotonic)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    send_attempts = []
+    first_failed = asyncio.Event()
+
+    async def fail_once(chat_id, content, reply_to=None, metadata=None):
+        send_attempts.append(content)
+        if len(send_attempts) == 1:
+            first_failed.set()
+            return SendResult(
+                success=False,
+                error="temporary progress send failure",
+                retryable=True,
+                error_kind="transient",
+            )
+        return SendResult(success=True, message_id="progress-retry")
+
+    adapter.send = fail_once
+    async with _running_progress_worker(adapter, grouping="separate") as (
+        progress_queue,
+        task,
+    ):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_failed.wait(), timeout=2)
+        await asyncio.sleep(0)
+        task.cancel()
+
+    assert send_attempts == ["first", "first"]
+
+
+@pytest.mark.parametrize("reset_before_cancel", [False, True])
+@pytest.mark.asyncio
+async def test_cancellation_drain_fresh_sends_unseen_tail_after_definite_edit_failure(
+    monkeypatch,
+    reset_before_cancel,
+):
+    """A definite drain edit failure must not discard unseen progress."""
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run.time, "monotonic", lambda: 2.0)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    first_sent = asyncio.Event()
+    original_send = adapter.send
+
+    async def tracking_send(chat_id, content, reply_to=None, metadata=None):
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if content == "first":
+            first_sent.set()
+        return result
+
+    async def missing_edit(chat_id, message_id, content):
+        adapter.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        return SendResult(
+            success=False,
+            error="message not found",
+            error_kind="not_found",
+        )
+
+    adapter.send = tracking_send
+    adapter.edit_message = missing_edit
+    async with _running_progress_worker(adapter) as (progress_queue, task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put("second")
+        if reset_before_cancel:
+            progress_queue.put(("__reset__",))
+        task.cancel()
+
+    assert [call["content"] for call in adapter.sent] == ["first", "second"]
+    assert adapter.edits[-1]["content"] == "first\nsecond"
+
+
+@pytest.mark.parametrize(
+    ("first_failure", "second_failure"),
+    [
+        ("ambiguous", None),
+        ("transient", None),
+        ("exception", None),
+        ("ambiguous", "ambiguous"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cancellation_drain_retries_idempotent_edit_before_fallback(
+    monkeypatch,
+    first_failure,
+    second_failure,
+):
+    """Drain retries edits in place and never fresh-sends unresolved ambiguity."""
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run.time, "monotonic", lambda: 2.0)
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    first_sent = asyncio.Event()
+    original_send = adapter.send
+
+    async def tracking_send(chat_id, content, reply_to=None, metadata=None):
+        result = await original_send(chat_id, content, reply_to, metadata)
+        if content == "first":
+            first_sent.set()
+        return result
+
+    failures = [first_failure, second_failure]
+
+    async def retrying_edit(chat_id, message_id, content):
+        adapter.edits.append(
+            {"chat_id": chat_id, "message_id": message_id, "content": content}
+        )
+        failure = failures[len(adapter.edits) - 1]
+        if failure == "ambiguous":
+            return SendResult(
+                success=False,
+                error="relay acknowledgement timed out",
+                error_kind="transient",
+                retryable=True,
+                ambiguous=True,
+            )
+        if failure == "transient":
+            return SendResult(
+                success=False,
+                error="temporary network failure",
+                error_kind="transient",
+                retryable=True,
+            )
+        if failure == "exception":
+            raise RuntimeError("edit acknowledgement unavailable")
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.send = tracking_send
+    adapter.edit_message = retrying_edit
+    async with _running_progress_worker(adapter) as (progress_queue, task):
+        progress_queue.put("first")
+        await asyncio.wait_for(first_sent.wait(), timeout=2)
+        progress_queue.put("second")
+        task.cancel()
+
+    assert [call["content"] for call in adapter.sent] == ["first"]
+    assert [edit["content"] for edit in adapter.edits] == [
+        "first\nsecond",
+        "first\nsecond",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_overflow_group_is_retained_and_retried(monkeypatch, tmp_path):
+    """A failed overflow group must stop the split and preserve the exact tail."""
+    _overflow_initial_sent.clear()
+    _overflow_send_failed.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OverflowSendFailureAgent,
+        session_id="sess-progress-overflow-group-retry",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            },
+            "tool_preview_length": 60,
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=FailedOverflowGroupAdapter,
+    )
+    assert isinstance(adapter, FailedOverflowGroupAdapter)
+
+    assert result["final_response"] == "done"
+    assert len(adapter.send_attempts) >= 3
+    assert adapter.send_attempts[2].splitlines()[0] == adapter.send_attempts[1]
+    visible_text = "\n".join(adapter.visible.values())
+    ordered_tokens = ["base command", *(f"overflow-item-{index}-" for index in range(1, 7))]
+    assert [visible_text.count(token) for token in ordered_tokens] == [1] * len(
+        ordered_tokens
+    )
+    assert [visible_text.index(token) for token in ordered_tokens] == sorted(
+        visible_text.index(token) for token in ordered_tokens
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_reset_flushes_retained_failed_overflow_tail(monkeypatch, tmp_path):
+    """A content-bubble reset must not discard a failed continuation tail."""
+    _overflow_initial_sent.clear()
+    _overflow_send_failed.clear()
+    _interim_content_sent.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OverflowSendFailureThenInterimAgent,
+        session_id="sess-progress-reset-retained-tail",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": True,
+            },
+            "tool_preview_length": 60,
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=FailedOverflowGroupAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, FailedOverflowGroupAdapter)
+    visible_text = "\n".join(adapter.visible.values())
+    ordered_tokens = ["reset-base", *(f"reset-item-{index}-" for index in range(1, 7))]
+    assert [visible_text.count(token) for token in ordered_tokens] == [1] * len(
+        ordered_tokens
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_overflow_group_without_id_is_not_retried(monkeypatch, tmp_path):
+    """Success without an ID is visible but frozen, not pending for resubmission."""
+    _overflow_initial_sent.clear()
+    _overflow_missing_id_seen.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OverflowMissingIdAgent,
+        session_id="sess-progress-overflow-missing-id",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            },
+            "tool_preview_length": 60,
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=MissingIdOverflowGroupAdapter,
+    )
+    assert isinstance(adapter, MissingIdOverflowGroupAdapter)
+
+    assert result["final_response"] == "done"
+    no_id_content = adapter.visible_without_ids[0]
+    assert adapter.send_attempts.count(no_id_content) == 1
+    visible_text = "\n".join(
+        [*adapter.visible.values(), *adapter.visible_without_ids]
+    )
+    assert visible_text.count("base command") == 1
+    for index in range(1, 7):
+        assert visible_text.count(f"no-id-item-{index}-") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_overflow_send_does_not_retry_attempted_group(
+    monkeypatch, tmp_path
+):
+    """Cancellation mid-split retains only groups that were never attempted."""
+    _cancelled_overflow_initial_sent.clear()
+    _cancelled_overflow_send_started.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CancelledOverflowGroupAgent,
+        session_id="sess-progress-cancelled-overflow-tail",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            },
+            "tool_preview_length": 60,
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=CancelledOverflowGroupAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, CancelledOverflowGroupAdapter)
+    visible_with_ids = list(adapter.visible.values())
+    visible_text = "\n".join(
+        [visible_with_ids[0], *adapter.visible_without_ids, *visible_with_ids[1:]]
+    )
+    ordered_tokens = ["cancel-base", *(f"cancel-item-{index}-" for index in range(1, 7))]
+    assert [visible_text.count(token) for token in ordered_tokens] == [1] * len(
+        ordered_tokens
+    ), (adapter.send_attempts, adapter.visible, adapter.visible_without_ids)
+    assert [visible_text.index(token) for token in ordered_tokens] == sorted(
+        visible_text.index(token) for token in ordered_tokens
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_progress_drain_finishes_before_streamed_final(
+    monkeypatch,
+    tmp_path,
+):
+    """Pending progress must not appear below the completed final response."""
+    _ordering_draft_sent.clear()
+    _ordering_initial_progress_failed.clear()
+    _ordering_progress_retry_started.clear()
+    _ordering_progress_retry_release.clear()
+    _ordering_final_sent.clear()
+    gateway_run = importlib.import_module("gateway.run")
+    original_cleanup_wait = gateway_run.GatewayRunner._await_adapter_cleanup_with_timeout
+    cleanup_saw_final = []
+
+    async def tracking_cleanup_wait(self, task, timeout):
+        cleanup_saw_final.append(_ordering_final_sent.is_set())
+        return await original_cleanup_wait(self, task, timeout)
+
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_await_adapter_cleanup_with_timeout",
+        tracking_cleanup_wait,
+    )
+    run_task = asyncio.create_task(
+        _run_with_agent(
+            monkeypatch,
+            tmp_path,
+            OrderedFinalProgressAgent,
+            session_id="sess-progress-before-streamed-final",
+            config_data={
+                "display": {
+                    "tool_progress": "all",
+                    "interim_assistant_messages": False,
+                },
+                "streaming": {
+                    "enabled": True,
+                    "edit_interval": 0.01,
+                    "buffer_threshold": 1,
+                },
+            },
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="direct",
+            thread_id="1700000000.000100",
+            adapter_cls=OrderedFinalProgressAdapter,
+        )
+    )
+    retry_started = await asyncio.to_thread(
+        _ordering_progress_retry_started.wait,
+        2,
+    )
+    assert retry_started
+    try:
+        final_overtook_progress = await asyncio.to_thread(
+            _ordering_final_sent.wait,
+            0.2,
+        )
+    finally:
+        _ordering_progress_retry_release.set()
+    adapter, result = await run_task
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, OrderedFinalProgressAdapter)
+    assert not final_overtook_progress
+    assert cleanup_saw_final == [False]
+    assert adapter.visible_order == ["draft", "progress", "final"]
+
+
+@pytest.mark.asyncio
+async def test_wedged_cancellation_finalizer_does_not_block_turn(monkeypatch, tmp_path):
+    """A stuck adapter send during cancellation cleanup must be time-bounded."""
+    _initial_send_failed.clear()
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_PROGRESS_FINALIZE_TIMEOUT", 0.05, raising=False)
+
+    started = asyncio.get_running_loop().time()
+    adapter, result = await asyncio.wait_for(
+        _run_with_agent(
+            monkeypatch,
+            tmp_path,
+            FailedInitialProgressSendAgent,
+            session_id="sess-progress-wedged-finalizer",
+            config_data={
+                "display": {
+                    "tool_progress": "all",
+                    "interim_assistant_messages": False,
+                }
+            },
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="direct",
+            thread_id="1700000000.000100",
+            adapter_cls=WedgedCancellationDrainAdapter,
+        ),
+        timeout=1.0,
+    )
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, WedgedCancellationDrainAdapter)
+    assert len(adapter.send_attempts) == 2
+    assert asyncio.get_running_loop().time() - started < 0.7
+
+
+@pytest.mark.asyncio
+async def test_pending_no_id_drain_gets_bounded_retry(monkeypatch, tmp_path):
+    """Cancellation finalization retries retained no-ID progress once more."""
+    _initial_send_failed.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FailedInitialProgressSendAgent,
+        session_id="sess-progress-no-id-drain-retry",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=RetryNoIdDrainAdapter,
+    )
+    assert isinstance(adapter, RetryNoIdDrainAdapter)
+
+    assert result["final_response"] == "done"
+    assert len(adapter.send_attempts) == 3
+    assert adapter.send_attempts[0] == adapter.send_attempts[1]
+    assert adapter.send_attempts[1] == adapter.send_attempts[2]
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["content"].endswith("Running retry me")
+
+
+@pytest.mark.asyncio
+async def test_successful_initial_send_without_id_is_not_replayed(monkeypatch, tmp_path):
+    """A visible initial no-ID bubble is frozen before later progress arrives."""
+    _initial_no_id_delivered.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        InitialNoIdThenProgressAgent,
+        session_id="sess-progress-initial-missing-id",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="direct",
+        thread_id="1700000000.000100",
+        adapter_cls=SuccessfulInitialNoIdAdapter,
+    )
+    assert isinstance(adapter, SuccessfulInitialNoIdAdapter)
+
+    assert result["final_response"] == "done"
+    assert len(adapter.send_attempts) == 2
+    assert adapter.send_attempts[0].endswith("Running first no-id command")
+    assert "first no-id command" not in adapter.send_attempts[1]
+    assert adapter.send_attempts[1].endswith("Running second command")
 
 
 @pytest.mark.asyncio

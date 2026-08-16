@@ -9566,6 +9566,58 @@ def _repair_venv_via_import_probes(
     return "failed"
 
 
+def _is_uv_command(install_cmd_prefix: list[str]) -> bool:
+    """True when the install command is a uv/uvx invocation.
+
+    Handles a bare uv binary (``uv`` / ``uvx``, any extension), a path to
+    one, and ``python -m uv`` / ``python -m uvx`` — the naive basename check
+    misses the module form and launcher wrappers whose name does not contain
+    "uv".
+    """
+    if not install_cmd_prefix:
+        return False
+    first = str(install_cmd_prefix[0]).lower()
+    if "uv" in Path(first).name:
+        return True
+    # python -m uv / python -m uvx
+    if len(install_cmd_prefix) >= 3 and first.endswith(("python", "python.exe")):
+        return install_cmd_prefix[1] == "-m" and install_cmd_prefix[2] in (
+            "uv",
+            "uvx",
+        )
+    return False
+
+
+def _insert_python_pin(args: list[str]) -> list[str]:
+    """Insert ``--python <sys.executable>`` into a uv command line.
+
+    If the caller already passed ``--python``, its value wins (uv's last-wins
+    semantics are ambiguous; the explicit caller intent should not be
+    overridden by the fallback pin).
+    """
+    if "--python" in args:
+        return args
+    return [args[0], "--python", str(sys.executable), *args[1:]]
+
+
+def _interpreter_scripts_dir() -> Path | None:
+    """Scripts/bin directory of the running interpreter (sys.executable).
+
+    Used when pinning an install to ``sys.executable`` on a site-packages
+    install where ``PROJECT_ROOT / "venv"`` does not exist: the entry-point
+    shims uv rewrites live next to the interpreter, not under a project venv.
+    """
+    exe = Path(sys.executable)
+    parent = exe.parent
+    scripts_candidates = (
+        [parent / "Scripts"] if _is_windows() else [parent / "bin"]
+    )
+    for cand in scripts_candidates:
+        if cand.is_dir():
+            return cand
+    return None
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -9604,17 +9656,25 @@ def _install_python_dependencies_with_optional_fallback(
         and env.get("VIRTUAL_ENV")
         and not Path(env["VIRTUAL_ENV"]).is_dir()
         and install_cmd_prefix
-        and "uv" in Path(install_cmd_prefix[0]).name.lower()
+        and _is_uv_command(install_cmd_prefix)
     ):
         # Only uv needs the explicit pin; pip resolves the target from
         # sys.executable itself and has no --python flag.
         pin_python = True
         env = {**env}
         env.pop("VIRTUAL_ENV", None)
+        # When we pin to sys.executable, the entry-point shims that uv will
+        # rewrite live in that interpreter's Scripts/bin directory, NOT in
+        # PROJECT_ROOT/venv (which does not exist on a site-packages install).
+        # Quarantining the wrong dir means the running hermes.exe stays locked
+        # on Windows and the install fails exactly like the original bug. Only
+        # override when the venv-derived dir is missing; otherwise keep it.
+        if scripts_dir is None and _is_windows():
+            scripts_dir = _interpreter_scripts_dir()
 
     def _install(args: list[str]) -> None:
         if pin_python:
-            args = [args[0], "--python", str(sys.executable), *args[1:]]
+            args = _insert_python_pin(args)
         # strict_quarantine: this is the UPDATE dependency sync. A shim that
         # cannot be renamed aside proves a hard venv hold; running uv anyway
         # is how installs strand half-updated (#87331). ShimQuarantineError

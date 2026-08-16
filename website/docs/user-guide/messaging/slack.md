@@ -677,11 +677,19 @@ platforms:
       # "none" (default) — ignore all bot/app-authored messages
       # "mentions"       — accept a bot message only when THAT message
       #                    @mentions this bot
-      # "all"            — accept every bot message (except the bot's own)
+      # "all"            — accept every allowlisted bot message
+      #                    (except the bot's own)
       allow_bots: mentions
 ```
 
 Env equivalent: `SLACK_ALLOW_BOTS=none|mentions|all` (the config key wins when both are set). Unknown values are treated as `none`.
+
+For bot messages that carry a Slack user ID, `allow_bots` controls whether the
+message is considered, while the existing sender authorization still applies:
+add each peer bot's user ID to `SLACK_ALLOWED_USERS` (or use an explicit
+allow-all sender policy). Workflow Builder and app events without a matchable
+user ID continue to use the `allow_bots` opt-in because they cannot be matched
+against the sender allowlist.
 
 How `mentions` mode gates:
 

@@ -1,5 +1,13 @@
 import { useStore } from '@nanostores/react'
-import { Children, type CSSProperties, type ReactNode, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
+import {
+  Children,
+  type CSSProperties,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState
+} from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -9,7 +17,13 @@ import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $paneHeightOverride, $paneState, $paneWidthOverride, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
+import {
+  $paneHeightOverride,
+  $paneState,
+  $paneWidthOverride,
+  setPaneHeightOverride,
+  setPaneWidthOverride
+} from '@/store/panes'
 
 // Monospace capability chip (tool name, transport, …). Shared by the Skills
 // and MCP tabs so the pill reads identically everywhere.

@@ -97,7 +97,9 @@ describe('applyRuntimeInfo credential warnings', () => {
   })
 
   it('a warning-free session event clears the stash (profile healed or switched away)', () => {
-    applyRuntimeInfo({ credential_warning: "No API key configured for provider 'openrouter'. First message will fail." })
+    applyRuntimeInfo({
+      credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+    })
     applyRuntimeInfo({ model: 'gpt-5' })
 
     expect(consumePendingCredentialWarning()).toBeNull()

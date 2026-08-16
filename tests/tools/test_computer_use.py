@@ -768,12 +768,34 @@ class TestLazyMcpInstall:
 
     def test_start_lazy_installs_mcp(self):
         from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "_maybe_nudge_update"), \
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value={"ready": True},
+             ), \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure") as mock_ensure, \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             cua_backend.CuaDriverBackend().start()
         mock_ensure.assert_called_once_with("tool.computer_use", prompt=False)
         mock_sess_start.assert_called_once()
+
+    def test_start_reports_incompatible_existing_driver_before_mcp_setup(self):
+        from tools.computer_use import cua_backend
+
+        state = {
+            "ready": False,
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=state,
+             ), patch("tools.lazy_deps.ensure") as mock_ensure:
+            with pytest.raises(RuntimeError, match="hermes computer-use install"):
+                cua_backend.CuaDriverBackend().start()
+
+        mock_ensure.assert_not_called()
 
     def test_start_propagates_feature_unavailable(self):
         """When mcp can't be installed (lazy installs off / network), start()
@@ -784,7 +806,12 @@ class TestLazyMcpInstall:
         unavailable = FeatureUnavailable(
             "tool.computer_use", ("mcp==1.28.1",), "lazy installs disabled"
         )
-        with patch.object(cua_backend, "_maybe_nudge_update"), \
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value={"ready": True},
+             ), \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure", side_effect=unavailable), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             with pytest.raises(FeatureUnavailable):
@@ -2071,7 +2098,10 @@ class TestSessionLifecycle:
 
         # Stub the optional-dep lazy-install so start() runs end-to-end
         # without trying to pip-install anything.
-        with patch("tools.lazy_deps.ensure"):
+        with patch(
+            "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+            return_value={"ready": True},
+        ), patch("tools.lazy_deps.ensure"):
             backend.start()
 
         # First call_tool after _session.start() must be start_session
@@ -2083,9 +2113,7 @@ class TestSessionLifecycle:
 
 
     def test_session_lifecycle_failures_are_non_fatal(self):
-        """If start_session raises (older cua-driver build, anonymous
-        path), backend.start() must still succeed — the rest of the
-        wrapper works fine in anonymous mode."""
+        """A lifecycle-label failure does not discard an otherwise valid runtime."""
         from unittest.mock import MagicMock, patch
         from tools.computer_use.cua_backend import CuaDriverBackend
 
@@ -2097,7 +2125,10 @@ class TestSessionLifecycle:
             RuntimeError("older cua-driver — start_session unknown"),
         ]
 
-        with patch("tools.lazy_deps.ensure"):
+        with patch(
+            "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
+            return_value={"ready": True},
+        ), patch("tools.lazy_deps.ensure"):
             backend.start()  # must not raise
 
 

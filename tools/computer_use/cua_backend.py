@@ -928,6 +928,136 @@ def cua_driver_binary_available() -> bool:
     return resolve_cua_driver_cmd() is not None
 
 
+_CUA_DRIVER_RUNTIME_CONTRACT_MIN = (0, 20, 0)
+_CUA_DRIVER_RUNTIME_CONTRACT_ARGS = {
+    "mcp": {"--socket", "--grant"},
+    "serve": {
+        "--socket",
+        "--permission-mode",
+        "--capability-manifest",
+        "--approve-capability-manifest",
+        "--embedded",
+    },
+    "stop": {"--socket"},
+}
+
+
+def cua_driver_runtime_contract_status(binary: Optional[str] = None) -> Dict[str, Any]:
+    """Report whether a local driver can host Hermes' 0.20 integration."""
+    resolved = binary or resolve_cua_driver_cmd()
+    if not resolved:
+        return {
+            "ready": False,
+            "binary": None,
+            "version": None,
+            "reason": "cua-driver is not installed",
+        }
+
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+
+        result = subprocess.run(
+            [resolved, "manifest"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15.0 if sys.platform == "win32" else 5.0,
+            stdin=subprocess.DEVNULL,
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": None,
+            "reason": f"manifest check failed: {exc}",
+        }
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "manifest command failed").strip()
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": None,
+            "reason": detail.splitlines()[-1][:200],
+        }
+
+    try:
+        manifest = json.loads(result.stdout or "")
+    except (TypeError, ValueError):
+        manifest = None
+    if not isinstance(manifest, dict):
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": None,
+            "reason": "driver manifest is missing or invalid",
+        }
+
+    raw_version = str(manifest.get("binary_version") or "").strip()
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", raw_version)
+    if not match:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version or None,
+            "reason": "driver manifest does not report a semantic version",
+        }
+    version = tuple(int(part) for part in match.groups())
+    if version < _CUA_DRIVER_RUNTIME_CONTRACT_MIN:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version,
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+
+    invocation = manifest.get("mcp_invocation")
+    invocation_args = invocation.get("args") if isinstance(invocation, dict) else None
+    if not (
+        isinstance(invocation_args, list)
+        and invocation_args
+        and all(isinstance(arg, str) for arg in invocation_args)
+    ):
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version,
+            "reason": "driver manifest does not provide an MCP launch command",
+        }
+
+    advertised: Dict[str, set[str]] = {}
+    for command in manifest.get("subcommands") or []:
+        if not isinstance(command, dict) or not isinstance(command.get("name"), str):
+            continue
+        advertised[command["name"]] = {
+            arg["name"]
+            for arg in command.get("args") or []
+            if isinstance(arg, dict) and isinstance(arg.get("name"), str)
+        }
+
+    missing = []
+    for command, required_args in _CUA_DRIVER_RUNTIME_CONTRACT_ARGS.items():
+        for arg in sorted(required_args - advertised.get(command, set())):
+            missing.append(f"{command} {arg}")
+    if missing:
+        return {
+            "ready": False,
+            "binary": resolved,
+            "version": raw_version,
+            "reason": "driver manifest is missing: " + ", ".join(missing),
+        }
+
+    return {
+        "ready": True,
+        "binary": resolved,
+        "version": raw_version,
+        "reason": "",
+    }
+
+
 def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Run ``cua-driver check-update --json`` and return its parsed state.
 
@@ -2295,10 +2425,8 @@ class CuaDriverBackend(ComputerUseBackend):
         # We mint a UUID4-based id once per CuaDriverBackend instance —
         # one Hermes run = one backend = one label — and pass it as
         # `session` on every cua-driver tool call. Labels are an
-        # additive feature on the cua-driver side: when our id is
-        # unknown to the driver (older builds), the tool calls
-        # degrade to the anonymous / unsynced path documented in the
-        # MCP server instructions.
+        # part of the required Cua Driver 0.20 runtime contract checked at
+        # backend startup.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
         self._typed_browser = CuaTypedBrowserRoute(
             session_id=self._session_id,
@@ -2328,6 +2456,17 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
+        contract = cua_driver_runtime_contract_status()
+        if not contract.get("ready"):
+            reason = contract.get("reason") or "runtime contract is incomplete"
+            if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+                repair = (
+                    "Update the binary selected by HERMES_CUA_DRIVER_CMD or "
+                    "remove that override."
+                )
+            else:
+                repair = "Run `hermes computer-use install` to repair it."
+            raise RuntimeError(f"cua-driver is not ready: {reason}. {repair}")
         _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
         # `computer-use` / `mcp` extras), not part of Hermes' minimal core.

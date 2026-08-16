@@ -793,6 +793,49 @@ def _cua_driver_env() -> dict:
         return dict(os.environ)
 
 
+_CUA_DRIVER_CONTRACT_CACHE: dict = {}
+
+
+def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
+    """Inspect whether an installed driver supports Hermes' runtime contract."""
+    import time
+
+    from tools.computer_use.cua_backend import cua_driver_runtime_contract_status
+
+    resolved = binary or _resolved_cua_driver_cmd()
+    if not resolved:
+        return cua_driver_runtime_contract_status(None)
+    try:
+        stat = os.stat(resolved)
+        fingerprint = (resolved, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return cua_driver_runtime_contract_status(resolved)
+
+    now = time.monotonic()
+    if (
+        _CUA_DRIVER_CONTRACT_CACHE.get("fingerprint") == fingerprint
+        and now - _CUA_DRIVER_CONTRACT_CACHE.get("checked_at", 0.0) < 30.0
+    ):
+        return dict(_CUA_DRIVER_CONTRACT_CACHE["state"])
+
+    state = cua_driver_runtime_contract_status(resolved)
+    _CUA_DRIVER_CONTRACT_CACHE.update(
+        fingerprint=fingerprint,
+        checked_at=now,
+        state=dict(state),
+    )
+    return state
+
+
+def _cua_driver_install_ready() -> bool:
+    """Return whether an existing driver needs no install-time repair."""
+    if not _cua_driver_contract_status().get("ready"):
+        return False
+    if sys.platform == "win32":
+        return _cua_driver_autostart_registered_windows()
+    return True
+
+
 def _pip_install(
     args: List[str],
     *,
@@ -928,9 +971,9 @@ def install_cua_driver(
     The upstream installer always pulls the latest release tag, so re-running
     it is the canonical way to upgrade. We expose two modes:
 
-    * ``upgrade=False`` — original post-setup behaviour: skip if already
-      installed, install otherwise. Used by the toolset enable flow where
-      we don't want to surprise the user with a network fetch.
+    * ``upgrade=False`` — keep a compatible Cua Driver 0.20 installation,
+      repair an old or incomplete installation, and install when missing.
+      Used by the toolset enable flow.
     * ``upgrade=True`` — always re-run the installer (or call ``cua-driver
       update`` if the binary supports it). Used by ``hermes update`` and
       by ``hermes computer-use install --upgrade``.
@@ -998,8 +1041,14 @@ def install_cua_driver(
         # baked in by CD and errors cleanly on missing-arch assets.
         return _run_cua_driver_installer(label="Installing")
 
-    # Already installed and caller didn't ask to upgrade → just confirm.
-    if binary and not upgrade:
+    contract = _cua_driver_contract_status(binary) if binary else None
+    repair_existing = bool(
+        binary and not upgrade and contract and not contract.get("ready")
+    )
+
+    # A compatible existing installation needs no download. Finish the small
+    # host-specific setup that the upstream installer normally owns.
+    if binary and not upgrade and not repair_existing:
         try:
             version = subprocess.run(
                 [binary, "--version"],
@@ -1010,6 +1059,11 @@ def install_cua_driver(
         except Exception:
             _print_success(f"    {driver_cmd} already installed.")
         if is_windows:
+            if not _repair_cua_driver_autostart_windows(binary, verbose=False):
+                _print_warning(
+                    "    cua-driver is compatible, but Windows autostart repair failed."
+                )
+                return False
             _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
             _print_info("    Windows/SmartScreen may prompt the first time it runs.")
         elif is_linux:
@@ -1019,6 +1073,21 @@ def install_cua_driver(
             _print_info("      System Settings > Privacy & Security > Accessibility")
             _print_info("      System Settings > Privacy & Security > Screen Recording")
         return True
+
+    if repair_existing:
+        version = contract.get("version") or "unknown version"
+        reason = contract.get("reason") or "required runtime features are missing"
+        _print_warning(
+            f"    Found cua-driver {version}, but Hermes cannot use its current "
+            f"runtime contract: {reason}."
+        )
+        if os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip():
+            _print_info(
+                "    Update the binary selected by HERMES_CUA_DRIVER_CMD, or unset "
+                "the override and run: hermes computer-use install --upgrade"
+            )
+            return False
+        _print_info("    Repairing it with the current upstream installer.")
 
     # upgrade=True path — refresh to the latest upstream release.
     if not _cua_install_target_writable():
@@ -1048,7 +1117,7 @@ def install_cua_driver(
     # `hermes computer-use install --upgrade` falls through and re-runs the
     # installer as before.
     confirmed_version = None
-    if binary:
+    if binary and not repair_existing:
         _state = None
         try:
             from tools.computer_use.cua_backend import cua_driver_update_check
@@ -1099,11 +1168,20 @@ def install_cua_driver(
         before = ""
 
     ok = _run_cua_driver_installer(
-        label="Refreshing",
+        label="Repairing" if repair_existing else "Refreshing",
         verbose=False,
         pin_version=confirmed_version,
         show_progress=show_installer_progress,
     )
+    if ok and repair_existing:
+        repaired = _cua_driver_contract_status()
+        if not repaired.get("ready"):
+            _print_warning(
+                "    cua-driver was reinstalled, but its runtime contract is still "
+                f"unusable: {repaired.get('reason') or 'unknown error'}."
+            )
+            _print_info("    Run: hermes computer-use doctor")
+            return False
     if ok and before:
         try:
             after = subprocess.run(
@@ -1597,9 +1675,10 @@ def _run_cua_driver_installer(
                         pass
                 if result.returncode != 0:
                     logger.debug("cua-driver installer output:\n%s", result.stdout)
-        if result.returncode == 0 and shutil.which(driver_cmd):
+        installed_binary = _resolved_cua_driver_cmd()
+        if result.returncode == 0 and installed_binary:
             if is_windows and not _repair_cua_driver_autostart_windows(
-                driver_cmd, verbose=verbose
+                installed_binary, verbose=verbose
             ):
                 _print_warning(
                     "    cua-driver installed, but auto-start was not registered."
@@ -3283,9 +3362,9 @@ _POST_SETUP_INSTALLED: dict = {
     # Only entries here are gated; other post_setup hooks (kittentts,
     # piper, agent_browser, etc.) keep their existing behaviour. Add an
     # entry when (a) the post_setup is the ONLY install side-effect for
-    # a no-key provider, and (b) an installed-state check is cheap and
-    # doesn't trigger a heavy import.
-    "cua_driver": lambda: _resolved_cua_driver_cmd() is not None,
+    # a no-key provider, and (b) an installed-state check is local, bounded,
+    # and doesn't trigger a heavy import.
+    "cua_driver": lambda: _cua_driver_install_ready(),
 }
 
 
@@ -3395,7 +3474,7 @@ _POST_SETUP_READY: dict = {
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),
-    "cua_driver": lambda: _resolved_cua_driver_cmd() is not None,
+    "cua_driver": lambda: _cua_driver_install_ready(),
 }
 
 

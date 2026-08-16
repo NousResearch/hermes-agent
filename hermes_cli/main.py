@@ -12697,6 +12697,7 @@ def main():
             return
         if action == "status":
             import subprocess
+            from hermes_cli.tools_config import _cua_driver_contract_status
             from tools.computer_use.cua_backend import (
                 cua_driver_update_check,
                 resolve_cua_driver_cmd,
@@ -12719,6 +12720,14 @@ def main():
                     print(f"cua-driver: installed at {path} ({version})")
                 else:
                     print(f"cua-driver: installed at {path}")
+                contract = _cua_driver_contract_status(path)
+                if not contract.get("ready"):
+                    print(
+                        "  ⚠ Repair required: "
+                        + (contract.get("reason") or "runtime contract is incomplete")
+                    )
+                    print("    Run: hermes computer-use install")
+                    return
                 try:
                     st = cua_driver_update_check()
                     if st and st.get("update_available"):

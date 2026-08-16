@@ -1433,6 +1433,13 @@ Subcommands:
 to use for re-running the install if the toolset toggle didn't trigger
 it (for example, on returning-user setups).
 
+If cua-driver is already present, Hermes checks its version and runtime
+manifest. A compatible 0.20.0 or newer installation is left in place. An old or
+incomplete standard installation is repaired with the current upstream
+installer. Hermes never replaces a custom binary selected through
+`HERMES_CUA_DRIVER_CMD`; update that binary directly or remove the override.
+`hermes computer-use status` reports when repair is required.
+
 The built-in `computer_use` toolset is the recommended Hermes integration.
 Registering raw Cua MCP tools is an alternative when you need Cua's low-level
 tool vocabulary. `cua-driver skills install` detects Hermes and links Cua's

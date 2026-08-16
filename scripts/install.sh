@@ -2501,6 +2501,37 @@ install_browser_use_cli() {
     fi
 }
 
+cua_driver_runtime_compatible() {
+    local driver_path version_output manifest_output
+    local major minor
+    driver_path="$(command -v cua-driver 2>/dev/null)" || return 1
+    version_output="$("$driver_path" --version 2>/dev/null)" || return 1
+    if [[ ! "$version_output" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        return 1
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if (( major == 0 && minor < 20 )); then
+        return 1
+    fi
+    manifest_output="$("$driver_path" manifest 2>/dev/null)" || return 1
+    local required
+    for required in \
+        '"mcp_invocation"' \
+        '"--socket"' \
+        '"--grant"' \
+        '"--permission-mode"' \
+        '"--capability-manifest"' \
+        '"--approve-capability-manifest"' \
+        '"--embedded"'; do
+        case "$manifest_output" in
+            *"$required"*) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
 install_computer_use_driver() {
     # cua-driver powers the computer_use toolset (background desktop control).
     # Provision it at install time so enabling the tool later — via
@@ -2519,8 +2550,11 @@ install_computer_use_driver() {
             ;;
     esac
     if command -v cua-driver >/dev/null 2>&1; then
-        log_success "Computer Use driver (cua-driver) already installed"
-        return 0
+        if cua_driver_runtime_compatible; then
+            log_success "Computer Use driver (cua-driver) already installed and compatible"
+            return 0
+        fi
+        log_warn "Existing cua-driver is old or incomplete; repairing it"
     fi
     # Non-admin macOS accounts can't receive the CuaDriver.app bundle in
     # /Applications; skip cleanly instead of failing loudly (#47865 class).

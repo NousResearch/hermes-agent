@@ -982,6 +982,25 @@ def recover_with_credential_pool(
     # that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+
+    def _canon_provider(name: str) -> str:
+        # Resolve ALIASES so the SAME provider under either spelling matches.
+        # A ``/model`` switch stores the ALIASES-canonical id on the session
+        # override (e.g. ``opencode-zen`` → ``opencode``, via
+        # ``normalize_provider`` in ``switch_model``), while the pool is
+        # seeded from the auth-registry slug (``opencode-zen``). A literal
+        # compare then treats the two as different providers and skips
+        # rotation for every aliased provider (#87526). Canonicalizing both
+        # sides collapses that spelling gap while leaving genuinely different
+        # providers — the #33088 fallback case this guard protects — distinct.
+        if not name:
+            return name
+        try:
+            from hermes_cli.providers import normalize_provider
+            return normalize_provider(name)
+        except Exception:
+            return name
+
     # Guard: skip credential pool recovery when the pool is scoped to a
     # different provider than the agent.  Only guard when the pool has a
     # known provider — an empty pool provider means "unscoped" (applies to
@@ -989,7 +1008,7 @@ def recover_with_credential_pool(
     # because swapping the pool's credentials would set base_url/api_key
     # without fixing the empty provider field, leaving the agent in a
     # corrupted state (provider="" model="").
-    if pool_provider and current_provider != pool_provider:
+    if pool_provider and _canon_provider(current_provider) != _canon_provider(pool_provider):
         # Custom endpoints use two naming conventions for the SAME provider:
         # the agent carries the generic ``custom`` label while the pool is
         # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string

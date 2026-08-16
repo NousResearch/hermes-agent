@@ -57,6 +57,40 @@ class TestDataUrl:
             await isrc.resolve_image_source(
                 f"data:text/plain;base64,{b64}", isrc.ResolveContext())
 
+    @pytest.mark.asyncio
+    async def test_uppercase_data_scheme_resolves(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        b64 = base64.b64encode(PNG).decode()
+
+        res = await isrc.resolve_image_source(
+            f"DATA:image/png;base64,{b64}", isrc.ResolveContext()
+        )
+
+        assert res.data == PNG
+        assert res.mime == "image/png"
+        assert res.origin == "data"
+
+
+class TestHttpUrl:
+    @pytest.mark.asyncio
+    async def test_uppercase_http_scheme_resolves(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+
+        async def fake_download(url):
+            assert url == "HTTP://example.com/cat.png"
+            return PNG
+
+        monkeypatch.setattr(isrc, "_http_block_reason", lambda _url: None)
+        monkeypatch.setattr(isrc, "_download_to_bytes", fake_download)
+
+        res = await isrc.resolve_image_source(
+            "HTTP://example.com/cat.png", isrc.ResolveContext()
+        )
+
+        assert res.data == PNG
+        assert res.mime == "image/png"
+        assert res.origin == "http"
+
 
 class TestLocalBackend:
     @pytest.mark.asyncio

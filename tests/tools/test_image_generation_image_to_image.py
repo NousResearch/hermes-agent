@@ -306,6 +306,7 @@ class _FakeFalClient:
 
     def __init__(self, *, upload_error: Optional[Exception] = None):
         self.uploaded: List[str] = []
+        self.uploaded_bytes: List[tuple] = []
         self._upload_error = upload_error
 
     def upload_file(self, path: str) -> str:
@@ -313,6 +314,12 @@ class _FakeFalClient:
             raise self._upload_error
         self.uploaded.append(path)
         return f"https://fal.storage/{os.path.basename(path)}"
+
+    def upload(self, data: bytes, mime: str, file_name: Optional[str] = None) -> str:
+        if self._upload_error is not None:
+            raise self._upload_error
+        self.uploaded_bytes.append((data, mime, file_name))
+        return f"https://fal.storage/{file_name or 'upload'}"
 
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-pixels"
@@ -392,9 +399,18 @@ class TestFalSourceImageResolution:
             if managed
             else f"https://fal.storage/{os.path.basename(src_image)}"
         )
-        assert {"resolved": resolved, "uploaded": fake.uploaded} == {
+        assert {
+            "resolved": resolved,
+            "uploaded_files": fake.uploaded,
+            "uploaded_bytes": fake.uploaded_bytes,
+        } == {
             "resolved": expected_resolved,
-            "uploaded": [] if managed else [src_image],
+            "uploaded_files": [],
+            "uploaded_bytes": (
+                []
+                if managed
+                else [(_PNG_BYTES, "image/png", os.path.basename(src_image))]
+            ),
         }
 
     @pytest.mark.parametrize("managed", [False, True])
@@ -439,6 +455,36 @@ class TestFalSourceImageResolution:
 
         resolved = image_tool._resolve_fal_source_image(str(blob), managed=True)
         assert resolved == _data_uri(jpeg, mime="image/jpeg")
+
+    def test_direct_upload_uses_validated_bytes_and_sniffed_mime(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.image_generation_tool as image_tool
+
+        jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 16
+        blob = tmp_path / "attachment_blob"
+        blob.write_bytes(jpeg)
+        fake = _FakeFalClient()
+        monkeypatch.setattr(image_tool, "fal_client", fake)
+
+        resolved = image_tool._resolve_fal_source_image(str(blob), managed=False)
+
+        assert resolved == "https://fal.storage/attachment_blob"
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [(jpeg, "image/jpeg", "attachment_blob")]
+
+    def test_direct_data_uri_is_rebuilt_with_sniffed_mime(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+
+        fake = _FakeFalClient()
+        monkeypatch.setattr(image_tool, "fal_client", fake)
+        mislabelled = _data_uri(_PNG_BYTES, mime="image/gif")
+
+        resolved = image_tool._resolve_fal_source_image(
+            mislabelled, managed=False
+        )
+
+        assert resolved == _data_uri(_PNG_BYTES, mime="image/png")
 
     @pytest.mark.parametrize(
         "magic, expected_mime",
@@ -516,9 +562,11 @@ class TestFalSourceImageResolution:
         wrapped = lead + "\n".join(b64[i : i + 12] for i in range(0, len(b64), 12))
         monkeypatch.setattr(image_tool, "fal_client", _FakeFalClient())
 
-        # A data: URI passes through unchanged once validated.
+        # Whitespace is accepted, then the validated bytes are canonicalised.
         ref = f"data:image/png;base64,{wrapped}"
-        assert image_tool._resolve_fal_source_image(ref, managed=False) == ref
+        assert image_tool._resolve_fal_source_image(
+            ref, managed=False
+        ) == _data_uri(raw)
 
     def test_remote_file_uri_host_is_rejected(self, monkeypatch):
         import tools.image_generation_tool as image_tool
@@ -539,7 +587,10 @@ class TestFalSourceImageResolution:
             f"file://localhost{src_image}", managed=False
         )
         assert resolved == f"https://fal.storage/{os.path.basename(src_image)}"
-        assert fake.uploaded == [src_image]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            (_PNG_BYTES, "image/png", os.path.basename(src_image))
+        ]
 
     def test_oversized_managed_inline_is_rejected(self, monkeypatch, tmp_path):
         import tools.image_generation_tool as image_tool
@@ -586,8 +637,8 @@ class TestFalSourceImageResolution:
     def test_direct_mode_has_no_inline_size_cap(self, monkeypatch, tmp_path):
         import tools.image_generation_tool as image_tool
 
-        # The size cap is a managed-gateway concern; direct uploads stream from
-        # disk, so a large source must still upload.
+        # The inline size cap is a managed-gateway concern. Direct mode uploads
+        # the validated bytes under the resolver's separate ingest cap.
         monkeypatch.setattr(image_tool, "_MAX_INLINE_BASE64_BYTES", 8)
         big = tmp_path / "big.png"
         big.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
@@ -596,7 +647,10 @@ class TestFalSourceImageResolution:
 
         resolved = image_tool._resolve_fal_source_image(str(big), managed=False)
         assert resolved == f"https://fal.storage/{big.name}"
-        assert fake.uploaded == [str(big)]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            (big.read_bytes(), "image/png", big.name)
+        ]
 
     def test_file_uri_is_resolved(self, monkeypatch, src_image):
         import tools.image_generation_tool as image_tool
@@ -608,7 +662,10 @@ class TestFalSourceImageResolution:
             f"file://{src_image}", managed=False
         )
         assert resolved == f"https://fal.storage/{os.path.basename(src_image)}"
-        assert fake.uploaded == [src_image]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            (_PNG_BYTES, "image/png", os.path.basename(src_image))
+        ]
 
     def test_upload_error_propagates_in_direct_mode(self, monkeypatch, src_image):
         import tools.image_generation_tool as image_tool
@@ -635,7 +692,10 @@ class TestFalSourceImageResolution:
 
         resolved = image_tool._resolve_fal_source_image("~/pic.png", managed=False)
         assert resolved == "https://fal.storage/pic.png"
-        assert fake.uploaded == [str(home / "pic.png")]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            ((home / "pic.png").read_bytes(), "image/png", "pic.png")
+        ]
 
     def test_empty_reference_raises(self, monkeypatch):
         import tools.image_generation_tool as image_tool
@@ -710,7 +770,10 @@ class TestFalRoutingWithLocalSources:
         hosted = f"https://fal.storage/{os.path.basename(src_image)}"
         assert capture["arguments"]["prompt"] == "make it night"
         assert capture["arguments"]["image_urls"] == [hosted]
-        assert fake.uploaded == [src_image]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            (_PNG_BYTES, "image/png", os.path.basename(src_image))
+        ]
 
     @pytest.mark.parametrize("managed", [False, True])
     def test_mixed_local_and_remote_sources_preserve_order(
@@ -748,7 +811,12 @@ class TestFalRoutingWithLocalSources:
             "https://in/primary.png",
             resolved_local,
         ]
-        assert fake.uploaded == ([] if managed else [str(local_ref)])
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == (
+            []
+            if managed
+            else [(local_bytes, "image/png", local_ref.name)]
+        )
 
     def test_reference_images_only_still_routes_to_edit(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
@@ -774,7 +842,7 @@ class TestFalRoutingWithLocalSources:
 
         # nano-banana-pro caps at 2; the third source is clamped away and must
         # never be resolved. The dropped ref is a *present* file, so its absence
-        # from fal.uploaded can only mean resolution never reached it.
+        # from the byte uploads can only mean resolution never reached it.
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
         capture: dict = {}
         self._patch_submit(monkeypatch, image_tool, capture)
@@ -792,7 +860,11 @@ class TestFalRoutingWithLocalSources:
         )
         out = json.loads(raw)
         assert out["success"] is True
-        assert fake.uploaded == [primary, kept_ref]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            ((tmp_path / "a.png").read_bytes(), "image/png", "a.png"),
+            ((tmp_path / "b.png").read_bytes(), "image/png", "b.png"),
+        ]
         assert capture["arguments"]["image_urls"] == [
             f"https://fal.storage/{os.path.basename(primary)}",
             f"https://fal.storage/{os.path.basename(kept_ref)}",
@@ -951,4 +1023,7 @@ class TestLocalAttachmentIntegration:
         assert capture["arguments"]["image_urls"] == [
             f"https://fal.storage/{attachment.name}"
         ]
-        assert fake.uploaded == [str(attachment)]
+        assert fake.uploaded == []
+        assert fake.uploaded_bytes == [
+            (attachment.read_bytes(), "image/png", attachment.name)
+        ]

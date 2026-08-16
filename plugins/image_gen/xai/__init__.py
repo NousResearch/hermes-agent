@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -248,23 +247,6 @@ class XAIImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
-        for index, source in enumerate(source_images):
-            field = "image_url" if index == 0 and image_url and image_url.strip() == source else "reference_image_urls"
-            lower = source.lower()
-            if not lower.startswith(("http://", "https://", "data:")):
-                path = Path(source).expanduser()
-                if not path.is_file():
-                    return error_response(
-                        error=(
-                            f"{field} must be a public HTTPS URL or data URI "
-                            "(e.g. the `image`/`public_url` from a prior Imagine result)"
-                        ),
-                        error_type="invalid_image_url",
-                        provider=provider_name,
-                        model="grok-imagine-image-quality",
-                        prompt=prompt,
-                        aspect_ratio=aspect,
-                    )
         is_edit = bool(source_images)
         modality = "image" if is_edit else "text"
 

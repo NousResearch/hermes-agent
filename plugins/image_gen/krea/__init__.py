@@ -353,8 +353,8 @@ def _resolve_style_refs(refs: List[Any]) -> List[Any]:
 
     Each entry must be an object (``{"url", "strength"}``); a bare string
     yields a 422 "Expected object, received string". Resolved strings are
-    wrapped at the default strength, and Krea's richer objects pass through
-    verbatim for backward compatibility.
+    wrapped at the default strength. For richer objects, the URL is resolved
+    while the remaining Krea fields are preserved.
     """
     from tools.image_source import resolve_source_to_url_sync
 
@@ -367,8 +367,15 @@ def _resolve_style_refs(refs: List[Any]) -> List[Any]:
                     "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH,
                 }
             )
-        else:
-            resolved.append(ref)
+            continue
+
+        if isinstance(ref, dict) and isinstance(ref.get("url"), str):
+            rich_ref = dict(ref)
+            rich_ref["url"] = resolve_source_to_url_sync(ref["url"])
+            resolved.append(rich_ref)
+            continue
+
+        resolved.append(ref)
     return resolved
 
 

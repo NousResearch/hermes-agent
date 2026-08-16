@@ -970,12 +970,11 @@ def _resolve_fal_source_image(ref: str, *, managed: bool) -> str:
     for FAL:
 
       * ``http(s)://`` URIs pass through unchanged (FAL fetches them).
-      * an image ``data:`` URI is validated (decoded and sniffed) and the
-        ORIGINAL string passes through; managed mode caps its length first.
-      * a local file (including ``file://``) is uploaded to FAL storage in
-        direct mode (a hosted URL keeps large images out of the request
-        body); under the managed gateway, which exposes no upload endpoint,
-        it is inlined as a ``data:`` URI under the sniffed mime.
+      * an image ``data:`` URI is validated, then rebuilt from the validated
+        bytes under the sniffed mime.
+      * a local file (including ``file://``) is uploaded from the validated
+        bytes in direct mode. Under the managed gateway, which exposes no
+        upload endpoint, it is inlined under the sniffed mime.
 
     ``managed`` selects the backend so the gateway is resolved once per
     request rather than once per image.
@@ -997,22 +996,23 @@ def _resolve_fal_source_image(ref: str, *, managed: bool) -> str:
         return s
 
     if s.lower().startswith("data:"):
-        # Validate (decode + sniff) but keep the original string: FAL accepts
-        # data: URIs verbatim and a re-encode buys nothing.
-        resolve_source_sync(s)
+        resolved = resolve_source_sync(s)
+        encoded = base64.b64encode(resolved.data).decode("ascii")
+        canonical = f"data:{resolved.mime};base64,{encoded}"
         if managed:
-            _ensure_managed_payload_within_cap(len(s))
-        return s
+            _ensure_managed_payload_within_cap(len(canonical))
+        return canonical
 
     resolved = resolve_source_sync(s)
 
     if not managed:
         _load_fal_client()
-        if resolved.path is not None:
-            # Host file: hand FAL the path so the uploader streams from disk.
-            return fal_client.upload_file(str(resolved.path))
-        # Sandbox-read bytes have no host path; upload them directly.
-        return fal_client.upload(resolved.data, resolved.mime)
+        file_name = resolved.path.name if resolved.path is not None else None
+        return fal_client.upload(
+            resolved.data,
+            resolved.mime,
+            file_name=file_name,
+        )
 
     _ensure_managed_payload_within_cap(_projected_data_uri_len(len(resolved.data)))
     encoded = base64.b64encode(resolved.data).decode("ascii")

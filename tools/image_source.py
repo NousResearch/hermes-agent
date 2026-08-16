@@ -114,10 +114,11 @@ async def resolve_image_source(
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
-    if s.startswith("data:"):
+    lower = s.lower()
+    if lower.startswith("data:"):
         data, mime = _resolve_data_url(s, max_bytes)
         return _finalize(data, mime, "data", s, permitted, max_bytes, accepted_mimes)
-    if s.startswith(("http://", "https://")):
+    if lower.startswith(("http://", "https://")):
         reason = _http_block_reason(s)
         if reason:
             raise SourceUnsafe(reason, src=s)
@@ -125,7 +126,7 @@ async def resolve_image_source(
             await _download_to_bytes(s), "", "http", s, permitted, max_bytes, accepted_mimes
         )
 
-    if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
+    if _SCHEME_RE.match(s) and not lower.startswith("file://"):
         raise UnsupportedScheme(
             "Unrecognized image source scheme. Use an http(s) URL, a local "
             "file path, a file:// URI, or a data: URL.",

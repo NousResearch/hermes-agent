@@ -746,3 +746,30 @@ class TestStyleRefHardening:
 
         with pytest.raises(ValueError, match="Access denied"):
             _resolve_style_refs([str(env_file)])
+
+    def test_rich_local_reference_resolves_its_url(self, tmp_path):
+        from plugins.image_gen.krea import _resolve_style_refs
+
+        path = tmp_path / "ref.png"
+        path.write_bytes(self._PNG)
+        rich_ref = {"url": str(path), "strength": 0.75, "name": "reference"}
+
+        out = _resolve_style_refs([rich_ref])
+        resolved_url = out[0]["url"]
+
+        assert out == [{
+            "url": resolved_url,
+            "strength": 0.75,
+            "name": "reference",
+        }]
+        assert resolved_url.startswith("data:image/png;base64,")
+        assert rich_ref["url"] == str(path)
+
+    def test_rich_reference_applies_the_credential_guard(self, tmp_path):
+        from plugins.image_gen.krea import _resolve_style_refs
+
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(self._PNG)
+
+        with pytest.raises(ValueError, match="Access denied"):
+            _resolve_style_refs([{"url": str(env_file), "strength": 0.5}])

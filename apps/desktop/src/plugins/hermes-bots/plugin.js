@@ -2838,7 +2838,8 @@ function backfillMessagingProtocol(roster) {
 }
 
 /** SOUL.md for a new bot: identity (or the user's custom SOUL) + the
- *  messaging protocol, which ALWAYS ships. */
+ *  messaging protocol — which ships UNLESS the backend injects it into the
+ *  system prompt itself (bot_mode_protocol capability). */
 function composeSoul({ name, title, description, roster, customSoul }) {
   if (customSoul && customSoul.trim()) {
     return ensureMessagingProtocol(customSoul, name, roster)
@@ -2854,7 +2855,9 @@ function composeSoul({ name, title, description, roster, customSoul }) {
     'You keep your own memory, skills, and conversation history across sessions.'
   ]
 
-  return lines.filter(line => line !== null).join('\n') + '\n\n' + messagingProtocolSection(name, roster)
+  const identity = lines.filter(line => line !== null).join('\n')
+
+  return serverInjectsProtocol ? identity : identity + '\n\n' + messagingProtocolSection(name, roster)
 }
 
 // ── human-readable row helpers ───────────────────────────────────────────────

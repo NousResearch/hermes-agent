@@ -138,4 +138,8 @@ test('backend bot_mode_protocol capability suppresses every SOUL protocol write'
   )
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(calls.length, 0)
+
+  // composeSoul's generated-identity path also skips the section.
+  const generated = helpers.composeSoul({ name: 'newbot', title: 'T', description: 'D', roster: [], customSoul: '' })
+  assert.doesNotMatch(generated, /## Messaging other agents/)
 })

@@ -7155,7 +7155,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                state = self._approval_state.pop(approval_id, None)
+                state = self._approval_state.get(approval_id)
                 if not state:
                     await query.answer(text="This approval has already been resolved.")
                     return
@@ -7189,6 +7189,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         await query.answer(text="⛔ Not authorized to approve this command.")
                         return
                 user_display = getattr(query.from_user, "first_name", "User")
+
+                # Consume the approval state ONLY after all validation
+                # passed — unauthorized clicks above return early without
+                # popping, so the real admin can still approve after an
+                # attacker's rejected click. This pop also prevents
+                # double-clicks from resolving twice.
+                self._approval_state.pop(approval_id, None)
 
                 # Resolve the approval FIRST — unblocks the agent thread.
                 # Rendering happens after so the message reflects what

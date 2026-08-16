@@ -3897,7 +3897,8 @@ def _for_each_systemd_gateway_unit(
         # unrelated ``hermes-server.service`` — require the exact base unit
         # or the hyphenated profile family instead (review on #83595).
         if not (
-            unit.startswith("hermes-gateway")
+            unit == "hermes-gateway.service"
+            or unit.startswith("hermes-gateway-")
             or unit == "hermes-serve.service"
             or unit.startswith("hermes-serve-")
         ):
@@ -3916,8 +3917,14 @@ def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
     SIGUSR1 would just invoke the default terminate action and burn the full
     drain budget waiting for an exit that was never graceful — go straight to
     the blunt ``systemctl restart`` path for those instead.
+
+    Uses the same strict exact/hyphenated shape as the unit-name gate in
+    ``_for_each_systemd_gateway_unit`` so a hypothetical near-prefix unit
+    (``hermes-gateway-helper`` is fine — profile units are
+    ``hermes-gateway-<profile>`` — but ``hermes-gatewayd``-style names are
+    not) can't be sent a SIGUSR1 it doesn't handle.
     """
-    return svc_name.startswith("hermes-gateway")
+    return svc_name == "hermes-gateway" or svc_name.startswith("hermes-gateway-")
 
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:

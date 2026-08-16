@@ -375,6 +375,14 @@ class TestWriteToSandbox:
         assert _expire_persisted_result_on_access(str(target), env) is False
         assert target.read_text(encoding="utf-8") == "sensitive"
 
+    def test_access_expiry_probe_failure_is_indeterminate(self):
+        env = MagicMock()
+        env.execute.return_value = {"returncode": 1, "output": ""}
+
+        assert _expire_persisted_result_on_access(
+            "/tmp/hermes-results/result.txt", env
+        ) is None
+
     def test_read_interface_enforces_expiry_only_in_active_result_dir(self):
         from tools.file_tools import read_file_tool
 
@@ -404,6 +412,32 @@ class TestWriteToSandbox:
 
         assert "expired after 7 days" in result
         expire.assert_called_once_with("/tmp/hermes-results/expired.txt", env)
+        file_ops.read_file.assert_not_called()
+
+    def test_read_interface_fails_closed_when_expiry_cannot_be_verified(self):
+        from tools.file_tools import read_file_tool
+
+        env = MagicMock()
+        file_ops = MagicMock(env=env)
+        with (
+            patch("tools.file_tools._get_file_ops", return_value=file_ops),
+            patch("tools.file_tools._file_ops_uses_host_paths", return_value=True),
+            patch(
+                "tools.file_tools._resolve_path_for_task",
+                return_value=Path("/tmp/hermes-results/result.txt"),
+            ),
+            patch(
+                "tools.tool_result_storage._resolve_storage_dir",
+                return_value="/tmp/hermes-results",
+            ),
+            patch(
+                "tools.tool_result_storage._expire_persisted_result_on_access",
+                return_value=None,
+            ),
+        ):
+            result = read_file_tool("/tmp/hermes-results/result.txt")
+
+        assert "could not be verified" in result
         file_ops.read_file.assert_not_called()
 
     def test_read_interface_does_not_expire_unrelated_old_file(self):

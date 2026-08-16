@@ -1686,13 +1686,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         if (
             path_flavor.dirname(resolved_path) == persisted_dir
             and path_flavor.basename(resolved_path).endswith(".txt")
-            and _expire_persisted_result_on_access(resolved_path, file_env)
         ):
-            return tool_error(
-                f"Persisted tool result expired after {RESULT_TTL_DAYS} days "
-                "and was deleted. Re-run the original tool call if the output "
-                "is still needed."
-            )
+            expiry_status = _expire_persisted_result_on_access(resolved_path, file_env)
+            if expiry_status is True:
+                return tool_error(
+                    f"Persisted tool result expired after {RESULT_TTL_DAYS} days "
+                    "and was deleted. Re-run the original tool call if the output "
+                    "is still needed."
+                )
+            if expiry_status is None:
+                return tool_error(
+                    "Persisted tool result retention could not be verified safely; "
+                    "access denied. Check backend permissions and retry."
+                )
 
         # ── Special-file type guard (stat-based) ──────────────────────
         # The name blocklist above catches /dev/* and /proc/* aliases; this

@@ -298,13 +298,14 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     return result.get("returncode", 1) == 0
 
 
-def _expire_persisted_result_on_access(remote_path: str, env) -> bool:
+def _expire_persisted_result_on_access(remote_path: str, env) -> bool | None:
     """Delete an expired persisted result before it is served.
 
-    Returns True only when an existing result was older than the retention
-    boundary and was successfully removed. Callers restrict this helper to
-    the active environment's resolved ``hermes-results`` directory so an
-    ordinary read can never delete an unrelated old file.
+    Returns ``True`` when an existing result was expired and removed, ``False``
+    when the retention probe completed and the result is still current, and
+    ``None`` when expiry or deletion could not be verified. Callers restrict
+    this helper to the active environment's resolved ``hermes-results``
+    directory and must fail closed on ``None``.
     """
     quoted_path = shlex.quote(remote_path)
     cmd = (
@@ -315,8 +316,10 @@ def _expire_persisted_result_on_access(remote_path: str, env) -> bool:
         "fi"
     )
     result = env.execute(cmd, timeout=30)
+    if result.get("returncode", 1) != 0:
+        return None
     output = result.get("output", result.get("stdout", ""))
-    return result.get("returncode", 1) == 0 and output.strip() == "expired"
+    return output.strip() == "expired"
 
 
 def _build_persisted_message(

@@ -1072,10 +1072,16 @@ def install_cua_driver(
         # baked in by CD and errors cleanly on missing-arch assets.
         return _run_cua_driver_installer(label="Installing")
 
+    # An installed driver that fails Hermes' runtime contract (version floor,
+    # missing manifest verbs) is repaired regardless of the caller's mode.
+    # Hermes' own minimum requirement IS the confirmation that an upgrade is
+    # needed, so the ``upgrade=True`` path must not defer to the driver's
+    # ``check-update`` verb here — a cached/indeterminate "no update" answer
+    # would otherwise pin users on an unusable driver forever (observed:
+    # 0.19.3 installs hard-failing every computer_use call after the 0.20
+    # contract landed, with `hermes update` declining to refresh).
     contract = _cua_driver_contract_status(binary) if binary else None
-    repair_existing = bool(
-        binary and not upgrade and contract and not contract.get("ready")
-    )
+    repair_existing = bool(binary and contract and not contract.get("ready"))
 
     # A compatible existing installation needs no download. Finish the small
     # host-specific setup that the upstream installer normally owns.

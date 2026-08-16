@@ -1191,6 +1191,52 @@ def cua_driver_update_nudge() -> Optional[str]:
 
 _update_checked = False
 
+# One auto-repair attempt per process. The runtime-contract gate in
+# ``CuaDriverBackend.start()`` fails closed on an incompatible driver; when
+# the incompatibility is something a reinstall fixes (old version, missing
+# manifest verbs) we run the standard install/repair path once instead of
+# telling the user to do it by hand. Guarded so a failing installer can't
+# loop — the second start() in the same process goes straight to the error.
+_contract_repair_attempted = False
+
+
+def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Try one automatic driver repair for a failed runtime contract.
+
+    Returns the post-repair contract state (or the original state when no
+    repair was attempted / the repair failed). Never raises. An explicit
+    ``HERMES_CUA_DRIVER_CMD`` override is authoritative even when broken, and
+    a missing binary means installation was never requested — both are left
+    for the caller's error message.
+    """
+    global _contract_repair_attempted
+    if contract.get("ready"):
+        return contract
+    if _contract_repair_attempted:
+        return contract
+    if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+        return contract
+    if not contract.get("binary"):
+        return contract
+    _contract_repair_attempted = True
+    logger.info(
+        "computer_use: installed cua-driver is not usable (%s); "
+        "attempting automatic repair",
+        contract.get("reason") or "runtime contract is incomplete",
+    )
+    try:
+        from hermes_cli.tools_config import install_cua_driver
+
+        if not install_cua_driver(upgrade=False, show_installer_progress=False):
+            return contract
+    except Exception as exc:
+        logger.warning("computer_use: automatic cua-driver repair failed: %s", exc)
+        return contract
+    try:
+        return cua_driver_runtime_contract_status()
+    except Exception:
+        return contract
+
 
 def _maybe_nudge_update() -> None:
     """Emit an update nudge at most once per process, off-thread so the
@@ -2526,6 +2572,11 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
         contract = cua_driver_runtime_contract_status()
+        if not contract.get("ready"):
+            # An installed-but-incompatible driver (e.g. predating a Hermes
+            # version-floor bump) is a state we created — repair it once
+            # automatically instead of failing every computer_use call.
+            contract = _maybe_repair_runtime_contract(contract)
         if not contract.get("ready"):
             reason = contract.get("reason") or "runtime contract is incomplete"
             if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():

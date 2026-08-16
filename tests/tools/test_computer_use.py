@@ -819,6 +819,122 @@ class TestLazyMcpInstall:
         mock_sess_start.assert_not_called()  # never reaches the MCP session
 
 
+class TestContractAutoRepair:
+    """An installed-but-incompatible driver is repaired automatically, once.
+
+    The 0.20 runtime-contract gate fails closed; when the failure is an old
+    installed driver (a state Hermes' own version-floor bump created),
+    start() runs the standard install/repair path once instead of failing
+    every computer_use call until the user runs the CLI by hand.
+    """
+
+    def _incompatible(self):
+        return {
+            "ready": False,
+            "binary": "/usr/local/bin/cua-driver",
+            "version": "0.19.3",
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+
+    def test_start_auto_repairs_incompatible_driver(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        backend = cua_backend.CuaDriverBackend()
+        backend._session = MagicMock()
+
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 side_effect=[self._incompatible(), {"ready": True}],
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver",
+                   return_value=True) as installer, \
+             patch.object(cua_backend, "_maybe_nudge_update"), \
+             patch("tools.lazy_deps.ensure"):
+            backend.start()
+
+        installer.assert_called_once_with(
+            upgrade=False, show_installer_progress=False
+        )
+        backend._session.start.assert_called_once()
+
+    def test_failed_repair_surfaces_original_error(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=self._incompatible(),
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver",
+                   return_value=False), \
+             patch("tools.lazy_deps.ensure") as mock_ensure:
+            with pytest.raises(RuntimeError, match="0.20.0 or newer"):
+                cua_backend.CuaDriverBackend().start()
+        mock_ensure.assert_not_called()
+
+    def test_repair_is_attempted_once_per_process(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=self._incompatible(),
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver",
+                   return_value=False) as installer, \
+             patch("tools.lazy_deps.ensure"):
+            for _ in range(2):
+                with pytest.raises(RuntimeError):
+                    cua_backend.CuaDriverBackend().start()
+        installer.assert_called_once()
+
+    def test_explicit_override_is_never_repaired(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/custom/cua-driver")
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=self._incompatible(),
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
+             patch("tools.lazy_deps.ensure"):
+            with pytest.raises(RuntimeError, match="HERMES_CUA_DRIVER_CMD"):
+                cua_backend.CuaDriverBackend().start()
+        installer.assert_not_called()
+
+    def test_missing_binary_is_not_repaired(self, monkeypatch):
+        from unittest.mock import patch
+        from tools.computer_use import cua_backend
+
+        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
+        state = {
+            "ready": False,
+            "binary": None,
+            "version": None,
+            "reason": "cua-driver is not installed",
+        }
+        with patch.object(
+                 cua_backend,
+                 "cua_driver_runtime_contract_status",
+                 return_value=state,
+             ), \
+             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
+             patch("tools.lazy_deps.ensure"):
+            with pytest.raises(RuntimeError, match="not installed"):
+                cua_backend.CuaDriverBackend().start()
+        installer.assert_not_called()
+
+
 class TestCaptureAfterAppContext:
     """Bug 2: capture_after=True loses app context after actions.
 

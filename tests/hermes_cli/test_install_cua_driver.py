@@ -149,6 +149,11 @@ class TestInstallCuaDriverUpgrade:
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in {"cua-driver", "curl"} else None), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
              patch("subprocess.run"):
@@ -244,6 +249,11 @@ class TestInstallCuaDriverUpgrade:
                      if name in {"cua-driver", "curl"}
                      else None
                  ),
+             ), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
              ), \
              patch.object(
                  tools_config,
@@ -450,6 +460,11 @@ class TestRequireConfirmedUpdate:
                           return_value="/x/cua-driver"), \
              patch.object(tools_config, "_cua_install_target_writable",
                           return_value=True), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch("tools.computer_use.cua_backend.cua_driver_update_check",
                    return_value=check_state), \
              patch.object(tools_config, "_run_cua_driver_installer",
@@ -502,6 +517,55 @@ class TestRequireConfirmedUpdate:
         ok, runner, _ = self._install(None, require_confirmed=False)
         assert ok is True
         runner.assert_called_once()
+
+    def test_incompatible_driver_repairs_despite_indeterminate_check(self):
+        """Hermes' own version floor is the confirmation. When the installed
+        driver fails the runtime contract, the `hermes update` refresh must
+        repair it even though ``check-update`` can't confirm a newer release
+        (its ~20h cache routinely lags a same-day floor bump — the 0.19.3
+        wedge)."""
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        incompatible = {
+            "ready": False,
+            "version": "0.19.3",
+            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
+        }
+        with patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/x/" + n
+                          if n in {"cua-driver", "curl", "powershell"} else None), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd",
+                          return_value="/x/cua-driver"), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=True), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 side_effect=[incompatible,
+                              {"ready": True, "version": "0.20.0", "reason": ""}],
+             ), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=None) as check, \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="cua-driver 0.19.3",
+                                          returncode=0)), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config.install_cua_driver(
+                upgrade=True, require_confirmed_update=True
+            )
+
+        assert ok is True
+        runner.assert_called_once()
+        assert runner.call_args.kwargs["label"] == "Repairing"
+        # The confirmed-update gate must not even consult check-update:
+        # the contract failure already confirmed the need.
+        check.assert_not_called()
 
 
 class TestUpdateCheckTimeoutDefaults:
@@ -623,6 +687,11 @@ class TestArchProbeRemoval:
         with patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in ("cua-driver", "curl", "powershell") else None), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch("urllib.request.urlopen") as urlopen, \
              patch("subprocess.run"), \
              patch.object(tools_config, "_run_cua_driver_installer",
@@ -1055,6 +1124,11 @@ class TestConfirmedVersionPinning:
                           return_value="/x/cua-driver"), \
              patch.object(tools_config, "_cua_install_target_writable",
                           return_value=True), \
+             patch.object(
+                 tools_config,
+                 "_cua_driver_contract_status",
+                 return_value={"ready": True, "version": "0.20.0", "reason": ""},
+             ), \
              patch("tools.computer_use.cua_backend.cua_driver_update_check",
                    return_value=check_state), \
              patch.object(tools_config, "_run_cua_driver_installer",

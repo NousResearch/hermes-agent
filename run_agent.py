@@ -7290,6 +7290,16 @@ class AIAgent:
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
+        # Local custom endpoints (loopback hosts like the turbohaul-manager
+        # relay at 127.0.0.1:11410): the user controls the server, and the
+        # reasoning extra_body is forwarded verbatim by the relay and the
+        # manager's knob allow-list, so it is safe to emit. This enables the
+        # /reasoning switcher with local GGUF models (e.g. Qwen3.8-27B).
+        if (
+            base_url_host_matches(self._base_url_lower, "127.0.0.1")
+            or base_url_host_matches(self._base_url_lower, "localhost")
+        ):
+            return True
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
+from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _irc_mod = load_plugin_adapter("irc")
@@ -33,22 +32,19 @@ def test_is_libera_chat_host(host, expected):
     assert is_libera_chat_host(host) is expected
 
 
-def test_recommended_docs_and_prompts_do_not_use_libera_as_example():
-    repo = Path(__file__).resolve().parents[3]
-    files = [
-        repo / "plugins/platforms/irc/plugin.yaml",
-        repo / "plugins/platforms/irc/adapter.py",
-        repo / "hermes_cli/config_defaults.py",
-        repo / "website/docs/user-guide/messaging/irc.md",
-        repo / "website/docs/reference/environment-variables.md",
-    ]
-    banned = ("e.g. irc.libera.chat", "e.g. `irc.libera.chat`", "server: irc.libera.chat")
-    for path in files:
-        text = path.read_text(encoding="utf-8")
-        for needle in banned:
-            assert needle not in text, f"{path} still recommends {needle!r}"
-        if path.name == "plugin.yaml":
-            assert "127.0.0.1" in text
+def test_recommended_server_example_is_not_libera():
+    """Setup/env example host must not be a Libera hostname (behavior, not source scan)."""
+    desc = OPTIONAL_ENV_VARS["IRC_SERVER"]["description"]
+    assert "127.0.0.1" in desc
+    assert "libera" not in desc.lower()
+    assert not is_libera_chat_host("127.0.0.1")
+
+
+def test_unconfigured_adapter_does_not_default_to_libera():
+    from gateway.config import PlatformConfig
+
+    adapter = IRCAdapter(PlatformConfig(enabled=True, extra={}))
+    assert not is_libera_chat_host(adapter.server)
 
 
 @pytest.mark.asyncio

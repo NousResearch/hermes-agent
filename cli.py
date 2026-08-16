@@ -81,13 +81,15 @@ try:
         install_cmd_backspace_alias,
         install_ctrl_enter_alias,
         install_ignored_terminal_sequences,
+        install_modify_other_keys_aliases,
         install_shift_enter_alias,
     )
     install_shift_enter_alias()
     install_ctrl_enter_alias()
     install_cmd_backspace_alias()
+    install_modify_other_keys_aliases()
     install_ignored_terminal_sequences()
-    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_ignored_terminal_sequences
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_modify_other_keys_aliases, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -3926,6 +3928,15 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     characters — Ctrl+C arrives as ``\\x1b[99;5u`` instead of ``\\x03``,
     which neither prompt_toolkit's key bindings nor the kernel's INTR
     mechanism can match, leaving Ctrl+C completely dead (#56684).
+
+    modifyOtherKeys=2 re-encodes ALL Ctrl+key combos as
+    ``ESC[27;5;<codepoint>~`` instead of raw control bytes.
+    ``install_modify_other_keys_aliases()`` (called at CLI startup from
+    ``hermes_cli.pt_input_extras``) populates prompt_toolkit's
+    ``ANSI_SEQUENCES`` with the full Ctrl+letter / Ctrl+digit / Ctrl+symbol
+    and Alt+letter mappings under both the modifyOtherKeys and CSI-u formats,
+    so every existing key binding continues to fire (#87711).
+
     The exit reset sequence already pops/resets both modes, so this is
     safe across normal exits, Ctrl+C, and SIGTERM cleanup.
     """

@@ -126,6 +126,145 @@ def install_cmd_backspace_alias() -> int:
     return changed
 
 
+def install_modify_other_keys_aliases() -> int:
+    """Map Ctrl+key and Alt+key sequences emitted under ``modifyOtherKeys`` level 2
+    and Kitty CSI-u to the same ``Keys``.* values that the raw control bytes
+    already map to.
+
+    When the terminal is in ``modifyOtherKeys=2`` mode (pushed by
+    ``_enable_extended_enter_keys`` so Shift+Enter is distinguishable from
+    Enter), the terminal re-encodes *every* Ctrl+key combo as
+    ``ESC[27;5;<codepoint>~`` instead of the raw control byte (``\\x01`` etc.).
+    Kitty keyboard protocol emits ``ESC[<codepoint>;5u``.
+
+    Stock prompt_toolkit 3.x only maps ``ESC[27;5;13~`` (Ctrl+Enter = Ctrl+M);
+    all other Ctrl+letter combos are unmapped and leak as literal text or get
+    swallowed — breaking Ctrl+A, Ctrl+C, Ctrl+D, Ctrl+E, Ctrl+K, Ctrl+R,
+    Ctrl+U, Ctrl+W, Ctrl+Z, etc. (#56684, #87711).
+
+    This function populates ``ANSI_SEQUENCES`` for the full set:
+
+    * **Ctrl+letter** (a–z): ``ESC[27;5;<codepoint>~`` and ``ESC[<codepoint>;5u``
+      → ``Keys.ControlA`` .. ``Keys.ControlZ``
+    * **Ctrl+digit** (0–9): same formats → ``Keys.Control0`` .. ``Keys.Control9``
+    * **Ctrl+symbol** (``[`` ``\\`` ``]`` ``^`` ``_`` `` `` ``@``):
+      same formats → the same ``Keys`` value the raw control byte maps to.
+    * **Alt+letter** (a–z, A–Z): ``ESC[27;3;<codepoint>~`` and
+      ``ESC[<codepoint>;3u`` → ``(Keys.Escape, <letter>)`` — matching how
+      prompt_toolkit handles a bare ``ESC`` followed by a character.
+
+    Existing mappings (including those installed by
+    ``install_shift_enter_alias`` / ``install_ctrl_enter_alias``) are never
+    overwritten — ``setdefault`` semantics.
+
+    Returns the number of sequences whose mapping was newly installed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    # -- Ctrl+letter / Ctrl+digit / Ctrl+symbol → Keys.Control* ----
+    # codepoint -> Keys value.  The raw control byte for Ctrl+<ch> is
+    # chr(ord(ch) & 0x1f) (i.e. ord(ch) - 96 for lowercase).  We map the
+    # *extended* sequence to the same Keys value that the raw byte maps to,
+    # so prompt_toolkit's existing key bindings fire identically.
+    ctrl_key_map: dict[int, object] = {}
+
+    # a-z: Ctrl+A = \x01 = Keys.ControlA, ..., Ctrl+Z = \x1a = Keys.ControlZ
+    for ch in range(ord('a'), ord('z') + 1):
+        raw = chr(ch & 0x1F)  # 0x01..0x1a
+        existing = ANSI_SEQUENCES.get(raw)
+        if existing is not None:
+            ctrl_key_map[ch] = existing
+
+    # 0-9: Ctrl+0 = \x00? No — Ctrl+0 doesn't produce a control byte.
+    # Under modifyOtherKeys, Ctrl+0 sends ESC[27;5;48~. prompt_toolkit has
+    # Keys.Control0..Control9; map them.  These don't have raw-byte mappings
+    # in ANSI_SEQUENCES, so map them directly.
+    ctrl_key_map[ord('0')] = Keys.Control0
+    ctrl_key_map[ord('1')] = Keys.Control1
+    ctrl_key_map[ord('2')] = Keys.Control2
+    ctrl_key_map[ord('3')] = Keys.Control3
+    ctrl_key_map[ord('4')] = Keys.Control4
+    ctrl_key_map[ord('5')] = Keys.Control5
+    ctrl_key_map[ord('6')] = Keys.Control6
+    ctrl_key_map[ord('7')] = Keys.Control7
+    ctrl_key_map[ord('8')] = Keys.Control8
+    ctrl_key_map[ord('9')] = Keys.Control9
+
+    # Symbols that produce control chars:
+    # Ctrl+@   (64)  = \x00 = Keys.ControlAt
+    # Ctrl+[   (91)  = \x1b = Keys.Escape
+    # Ctrl+\   (92)  = \x1c = Keys.ControlBackslash
+    # Ctrl+]   (93)  = \x1d = Keys.ControlSquareClose
+    # Ctrl+^   (94)  = \x1e = Keys.ControlCircumflex
+    # Ctrl+_   (95)  = \x1f = Keys.ControlUnderscore
+    # Ctrl+Space(32) = \x00 = Keys.ControlAt (prompt_toolkit maps \x00 → ControlAt)
+    for codepoint in (64, 91, 92, 93, 94, 95, 32):
+        raw = chr(codepoint & 0x1F)
+        existing = ANSI_SEQUENCES.get(raw)
+        if existing is not None:
+            ctrl_key_map[codepoint] = existing
+
+    changed = 0
+    for codepoint, key_val in ctrl_key_map.items():
+        # modifyOtherKeys format: ESC[27;5;<codepoint>~
+        seq_mok = f"\x1b[27;5;{codepoint}~"
+        if seq_mok not in ANSI_SEQUENCES:
+            ANSI_SEQUENCES[seq_mok] = key_val
+            changed += 1
+        # CSI-u format: ESC[<codepoint>;5u
+        seq_csiu = f"\x1b[{codepoint};5u"
+        if seq_csiu not in ANSI_SEQUENCES:
+            ANSI_SEQUENCES[seq_csiu] = key_val
+            changed += 1
+
+    # -- Alt+letter → (Escape, <letter>) ----
+    # Under modifyOtherKeys, Alt+a = ESC[27;3;97~. Without mapping, this
+    # leaks as literal text. prompt_toolkit handles bare Alt+letter as
+    # (Escape, <letter>), so we map the extended sequences to the same tuple.
+    for ch in range(ord('a'), ord('z') + 1):
+        letter = chr(ch)
+        upper = chr(ch - 32)  # uppercase variant
+        alt_key: tuple = (Keys.Escape, letter)
+        for codepoint, alt_val in ((ch, alt_key), (ch - 32, (Keys.Escape, upper))):
+            seq_mok = f"\x1b[27;3;{codepoint}~"
+            if seq_mok not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq_mok] = alt_val
+                changed += 1
+            seq_csiu = f"\x1b[{codepoint};3u"
+            if seq_csiu not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq_csiu] = alt_val
+                changed += 1
+
+    # -- Shift+letter → uppercase letter ----
+    # Under modifyOtherKeys=2, some terminals re-encode Shift+a as
+    # ESC[27;2;97~. Without mapping, this leaks as literal escape +
+    # "[27;2;97~" in the prompt buffer — the "caps locked" / "every key
+    # combo is broken" symptom (#87711).
+    # Map Shift+letter to the uppercase character so typing works normally.
+    # This is safe across all Latin keyboard layouts: Shift always uppercases
+    # letters.  Shift+digit symbols are layout-specific (US: '!', AZERTY: '¹',
+    # etc.) so they are NOT mapped here — if the terminal sends those under
+    # modifyOtherKeys, they will leak, but that's better than wrong input.
+    for ch in range(ord('a'), ord('z') + 1):
+        upper_char = chr(ch - 32)  # 'A'..'Z'
+        for codepoint in (ch, ch - 32):
+            target = upper_char
+            seq_mok = f"\x1b[27;2;{codepoint}~"
+            if seq_mok not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq_mok] = target
+                changed += 1
+            seq_csiu = f"\x1b[{codepoint};2u"
+            if seq_csiu not in ANSI_SEQUENCES:
+                ANSI_SEQUENCES[seq_csiu] = target
+                changed += 1
+
+    return changed
+
+
 def install_ignored_terminal_sequences() -> int:
     """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they
     are consumed by the VT100 parser before they reach key bindings or

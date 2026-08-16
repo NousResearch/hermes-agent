@@ -2077,8 +2077,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
                 )
-                # Build DM room cache from m.direct account data.
-                await self._refresh_dm_cache()
+                # Build the DM room cache before dispatching messages from the
+                # same sync response. Older homeservers may omit account data
+                # here, so retain the separate account-data request as a
+                # fallback.
+                if not self._update_dm_rooms_from_sync(sync_data):
+                    await self._refresh_dm_cache()
 
                 # Dispatch events from the initial sync so the OlmMachine
                 # receives to-device key shares queued while we were offline.
@@ -4853,7 +4857,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identities.pop(room_id, None)
         self._room_identity_cached_at.pop(room_id, None)
 
-    def _update_dm_rooms_from_sync(self, sync_data: Dict[str, Any]) -> None:
+    def _update_dm_rooms_from_sync(self, sync_data: Dict[str, Any]) -> bool:
         """Apply live m.direct updates delivered in a sync response.
 
         Element edits m.direct account data when the user marks or unmarks a
@@ -4862,11 +4866,11 @@ class MatrixAdapter(BasePlatformAdapter):
         """
         account_data = sync_data.get("account_data")
         if not isinstance(account_data, dict):
-            return
+            return False
 
         events = account_data.get("events")
         if not isinstance(events, list):
-            return
+            return False
 
         for raw_event in events:
             if not isinstance(raw_event, dict):
@@ -4877,6 +4881,9 @@ class MatrixAdapter(BasePlatformAdapter):
             content = raw_event.get("content")
             if isinstance(content, dict):
                 self._apply_m_direct_content(content)
+                return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Mention detection helpers

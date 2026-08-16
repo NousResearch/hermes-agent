@@ -1545,8 +1545,8 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
-    async def test_connect_receives_dm_from_initial_sync_dispatch(self):
-        """A DM delivered by initial sync should reach the message handler after connect."""
+    async def test_connect_applies_m_direct_before_initial_sync_dispatch(self):
+        """Initial sync account data classifies messages in the same response."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(
@@ -1584,11 +1584,17 @@ class TestMatrixSyncLoop:
         mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
         mock_client.sync = AsyncMock(return_value={
             "rooms": {"join": {"!dm:example.org": {}}},
+            "account_data": {
+                "events": [
+                    {
+                        "type": "m.direct",
+                        "content": {"@alice:example.org": ["!dm:example.org"]},
+                    }
+                ]
+            },
             "next_batch": "s1",
         })
-        mock_client.get_account_data = AsyncMock(
-            return_value=MagicMock(content={"@alice:example.org": ["!dm:example.org"]})
-        )
+        mock_client.get_account_data = AsyncMock(side_effect=Exception("unavailable"))
         mock_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
         mock_client.state_store = MagicMock()
         mock_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])

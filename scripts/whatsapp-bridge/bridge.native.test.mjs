@@ -177,6 +177,48 @@ import {
   console.log('  ✓ reply to uncaptioned quoted image resolves cached original file');
 }
 
+// -- bare quote-reply (no own text/media) still resolves quoted media -----
+{
+  // A reply with no caption of its own (e.g. a bare quote of an uncaptioned
+  // image) has empty own body/media, so bridge.js's empty-message guard must
+  // consult quotedMediaUrls rather than only event.body/event.hasMedia, or
+  // the reply is dropped even though extractBridgeEvent resolved real content.
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'incoming-4',
+        remoteJid: '15551234567@s.whatsapp.net',
+        participant: '15550001111@s.whatsapp.net',
+        fromMe: false,
+      },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: '',
+          contextInfo: {
+            stanzaId: 'original-image-2',
+            participant: '15550001111@s.whatsapp.net',
+            remoteJid: '15551234567@s.whatsapp.net',
+            quotedMessage: { imageMessage: {} },
+          },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: [],
+    downloadMedia: async () => Buffer.from(''),
+    lookupQuotedMedia: () => ({ hasMedia: true, mediaType: 'image', mediaUrls: ['/cache/image/img_original.jpg'] }),
+  });
+
+  assert.equal(event.body, '');
+  assert.equal(event.hasMedia, false);
+  assert.deepEqual(event.quotedMediaUrls, ['/cache/image/img_original.jpg']);
+  console.log('  ✓ bare quote-reply with no own content still carries resolved quoted media');
+}
+
 // -- quoted media lookup miss leaves quoted fields empty (no crash) -------
 {
   const event = await extractBridgeEvent({

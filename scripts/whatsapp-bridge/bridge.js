@@ -754,8 +754,9 @@ async function startSocket() {
         continue;
       }
 
-      // Skip empty messages
-      if (!event.body && !event.hasMedia) {
+      // Skip empty messages (but not a bare quote-reply whose own text/media
+      // is empty when the quoted message resolved to cached media).
+      if (!event.body && !event.hasMedia && !event.quotedMediaUrls.length) {
         emitDebugEvent({
           stage: 'ignored',
           reason: 'empty',

@@ -1,8 +1,8 @@
-import { backendScopeKey, type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@hermes/shared'
+import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import type { HermesConnection } from '@/global'
+import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -31,7 +31,7 @@ interface RegistryConfig {
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
 interface Secondary {
-  /** Scope key from backendScopeKey(connectionId, profile). */
+  /** Scope key from registryBackendScopeKey(connectionId, profile). */
   scope: string
   profile: string
   /** Registry connection serving this socket; null = the local/legacy path. */
@@ -355,7 +355,7 @@ function isMissingConnectionError(error: unknown): boolean {
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
   const gateway = new HermesGateway()
-  const scope = backendScopeKey(connectionId, profile)
+  const scope = registryBackendScopeKey(connectionId, profile)
 
   const entry: Secondary = {
     scope,
@@ -516,8 +516,8 @@ export async function requestGatewayForProfile<T>(
 /**
  * Send a gateway RPC through one registry source without activating it. The
  * composite (connectionId, profile) pool key prevents same-named agents on two
- * sources from sharing a socket. Local/empty ids deliberately retain the v1
- * profile resolver, including shared-primary request scoping.
+ * sources from sharing a socket. Only null/empty ids retain the v1 profile
+ * resolver; explicit `local` is a registry source and must use getConnectionFor.
  */
 export async function requestGatewayForAgent<T>(
   connectionId: null | string,
@@ -526,7 +526,7 @@ export async function requestGatewayForAgent<T>(
   params: Record<string, unknown> = {}
 ): Promise<T> {
   const key = normKey(profile)
-  const scope = backendScopeKey(connectionId, key)
+  const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
     return requestGatewayForProfile<T>(key, method, params)
@@ -581,13 +581,13 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
 
 // ── Connection-scoped agents (multi-source roster) ─────────────────────────
 // The (connectionId, profile) analogues of the profile functions above. A
-// null/'local' connectionId falls straight through to the profile path, so
-// callers can pass roster rows verbatim without special-casing the local
-// source. Feature-detected: without the Electron getConnectionFor door these
+// null connectionId falls straight through to the profile path. An explicit
+// `local` id remains registry-scoped so it cannot inherit legacy remote v1
+// routing. Feature-detected: without the Electron getConnectionFor door these
 // throw, and roster surfaces disable non-local rows instead.
 
 export async function openGatewayForAgent(connectionId: null | string, profile: string): Promise<void> {
-  const scope = backendScopeKey(connectionId, profile)
+  const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
     return openGatewayForProfile(profile)
@@ -606,11 +606,13 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<void> {
-  const scope = backendScopeKey(connectionId, profile)
+export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+  const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
-    return ensureGatewayForProfile(profile)
+    await ensureGatewayForProfile(profile)
+
+    return true
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -641,14 +643,17 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
   // A source edit/remove may dispose this entry while its dial is still in
   // flight. Only the still-registered, still-owned activation may publish.
-  if (
+  const activated =
     entry.wantOpen &&
     g.secondaries.get(scope) === entry &&
-    applyActive(scope, activationEpoch) &&
-    entry.connection
-  ) {
+    Boolean(entry.connection) &&
+    applyActive(scope, activationEpoch)
+
+  if (activated && entry.connection) {
     publishActiveConnection(entry.connection)
   }
+
+  return activated
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
@@ -774,7 +779,7 @@ function restoreActiveToPrimaryIfEvicted(): void {
 // Close + evict secondaries whose scope is neither active nor in `keep`
 // (scopes with a running / needs-input session). Bounds cost to live work.
 // `keep` carries PROFILE names for local/legacy entries and composite
-// backendScopeKey(connectionId, profile) scopes for registry-sourced live
+// registryBackendScopeKey(connectionId, profile) scopes for registry-sourced live
 // work. A registry-scoped entry matches ONLY on its composite key: every
 // source exposes a 'default' profile, so matching a non-local entry on the
 // bare profile name kept gateway B's 'default' socket alive off gateway A's

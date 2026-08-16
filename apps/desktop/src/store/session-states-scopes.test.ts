@@ -36,6 +36,13 @@ describe('liveSessionScopes', () => {
     expect(liveSessionScopes()).toEqual(new Set(['conn:homelab::default']))
   })
 
+  it('keeps an explicit local registry session on its composite scope', () => {
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    publishSessionState('rt-local', state({ busy: true }))
+
+    expect(liveSessionScopes()).toEqual(new Set(['conn:local::default']))
+  })
+
   it('includes needs-input sessions and drops settled ones', () => {
     recordSessionEventScope({ connectionId: 'homelab', profile: 'default', session_id: 'rt-1' })
     publishSessionState('rt-1', state({ busy: false, needsInput: true }))

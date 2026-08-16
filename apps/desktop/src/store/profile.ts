@@ -1,4 +1,3 @@
-import { backendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -337,12 +336,13 @@ async function syncConnectionToActiveAgent(connectionId: string, profile: string
 //  - Activations share the gatewaySwitch mutex with profile switches, so a
 //    rapid agent↔profile (or agent↔agent) interleave can't finish out of
 //    order and leave the EARLIER setActive() as the last write.
-// A local/null connectionId falls through to the profile path verbatim.
+// Only a null connectionId falls through to the legacy profile path. Explicit
+// `local` is a registry identity and must use the genuinely-local route.
 export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {
   const target = normalizeProfileKey(profile)
   const connection = (connectionId ?? '').trim() || null
 
-  if (!connection || backendScopeKey(connection, target) === target) {
+  if (!connection) {
     return ensureGatewayProfile(target)
   }
 
@@ -353,7 +353,12 @@ export async function ensureGatewayAgent(connectionId: null | string, profile: s
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    await ensureGatewayForAgent(connection, target)
+    const activated = await ensureGatewayForAgent(connection, target)
+
+    if (!activated) {
+      return
+    }
+
     $activeGatewayProfile.set(target)
     // The active backend just changed; resync $connection so remote-aware
     // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.

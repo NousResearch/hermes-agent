@@ -215,15 +215,13 @@ import {
   parentWatchdogEnv
 } from './parent-process-identity'
 import {
-  buildOpaqueProfileRoutes,
   buildRegistryProfileRoutes,
-  type EffectiveSshRoute,
   localRouteFallbackProfiles,
-  type ProfileRouteConfig,
   registryGatewayWsUrl,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
+import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -8566,39 +8564,6 @@ function effectiveSshConfigFingerprint(sshConfig) {
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
-function effectiveSshRouteForPlugin(config: ProfileRouteConfig): Promise<EffectiveSshRoute> {
-  const ssh =
-    process.platform === 'win32'
-      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-      : 'ssh'
-
-  const args = ['-G']
-
-  if (config.sshPort) {
-    args.push('-p', String(config.sshPort))
-  }
-
-  args.push('--', config.sshUser ? `${config.sshUser}@${config.sshHost}` : config.sshHost)
-
-  return new Promise((resolve, reject) => {
-    execFile(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true }, (error, stdout) => {
-      if (error) {
-        reject(new Error('Could not resolve SSH route for profile.'))
-
-        return
-      }
-
-      const resolved = parseSshGOutput(stdout)
-
-      resolve({
-        hostname: resolved.hostname || config.sshHost,
-        port: resolved.port || config.sshPort || 22,
-        user: resolved.user || config.sshUser
-      })
-    })
-  })
-}
-
 async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
   const scope = sshScopeKey(profile)
   const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
@@ -9540,16 +9505,14 @@ async function stopRegistryConnectionBackends(connectionId) {
 // renderer calls this when it opens a profile's chat WS and periodically while
 // streaming, since the main process can't see the direct renderer↔backend WS.
 function touchPoolBackend(profile) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : null
+  for (const key of poolTouchKeys(profile)) {
+    const entry = backendPool.get(key)
 
-  if (!key) {
-    return
-  }
+    if (entry) {
+      entry.lastActiveAt = Date.now()
 
-  const entry = backendPool.get(key)
-
-  if (entry) {
-    entry.lastActiveAt = Date.now()
+      return
+    }
   }
 }
 
@@ -12059,20 +12022,7 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     ]
   }
 
-  const config = readDesktopConnectionConfig()
-  const globalConfig = (await sanitizeDesktopConnectionConfig(config, null)) as ProfileRouteConfig
-  const localProfiles = agents.filter(agent => agent.connectionId === 'local').map(agent => agent.profile)
-
-  const legacyRoutes = await buildOpaqueProfileRoutes({
-    getProfileConfig: async profile => (await sanitizeDesktopConnectionConfig(config, profile)) as ProfileRouteConfig,
-    globalConfig,
-    installationId: desktopInstallationId,
-    primaryProfile: primaryProfileKey(),
-    profileNames: localProfiles,
-    resolveSsh: effectiveSshRouteForPlugin
-  })
-
-  return buildRegistryProfileRoutes({ agents, legacyRoutes, sources: registry.connections })
+  return buildRegistryProfileRoutes({ agents, sources: registry.connections })
 })
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {

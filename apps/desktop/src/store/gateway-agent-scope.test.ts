@@ -42,6 +42,7 @@ const {
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
+  ensureGatewayForProfile,
   isActivePrimary,
   pruneSecondaryGateways,
   setPrimaryGateway
@@ -102,6 +103,25 @@ describe('registry-agent scope eviction (activeGateway must never silently hit t
     expect(activeGateway()).not.toBe(primary)
     expect($gateway.get()).not.toBe(primary)
     expect(gatewayMocks.connect).toHaveBeenCalledWith(agentConn.wsUrl)
+  })
+
+  it('keeps the primary active when a fresh registry activation cannot resolve', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    await ensureGatewayForProfile('default')
+    const publishedPrimary = $gateway.get()
+    installDesktop({
+      getConnection: vi.fn(async () => agentConn),
+      getConnectionFor: vi.fn(async () => {
+        throw new Error('source unreachable')
+      })
+    })
+
+    await expect(ensureGatewayForAgent('offline', 'research')).resolves.toBe(false)
+
+    expect(isActivePrimary()).toBe(true)
+    expect(activeGateway()).toBe(primary)
+    expect($gateway.get()).toBe(publishedPrimary)
   })
 
   it('closeSecondaryGateways re-points the active key at the primary instead of dangling', async () => {

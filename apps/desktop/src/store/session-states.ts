@@ -16,7 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { backendScopeKey } from '@hermes/shared'
+import { registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -70,7 +70,7 @@ const sessionScopeByRuntimeId = new Map<string, string>()
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
   if (event.session_id && event.connectionId) {
-    sessionScopeByRuntimeId.set(event.session_id, backendScopeKey(event.connectionId, event.profile))
+    sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
   }
 }
 

@@ -235,7 +235,7 @@ describe('buildRegistryProfileRoutes', () => {
     expect(new Set(routes.map(route => `${route.connectionId}/${route.profile}`))).toHaveLength(2)
   })
 
-  it('preserves legacy v1 targetProfile correction for routes reached through local', () => {
+  it('keeps the registry local source genuinely local when legacy v1 routing is remote', () => {
     const routes = buildRegistryProfileRoutes({
       agents: [{ connectionId: 'local', profile: 'barry' }],
       legacyRoutes: [
@@ -245,7 +245,7 @@ describe('buildRegistryProfileRoutes', () => {
     })
 
     expect(routes).toEqual([
-      { connectionId: 'local', mode: 'remote', profile: 'barry', targetProfile: 'default' }
+      { connectionId: 'local', mode: 'local', profile: 'barry', targetProfile: 'barry' }
     ])
   })
 

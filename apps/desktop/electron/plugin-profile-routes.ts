@@ -244,17 +244,14 @@ export async function buildOpaqueProfileRoutes({
 /**
  * Project the union registry roster into the narrow plugin descriptor. Registry
  * ids and profile names are routing identities; endpoint/auth/source fields are
- * deliberately discarded here. The local source keeps the v1 resolver's mode
- * and targetProfile semantics because getConnectionFor(local, profile) delegates
- * to that compatibility path.
+ * deliberately discarded here. A registry source of kind `local` always means
+ * the actual local runtime, independently of legacy v1 global/profile routing.
  */
 export function buildRegistryProfileRoutes({
   agents,
-  legacyRoutes = [],
   sources
 }: BuildRegistryProfileRoutesOptions): OpaqueProfileRoute[] {
   const sourceById = new Map(sources.map(source => [source.id, source]))
-  const legacyByProfile = new Map(legacyRoutes.map(route => [route.profile, route]))
   const seen = new Set<string>()
   const routes: OpaqueProfileRoute[] = []
 
@@ -270,13 +267,11 @@ export function buildRegistryProfileRoutes({
     seen.add(key)
 
     if (source.kind === 'local') {
-      const legacy = legacyByProfile.get(profile)
-
       routes.push({
         connectionId: source.id,
-        mode: legacy?.mode ?? 'local',
+        mode: 'local',
         profile,
-        targetProfile: legacy?.targetProfile ?? profile
+        targetProfile: profile
       })
 
       continue

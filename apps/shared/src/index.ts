@@ -1,7 +1,8 @@
 export {
   backendScopeKey,
   backendScopePrefix,
-  LOCAL_CONNECTION_ID
+  LOCAL_CONNECTION_ID,
+  registryBackendScopeKey
 } from './backend-scope'
 export {
   BILLING_REFUSAL_POLICY,

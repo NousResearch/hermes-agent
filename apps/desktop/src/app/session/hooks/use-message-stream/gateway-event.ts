@@ -1,5 +1,5 @@
 import type { BillingBlock } from '@hermes/shared'
-import { backendScopeKey } from '@hermes/shared'
+import { registryBackendScopeKey } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
@@ -340,12 +340,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // registered connection exposes a 'default' profile, so a bare profile
       // comparison attributes gateway B's 'default' events to gateway A's
       // 'default'. Compare the composite (connectionId, profile) scope with
-      // backendScopeKey — untagged (local/primary) events keep the legacy
+      // registryBackendScopeKey — untagged primary events keep the legacy
       // bare-profile behavior byte-identical.
       const fromActiveSource = (): boolean =>
         (!event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())) &&
-        backendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
-          backendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
+        registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
+          registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
       const occurredAt =
         typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)

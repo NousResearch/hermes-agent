@@ -39,7 +39,8 @@ vi.mock('@/hermes', () => ({
     constructor() {
       secondaryGateways.push(this)
     }
-  }
+  },
+  setApiRequestConnection: vi.fn()
 }))
 vi.mock('@/store/session', () => ({ setGatewayState: vi.fn() }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
@@ -232,15 +233,30 @@ describe('requestGatewayForAgent', () => {
     expect($gateway.get()).toBe(primary)
   })
 
-  it('falls back to the legacy profile path for the local registry connection', async () => {
+  it('routes an explicit local registry descriptor through getConnectionFor', async () => {
     const primary = makePrimary()
-    const getConnection = vi.fn(async (profile: null | string) => ({ port: 5151, profile, token: 'legacy-token' }))
-    const getConnectionFor = vi.fn()
+
+    const getConnection = vi.fn(async (profile: null | string) => ({
+      mode: 'remote',
+      profile,
+      wsUrl: 'wss://legacy-remote.invalid/api/ws?token=legacy'
+    }))
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({
+      connectionId,
+      mode: 'local',
+      port: 5151,
+      profile
+    }))
 
     setPrimaryGateway(primary as never, 'default')
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getConnection,
       getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true as const,
+        wsUrl: `ws://${connectionId}/${profile}`
+      })),
       touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
@@ -249,8 +265,8 @@ describe('requestGatewayForAgent', () => {
       method: 'profiles.list',
       params: {}
     })
-    expect(getConnection).toHaveBeenCalledWith('worker')
-    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'worker' })
+    expect(getConnection).not.toHaveBeenCalled()
     expect($gateway.get()).toBe(primary)
   })
 

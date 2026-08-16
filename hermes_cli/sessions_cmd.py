@@ -302,6 +302,12 @@ def cmd_sessions(args, sessions_parser=None):
         print("  Do not install it. Review the JSON report for partial data or errors.")
         return 1
 
+    if action == "import":
+        from hermes_cli.foreign_sessions import run_sessions_import
+
+        run_sessions_import(args)
+        return
+
     try:
         from hermes_state import SessionDB
 

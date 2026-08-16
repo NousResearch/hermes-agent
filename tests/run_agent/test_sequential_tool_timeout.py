@@ -14,6 +14,51 @@ from run_agent import AIAgent
 from tools.clarify_gateway import resolve_clarify_timeout
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_worker_start(monkeypatch):
+    """Deadline must race the TOOL, not the scheduler or the preamble.
+
+    The sequential timeout path computes ``deadline = now + timeout_s``
+    immediately after ``executor.submit()``. Two races made a sub-second
+    test deadline flaky on loaded CI workers (three slice-4 reds on
+    unrelated PRs, Aug 2026):
+
+    1. Thread-start latency — the pool thread took longer than the whole
+       deadline to START; the future was cancelled before the tool ever
+       dispatched. Killed here by blocking submit() until the worker
+       callable has begun.
+    2. Middleware preamble latency — after the worker starts, argument
+       parsing / hooks / cold imports run BEFORE ``handle_function_call``;
+       when the deadline expired in that window, the timeout interrupt made
+       the middleware return without dispatching (``first_started`` unset).
+       Killed by using a 1.0s deadline: tight enough to keep the suite
+       fast, ~7x the worst observed preamble.
+
+    Together the countdown starts only once the worker is running and has
+    generous headroom to reach the dispatch — which is the behavior these
+    tests mean to pin.
+    """
+    import tools.daemon_pool as daemon_pool
+
+    real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+    class _StartSyncedExecutor(real_executor):
+        def submit(self, fn, *args, **kwargs):
+            begun = threading.Event()
+
+            def _traced(*fa, **fk):
+                begun.set()
+                return fn(*fa, **fk)
+
+            future = super().submit(_traced, *args, **kwargs)
+            # Bounded: a wedged pool must fail the test loudly, not hang it.
+            assert begun.wait(timeout=10), "tool worker thread never started"
+            return future
+
+    monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _StartSyncedExecutor)
+    yield
+
+
 def _make_agent(tmp_path: Path) -> AIAgent:
     with (
         patch(
@@ -93,7 +138,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     calls = [_tool_call("hung"), _tool_call("next")]
     assistant = SimpleNamespace(tool_calls=calls)
     messages: list[dict] = []
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
 
     started = time.monotonic()
     try:
@@ -105,29 +150,14 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
             ),
         ):
             execute_tool_calls_sequential(agent, assistant, messages, "task")
-            elapsed = time.monotonic() - started
-            release_first.set()
-            # Give a late-scheduled worker a moment to drain inside the patch
-            # context (if the with block exits first, a late worker would hit
-            # the REAL handle_function_call).
-            for _ in range(100):
-                if "next" in dispatched:
-                    break
-                time.sleep(0.05)
     finally:
         release_first.set()
 
-    assert elapsed < 1.0  # the EXECUTOR must not have waited for the hung call
-    # The hung call's dispatch is NOT guaranteed: on a loaded runner the
-    # 0.05s timeout can expire before its worker thread starts, in which case
-    # future.cancel() legitimately prevents the dispatch entirely
-    # (tool_executor timeout path). The contract is: the executor emitted a
-    # timeout result for it and CONTINUED — the next tool must have actually
-    # run, and the message stream must carry both call ids in order.
-    assert "next" in dispatched
-    assert set(dispatched) <= {"hung", "next"}
+    assert first_started.is_set()
+    assert time.monotonic() - started < 10.0
+    assert dispatched == ["hung", "next"]
     assert [message["tool_call_id"] for message in messages] == ["hung", "next"]
-    assert "timed out after 0.1s" in messages[0]["content"]
+    assert "timed out after 1.0s" in messages[0]["content"]
     assert messages[0]["effect_disposition"] == "unknown"
     assert messages[1]["content"] == "second result"
     timeout_events = [event for event in terminal_events if event.get("error_type") == "tool_timeout"]
@@ -157,7 +187,7 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
 
     calls = [_tool_call("hung"), _tool_call("next")]
     messages: list[dict] = []
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
 
     try:
         with (
@@ -199,14 +229,16 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     outlast ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` (default 420s).
     """
     agent = _make_agent(tmp_path)
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
     monkeypatch.setattr(
         "tools.clarify_gateway.get_clarify_timeout",
         lambda: clarify_timeout,
     )
 
     def _callback(question, choices, multi_select=False):
-        time.sleep(0.15)
+        # Must OUTLAST the 1.0s sequential deadline — the test proves the
+        # generic timeout never cuts a human clarify wait.
+        time.sleep(1.3)
         return "A"
 
     agent.clarify_callback = _callback
@@ -234,7 +266,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
             "task",
         )
 
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 10.0
     assert [message["tool_call_id"] for message in messages] == ["clarify-1", "next"]
     payload = json.loads(messages[0]["content"])
     assert payload["user_response"] == "A"

@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { installHubSkill } from '@/store/hub-actions'
+import { Loader2 } from '@/lib/icons'
+import { $hubActions, installHubSkill, UPDATE_ALL_KEY, updateHubSkills } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 
 // The REAL Skills Hub page (docs site) embedded as a one-click picker — the
@@ -24,20 +26,25 @@ interface SkillPickMessage {
 }
 
 interface EmbeddedHubPickerProps {
+  /** Names of skills already installed in the scoped profile — a pick that
+   *  matches is refused with a toast instead of re-running the install. */
+  installedNames: ReadonlySet<string>
   /** Capabilities profile-scope override — installs land in THIS profile;
    *  undefined/null targets the app-wide active profile. */
   profile?: null | string
 }
 
-/** Collapsible "browse the full hub" strip for the Skills tab: a resizable
- *  iframe of the live Skills Hub where every card installs with one click. */
-export function EmbeddedHubPicker({ profile }: EmbeddedHubPickerProps) {
+/** The Skills Hub browser for the Skills tab: a resizable iframe of the live
+ *  hub where every card installs with one click. Expanded by default —
+ *  discovery IS the point — with a collapse toggle and an update-all action. */
+export function EmbeddedHubPicker({ installedNames, profile }: EmbeddedHubPickerProps) {
   const { t } = useI18n()
   const h = t.skills.hub
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
+  const updating = useStore($hubActions)[UPDATE_ALL_KEY]?.running ?? false
 
   // Picker messages from the embedded hub page. Origin-checked; installs route
-  // through the same store pipeline the Browse Hub tab uses, so the action log,
+  // through the same store pipeline the hub rows use, so the action log,
   // optimistic flips, and Skills-list refresh all come for free.
   useEffect(() => {
     if (!open) {
@@ -58,6 +65,13 @@ export function EmbeddedHubPicker({ profile }: EmbeddedHubPickerProps) {
       const target = String(data.identifier || data.name)
       const label = String(data.name)
 
+      // Already installed in this scope → tell the user, don't reinstall.
+      if (installedNames.has(label) || installedNames.has(target)) {
+        notify({ kind: 'success', title: h.alreadyInstalled(label), message: '' })
+
+        return
+      }
+
       notify({ kind: 'success', title: h.installStarted(label), message: h.actionLog })
       void installHubSkill(target, profile).catch(err => notifyError(err, h.actionFailed))
     }
@@ -65,30 +79,40 @@ export function EmbeddedHubPicker({ profile }: EmbeddedHubPickerProps) {
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [h, open, profile])
+  }, [h, installedNames, open, profile])
+
+  const updateAll = () => {
+    notify({ kind: 'success', title: h.updateStarted, message: h.actionLog })
+    void updateHubSkills(profile).catch(err => notifyError(err, h.actionFailed))
+  }
 
   return (
-    <div className="border-b border-(--ui-stroke-secondary)">
+    <div className="border-t border-(--ui-stroke-secondary)">
       <div className="flex items-center justify-between px-3 py-1.5">
         <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{h.pickerTitle}</span>
-        <Button onClick={() => setOpen(v => !v)} size="xs" variant="text">
-          {open ? h.pickerHide : h.pickerBrowse}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button disabled={updating} onClick={updateAll} size="xs" variant="text">
+            {updating && <Loader2 className="size-3 animate-spin" />}
+            {updating ? h.updating : h.updateAll}
+          </Button>
+          <Button onClick={() => setOpen(v => !v)} size="xs" variant="text">
+            {open ? h.pickerHide : h.pickerBrowse}
+          </Button>
+        </div>
       </div>
       {open && (
         <div className="grid gap-1 px-3 pb-2">
-          {/* Resizable viewport: native CSS resize handle (bottom-right corner)
-              lets the user drag it larger/smaller. The iframe is rendered
-              oversized and scaled DOWN (133% × 0.75) so the hub page starts
-              zoomed out — the cross-origin page itself can't be styled, but
-              scaling the frame is ours. */}
+          {/* Resizable viewport: native CSS resize handle lets the user drag it
+              larger/smaller. The iframe is rendered oversized and scaled DOWN
+              (133% × 0.75) so the hub page starts zoomed out — the cross-origin
+              page itself can't be styled, but scaling the frame is ours. */}
           <div
             style={{
               border: '1px solid var(--ui-stroke-secondary)',
               borderRadius: 8,
-              height: 480,
+              height: 380,
               maxWidth: '100%',
-              minHeight: 240,
+              minHeight: 200,
               minWidth: 320,
               overflow: 'hidden',
               position: 'relative',

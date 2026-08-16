@@ -115,6 +115,10 @@ hermes chat -c
 
 This looks up the most recent `cli` session from the SQLite database and loads its full conversation history.
 
+#### Per-Terminal Continue
+
+A bare `-c` is terminal-aware: each CLI session drops a small breadcrumb file under `~/.hermes/terminal-sessions/` keyed by the terminal it runs in (tty device, tmux pane, kitty window, wezterm pane, Zellij pane, Windows Terminal session, ...). When you run `hermes -c` again in the *same* terminal, Hermes resumes that terminal's own session — so two panes side by side each continue their own conversation instead of both grabbing the globally most-recent one. If there's no breadcrumb for the terminal (first use, deleted session, or a stale breadcrumb older than 30 days), `-c` falls back to the most-recent-session behavior. `-c "name"` and `--resume` are unaffected. Disable with `session.terminal_continue: false` in `config.yaml`.
+
 ### Resume by Name
 
 If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:
@@ -608,6 +612,38 @@ second history, choosing which thread it continues is your call. The stranded
 conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
+
+
+## Importing Sessions from Claude Code and Codex CLI
+
+Started a conversation in another agent CLI? You can pull it into Hermes and
+continue it here. Hermes reads Claude Code's session logs
+(`~/.claude/projects/`) and Codex CLI's rollouts (`~/.codex/sessions/`) —
+the foreign files are only read, never modified.
+
+```bash
+# Interactive picker across both tools, newest first
+hermes sessions import
+
+# Limit to one tool, or point at a specific file
+hermes sessions import --from claude
+hermes sessions import --from codex ~/.codex/sessions/2026/08/15/rollout-....jsonl
+
+# Import-and-resume in one step
+hermes --resume @claude
+hermes --resume @codex
+```
+
+`hermes sessions import` creates a new Hermes session titled
+`Imported from Claude Code: <first user message>` (or Codex CLI) and prints
+the id plus a ready-to-paste `hermes --resume <id>` command.
+`--resume @claude` / `--resume @codex` show the same picker and drop you
+straight into the imported conversation.
+
+What carries over: the ordered user/assistant conversation, with tool
+activity condensed to short `[ran tool: …]` notes inside assistant turns.
+System prompts, injected context, reasoning traces, and raw tool output are
+left behind — the import is a clean transcript, not a byte-for-byte replay.
 
 
 ## Session Search Tool

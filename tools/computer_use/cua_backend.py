@@ -311,6 +311,67 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     return env
 
 
+def _linux_session_locked() -> Optional[bool]:
+    """Best-effort: is the graphical session locked? (Linux only.)
+
+    A locked KDE/GNOME session freezes app renderers and half-disables the
+    AX tree, so window discovery legitimately returns nothing — but a bare
+    empty result reads as a driver bug (live QA, Aug 2026: every capture
+    came back 0x0 with no hint). True/False when loginctl answers, None
+    when unavailable (non-Linux, no systemd-logind, probe failure).
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        proc = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        if proc.returncode != 0:
+            return None
+        any_seat = False
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2 or "seat" not in line:
+                continue
+            any_seat = True
+            probe = subprocess.run(
+                ["loginctl", "show-session", parts[0], "-p", "LockedHint"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if "LockedHint=no" in probe.stdout:
+                return False
+        return True if any_seat else None
+    except Exception:
+        return None
+
+
+def _empty_discovery_reason() -> str:
+    """One-line diagnosis for 'window discovery found nothing'."""
+    locked = _linux_session_locked()
+    if locked is True:
+        return (
+            "the desktop session is LOCKED (loginctl LockedHint=yes) — "
+            "unlock the screen; a locked compositor hides windows and "
+            "freezes app renderers"
+        )
+    if sys.platform == "linux" and not os.environ.get("DISPLAY"):
+        return "no DISPLAY is set — X11/XWayland is not reachable from this process"
+    if sys.platform == "darwin":
+        # Headless Mac / asleep panel: ScreenCaptureKit has 0 shareable
+        # displays while TCC grants look fine (#67165, #52925 lineage).
+        return (
+            "window discovery returned no windows; on macOS this usually "
+            "means no shareable display (headless Mac or panel asleep) — "
+            "wake the display or attach a monitor/HDMI dummy, then run "
+            "`hermes computer-use doctor`"
+        )
+    return (
+        "window discovery returned no windows; run `hermes computer-use "
+        "doctor` (display reachability, AX capability)"
+    )
+
+
 def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:
     """True when every window shares the same z_index (common on Linux/X11)."""
     if not windows:
@@ -1684,6 +1745,19 @@ class _CuaDriverSession:
 
                 out = (proc.stdout or "").strip()
                 last_err = out[:200] or (proc.stderr or "")[:200]
+                # "daemon is not running" is a PERMANENT condition for this
+                # invocation (`cua-driver call` requires the machine-wide
+                # daemon socket, which Linux installs typically never start —
+                # Hermes talks to the direct `cua-driver mcp` runtime
+                # instead). Retrying with backoff burns ~3.5s of sleeps per
+                # fallback for an outcome that cannot change; fail fast so
+                # callers surface a diagnosable error immediately.
+                if "daemon is not running" in out or "daemon is not running" in (proc.stderr or ""):
+                    raise RuntimeError(
+                        f"cua-driver CLI fallback for {name} unavailable: the "
+                        "machine-wide cua-driver daemon is not running (the "
+                        "CLI transport requires it; the MCP runtime does not)."
+                    )
                 start = min(
                     (i for i in (out.find("{"), out.find("[")) if i != -1),
                     default=-1,
@@ -1912,6 +1986,24 @@ def _positive_int(value: Any) -> Optional[int]:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+def _is_placeholder_id(value: Any) -> bool:
+    """True when *value* is a schema-filler id rather than a real target.
+
+    Several providers emit every declared schema property on every tool call,
+    filling unused optional integers with ``0``. A non-positive id cannot name
+    a window, so treating it as a targeting request drops the caller's ``app=``
+    and fails the capture. Malformed non-numeric values are deliberately NOT
+    placeholders: those still reach the existing validation error rather than
+    being silently ignored.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return False
+    try:
+        return int(value) <= 0
+    except ValueError:
+        return False
 
 
 def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2349,6 +2441,13 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
+        # Drop schema-filler ids before they can be read as a targeting
+        # request, so `capture(app=...)` and frontmost capture still work for
+        # models that emit every optional property zero-filled.
+        if _is_placeholder_id(pid):
+            pid = None
+        if _is_placeholder_id(window_id):
+            window_id = None
         # An exact pid/window pair is both the stable capture_after target and
         # the escape hatch when app/window discovery is unavailable on X11.
         if pid is not None or window_id is not None:
@@ -2377,7 +2476,9 @@ class CuaDriverBackend(ComputerUseBackend):
                 self._clear_active_target()
                 raise
             if not windows:
-                return self._failed_capture(mode)
+                # Diagnose instead of returning a bare 0x0: the dominant
+                # real-world cause on Linux is a locked desktop session.
+                return self._failed_capture(mode, _empty_discovery_reason())
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of

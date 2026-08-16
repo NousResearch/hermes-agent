@@ -16,6 +16,7 @@ const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
+const getSkillContent = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -31,7 +32,8 @@ vi.mock('@/hermes', async importOriginal => ({
   getToolsetConfig: (name: string, profile?: null | string) => getToolsetConfig(name, profile),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
-  getProfiles: () => getProfiles()
+  getProfiles: () => getProfiles(),
+  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile)
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -85,6 +87,11 @@ beforeEach(() => {
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
+  getSkillContent.mockResolvedValue({
+    name: 'web-research',
+    path: '/skills/web-research/SKILL.md',
+    content: '---\nname: web-research\nversion: 1.2.0\nauthor: Nous\n---\n\n# Web Research\n\nDeep research steps.'
+  })
   // Single profile by default → the scope selector stays hidden (>1 gate),
   // so existing tests see unchanged single-profile behavior.
   getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
@@ -225,6 +232,64 @@ describe('SkillsView toolset management', () => {
       fireEvent.click(sw)
     })
     await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', false, 'researcher'))
+  })
+
+  it('shows the FULL skill in the detail pane — frontmatter metadata + body', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'web-research',
+        description: 'Research the web',
+        category: 'research',
+        enabled: true,
+        usage: 3,
+        provenance: 'bundled'
+      }
+    ])
+
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills?tab=skills']}>
+            <SkillsView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // Frontmatter renders as metadata rows, the body as full text — not just
+    // the one-line description.
+    await waitFor(() => expect(getSkillContent).toHaveBeenCalled())
+    expect(getSkillContent.mock.calls[0][0]).toBe('web-research')
+    expect(await screen.findByText('version')).toBeTruthy()
+    expect(await screen.findByText('1.2.0')).toBeTruthy()
+    expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
+  })
+
+  it('hub picker refuses to reinstall an already-installed skill', async () => {
+    const { notify } = await import('@/store/notifications')
+    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+
+    render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
+
+    // The picker is expanded by default — the hub iframe is live on mount.
+    expect(document.querySelector('iframe')).toBeTruthy()
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'hermes-skill-pick', name: 'web-research', identifier: 'web-research' },
+          origin: 'https://hermes-agent.nousresearch.com'
+        })
+      )
+    })
+
+    // Refused with an informational toast, no install action spawned.
+    await waitFor(() =>
+      expect(vi.mocked(notify)).toHaveBeenCalledWith(
+        expect.objectContaining({ title: '"web-research" is already installed' })
+      )
+    )
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {

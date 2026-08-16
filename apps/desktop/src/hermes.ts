@@ -1070,6 +1070,18 @@ export function getSkills(profile?: null | string): Promise<SkillInfo[]> {
   })
 }
 
+/** Raw SKILL.md text (frontmatter included) for ANY skill — bundled, hub, or
+ *  learned — backing the Capabilities detail pane's full-skill view. */
+export function getSkillContent(
+  name: string,
+  profile?: null | string
+): Promise<{ content: string; name: string; path: string }> {
+  return window.hermesDesktop.api<{ content: string; name: string; path: string }>({
+    ...profileScoped(profile),
+    path: `/api/skills/content?name=${encodeURIComponent(name)}`
+  })
+}
+
 export function getStarmapGraph(): Promise<StarmapGraph> {
   return window.hermesDesktop.api<StarmapGraph>({
     ...profileScoped(),

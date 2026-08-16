@@ -33,6 +33,15 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    "session": {
+        # Per-terminal `hermes -c`: each CLI session drops a breadcrumb file
+        # under $HERMES_HOME/terminal-sessions/<terminal-id>, and a bare
+        # -c/--continue resumes THIS terminal's session (tmux pane, kitty
+        # window, wezterm pane, plain tty, ...) instead of the globally
+        # most-recent one. Set false to restore the old latest-session
+        # behavior everywhere.
+        "terminal_continue": True,
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).

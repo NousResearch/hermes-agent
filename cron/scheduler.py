@@ -2402,7 +2402,12 @@ def _send_media_via_adapter(
                 errors.append(msg)
                 return errors
             try:
-                result = future.result(timeout=30)
+                # Large attachments (long TTS audio, concatenated recordings,
+                # big exports) can legitimately exceed a fixed 30s upload
+                # window. Configurable, matching the other cron timeouts.
+                result = future.result(
+                    timeout=int(os.getenv("HERMES_CRON_MEDIA_SEND_TIMEOUT", "300"))
+                )
             except TimeoutError:
                 future.cancel()
                 raise

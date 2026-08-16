@@ -2,7 +2,7 @@ import { createCronTriggerController, type CronTriggerController } from '@hermes
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { PageLoader } from '@/components/page-loader'
@@ -51,7 +51,7 @@ import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { $cronFocus, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
+import { $cronFocus, $cronJobs, cronJobIdentity, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
@@ -338,7 +338,7 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
   }, [])
 
   // Master/detail: the job whose schedule + run history fill the right pane.
-  const [selectedJobId, setSelectedJobId] = useState<null | string>(null)
+  const [selectedJobKey, setSelectedJobKey] = useState<null | string>(null)
   // Set when a job is opened from the sidebar so we scroll it into view once the
   // row exists. Cleared after the scroll fires.
   const pendingScrollRef = useRef<null | string>(null)
@@ -393,8 +393,10 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
     )
 
     if (match) {
-      setSelectedJobId(match.id)
-      pendingScrollRef.current = match.id
+      const matchKey = cronJobIdentity(match)
+
+      setSelectedJobKey(matchKey)
+      pendingScrollRef.current = matchKey
     }
 
     if (!focusTarget.outputId) {
@@ -425,8 +427,8 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
   // Detail always reflects a concrete job: the explicitly selected one, else the
   // first visible row, so the right pane is never empty while jobs exist.
   const selectedJob = useMemo(
-    () => visibleJobs.find(job => job.id === selectedJobId) ?? visibleJobs[0] ?? null,
-    [visibleJobs, selectedJobId]
+    () => visibleJobs.find(job => cronJobIdentity(job) === selectedJobKey) ?? visibleJobs[0] ?? null,
+    [visibleJobs, selectedJobKey]
   )
 
   // Scroll a sidebar-opened job into view once its list row is mounted.
@@ -434,7 +436,7 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
   useEffect(() => {
     const target = pendingScrollRef.current
 
-    if (!target || selectedJob?.id !== target) {
+    if (!target || !selectedJob || cronJobIdentity(selectedJob) !== target) {
       return
     }
 
@@ -670,15 +672,15 @@ export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGrou
           >
             {visibleJobs.map(job => (
               <CronJobListRow
-                active={selectedJob?.id === job.id}
+                active={Boolean(selectedJob && cronJobIdentity(selectedJob) === cronJobIdentity(job))}
                 job={job}
-                key={job.id}
+                key={cronJobIdentity(job)}
                 menuItems={[
                   { icon: 'edit', label: c.edit, onSelect: () => setEditor({ mode: 'edit', job }) },
                   { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(job), tone: 'danger' }
                 ]}
                 menuLabel={c.manage}
-                onSelect={() => setSelectedJobId(job.id)}
+                onSelect={() => setSelectedJobKey(cronJobIdentity(job))}
               />
             ))}
             {visibleJobs.length === 0 && (
@@ -778,7 +780,7 @@ function CronJobListRow({
       menuItems={menuItems}
       menuLabel={menuLabel}
       onSelect={onSelect}
-      rowKey={job.id}
+      rowKey={cronJobIdentity(job)}
       title={jobTitle(job)}
     />
   )
@@ -880,6 +882,19 @@ export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jo
   const focusTarget = useStore($cronFocus)
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
+
+  // Invalidate both an in-flight detail read and the previous scope's rendered
+  // selection as soon as this instance is reused for another profile/job.
+  useLayoutEffect(() => {
+    ++outputRequestRef.current
+    setRuns(null)
+    setRunsError(false)
+    setSelectedOutputId(null)
+    setOutput(null)
+    setOutputError(false)
+    setOutputLoading(false)
+    setFocusUnavailable(null)
+  }, [jobId, profile])
 
   const openOutput = useCallback(
     async (outputId: string) => {

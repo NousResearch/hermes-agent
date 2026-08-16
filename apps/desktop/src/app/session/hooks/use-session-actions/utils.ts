@@ -1292,10 +1292,34 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
-    sessionMatchesStoredId(session, storedSessionId)
+export async function resolveStoredSession(storedSessionId: string, ownerProfile?: string): Promise<SessionInfo | undefined> {
+  const requestedOwner = ownerProfile?.trim() ? normalizeProfileKey(ownerProfile) : undefined
+
+  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(
+    session =>
+      sessionMatchesStoredId(session, storedSessionId) &&
+      (!requestedOwner || normalizeProfileKey(session.profile) === requestedOwner)
   )
+
+  // A run-history row already carries immutable owner provenance. Honor it
+  // directly instead of probing the active/default backend first: cron session
+  // ids can collide when two profiles use the same job id and timestamp.
+  if (requestedOwner) {
+    if (cached) {
+      return cached
+    }
+
+    try {
+      const session = await getSession(storedSessionId, requestedOwner)
+
+      session.profile = requestedOwner
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      return undefined
+    }
+  }
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is

@@ -81,9 +81,46 @@ describe('CronJobSidebarRuns', () => {
 
     fireEvent.click(await screen.findByRole('button'))
 
-    expect(getCronJobRuns).toHaveBeenCalledWith('report-job', 5)
-    expect(onOpenSession).toHaveBeenCalledWith('cron_report-job_20260811_090000')
+    expect(getCronJobRuns).toHaveBeenCalledWith('report-job', 5, undefined)
+    expect(onOpenSession).toHaveBeenCalledWith('cron_report-job_20260811_090000', undefined)
     expect(getCronJobOutputs).not.toHaveBeenCalled()
+  })
+
+  it('pins an agent-backed run lookup and open to the owning profile when job ids are shared', async () => {
+    vi.mocked(getCronJobRuns).mockResolvedValue([
+      {
+        ended_at: null,
+        id: 'cron_shared-job_20260811_090000',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 1_786_435_200,
+        message_count: 1,
+        model: null,
+        output_tokens: 0,
+        preview: null,
+        profile: 'worker_alpha',
+        source: 'cron',
+        started_at: 1_786_435_000,
+        title: 'Report',
+        tool_call_count: 0
+      }
+    ])
+    const onOpenSession = vi.fn()
+
+    render(
+      <CronJobSidebarRuns
+        jobId="shared-job"
+        noAgent={false}
+        onOpenOutput={vi.fn()}
+        onOpenSession={onOpenSession}
+        profile="worker_alpha"
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button'))
+
+    expect(getCronJobRuns).toHaveBeenCalledWith('shared-job', 5, 'worker_alpha')
+    expect(onOpenSession).toHaveBeenCalledWith('cron_shared-job_20260811_090000', 'worker_alpha')
   })
 
   it('falls back to durable output when an agent run has no stored session', async () => {

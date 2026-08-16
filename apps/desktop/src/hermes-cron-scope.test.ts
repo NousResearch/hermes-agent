@@ -112,6 +112,12 @@ describe('cron helpers are profile-scoped', () => {
   it('keeps the gateway profile separate from a run output owner profile', () => {
     setApiRequestProfile('remote_gateway')
 
+    void getCronJobRuns('job-1', 5, 'worker_alpha')
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
+      path: '/api/cron/jobs/job-1/runs?limit=5&profile=worker_alpha',
+      profile: 'remote_gateway'
+    })
+
     void getCronJobOutputs('job-1', 5, 'worker_alpha')
     expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
       path: '/api/cron/jobs/job-1/outputs?limit=5&profile=worker_alpha',

@@ -7,6 +7,11 @@ import type { CronJob } from '@/types/hermes'
 // first-class entity; its durable outputs resolve under it in the cron detail.
 export const $cronJobs = atom<CronJob[]>([])
 
+/** Stable owner-qualified identity for aggregated cross-profile job lists. */
+export function cronJobIdentity(job: Pick<CronJob, 'id' | 'profile'>): string {
+  return JSON.stringify([job.profile?.trim() || 'default', job.id])
+}
+
 export interface CronJobsRequest {
   generation: number
   scope: string
@@ -92,7 +97,8 @@ export interface CronFocusTarget {
 }
 
 export const $cronFocus = atom<CronFocusTarget | null>(null)
-export const setCronFocusJobId = (id: null | string) => $cronFocus.set(id ? { jobId: id } : null)
+export const setCronFocusJobId = (id: null | string, profile?: string) =>
+  $cronFocus.set(id ? { jobId: id, profile } : null)
 export const setCronFocusOutput = (jobId: string, outputId: string, profile?: string) =>
   $cronFocus.set({ jobId, outputId, profile })
 

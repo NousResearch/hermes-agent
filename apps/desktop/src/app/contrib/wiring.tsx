@@ -930,8 +930,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
     onLoadMoreSessions: loadMoreSessions,
-    onManageCronJob: jobId => {
-      setCronFocusJobId(jobId)
+    onManageCronJob: (jobId, profile) => {
+      setCronFocusJobId(jobId, profile)
       navigate(CRON_ROUTE)
     },
     onNavigate: selectSidebarItem,
@@ -950,7 +950,18 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
     // otherwise load it into main. Same door every other session link uses.
-    onResumeSession: sessionId => openSession(sessionId, navigate),
+    onResumeSession: (sessionId, profile) => {
+      if (!profile) {
+        openSession(sessionId, navigate)
+
+        return
+      }
+
+      // Cron run rows carry immutable owner provenance. Resolve and resume on
+      // that backend before routing so a same-id row from the active/default
+      // profile cannot win the generic id-only focus path.
+      void resumeSession(sessionId, false, profile).finally(() => navigate(sessionRoute(sessionId)))
+    },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,

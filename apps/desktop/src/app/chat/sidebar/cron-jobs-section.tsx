@@ -14,7 +14,7 @@ import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
-import { updateCronJobs } from '@/store/cron'
+import { cronJobIdentity, updateCronJobs } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $selectedStoredSessionId } from '@/store/session'
@@ -79,9 +79,9 @@ interface SidebarCronJobsSectionProps {
   // Open a durable no-agent output in the full Cron page.
   onOpenOutput: (jobId: string, outputId: string, profile?: string) => void
   // Agent-backed jobs retain their real conversation-session navigation.
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, profile?: string) => void
   // Open the full Cron page focused on this job (manage / full history).
-  onManageJob: (jobId: string) => void
+  onManageJob: (jobId: string, profile?: string) => void
   // Fire the job now.
   onTriggerJob: (jobId: string) => Promise<void>
   onToggle: () => void
@@ -101,7 +101,7 @@ export function SidebarCronJobsSection({
 }: SidebarCronJobsSectionProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
-  const [peekJobId, setPeekJobId] = useState<null | string>(null)
+  const [peekJobKey, setPeekJobKey] = useState<null | string>(null)
   // Rows revealed so far; starts compact, grows in steps via "load more".
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_JOBS)
   const [triggeringJobIds, setTriggeringJobIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -202,20 +202,24 @@ export function SidebarCronJobsSection({
       </div>
       {open && (
         <SidebarGroupContent className="scrollbar-fade flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-          {shown.map(job => (
-            <CronJobSidebarRow
-              busy={triggeringJobIds.has(job.id)}
-              expanded={peekJobId === job.id}
-              job={job}
-              key={job.id}
-              nowMs={nowMs}
-              onManage={() => onManageJob(job.id)}
-              onOpenOutput={onOpenOutput}
-              onOpenSession={onOpenSession}
-              onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
-              onTrigger={() => triggerJob(job.id)}
-            />
-          ))}
+          {shown.map(job => {
+            const jobKey = cronJobIdentity(job)
+
+            return (
+              <CronJobSidebarRow
+                busy={triggeringJobIds.has(job.id)}
+                expanded={peekJobKey === jobKey}
+                job={job}
+                key={jobKey}
+                nowMs={nowMs}
+                onManage={() => onManageJob(job.id, job.profile)}
+                onOpenOutput={onOpenOutput}
+                onOpenSession={onOpenSession}
+                onTogglePeek={() => setPeekJobKey(prev => (prev === jobKey ? null : jobKey))}
+                onTrigger={() => triggerJob(job.id)}
+              />
+            )
+          })}
           {hiddenCount > 0 && (
             <SidebarLoadMoreRow
               onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
@@ -245,7 +249,7 @@ function CronJobSidebarRow({
   nowMs: number
   onManage: () => void
   onOpenOutput: (jobId: string, outputId: string, profile?: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, profile?: string) => void
   onTogglePeek: () => void
   onTrigger: () => void
 }) {
@@ -412,7 +416,7 @@ export function CronJobSidebarRuns({
   jobId: string
   noAgent: boolean
   onOpenOutput: (jobId: string, outputId: string, profile?: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, profile?: string) => void
   profile?: string
 }) {
   const { t } = useI18n()
@@ -439,7 +443,7 @@ export function CronJobSidebarRuns({
 
       const request = noAgent
         ? loadOutputs()
-        : getCronJobRuns(jobId, PEEK_RUN_LIMIT).then<CronSidebarRun[]>(sessions =>
+        : getCronJobRuns(jobId, PEEK_RUN_LIMIT, profile).then<CronSidebarRun[]>(sessions =>
             sessions.length > 0
               ? sessions.map(session => ({
                   createdAt: session.last_active || session.started_at,
@@ -513,7 +517,7 @@ export function CronJobSidebarRuns({
               )}
               key={run.id}
               onClick={() =>
-                run.kind === 'output' ? onOpenOutput(jobId, run.id, profile) : onOpenSession(run.id)
+                run.kind === 'output' ? onOpenOutput(jobId, run.id, profile) : onOpenSession(run.id, profile)
               }
               type="button"
             >

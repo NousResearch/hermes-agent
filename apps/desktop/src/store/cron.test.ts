@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $cronJobs, beginCronJobsRequest, commitCronJobsRequest, setCronJobs, updateCronJobs } from './cron'
+import { $cronJobs, beginCronJobsRequest, commitCronJobsRequest, cronJobIdentity, setCronJobs, updateCronJobs } from './cron'
 
 const oldJob = { id: 'old' } as never
 const newJob = { id: 'new' } as never
@@ -35,5 +35,13 @@ describe('cron jobs request fencing', () => {
 
     expect(commitCronJobsRequest(poll, [oldJob])).toBe(false)
     expect($cronJobs.get()).toEqual([newJob])
+  })
+})
+
+describe('cron job owner identity', () => {
+  it('keeps duplicate job ids in different profiles distinct', () => {
+    expect(cronJobIdentity({ id: 'shared-job', profile: 'worker_alpha' })).not.toBe(
+      cronJobIdentity({ id: 'shared-job', profile: 'worker_beta' })
+    )
   })
 })

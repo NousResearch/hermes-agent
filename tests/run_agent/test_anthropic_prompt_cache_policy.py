@@ -558,9 +558,9 @@ class TestLiteLLMOpenAIWire:
     grant branch and fell through to (False, False): zero cache hits, the
     full prompt re-billed every turn. The endpoint accepts Anthropic-style
     cache_control fine — only the provider detection missed it. Claude gets
-    the grant with the native inner-block layout; non-Claude models routed
-    through the same proxy get nothing (they may not tolerate the marker
-    block format).
+    the grant with the envelope layout (the only layout honored on this
+    wire); non-Claude models routed through the same proxy get nothing
+    (they may not tolerate the marker block format).
     """
 
     @pytest.mark.parametrize(
@@ -581,7 +581,7 @@ class TestLiteLLMOpenAIWire:
             "claude-3-7-sonnet",
         ],
     )
-    def test_claude_on_litellm_openai_wire_caches_with_native_layout(
+    def test_claude_on_litellm_openai_wire_caches_with_envelope_layout(
         self, provider, base_url, model
     ):
         agent = _make_agent(
@@ -590,7 +590,7 @@ class TestLiteLLMOpenAIWire:
             api_mode="chat_completions",
             model=model,
         )
-        assert agent._anthropic_prompt_cache_policy() == (True, True)
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     @pytest.mark.parametrize(
         "model",
@@ -634,6 +634,129 @@ class TestLiteLLMOpenAIWire:
             model="claude-opus-4.8",
         )
         assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            # "litellm" as a substring of a longer label is NOT a LiteLLM host.
+            "https://notlitellm.attacker.example/v1",
+            "https://foolitellmbar.example/v1",
+            # A "litellm" PATH segment on an unrelated host must not qualify.
+            "https://gateway.attacker.example/litellm/v1",
+        ],
+    )
+    def test_litellm_lookalike_hosts_do_not_cache(self, base_url):
+        # Host matching is label-token-wise, not substring: a Claude-named
+        # model on an unrelated strict OpenAI-wire relay must not receive
+        # Anthropic markers (it may reject the block format, cf. #77217).
+        agent = _make_agent(
+            provider="custom",
+            base_url=base_url,
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    @pytest.mark.parametrize(
+        "api_mode", ["codex_responses", "bedrock_converse", "codex_app_server"]
+    )
+    def test_litellm_claude_on_other_transports_does_not_cache(self, api_mode):
+        # The grant is scoped to chat_completions. Other transports carry
+        # their own marker handling and must not be swept in by a blanket
+        # "not anthropic_messages" gate.
+        agent = _make_agent(
+            provider="custom:litellm",
+            base_url="https://litellm.internal.example.com/v1",
+            api_mode=api_mode,
+            model="claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_operator_capability_declaration_overrides_litellm_inference(self):
+        # The LiteLLM grant is inferred from the provider/host name, so an
+        # explicit per-model declaration must still win — otherwise an
+        # operator who turned caching off for a known-broken route on this
+        # proxy is silently overridden.
+        agent = _make_agent(
+            provider="custom:litellm",
+            base_url="https://litellm.internal.example.com/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        agent._custom_providers = [
+            {
+                "name": "litellm",
+                "base_url": "https://litellm.internal.example.com/v1",
+                "models": {"claude-opus-4.8": {"prompt_caching": False}},
+            }
+        ]
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_capability_declared_true_keeps_envelope_layout_on_openai_wire(self):
+        # An explicit prompt_caching: true must not promote the request to the
+        # native inner-block layout on chat_completions — the layout follows
+        # the transport, and a top-level marker is dropped there.
+        agent = _make_agent(
+            provider="custom:litellm",
+            base_url="https://litellm.internal.example.com/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        agent._custom_providers = [
+            {
+                "name": "litellm",
+                "base_url": "https://litellm.internal.example.com/v1",
+                "models": {"claude-opus-4.8": {"prompt_caching": True}},
+            }
+        ]
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_litellm_openai_wire_emits_no_top_level_marker(self):
+        # Wire-shape contract, not just the policy tuple: on chat_completions
+        # every breakpoint must land INSIDE a content part. A top-level
+        # msg["cache_control"] is never relocated on this transport, so it is
+        # both a lost breakpoint and (once a relay relocates it onto an empty
+        # assistant turn) the HTTP 400 empty-text-block shape (#69512).
+        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+
+        messages = [
+            {"role": "system", "content": "SYSTEM " * 200},
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c0", "content": "output " * 100},
+            {"role": "assistant", "content": "done"},
+        ]
+        planned, _tools = plan_cache_sections_for_destination(
+            messages,
+            None,
+            provider="custom:litellm",
+            base_url="https://litellm.internal.example.com/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+            cache_disabled=False,
+            cache_ttl="5m",
+        )
+        assert not [m for m in planned if "cache_control" in m], (
+            "no breakpoint may sit on the message envelope on the OpenAI wire"
+        )
+        inner = [
+            m
+            for m in planned
+            if isinstance(m.get("content"), list)
+            for part in m["content"]
+            if isinstance(part, dict) and "cache_control" in part
+        ]
+        assert inner, "the OpenAI-wire grant must still place real breakpoints"
 
 
 class TestNousPortalAnthropicWire:

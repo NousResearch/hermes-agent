@@ -154,7 +154,9 @@ export function McpInstallDeepLinkDialog() {
           </label>
 
           {!nameValid && <p className="text-xs text-destructive">{m.deepLinkNameInvalid}</p>}
-          {nameValid && nameConflict && <p className="text-xs text-destructive">{m.deepLinkNameConflict(trimmedName)}</p>}
+          {nameValid && nameConflict && (
+            <p className="text-xs text-destructive">{m.deepLinkNameConflict(trimmedName)}</p>
+          )}
 
           <div className="flex flex-col gap-1 text-xs text-muted-foreground">
             {m.serverJson}

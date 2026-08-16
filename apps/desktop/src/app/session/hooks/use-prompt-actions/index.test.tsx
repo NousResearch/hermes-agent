@@ -5184,6 +5184,7 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
 
   it('surfaces a compressed-away notice instead of plain-resubmitting without an ordinal', async () => {
     let handle: HarnessHandle | undefined
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'prompt.submit') {
         throw new JsonRpcGatewayError('target user message is no longer in session history', {
@@ -5204,6 +5205,7 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
       { id: 'u1', parts: [textPart('pre-compress')], role: 'user' as const, timestamp: 0 },
       { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 }
     ]
+
     setMessages(seed)
 
     await actRender(
@@ -5233,6 +5235,7 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
     const submitCalls = (requestGateway as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(
       ([method]) => method === 'prompt.submit'
     )
+
     // First attempt only — no plain resubmit that drops truncate_before_user_ordinal.
     expect(submitCalls).toHaveLength(1)
     expect(submitCalls[0]?.[1]).toMatchObject({

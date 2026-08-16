@@ -67,7 +67,11 @@ import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
-import { backfillOlderTranscriptPage, mergeOlderTranscriptPage, transcriptBackfillAvailable } from './transcript-backfill'
+import {
+  backfillOlderTranscriptPage,
+  mergeOlderTranscriptPage,
+  transcriptBackfillAvailable
+} from './transcript-backfill'
 import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {

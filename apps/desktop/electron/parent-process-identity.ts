@@ -14,11 +14,7 @@ export interface ParentStartMarkerResolverOptions {
  * an OS helper. Electron reports milliseconds since the Unix epoch; the Python
  * watchdog converts its exact Windows FILETIME to the same representation.
  */
-export function electronProcessStartMarker(
-  pid: number,
-  ownPid: number,
-  creationTime: unknown
-): string | null {
+export function electronProcessStartMarker(pid: number, ownPid: number, creationTime: unknown): string | null {
   if (pid !== ownPid || typeof creationTime !== 'number' || !Number.isFinite(creationTime)) {
     return null
   }

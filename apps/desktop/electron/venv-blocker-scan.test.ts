@@ -57,9 +57,7 @@ describe('formatBlockerMessage', () => {
   it('includes PID, name, cmdline, remote-client warning, and retry suggestion', () => {
     const msg = formatBlockerMessage({
       blocked: true,
-      processes: [
-        { pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1', kind: 'other', safeToStop: false }
-      ]
+      processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1', kind: 'other', safeToStop: false }]
     })
 
     assert.ok(msg.includes('PID 101'))
@@ -340,13 +338,7 @@ describe('stopSafeVenvBlockers', () => {
     assert.deepEqual(calls, [
       {
         command: 'C:\\Hermes\\venv\\Scripts\\python.exe',
-        args: [
-          '-m',
-          'hermes_cli._scan_venv_blockers',
-          '--terminate-safe',
-          '47484',
-          '1722798000.25'
-        ]
+        args: ['-m', 'hermes_cli._scan_venv_blockers', '--terminate-safe', '47484', '1722798000.25']
       }
     ])
     assert.deepEqual(outcome, { stopped: [47484], failed: [] })

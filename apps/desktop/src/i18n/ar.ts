@@ -763,8 +763,10 @@ export const ar = defineLocale({
       remove: 'إزالة',
       saveServer: 'حفظ الخادم',
       deepLinkTitle: 'إضافة خادم MCP؟',
-      deepLinkDescription: 'طلب رابط إضافة خادم MCP هذا إلى Hermes. راجع الإعدادات الكاملة أدناه — فهي قادمة من الرابط وليست من Hermes.',
-      deepLinkStdioWarning: 'سيشغّل هذا الخادم عملية محلية على جهازك بالأمر الموضح أدناه. لا تتابع إلا إذا كنت تثق بمصدره.',
+      deepLinkDescription:
+        'طلب رابط إضافة خادم MCP هذا إلى Hermes. راجع الإعدادات الكاملة أدناه — فهي قادمة من الرابط وليست من Hermes.',
+      deepLinkStdioWarning:
+        'سيشغّل هذا الخادم عملية محلية على جهازك بالأمر الموضح أدناه. لا تتابع إلا إذا كنت تثق بمصدره.',
       deepLinkConfirm: 'إضافة الخادم',
       deepLinkNameInvalid: 'الأسماء من 1-64 حرفا أو رقما أو نقطة أو شرطة أو شرطة سفلية.',
       deepLinkNameConflict: name => `يوجد خادم باسم ${name} بالفعل — اختر اسما مختلفا أو ألغِ العملية.`,

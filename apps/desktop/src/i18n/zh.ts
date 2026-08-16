@@ -1101,7 +1101,8 @@ export const zh: Translations = {
       disableTool: tool => `禁用 ${tool}`,
       noOutput: '暂无输出。',
       deepLinkTitle: '添加 MCP 服务器？',
-      deepLinkDescription: '一个链接请求将此 MCP 服务器添加到 Hermes。请检查下方的完整配置——它来自该链接，而非 Hermes。',
+      deepLinkDescription:
+        '一个链接请求将此 MCP 服务器添加到 Hermes。请检查下方的完整配置——它来自该链接，而非 Hermes。',
       deepLinkStdioWarning: '此服务器会使用下方所示命令在你的电脑上运行本地进程。仅在信任其来源时继续。',
       deepLinkConfirm: '添加服务器',
       deepLinkNameInvalid: '名称须为 1-64 个字母、数字、点、连字符或下划线。',

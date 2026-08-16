@@ -1013,11 +1013,13 @@ export function usePromptActions({
         }
 
         const data = err.data
+
         if (!data || typeof data !== 'object') {
           return false
         }
 
         const segmentOrdinal = (data as { segment_ordinal?: unknown }).segment_ordinal
+
         return typeof segmentOrdinal === 'number' && segmentOrdinal < 0
       }
 
@@ -1046,12 +1048,14 @@ export function usePromptActions({
         if (!plan.isFailedTurn && !unavailable && isStaleTargetError(err)) {
           try {
             const storedId = selectedStoredSessionIdRef.current
+
             if (storedId) {
               await resumeStoredSession(storedId)
             }
 
             const refreshed = $messages.get()
             const retryPlan = planEdit(refreshed, edited)
+
             if (retryPlan && !retryPlan.isFailedTurn) {
               const survivorRowIds = await submitRewindPrompt(
                 sessionId,
@@ -1064,6 +1068,7 @@ export function usePromptActions({
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
+
               return
             }
 

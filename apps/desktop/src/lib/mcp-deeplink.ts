@@ -36,8 +36,7 @@ export interface McpInstallRequest {
 }
 
 export type McpDeepLinkParseResult =
-  | { ok: false; error: McpDeepLinkErrorCode }
-  | { ok: true; request: McpInstallRequest }
+  { ok: false; error: McpDeepLinkErrorCode } | { ok: true; request: McpInstallRequest }
 
 /** i18n key (under `settings.mcp`) for each rejection, used by the toast. */
 export const MCP_DEEPLINK_ERROR_KEYS: Record<McpDeepLinkErrorCode, string> = {

@@ -23,10 +23,7 @@ test('parent marker resolver shares and caches a successful probe', async () => 
   const load = vi.fn(async () => 'winms:1723456789123')
   const resolve = createParentStartMarkerResolver({ load })
 
-  assert.deepEqual(await Promise.all([resolve(), resolve()]), [
-    'winms:1723456789123',
-    'winms:1723456789123'
-  ])
+  assert.deepEqual(await Promise.all([resolve(), resolve()]), ['winms:1723456789123', 'winms:1723456789123'])
   assert.equal(await resolve(), 'winms:1723456789123')
   assert.equal(load.mock.calls.length, 1)
 })
@@ -34,7 +31,8 @@ test('parent marker resolver shares and caches a successful probe', async () => 
 test('parent marker resolver degrades a failed probe and retries later', async () => {
   const failure = new Error('powershell timed out')
 
-  const load = vi.fn<() => Promise<string>>()
+  const load = vi
+    .fn<() => Promise<string>>()
     .mockRejectedValueOnce(failure)
     .mockResolvedValueOnce('win:638908765432100000')
 

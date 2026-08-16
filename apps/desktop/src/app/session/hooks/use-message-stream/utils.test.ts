@@ -66,7 +66,7 @@ describe('delegateTaskPayloads', () => {
 
   it.each(['timeout', 'error', 'failed', 'failure', 'TIMEOUT'])(
     'maps completion with result.status=%s to a failed subagent.complete',
-    (resultStatus) => {
+    resultStatus => {
       const [spec] = delegateTaskPayloads(
         payload({ name: 'delegate_task', result: { status: resultStatus, summary: 'timed out' } }),
         'complete'

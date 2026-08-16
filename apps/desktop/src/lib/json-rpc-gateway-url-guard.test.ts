@@ -104,11 +104,13 @@ describe('JsonRpcGatewayClient structured errors', () => {
     }
 
     vi.stubGlobal('WebSocket', RespondingSocket)
+
     try {
       const client = new JsonRpcGatewayClient({
         requestTimeoutMs: 5_000,
         socketFactory: () => new RespondingSocket() as unknown as WebSocket
       })
+
       await client.connect('ws://127.0.0.1:1234/api/ws?token=t')
 
       await expect(client.request('prompt.submit', { session_id: 's' })).rejects.toEqual(

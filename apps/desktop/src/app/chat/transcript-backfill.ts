@@ -75,6 +75,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   }
 
   const first = refreshedTail[0]
+
   const anchor = previous.findIndex(
     message =>
       (first.rowId !== undefined && message.rowId !== undefined && message.rowId === first.rowId) ||

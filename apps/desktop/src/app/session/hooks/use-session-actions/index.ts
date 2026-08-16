@@ -897,6 +897,7 @@ export function useSessionActions({
                     toChatMessages(persisted.messages),
                     cachedViewState.messages
                   )
+
                   const runtimeMessages = toChatMessages(activated.messages)
                   const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
 

@@ -2992,9 +2992,7 @@ async function processStartMarker(pid) {
 
   if (IS_WINDOWS) {
     const electronMarker =
-      pid === process.pid
-        ? electronProcessStartMarker(pid, process.pid, process.getCreationTime?.())
-        : null
+      pid === process.pid ? electronProcessStartMarker(pid, process.pid, process.getCreationTime?.()) : null
 
     if (electronMarker) {
       return electronMarker

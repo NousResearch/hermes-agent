@@ -887,11 +887,13 @@ export const ja = defineLocale({
         'このサーバーは下記のコマンドでローカルプロセスを実行します。提供元を信頼できる場合のみ続行してください。',
       deepLinkConfirm: 'サーバーを追加',
       deepLinkNameInvalid: '名前は 1〜64 文字の英数字、ドット、ハイフン、アンダースコアです。',
-      deepLinkNameConflict: name => `${name} という名前のサーバーは既に存在します。別の名前にするかキャンセルしてください。`,
+      deepLinkNameConflict: name =>
+        `${name} という名前のサーバーは既に存在します。別の名前にするかキャンセルしてください。`,
       deepLinkErrorTitle: 'MCP インストールリンクを拒否しました',
       deepLinkErrorName: 'リンクのサーバー名が欠落しているか無効です。',
       deepLinkErrorConfig: 'リンクの設定が有効な base64 エンコード JSON ではありません。',
-      deepLinkErrorShape: '設定は文字列の `url` または `command` フィールドを持つ JSON オブジェクトである必要があります。',
+      deepLinkErrorShape:
+        '設定は文字列の `url` または `command` フィールドを持つ JSON オブジェクトである必要があります。',
       deepLinkErrorUrl: 'サーバー URL は http:// と https:// のみ許可されます。',
       deepLinkErrorTooLarge: '設定ペイロードが 32KB の上限を超えています。'
     },

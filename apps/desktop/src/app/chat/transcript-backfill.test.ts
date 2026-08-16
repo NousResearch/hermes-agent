@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import {
-  $transcriptTailBySessionId,
-  recordTranscriptTail,
-  transcriptTailState
-} from '@/store/transcript-tail'
+import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
   _resetTranscriptBackfillForTests,
@@ -238,8 +234,16 @@ describe('backfillOlderTranscriptPage', () => {
       }) as never
     )
 
-    const first = backfillOlderTranscriptPage({ storedSessionId: 'stored-1', isCurrent: () => true, applyOlderPage: vi.fn() })
-    const second = backfillOlderTranscriptPage({ storedSessionId: 'stored-1', isCurrent: () => true, applyOlderPage: vi.fn() })
+    const first = backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage: vi.fn()
+    })
+    const second = backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage: vi.fn()
+    })
 
     expect(second).toBe(first)
     expect(getOlderSessionMessages).toHaveBeenCalledTimes(1)

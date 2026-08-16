@@ -76,6 +76,7 @@ import {
   acquireGatewayRequestLease,
   activeGateway,
   closeSecondaryGateways,
+  ensureGatewayForAgent,
   ensureGatewayForProfile,
   invalidatePrimaryGatewayGeneration,
   openGatewayForProfile,
@@ -344,6 +345,75 @@ describe('profile-scoped gateway request leases', () => {
     lease.release()
   })
 
+  it('closes a late secondary connect instead of resurrecting an owner removed during the dial', async () => {
+    const source = await createSecondary()
+    const lease = acquireGatewayRequestLease(source as unknown as HermesGateway, 'source')
+    const reconnect = deferred<void>()
+
+    source.requestImplementation = async () => {
+      source.setState('closed')
+      throw new Error('gateway not connected')
+    }
+
+    source.connectImplementation = async () => reconnect.promise
+    source.close.mockClear()
+    source.connect.mockClear()
+
+    const request = lease.request('session.branch', { session_id: 'source' })
+    await vi.waitFor(() => expect(source.connect).toHaveBeenCalledOnce())
+
+    closeSecondaryGateways()
+    reconnect.resolve()
+
+    await expect(request).rejects.toThrow('gateway not connected')
+    expect(source.connectionState).toBe('closed')
+    expect(source.request).toHaveBeenCalledOnce()
+    expect(source.close).toHaveBeenCalledTimes(2)
+
+    lease.release()
+  })
+
+  it('reconnects a lease through its exact registry scope when two sockets share a profile', async () => {
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId?: null | string; profile?: null | string }) =>
+        connection(`${connectionId ?? 'local'}-${profile ?? 'default'}`)
+    )
+
+    window.hermesDesktop!.getConnectionFor = getConnectionFor
+
+    await ensureGatewayForAgent('remote-a', 'work')
+    const source = latestGateway()
+    await ensureGatewayForAgent('remote-b', 'work')
+    const other = latestGateway()
+    const lease = acquireGatewayRequestLease(source as unknown as HermesGateway, 'work')
+    let attempts = 0
+
+    source.requestImplementation = async () => {
+      attempts += 1
+
+      if (attempts === 1) {
+        source.setState('closed')
+        throw new Error('gateway not connected')
+      }
+
+      return { transport: 'remote-a' }
+    }
+
+    getConnectionFor.mockClear()
+    source.connect.mockClear()
+    other.connect.mockClear()
+
+    await expect(lease.request('session.branch', { session_id: 'source-runtime' })).resolves.toEqual({
+      transport: 'remote-a'
+    })
+    expect(getConnectionFor).toHaveBeenCalledOnce()
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'remote-a', profile: 'work' })
+    expect(source.connect).toHaveBeenCalledOnce()
+    expect(other.connect).not.toHaveBeenCalled()
+
+    lease.release()
+  })
+
   it('invalidates a primary lease before the same gateway object is softly re-homed', async () => {
     const primary = fakes.instances[0]
     const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'default')
@@ -405,10 +475,14 @@ describe('profile-scoped gateway request leases', () => {
 describe('profile activation ownership', () => {
   it('keeps an activating profile registered while it joins a deferred prewarm', async () => {
     const lookup = deferred<ReturnType<typeof connection>>()
-    getConnection.mockImplementationOnce(async () => lookup.promise)
+    // First lookup classifies the profile route; the second is the actual
+    // prewarm dial whose entry must be synchronously claimed by activation.
+    getConnection
+      .mockImplementationOnce(async profile => connection(profile ?? 'default'))
+      .mockImplementationOnce(async () => lookup.promise)
 
     const prewarm = openGatewayForProfile('activation-source')
-    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('activation-source'))
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(2))
     const source = latestGateway()
 
     const activation = ensureGatewayForProfile('activation-source')
@@ -416,6 +490,24 @@ describe('profile activation ownership', () => {
     lookup.resolve(connection('activation-source'))
 
     await Promise.all([prewarm, activation])
+
+    expect(source.close).not.toHaveBeenCalled()
+    expect(activeGateway()).toBe(source)
+  })
+
+  it('keeps a registry-scoped agent activation alive across pruning while its dial is pending', async () => {
+    const lookup = deferred<ReturnType<typeof connection>>()
+    const getConnectionFor = vi.fn(async () => lookup.promise)
+    const desktop = window.hermesDesktop!
+    desktop.getConnectionFor = getConnectionFor
+
+    const activation = ensureGatewayForAgent('remote-a', 'work')
+    await vi.waitFor(() => expect(getConnectionFor).toHaveBeenCalledOnce())
+    const source = latestGateway()
+
+    pruneSecondaryGateways(new Set())
+    lookup.resolve(connection('work'))
+    await activation
 
     expect(source.close).not.toHaveBeenCalled()
     expect(activeGateway()).toBe(source)

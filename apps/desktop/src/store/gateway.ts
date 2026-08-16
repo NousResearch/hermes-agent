@@ -391,6 +391,9 @@ async function openSecondary(entry: Secondary): Promise<void> {
     entry.connection = conn
     await entry.gateway.connect(wsUrl)
 
+    // Teardown can also win while connect() itself is pending. Close the exact
+    // orphaned socket rather than letting its late open transition resurrect a
+    // removed registry entry.
     if (!entry.wantOpen || g.secondaries.get(entry.scope) !== entry) {
       entry.gateway.close()
 
@@ -792,34 +795,40 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   // recompute firing mid-spawn would otherwise dispose it and this
   // activation would fail (#89622).
   entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
+  // Activation owns this exact scoped entry across descriptor/ticket lookup.
+  // A concurrent live-session prune must not dispose it and let the eventual
+  // completion activate a replacement or dangling scope.
+  entry.commandLeases += 1
 
-  if (!isOpen(entry.gateway)) {
-    clearTimer(entry)
-    entry.reconnectAttempt = 0
+  try {
+    if (!isOpen(entry.gateway)) {
+      clearTimer(entry)
+      entry.reconnectAttempt = 0
 
-    try {
-      await openSecondary(entry)
-    } catch {
-      scheduleReconnect(entry)
+      try {
+        await openSecondary(entry)
+      } catch {
+        scheduleReconnect(entry)
+      }
     }
+
+    // A source edit/remove may dispose this entry while its dial is still in
+    // flight. Only the still-registered, still-owned activation may publish.
+    const activated =
+      entry.wantOpen &&
+      g.secondaries.get(scope) === entry &&
+      Boolean(entry.connection) &&
+      applyActive(scope, activationEpoch)
+
+    if (activated && entry.connection) {
+      publishActiveConnection(entry.connection)
+    }
+
+    return activated
+  } finally {
+    entry.activationLeaseUntil = 0
+    entry.commandLeases = Math.max(0, entry.commandLeases - 1)
   }
-
-  // The activation is settling either way — release the prune lease.
-  entry.activationLeaseUntil = 0
-
-  // A source edit/remove may dispose this entry while its dial is still in
-  // flight. Only the still-registered, still-owned activation may publish.
-  const activated =
-    entry.wantOpen &&
-    g.secondaries.get(scope) === entry &&
-    Boolean(entry.connection) &&
-    applyActive(scope, activationEpoch)
-
-  if (activated && entry.connection) {
-    publishActiveConnection(entry.connection)
-  }
-
-  return activated
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
@@ -834,21 +843,20 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     return
   }
 
-  // Global-remote share (routing case 3): one remote host serves every
-  // profile through the PRIMARY socket, scoped per request. Activate the
-  // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor — $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key)) {
-    applyActive(g.primaryProfile, activationEpoch)
-
-    return
-  }
-
   let entry = g.secondaries.get(key)
 
   if (!entry) {
-    entry = createSecondary(key)
+    // Global-remote share (routing case 3): one remote host serves every
+    // profile through the PRIMARY socket, scoped per request. Only classify
+    // when there is no already-owned pooled entry: awaiting this lookup before
+    // claiming an existing prewarm lets pruning dispose that entry mid-activate.
+    if (await sharedPrimaryRoute(key)) {
+      applyActive(g.primaryProfile, activationEpoch)
+
+      return
+    }
+
+    entry = g.secondaries.get(key) ?? createSecondary(key)
   }
 
   entry.retained = true
@@ -1056,6 +1064,7 @@ async function recoverLeasedGateway(owner: LeasedGatewayOwner): Promise<HermesGa
  */
 export function acquireGatewayRequestLease(gateway: HermesGateway, profile: string): GatewayRequestLease {
   const key = normKey(profile)
+
   // A profile can now have multiple registry-scoped sockets. The concrete
   // gateway captured by the invocation is the authority; the bare profile is
   // only validation/metadata and must never redirect the lease to another scope.

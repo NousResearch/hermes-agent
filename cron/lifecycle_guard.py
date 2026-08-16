@@ -89,17 +89,22 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # also means a real multi-line shell invocation split across continuation
 # lines (e.g. `launchctl submit \` / `  -l ai.hermes.gateway-... \` / `  -- ...`,
 # the exact reported shape in #62891) would otherwise slip past. Collapse
-# continuations to a single space before matching, mirroring what the shell
-# itself does, rather than loosening `[^\n]*` and risking false positives
-# across genuinely separate lines.
-_SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
+# the continuation pair before matching, mirroring what the shell itself does,
+# rather than loosening `[^\n]*` and risking false positives across genuinely
+# separate lines.  Indentation after the newline remains ordinary whitespace.
+_SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n")
+
+
+def _normalize_shell_line_continuations(text: str) -> str:
+    """Apply POSIX backslash-newline joining for both LF and CRLF input."""
+    return _SHELL_LINE_CONTINUATION.sub("", text)
 
 
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
-    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    normalized = _normalize_shell_line_continuations(text)
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
 
 
@@ -107,6 +112,19 @@ _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
+# Whole-walk work limits.  The per-file byte cap and recursion depth above are
+# not enough: one command can reference arbitrarily many files, and shlex is
+# especially expensive on either thousands of short lines (one lexer is built
+# per line) or one enormous token.  In production that unbounded breadth held
+# the GIL for minutes on every gateway terminal call (#78398).
+#
+# These limits are deliberately fail-closed.  A normal shell-wrapper graph is
+# tiny; if a command exceeds the generous aggregate envelope, the guard blocks
+# it rather than allowing an unscanned lifecycle action through.
+_MAX_LIFECYCLE_SCAN_BYTES = 256 * 1024
+_MAX_LIFECYCLE_SCAN_LINES = 4096
+_MAX_LIFECYCLE_SCAN_LINE_BYTES = 32 * 1024
+_MAX_LIFECYCLE_SCAN_PATHS = 32
 _CONTROL_CHARS = frozenset(";&|()")
 
 # Executables whose arguments are DATA, not commands: search patterns, SQL
@@ -151,9 +169,76 @@ _BINARY_SNIFF_BYTES = 4096
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+class _LifecycleScanBudget:
+    """Shared work budget for one complete referenced-script walk."""
+
+    __slots__ = (
+        "bytes_remaining",
+        "line_bytes_limit",
+        "lines_remaining",
+        "paths_remaining",
+    )
+
+    def __init__(self) -> None:
+        # Read module constants at construction time so tests and deployments
+        # can lower them without defaults capturing stale values at import.
+        self.bytes_remaining = _MAX_LIFECYCLE_SCAN_BYTES
+        self.lines_remaining = _MAX_LIFECYCLE_SCAN_LINES
+        self.line_bytes_limit = _MAX_LIFECYCLE_SCAN_LINE_BYTES
+        self.paths_remaining = _MAX_LIFECYCLE_SCAN_PATHS
+
+    def consume_text(self, text: str) -> bool:
+        """Charge text before tokenization; return False on exhaustion."""
+        # UTF-8 is at least one byte per code point.  This cheap check avoids
+        # allocating an encoded copy of an already-oversized adversarial input.
+        if len(text) > self.bytes_remaining:
+            return False
+        encoded_size = len(text.encode("utf-8", errors="replace"))
+        if encoded_size > self.bytes_remaining:
+            return False
+
+        # Match _iter_command_segments' physical-line accounting.  Check both
+        # character and encoded lengths so one huge token never reaches shlex's
+        # quadratic string accumulation, including for multibyte input.
+        # Use the same LF/CRLF continuation semantics as the direct-scan
+        # masker: either form can join multiple physical lines before shlex.
+        normalized = _normalize_shell_line_continuations(text)
+        lines = normalized.splitlines() or [normalized]
+        if len(lines) > self.lines_remaining:
+            return False
+        for line in lines:
+            if len(line) > self.line_bytes_limit:
+                return False
+            if len(line.encode("utf-8", errors="replace")) > self.line_bytes_limit:
+                return False
+
+        self.bytes_remaining -= encoded_size
+        self.lines_remaining -= len(lines)
+        return True
+
+    def consume_path(self) -> bool:
+        """Charge one unique referenced path before any local/remote read."""
+        if self.paths_remaining <= 0:
+            return False
+        self.paths_remaining -= 1
+        return True
+
+
+def lifecycle_scan_root_within_budget(text: str) -> bool:
+    """Return whether root text may safely enter an optional tokenizer pass.
+
+    ``False`` is not a safe/unsafe command verdict: callers must still run the
+    full lifecycle guard, which fails closed when this preflight is exhausted.
+    """
+    try:
+        return _LifecycleScanBudget().consume_text(text)
+    except Exception:
+        return False
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
-    normalized = command.replace("\\\n", "")
+    normalized = _normalize_shell_line_continuations(command)
     for line in normalized.splitlines() or [normalized]:
         try:
             lexer = shlex.shlex(
@@ -294,7 +379,7 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
     """
     if not contains_gateway_lifecycle_command(text):
         return False
-    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    normalized = _normalize_shell_line_continuations(text)
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
 
 
@@ -425,8 +510,15 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
     return None
 
 
-def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
+def _read_referenced_script(
+    path: Path,
+    *,
+    max_bytes: Optional[int] = None,
+) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads."""
+    byte_limit = _MAX_REFERENCED_SCRIPT_BYTES
+    if max_bytes is not None:
+        byte_limit = min(byte_limit, max(0, int(max_bytes)))
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
@@ -456,12 +548,12 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         data = os.read(descriptor, _BINARY_SNIFF_BYTES)
         if data.startswith(_BINARY_MAGIC_PREFIXES) or b"\x00" in data:
             return None, False
+        if metadata.st_size > byte_limit:
+            return None, True
         # Read the remainder (bounded). Loop because os.read may return
         # short for non-regular-file-backed descriptors.
-        while len(data) <= _MAX_REFERENCED_SCRIPT_BYTES:
-            chunk = os.read(
-                descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1 - len(data)
-            )
+        while len(data) <= byte_limit:
+            chunk = os.read(descriptor, byte_limit + 1 - len(data))
             if not chunk:
                 break
             data += chunk
@@ -477,12 +569,16 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     # executed by the user is not a referenced *shell script*.
     if b"\x00" in data:
         return None, False
-    if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
+    if len(data) > byte_limit:
         return None, True
     return data.decode("utf-8", errors="replace"), False
 
 
-def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bool]:
+def _sanitize_remote_script_text(
+    text: Optional[str],
+    *,
+    max_bytes: Optional[int] = None,
+) -> tuple[Optional[str], bool]:
     """Apply the local-read contract to text from a ``read_remote_script`` callback.
 
     The recursion boundary must not trust its callbacks: any backend (SSH,
@@ -503,7 +599,12 @@ def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bo
         return None, False
     if "\x00" in text:
         return None, False
-    if len(text.encode("utf-8", errors="replace")) > _MAX_REFERENCED_SCRIPT_BYTES:
+    byte_limit = _MAX_REFERENCED_SCRIPT_BYTES
+    if max_bytes is not None:
+        byte_limit = min(byte_limit, max(0, int(max_bytes)))
+    if len(text) > byte_limit:
+        return None, True
+    if len(text.encode("utf-8", errors="replace")) > byte_limit:
         return None, True
     return text, False
 
@@ -514,8 +615,14 @@ def _contains_unsafe_gateway_action(
     cwd: Optional[str],
     depth: int,
     visited: set[Path],
+    budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
+    # Charge all text, including the depth-zero command, BEFORE any direct scan:
+    # contains_launchctl_submit_command and both reference iterators tokenize
+    # with shlex, so checking afterwards would preserve the CPU spike.
+    if not budget.consume_text(command):
+        return True
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
@@ -527,6 +634,7 @@ def _contains_unsafe_gateway_action(
             cwd=cwd,
             depth=depth + 1,
             visited=visited,
+            budget=budget,
             read_remote_script=read_remote_script,
         ):
             return True
@@ -541,8 +649,15 @@ def _contains_unsafe_gateway_action(
             resolved = script_path
         if resolved in visited:
             continue
+        if not budget.consume_path():
+            return True
         visited.add(resolved)
-        script_text, unsafe = _read_referenced_script(script_path)
+        if budget.bytes_remaining <= 0 or budget.lines_remaining <= 0:
+            return True
+        script_text, unsafe = _read_referenced_script(
+            script_path,
+            max_bytes=budget.bytes_remaining,
+        )
         if unsafe:
             return True
         if script_text is None and read_remote_script is not None:
@@ -551,7 +666,8 @@ def _contains_unsafe_gateway_action(
             # local read — sanitize it identically before it enters the
             # recursion (binary skip + size fail-closed).
             script_text, unsafe = _sanitize_remote_script_text(
-                read_remote_script(str(script_path))
+                read_remote_script(str(script_path)),
+                max_bytes=budget.bytes_remaining,
             )
             if unsafe:
                 return True
@@ -565,6 +681,7 @@ def _contains_unsafe_gateway_action(
             cwd=script_dir,
             depth=depth + 1,
             visited=visited,
+            budget=budget,
             read_remote_script=read_remote_script,
         ):
             return True
@@ -599,6 +716,7 @@ def contains_gateway_lifecycle_command_or_referenced_script(
             cwd=cwd,
             depth=0,
             visited=set(),
+            budget=_LifecycleScanBudget(),
             read_remote_script=read_remote_script,
         )
     except Exception:
@@ -625,7 +743,7 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     """Resolve a cron ``script`` value the same way the scheduler does.
 
     The scheduler (``cron.scheduler``) resolves a bare/relative script path
-    under ``<HERMES_HOME>/scripts/`` and only accepts absolute paths as-is.
+    under ``<HERMES_HOME>/scripts/`` and canonicalizes the execution target.
     We MUST mirror that here so the guard scans the file that will actually
     run — otherwise a job whose script lives at the scheduler's real location
     (``~/.hermes/scripts/restart.sh``) but is passed as the bare name
@@ -642,14 +760,17 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     raw = _expand_candidate_path(script_path)
     if raw is None:
         return None
-    if raw.is_absolute():
-        return raw
     try:
-        return get_hermes_home() / "scripts" / raw
-    except (RuntimeError, OSError):
+        path = raw if raw.is_absolute() else get_hermes_home() / "scripts" / raw
+        # Match cron.scheduler: interpreter selection and shell-relative
+        # references use the resolved execution target, not a symlink's name
+        # or parent directory.
+        return path.resolve(strict=False)
+    except (RuntimeError, OSError, ValueError):
         # get_hermes_home() falls back to Path.home(), which raises when
         # neither HERMES_HOME nor HOME is resolvable (launchd/systemd
-        # environments) — same ingestion contract: nothing to scan.
+        # environments). Path resolution can also fail on malformed paths or
+        # symlink loops. Same ingestion contract: nothing executable to scan.
         return None
 
 
@@ -685,14 +806,20 @@ def check_gateway_lifecycle(
     fail with a ``ValueError``-shaped error (the agent's ``cronjob`` tool
     surfaces this as a tool error; the CLI prints it in red and exits 1).
     """
-    combined = prompt or ""
+    prompt_text = prompt or ""
+    combined = prompt_text
+    script_text = ""
+    resolved_script: Optional[Path] = None
     python_script = False
     if script:
         resolved_script = _resolve_script_path(script)
-        python_script = resolved_script is not None and resolved_script.suffix == ".py"
+        python_script = (
+            resolved_script is not None
+            and resolved_script.suffix.lower() not in {".sh", ".bash"}
+        )
         script_text = _read_script_for_scanning(script)
         if script_text:
-            combined = f"{combined}\n{script_text}"
+            combined = "\n".join(part for part in (combined, script_text) if part)
 
     if python_script:
         # Python is executed by the interpreter, never through a POSIX
@@ -701,10 +828,31 @@ def check_gateway_lifecycle(
         # the filesystem root and trips the regular-file check, blocking
         # every innocent .py cron script, #77131). The direct command
         # regex below still scans the full text, so a literal
-        # `hermes gateway restart` embedded in a .py script is still
+        # `hermes gateway restart` embedded in a Python script is still
         # blocked. Non-regular/oversized script files still fail closed
         # via the lifecycle-shaped sentinel in _read_script_for_scanning.
-        unsafe = _lifecycle_command_scan_with_data_exemption(combined)
+        # Charge the combined root before scanning, just like the shell path.
+        budget = _LifecycleScanBudget()
+        if not budget.consume_text(combined):
+            unsafe = True
+        else:
+            # Preserve prompt data-argument exemptions without ever sending
+            # Python source through shlex. The final verdict remains a direct
+            # lifecycle-regex scan over the prompt plus source text.
+            prompt_for_scan = prompt_text
+            if contains_gateway_lifecycle_command(combined):
+                prompt_for_scan = _mask_data_sink_arguments(
+                    _normalize_shell_line_continuations(prompt_for_scan)
+                )
+            python_scan_text = "\n".join(
+                part for part in (prompt_for_scan, script_text) if part
+            )
+            # The execution-aware launchctl scan is label-independent, but it
+            # must only tokenize the shell-like prompt, never Python source.
+            unsafe = (
+                contains_launchctl_submit_command(prompt_text)
+                or contains_gateway_lifecycle_command(python_scan_text)
+            )
     else:
         script_dir = _resolve_script_directory(script) if script else None
         unsafe = contains_gateway_lifecycle_command_or_referenced_script(

@@ -327,6 +327,31 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
 
+    def test_oversized_root_skips_launchctl_prescan_and_fails_closed(
+        self, monkeypatch
+    ):
+        import cron.lifecycle_guard as lifecycle_guard
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+        monkeypatch.setattr(
+            lifecycle_guard, "_MAX_LIFECYCLE_SCAN_BYTES", 8, raising=False
+        )
+        monkeypatch.setattr(
+            lifecycle_guard, "_MAX_LIFECYCLE_SCAN_LINE_BYTES", 8, raising=False
+        )
+
+        def explode_if_tokenized(*args, **kwargs):
+            raise AssertionError("over-budget root reached shlex")
+
+        monkeypatch.setattr(lifecycle_guard.shlex, "shlex", explode_if_tokenized)
+
+        result = json.loads(tt.terminal_tool(command="x" * 9))
+
+        assert result["exit_code"] == 1
+        assert "command or referenced script" in result["error"]
+        assert "KeepAlive" not in result["error"]
+
     @pytest.mark.parametrize("command", [
         # Neutral, non-hermes label: label-independent detection is the point
         # (#62891 second reproduction used `ai.hermes.svc-reload-tmp`).
@@ -675,6 +700,28 @@ class TestLifecycleGuardModule:
         script.write_text('import os\nos.system("hermes gateway restart")\n', encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
+
+    def test_symlink_named_python_to_shell_uses_target_suffix_and_parent(
+        self, tmp_path
+    ):
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+        child = target_dir / "child.sh"
+        child.write_text("hermes gateway restart\n", encoding="utf-8")
+        wrapper = target_dir / "wrapper.sh"
+        wrapper.write_text("./child.sh\n", encoding="utf-8")
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        link = link_dir / "job.py"
+        try:
+            link.symlink_to(wrapper)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("clean prompt", str(link))
 
     def test_absolute_path_binary_does_not_crash_guard(self):
         """#76762: a terminal command invoking a binary by absolute path
@@ -1167,6 +1214,23 @@ class TestLifecycleGuardDataArgumentExemption:
             "WHERE msg LIKE '%systemctl restart hermes-gateway%'\""
         )
         check_gateway_lifecycle(prompt, str(script))
+
+    def test_python_combined_match_masks_prompt_data_arguments(self, tmp_path):
+        from cron.lifecycle_guard import check_gateway_lifecycle
+
+        script = tmp_path / "report.py"
+        script.write_text("restart = False\n", encoding="utf-8")
+
+        check_gateway_lifecycle("grep hermes gateway", str(script))
+
+    def test_python_combined_real_split_command_still_blocks(self, tmp_path):
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+        script = tmp_path / "restart.py"
+        script.write_text("restart = True\n", encoding="utf-8")
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("hermes gateway", str(script))
 
 
 class TestLifecycleGuardNeverRaises:

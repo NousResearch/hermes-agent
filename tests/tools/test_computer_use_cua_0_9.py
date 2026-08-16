@@ -730,6 +730,7 @@ def test_missing_typed_browser_tool_returns_native_fallback_refusal():
 
 
 def test_existing_profile_prepare_delegates_to_driver_permission_mode():
+    """Past the host-side grant floor, the driver still owns the decision."""
     driver = _BrowserDriver()
     driver.responses["browser_prepare"] = {
         "status": "refused",
@@ -742,6 +743,7 @@ def test_existing_profile_prepare_delegates_to_driver_permission_mode():
         window_id=202,
         profile_mode="existing_profile",
         allow_launch=True,
+        grant_existing_profile=True,
     )
 
     assert result["code"] == "browser_consent_required"
@@ -897,3 +899,60 @@ def test_call_tool_restarts_a_dead_session():
     session._call_tool_async = call
     session.call_tool("click", {"pid": 1})
     assert starts == [True]
+
+
+def test_bind_response_directs_the_caller_to_drop_pid_and_window_id():
+    """A bind looks like a successful read, but carries no page content.
+
+    Any call passing pid/window_id lands in the binding branch, which clears
+    state and mints new tab_ids. A caller that keeps re-sending them re-binds
+    forever: the tab_id it just received is already unbound on the next call,
+    and every mutation stays refused. The response has to say so.
+    """
+    driver = _BrowserDriver()
+    route = _browser_route(driver)
+
+    payload = route.observe(pid=101, window_id=202)
+
+    assert payload["snapshot_required"] is True
+    assert payload["next_step"] == "fresh_browser_state"
+    assert "WITHOUT pid or window_id" in payload["hint"]
+    assert "screenshot_deferred" not in payload
+
+
+def test_bind_reports_include_screenshot_as_deferred():
+    """The flag had no page content to attach to; don't drop it silently."""
+    driver = _BrowserDriver()
+    route = _browser_route(driver)
+
+    payload = route.observe(pid=101, window_id=202, include_screenshot=True)
+
+    assert payload["screenshot_deferred"] is True
+    assert payload["snapshot_required"] is True
+
+
+def test_snapshot_after_bind_clears_the_requirement():
+    driver = _BrowserDriver()
+    route = _browser_route(driver)
+    route.observe(pid=101, window_id=202)
+
+    snapshot = route.observe(tab_id="opaque-tab")
+
+    assert snapshot["fresh_state"] is True
+    assert "snapshot_required" not in snapshot
+    assert "hint" not in snapshot
+
+
+def test_verification_refusal_names_the_exact_next_call():
+    driver = _BrowserDriver()
+    route = _browser_route(driver)
+    route.observe(pid=101, window_id=202)
+
+    result = route.mutate(
+        "browser_navigate",
+        tab_id="opaque-tab",
+        args={"url": "about:blank"},
+    )
+
+    assert result["code"] == "browser_verification_required"
+    assert "WITHOUT pid or window_id" in result["message"]

@@ -294,6 +294,25 @@ class CuaTypedBrowserRoute:
             # Binding mints the target/tab capabilities but is not a page
             # snapshot. Require one fresh tab read before any mutation.
             self.state.verification_required = True
+            # ...and say so in the payload. Any call carrying pid/window_id
+            # lands here, so a caller that keeps re-sending them re-binds
+            # forever: every bind clears state and mints new tab_ids, so the
+            # tab_id it just received is already unbound on the next call and
+            # every mutation stays refused. The way out is to drop
+            # pid/window_id, which is not otherwise discoverable from a bind
+            # response that looks like a successful read.
+            payload["snapshot_required"] = True
+            payload["next_step"] = "fresh_browser_state"
+            payload["hint"] = (
+                "Binding only, no page content. Call cua_browser_state again "
+                "WITHOUT pid or window_id (optionally with tab_id, query, "
+                "snapshot_format, include_screenshot) to take the snapshot "
+                "this binding requires before any mutation."
+            )
+            if include_screenshot:
+                # A bind carries no page content, so the flag had nothing to
+                # attach to. Surface that instead of dropping it silently.
+                payload["screenshot_deferred"] = True
             payload["exact_binding"] = quality == "exact"
             if quality != "exact" or not mutation_allowed:
                 payload["native_fallback_required"] = True
@@ -483,7 +502,11 @@ class CuaTypedBrowserRoute:
         if self.state.verification_required and not allow_without_snapshot:
             return None, _refusal(
                 "browser_verification_required",
-                "Take a fresh cua_browser_state snapshot before another browser mutation.",
+                "Take a fresh cua_browser_state snapshot before another "
+                "browser mutation: call cua_browser_state WITHOUT pid or "
+                "window_id. Re-sending pid/window_id re-binds instead of "
+                "snapshotting, which mints new tab_ids and leaves this "
+                "mutation refused.",
             )
         return selected_tab, None
 

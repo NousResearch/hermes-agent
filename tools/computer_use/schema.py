@@ -287,7 +287,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "boolean",
                 "description": (
                     "For cua_browser_state, include the current browser screenshot "
-                    "as image content in the tool result. Defaults to false."
+                    "as image content in the tool result. Defaults to false. "
+                    "Applies to snapshot calls only: passing pid/window_id makes "
+                    "the call a binding, which carries no page content and "
+                    "reports screenshot_deferred instead."
                 ),
             },
             "query": {"type": "string", "description": "Optional browser-state query."},

@@ -1288,7 +1288,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
             entry = platform_registry.get(platform_name)
             handler = entry.send_message_handler if entry is not None else None
-            if handler is not None and args:
+            if handler is not None and args is not None:
                 try:
                     import inspect
 
@@ -1309,33 +1309,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 media_files=media_files,
                 force_document=force_document,
             )
-            if (
-                isinstance(result, dict)
-                and result.get("error")
-                and handler is not None
-                and not args
-                and (entry.standalone_sender_fn is None if entry is not None else True)
-            ):
-                try:
-                    import inspect
-
-                    synth_args = {
-                        "message": chunk,
-                        "chat_id": chat_id,
-                        "target": chat_id,
-                    }
-                    if thread_id:
-                        synth_args["thread_id"] = thread_id
-                    if media_files:
-                        synth_args["media_files"] = media_files
-                    res = handler(synth_args, chat_id, platform_name, pconfig)
-                    if inspect.isawaitable(res):
-                        res = await res
-                    if isinstance(res, dict) and (res.get("success") or res.get("error")):
-                        return res
-                except Exception as e:
-                    return {"error": f"Plugin send_message handler failed: {e}"}
-
         if isinstance(result, dict) and result.get("error"):
             return result
         last_result = result

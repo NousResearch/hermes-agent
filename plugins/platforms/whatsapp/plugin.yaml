@@ -4,14 +4,16 @@ kind: platform
 version: 1.0.0
 description: >
   WhatsApp gateway adapter for Hermes Agent.
-  Connects to WhatsApp via a local Node.js bridge (WhatsApp Web client) over
-  an HTTP API and relays messages between WhatsApp chats and the Hermes agent.
+  Connects to WhatsApp via a gateway-managed Node.js bridge (WhatsApp Web
+  client) over authenticated private local IPC and relays messages between
+  WhatsApp chats and the Hermes agent. Native Windows gateway serving is not
+  currently supported; use WSL2/Linux. Pairing-only mode starts no IPC server.
   Supports DM/group policies, mention gating, free-response chats, and
   per-user allowlists.
 author: NousResearch
 requires_env:
   - name: WHATSAPP_ENABLED
-    description: "Enable the WhatsApp adapter (requires the Node.js bridge running)"
+    description: "Enable the WhatsApp adapter (the gateway manages its private bridge)"
     prompt: "Enable WhatsApp? (true/false)"
     password: false
 optional_env:

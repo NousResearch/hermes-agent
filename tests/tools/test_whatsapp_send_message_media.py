@@ -16,7 +16,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from plugins.platforms.whatsapp import adapter as whatsapp_adapter
 from plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_send
+
+
+@pytest.fixture(autouse=True)
+def _session_bridge_token(monkeypatch):
+    monkeypatch.setattr(whatsapp_adapter, "_read_bridge_token", lambda _path: "test-session-token")
+    monkeypatch.setattr(
+        whatsapp_adapter,
+        "_ensure_private_bridge_directory",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        whatsapp_adapter,
+        "_bridge_client_session",
+        lambda aiohttp, _path, _port, token: aiohttp.ClientSession(
+            headers=whatsapp_adapter._bridge_auth_headers(token)
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +130,7 @@ def test_text_plus_mixed_media_routes_native_types():
                 _resp(200, {"messageId": "m3"}),
             ]
         )
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
+        with patch("aiohttp.ClientSession", return_value=session_ctx) as client_session:
             res = asyncio.run(
                 _standalone_send(
                     _pconfig(),
@@ -122,6 +140,9 @@ def test_text_plus_mixed_media_routes_native_types():
                 )
             )
         assert res["success"] is True
+        client_session.assert_called_once_with(
+            headers={"Authorization": "Bearer test-session-token"}
+        )
         # text first, then three media uploads in order
         assert calls[0][0].endswith("/send")
         assert calls[0][1]["message"] == "hello"

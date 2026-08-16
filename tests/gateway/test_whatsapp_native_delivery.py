@@ -33,7 +33,7 @@ async def test_send_location_posts_to_bridge_location_endpoint():
     assert result.success
     assert result.message_id == "loc-msg"
     call = adapter._http_session.post.call_args
-    assert call.args[0] == "http://127.0.0.1:3000/send-location"
+    assert call.args[0] == "http://localhost/send-location"
     assert call.kwargs["json"] == {
         "chatId": "15551234567@s.whatsapp.net",
         "latitude": 41.015,
@@ -41,5 +41,4 @@ async def test_send_location_posts_to_bridge_location_endpoint():
         "name": "HQ",
         "address": "Example Street",
     }
-
 

@@ -192,6 +192,44 @@ configure the same `(platform, token)`, startup fails fast naming both profiles
 (see [Token-conflict safety](#token-conflict-safety) — the rule is unchanged,
 it's just enforced inside the one process now).
 
+WhatsApp's personal-account Baileys bridge is the exception to token-only
+guidance: every multiplexed WhatsApp profile also needs a distinct
+`gateway.platforms.whatsapp.extra.bridge_port`. Despite its historical name,
+this value is not a TCP bind for the current bridge. It is a stable per-profile
+bridge instance and multiplex discriminator, with a default of `3000`.
+
+##### WhatsApp bridge instance discriminators
+
+For example, the default profile can keep `3000` in
+`~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  platforms:
+    whatsapp:
+      extra:
+        bridge_port: 3000
+```
+
+Give a named profile, such as `coder`, a different stable value in
+`~/.hermes/profiles/coder/config.yaml`:
+
+```yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        bridge_port: 3001
+```
+
+If both profiles omit `bridge_port`, both inherit `3000`. The later duplicate
+is rejected before either of its adapter lifecycle methods runs, so it cannot
+connect, disconnect, or replace the first profile's bridge. The first profile
+and unrelated healthy profiles continue normally. See the
+[WhatsApp guide](./messaging/whatsapp.md) for the bridge-specific contract and
+platform support boundary.
+
 #### 4. Session keys are namespaced by profile
 
 Each profile's sessions live under an `agent:<profile>:…` namespace so two

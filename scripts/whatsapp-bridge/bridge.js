@@ -2,8 +2,8 @@
 /**
  * Hermes Agent WhatsApp Bridge
  *
- * Standalone Node.js process that connects to WhatsApp via Baileys
- * and exposes HTTP endpoints for the Python gateway adapter.
+ * Gateway-managed Node.js process that connects to WhatsApp via Baileys
+ * and exposes authenticated HTTP semantics over private local IPC.
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
  *   GET  /messages       - Long-poll for new incoming messages
@@ -15,8 +15,12 @@
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
  *
- * Usage:
- *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
+ * Supported entrypoints:
+ *   hermes gateway                    gateway-managed authenticated serving
+ *   hermes whatsapp                   pairing only (no control server)
+ *   node bridge.js --pair-only --session <path>  low-level pairing equivalent
+ *
+ * Do not launch serving mode directly or hand-author bridge credentials.
  */
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -24,7 +28,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { chmodSync, lstatSync, mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -35,6 +39,7 @@ import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   buildPollPayload,
+  createAuthenticatedBridgeApp,
   createReconnectScheduler,
   createVersionResolver,
   buildLocationPayload,
@@ -46,6 +51,7 @@ import {
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  validateBridgeLaunch,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -110,6 +116,10 @@ try {
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
+const BRIDGE_AUTH_TOKEN = process.env.WHATSAPP_BRIDGE_TOKEN || '';
+delete process.env.WHATSAPP_BRIDGE_TOKEN;
+const BRIDGE_IPC_ENDPOINT = process.env.WHATSAPP_BRIDGE_ENDPOINT || '';
+delete process.env.WHATSAPP_BRIDGE_ENDPOINT;
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -778,40 +788,10 @@ async function startSocket() {
   });
 }
 
-// HTTP server
-const app = express();
-app.use(express.json());
-
-// Host-header validation — defends against DNS rebinding.
-// The bridge binds loopback-only (127.0.0.1) but a victim browser on
-// the same machine could be tricked into fetching from an attacker
-// hostname that TTL-flips to 127.0.0.1. Reject any request whose Host
-// header doesn't resolve to a loopback alias.
-// See GHSA-ppp5-vxwm-4cf7.
-const _ACCEPTED_HOST_VALUES = new Set([
-  'localhost',
-  '127.0.0.1',
-  '[::1]',
-  '::1',
-]);
-
-app.use((req, res, next) => {
-  const raw = (req.headers.host || '').trim();
-  if (!raw) {
-    return res.status(400).json({ error: 'Missing Host header' });
-  }
-  // Strip port suffix: "localhost:3000" → "localhost"
-  const hostOnly = (raw.includes(':')
-    ? raw.substring(0, raw.lastIndexOf(':'))
-    : raw
-  ).replace(/^\[|\]$/g, '').toLowerCase();
-  if (!_ACCEPTED_HOST_VALUES.has(hostOnly)) {
-    return res.status(400).json({
-      error: 'Invalid Host header. Bridge accepts loopback hosts only.',
-    });
-  }
-  next();
-});
+// Production's only Express app is born with Host validation, bearer auth, and
+// authenticated-only body parsing already installed. Routes cannot precede the
+// security boundary by construction. See GHSA-ppp5-vxwm-4cf7.
+const app = createAuthenticatedBridgeApp(express, BRIDGE_AUTH_TOKEN);
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
@@ -1132,24 +1112,73 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
-    console.log(`📁 Session stored in: ${SESSION_DIR}`);
-    if (ALLOWED_USERS.size > 0) {
-      console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
-    } else if (WHATSAPP_MODE === 'self-chat') {
-      console.log(`🔒 Self-chat mode — only your own messages to yourself are processed.`);
-    } else if (WHATSAPP_MODE === 'bot' && WHATSAPP_DM_POLICY === 'pairing') {
-      console.log(`🤝 WHATSAPP_DM_POLICY=pairing — unknown DMs are forwarded for gateway pairing.`);
-    } else {
-      console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
-      console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
-      console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
+  try {
+    validateBridgeLaunch({
+      platform: process.platform,
+      pairOnly: false,
+      endpoint: BRIDGE_IPC_ENDPOINT,
+      token: BRIDGE_AUTH_TOKEN,
+    });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  if (process.platform !== 'win32' && existsSync(BRIDGE_IPC_ENDPOINT)) {
+    const endpointInfo = lstatSync(BRIDGE_IPC_ENDPOINT);
+    if (!endpointInfo.isSocket()) {
+      console.error('Refusing to replace a non-socket WhatsApp bridge endpoint');
+      process.exit(1);
     }
-    if (WHATSAPP_MODE === 'bot' && FORWARD_OWNER_MESSAGES) {
-      console.log(`👤 WHATSAPP_FORWARD_OWNER_MESSAGES=true — owner-typed messages will be forwarded with fromOwner:true`);
+    if (typeof process.geteuid === 'function' && endpointInfo.uid !== process.geteuid()) {
+      console.error('Refusing to replace a foreign WhatsApp bridge endpoint');
+      process.exit(1);
     }
-    console.log();
-    scheduleReconnect(0);
+    unlinkSync(BRIDGE_IPC_ENDPOINT);
+  }
+  const previousUmask = process.platform === 'win32' ? null : process.umask(0o077);
+  let umaskRestored = false;
+  const restoreUmask = () => {
+    if (previousUmask !== null && !umaskRestored) {
+      umaskRestored = true;
+      process.umask(previousUmask);
+    }
+  };
+  let bridgeServer;
+  try {
+    bridgeServer = app.listen(BRIDGE_IPC_ENDPOINT, () => {
+      try {
+        if (process.platform !== 'win32') {
+          chmodSync(BRIDGE_IPC_ENDPOINT, 0o600);
+        }
+      } finally {
+        restoreUmask();
+      }
+      console.log(`🌉 WhatsApp bridge listening on private local IPC (mode: ${WHATSAPP_MODE})`);
+      console.log(`📁 Session stored in: ${SESSION_DIR}`);
+      if (ALLOWED_USERS.size > 0) {
+        console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
+      } else if (WHATSAPP_MODE === 'self-chat') {
+        console.log(`🔒 Self-chat mode — only your own messages to yourself are processed.`);
+      } else if (WHATSAPP_MODE === 'bot' && WHATSAPP_DM_POLICY === 'pairing') {
+        console.log(`🤝 WHATSAPP_DM_POLICY=pairing — unknown DMs are forwarded for gateway pairing.`);
+      } else {
+        console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
+        console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
+        console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
+      }
+      if (WHATSAPP_MODE === 'bot' && FORWARD_OWNER_MESSAGES) {
+        console.log(`👤 WHATSAPP_FORWARD_OWNER_MESSAGES=true — owner-typed messages will be forwarded with fromOwner:true`);
+      }
+      console.log();
+      scheduleReconnect(0);
+    });
+  } catch (err) {
+    restoreUmask();
+    throw err;
+  }
+  bridgeServer.on('error', (err) => {
+    restoreUmask();
+    console.error(`WhatsApp bridge IPC listener failed: ${err.message}`);
+    process.exit(1);
   });
 }

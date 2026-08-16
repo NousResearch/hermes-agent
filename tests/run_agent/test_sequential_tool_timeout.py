@@ -16,17 +16,27 @@ from tools.clarify_gateway import resolve_clarify_timeout
 
 @pytest.fixture(autouse=True)
 def _deterministic_worker_start(monkeypatch):
-    """Deadline must race the TOOL, not the thread scheduler.
+    """Deadline must race the TOOL, not the scheduler or the preamble.
 
     The sequential timeout path computes ``deadline = now + timeout_s``
-    immediately after ``executor.submit()``. These tests run with a 0.1s
-    deadline, so on a loaded CI box (xdist, slice 4) the pool thread could
-    take longer than the whole deadline just to START — the future got
-    cancelled before the tool ever dispatched and ``first_started`` stayed
-    unset (flaked twice on unrelated PRs, Aug 2026). Wrapping submit() to
-    block until the worker callable has actually begun makes the deadline
-    countdown start only once the tool is running, which is the behavior
-    these tests mean to pin — without inflating the timeouts.
+    immediately after ``executor.submit()``. Two races made a sub-second
+    test deadline flaky on loaded CI workers (three slice-4 reds on
+    unrelated PRs, Aug 2026):
+
+    1. Thread-start latency — the pool thread took longer than the whole
+       deadline to START; the future was cancelled before the tool ever
+       dispatched. Killed here by blocking submit() until the worker
+       callable has begun.
+    2. Middleware preamble latency — after the worker starts, argument
+       parsing / hooks / cold imports run BEFORE ``handle_function_call``;
+       when the deadline expired in that window, the timeout interrupt made
+       the middleware return without dispatching (``first_started`` unset).
+       Killed by using a 1.0s deadline: tight enough to keep the suite
+       fast, ~7x the worst observed preamble.
+
+    Together the countdown starts only once the worker is running and has
+    generous headroom to reach the dispatch — which is the behavior these
+    tests mean to pin.
     """
     import tools.daemon_pool as daemon_pool
 
@@ -128,7 +138,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     calls = [_tool_call("hung"), _tool_call("next")]
     assistant = SimpleNamespace(tool_calls=calls)
     messages: list[dict] = []
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
 
     started = time.monotonic()
     try:
@@ -144,10 +154,10 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
         release_first.set()
 
     assert first_started.is_set()
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 10.0
     assert dispatched == ["hung", "next"]
     assert [message["tool_call_id"] for message in messages] == ["hung", "next"]
-    assert "timed out after 0.1s" in messages[0]["content"]
+    assert "timed out after 1.0s" in messages[0]["content"]
     assert messages[0]["effect_disposition"] == "unknown"
     assert messages[1]["content"] == "second result"
     timeout_events = [event for event in terminal_events if event.get("error_type") == "tool_timeout"]
@@ -177,7 +187,7 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
 
     calls = [_tool_call("hung"), _tool_call("next")]
     messages: list[dict] = []
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
 
     try:
         with (
@@ -219,14 +229,16 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     outlast ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` (default 420s).
     """
     agent = _make_agent(tmp_path)
-    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
     monkeypatch.setattr(
         "tools.clarify_gateway.get_clarify_timeout",
         lambda: clarify_timeout,
     )
 
     def _callback(question, choices, multi_select=False):
-        time.sleep(0.15)
+        # Must OUTLAST the 1.0s sequential deadline — the test proves the
+        # generic timeout never cuts a human clarify wait.
+        time.sleep(1.3)
         return "A"
 
     agent.clarify_callback = _callback
@@ -254,7 +266,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
             "task",
         )
 
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 10.0
     assert [message["tool_call_id"] for message in messages] == ["clarify-1", "next"]
     payload = json.loads(messages[0]["content"])
     assert payload["user_response"] == "A"

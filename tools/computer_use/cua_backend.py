@@ -286,6 +286,37 @@ def _cua_grant_existing_profile() -> bool:
     return bool(_computer_use_cfg().get("grant_existing_profile", False))
 
 
+def _manifest_is_mode_independent(path: str) -> bool:
+    """True when this capability manifest may accompany any permission mode.
+
+    cua-driver splits manifests by schema version (session_manifest.rs):
+
+    * v1/v2 are "legacy" — they must declare ``mode: bounded`` (or
+      ``autonomous``), so handing one to an unrestricted runtime aborts
+      startup with "legacy capability manifest mode must be bounded".
+    * v3 must NOT declare a mode. It is the mode-independent ceiling that
+      "can narrow a profile but never widen it", and the driver accepts it
+      alongside ``--permission-mode unrestricted``.
+
+    Unreadable or unparseable manifests return False: forwarding one to a
+    non-bounded runtime would turn a working session into a hard startup
+    failure, and bounded forwards unconditionally anyway so the driver stays
+    the authority on validity there.
+    """
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as handle:
+            parsed = yaml.safe_load(handle)
+    except Exception:
+        logger.debug("could not read capability manifest %s", path, exc_info=True)
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    version = parsed.get("version")
+    return isinstance(version, int) and not isinstance(version, bool) and version >= 3
+
+
 def _standard_runtime_launch_args(
     args: List[str],
     *,
@@ -532,6 +563,13 @@ class _EmbeddedCuaDaemon:
       launch via ``--approve-capability-manifest``.  The manifest, not a
       runtime prompt, is the authorization boundary; calls outside it fail
       closed inside cua-driver.
+
+    The manifest is a ceiling, not a mode.  cua-driver accepts it alongside
+    any permission mode and it "can narrow a profile but never widen it", so
+    a configured manifest is forwarded here even when YOLO selected
+    ``unrestricted`` — that pairing is what bounds an approval-bypassed run
+    to declared scope.  It stays mandatory for ``bounded`` and optional
+    everywhere else.
     """
 
     _START_TIMEOUT_SECONDS = 15.0
@@ -546,20 +584,34 @@ class _EmbeddedCuaDaemon:
             raise ValueError(
                 "embedded permission override supports unrestricted or bounded only"
             )
-        if permission_mode == "bounded":
-            manifest = str(capability_manifest or "").strip()
-            if not manifest:
-                raise ValueError(
-                    "bounded permission mode requires computer_use.capability_manifest"
-                )
+        self.capability_manifest: Optional[str] = None
+        manifest = str(capability_manifest or "").strip()
+        if not manifest and permission_mode == "bounded":
+            raise ValueError(
+                "bounded permission mode requires computer_use.capability_manifest"
+            )
+        if manifest:
             manifest = os.path.abspath(os.path.expanduser(manifest))
             if not os.path.isfile(manifest):
                 raise ValueError(
                     f"capability manifest not found: {manifest}"
                 )
-            self.capability_manifest: Optional[str] = manifest
-        else:
-            self.capability_manifest = None
+            self.capability_manifest = manifest
+        # bounded always forwards — the driver validates it there. Any other
+        # mode only accepts a v3 (mode-independent) manifest; forwarding a
+        # legacy one would abort startup instead of bounding the run.
+        self.manifest_applies = bool(self.capability_manifest) and (
+            permission_mode == "bounded"
+            or _manifest_is_mode_independent(str(self.capability_manifest))
+        )
+        if self.capability_manifest and not self.manifest_applies:
+            logger.warning(
+                "computer_use.capability_manifest is a legacy (v1/v2) manifest, "
+                "which cua-driver only accepts in bounded mode — it will NOT "
+                "bound this %s session. Migrate the manifest to version 3 to "
+                "keep a ceiling on approval-bypassed runs.",
+                permission_mode,
+            )
         self.permission_mode = permission_mode
         self._driver_cmd = driver_cmd
         self._command = driver_cmd
@@ -618,7 +670,13 @@ class _EmbeddedCuaDaemon:
         ]
         if self.permission_mode == "unrestricted":
             command.append("--dangerously-bypass-approvals")
-        else:  # bounded — manifest validated in __init__
+        # A v3 manifest is a ceiling, not a mode: cua-driver accepts it
+        # alongside any permission mode and it "can narrow a profile but never
+        # widen it". Attaching it to unrestricted is what bounds an
+        # approval-bypassed run to declared scope, so pass it whenever it
+        # applies — not only for bounded, which used to drop it for every
+        # other mode.
+        if self.manifest_applies:
             command.extend(
                 [
                     "--capability-manifest",
@@ -2389,8 +2447,13 @@ class CuaDriverBackend(ComputerUseBackend):
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
         if permission_mode == "unrestricted":
+            # Carry the manifest into unrestricted too. It is optional here
+            # (unlike bounded), but when the user declared one it still caps
+            # what an approval-bypassed run may touch.
             self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = _EmbeddedCuaDaemon(
-                resolve_cua_driver_cmd() or "", permission_mode
+                resolve_cua_driver_cmd() or "",
+                permission_mode,
+                capability_manifest=_cua_capability_manifest(),
             )
         elif permission_mode == "bounded":
             # Manifest path comes from config.yaml; _EmbeddedCuaDaemon

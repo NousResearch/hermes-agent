@@ -478,3 +478,133 @@ def test_backend_bounded_without_manifest_fails_loudly(monkeypatch):
 def test_backend_rejects_unknown_mode():
     with pytest.raises(ValueError, match="unsupported"):
         cb.CuaDriverBackend(permission_mode="wide-open")
+
+
+# ── manifest is a ceiling, not a mode ───────────────────────────────────
+
+
+def _captured_serve_command(monkeypatch, daemon):
+    captured: Dict[str, Any] = {}
+
+    class _FakeProc:
+        stderr = None
+
+        def poll(self):
+            return None
+
+    def _fake_popen(command, **kwargs):
+        captured["command"] = list(command)
+        return _FakeProc()
+
+    def _fake_run(command, **kwargs):
+        class _Probe:
+            returncode = 0
+
+        return _Probe()
+
+    monkeypatch.setattr(cb.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(cb.subprocess, "run", _fake_run)
+    monkeypatch.setattr(cb, "_resolve_mcp_invocation", lambda cmd: (cmd, ["mcp"]))
+    daemon.start()
+    return captured["command"]
+
+
+def test_unrestricted_daemon_carries_a_v3_manifest(monkeypatch, tmp_path):
+    """An approval bypass must not silently discard a v3 ceiling.
+
+    cua-driver accepts a v3 manifest alongside any permission mode and it can
+    only narrow a profile, never widen it. Pairing it with unrestricted is
+    what bounds an approval-bypassed run to declared scope; dropping it meant
+    the most carefully configured run became the least constrained one.
+    """
+    manifest = tmp_path / "cua-capabilities.yaml"
+    manifest.write_text("version: 3\nallow:\n  tools:\n    - list_windows\n", encoding="utf-8")
+    daemon = _EmbeddedCuaDaemon(
+        "cua-driver", "unrestricted", capability_manifest=str(manifest)
+    )
+
+    command = _captured_serve_command(monkeypatch, daemon)
+
+    assert "--dangerously-bypass-approvals" in command
+    assert "--capability-manifest" in command
+    assert command[command.index("--capability-manifest") + 1] == str(manifest)
+    assert "--approve-capability-manifest" in command
+    assert command[command.index("--permission-mode") + 1] == "unrestricted"
+
+
+def test_unrestricted_daemon_does_not_forward_a_legacy_manifest(monkeypatch, tmp_path):
+    """v1/v2 manifests must declare mode: bounded, so they cannot ride along.
+
+    Forwarding one anyway aborts driver startup with "legacy capability
+    manifest mode must be bounded" — turning a working session into a hard
+    failure. Verified against cua-driver 0.20.0.
+    """
+    manifest = tmp_path / "legacy.yaml"
+    manifest.write_text(
+        "version: 1\nmode: bounded\nexpires_after: 1h\nidle_timeout: 5m\n",
+        encoding="utf-8",
+    )
+    daemon = _EmbeddedCuaDaemon(
+        "cua-driver", "unrestricted", capability_manifest=str(manifest)
+    )
+
+    command = _captured_serve_command(monkeypatch, daemon)
+
+    assert "--dangerously-bypass-approvals" in command
+    assert "--capability-manifest" not in command
+
+
+def test_bounded_forwards_a_legacy_manifest_unchanged(monkeypatch, tmp_path):
+    """bounded is exactly where legacy manifests belong; nothing changes."""
+    manifest = tmp_path / "legacy.yaml"
+    manifest.write_text(
+        "version: 1\nmode: bounded\nexpires_after: 1h\nidle_timeout: 5m\n",
+        encoding="utf-8",
+    )
+    daemon = _EmbeddedCuaDaemon(
+        "cua-driver", "bounded", capability_manifest=str(manifest)
+    )
+
+    command = _captured_serve_command(monkeypatch, daemon)
+
+    assert command[command.index("--permission-mode") + 1] == "bounded"
+    assert command[command.index("--capability-manifest") + 1] == str(manifest)
+    assert "--approve-capability-manifest" in command
+
+
+def test_unparseable_manifest_is_not_forwarded_to_unrestricted(monkeypatch, tmp_path):
+    """Fail safe: never turn a working bypassed run into a startup abort."""
+    manifest = tmp_path / "broken.yaml"
+    manifest.write_text("{{{ not yaml", encoding="utf-8")
+    daemon = _EmbeddedCuaDaemon(
+        "cua-driver", "unrestricted", capability_manifest=str(manifest)
+    )
+
+    command = _captured_serve_command(monkeypatch, daemon)
+
+    assert "--capability-manifest" not in command
+
+
+def test_unrestricted_daemon_without_a_manifest_is_unchanged(monkeypatch):
+    """No manifest configured -> nothing new on the command line."""
+    daemon = _EmbeddedCuaDaemon("cua-driver", "unrestricted")
+
+    command = _captured_serve_command(monkeypatch, daemon)
+
+    assert "--dangerously-bypass-approvals" in command
+    assert "--capability-manifest" not in command
+
+
+def test_unrestricted_daemon_rejects_a_missing_manifest_path(tmp_path):
+    """A declared-but-absent ceiling fails loudly rather than silently opening up."""
+    with pytest.raises(ValueError, match="capability manifest not found"):
+        _EmbeddedCuaDaemon(
+            "cua-driver",
+            "unrestricted",
+            capability_manifest=str(tmp_path / "does-not-exist.yaml"),
+        )
+
+
+def test_bounded_still_requires_a_manifest():
+    with pytest.raises(ValueError, match="requires computer_use.capability_manifest"):
+        _EmbeddedCuaDaemon("cua-driver", "bounded")

@@ -497,6 +497,7 @@ from cron.jobs import (
     claim_dispatch,
     claim_job_for_fire,
     fire_claim_fence,
+    clear_run_claim,
     get_due_jobs,
     heartbeat_fire_claim,
     heartbeat_run_claim,
@@ -6862,6 +6863,7 @@ def tick(
                     "Job '%s' not dispatched — interpreter is shutting down",
                     job.get("name", job_id),
                 )
+                clear_run_claim(job_id)
                 return None
             if not try_register_running_job(job_id):
                 logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -6879,6 +6881,7 @@ def tick(
                 # audit requirement: every add is paired with guaranteed
                 # cleanup).
                 release_running_job(job_id)
+                clear_run_claim(job_id)
                 logger.exception(
                     "Job '%s' not dispatched: execution creation failed: %s",
                     job.get("name", job_id),
@@ -6896,6 +6899,7 @@ def tick(
                 fut = pool.submit(_run_and_release)
             except Exception as submit_err:
                 release_running_job(job_id)
+                clear_run_claim(job_id)
                 finish_execution(
                     execution["id"],
                     success=False,

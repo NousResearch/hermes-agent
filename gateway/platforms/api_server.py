@@ -6599,6 +6599,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "subagent_id",
                     "child_session_id",
                     "parent_id",
+                    "parent_tool_call_id",
                     "depth",
                     "model",
                     "tool_count",

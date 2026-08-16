@@ -39,7 +39,13 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
+import {
+  $attentionSessionIds,
+  $workingSessionIds,
+  liveSessionScopes,
+  recordSessionEventScope,
+  resetTileRuntimeBindings
+} from '@/store/session-states'
 import { windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -395,7 +401,15 @@ export function useGatewayBoot({
     callbacksRef.current.onGatewayReady(gateway)
     setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
-    configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
+    // Record each event's source scope first: registry-tagged events feed the
+    // (connectionId, profile) keep-set so two sources exposing the same
+    // profile name (every source has a 'default') can't collide.
+    configureGatewayRegistry({
+      onEvent: event => {
+        recordSessionEventScope(event)
+        callbacksRef.current.handleGatewayEvent(event)
+      }
+    })
 
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
@@ -471,7 +485,11 @@ export function useGatewayBoot({
     // to idle-reap. The active profile is always spared.
     const recomputeKeptGateways = () => {
       const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      const keep = new Set<string>()
+      // Registry-scoped (connectionId, profile) scopes with live work. Two
+      // sources can expose the same profile name (every source has a
+      // 'default'), so bare profile names can't represent a non-local
+      // source's liveness without keeping the wrong gateway alive.
+      const keep = liveSessionScopes()
 
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {

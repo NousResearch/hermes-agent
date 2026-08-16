@@ -142,6 +142,22 @@ export function activeGateway(): HermesGateway | null {
   return g.secondaries.get(g.activeKey)?.gateway ?? null
 }
 
+/**
+ * The registry connection serving the gateway the user is currently looking
+ * at — null for the local/legacy primary path and for profile-keyed (local)
+ * secondaries. Event consumers pair this with the event's own `connectionId`
+ * tag so "from the active profile" really means "from the active SOURCE":
+ * two connected gateways can both expose a 'default' profile, and a bare
+ * profile comparison attributed gateway B's 'default' activity to gateway A.
+ */
+export function activeGatewayConnectionId(): null | string {
+  if (g.activeKey === g.primaryProfile) {
+    return null
+  }
+
+  return g.secondaries.get(g.activeKey)?.connectionId ?? null
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect
@@ -524,15 +540,17 @@ function restoreActiveToPrimaryIfEvicted(): void {
   }
 }
 
-// Close + evict secondaries whose profile is neither active nor in `keep`
-// (profiles with a running / needs-input session). Bounds cost to live work.
-// `keep` carries PROFILE names (session ownership is profile-keyed), so a
-// registry-scoped entry survives when ITS profile has live work — matching on
-// the composite key alone would prune every non-local socket the moment the
-// user looks away.
+// Close + evict secondaries whose scope is neither active nor in `keep`
+// (scopes with a running / needs-input session). Bounds cost to live work.
+// `keep` carries PROFILE names for local/legacy entries and composite
+// backendScopeKey(connectionId, profile) scopes for registry-sourced live
+// work. A registry-scoped entry matches ONLY on its composite key: every
+// source exposes a 'default' profile, so matching a non-local entry on the
+// bare profile name kept gateway B's 'default' socket alive off gateway A's
+// 'default' activity (and vice versa) — cross-connection attribution.
 export function pruneSecondaryGateways(keep: Set<string>): void {
   for (const [key, entry] of [...g.secondaries]) {
-    if (key === g.activeKey || keep.has(key) || keep.has(entry.profile)) {
+    if (key === g.activeKey || keep.has(key) || (!entry.connectionId && keep.has(entry.profile))) {
       continue
     }
 

@@ -455,6 +455,9 @@ export interface PaginatedSessions {
 export interface RpcEvent<T = unknown> {
   payload?: T
   profile?: string
+  /** Registry connection whose socket delivered the event (renderer-side tag;
+   * absent for the local/legacy primary path). */
+  connectionId?: string
   session_id?: string
   type: string
 }

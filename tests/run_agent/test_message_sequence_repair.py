@@ -288,6 +288,106 @@ def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
     ]
 
 
+def test_repair_merge_drops_stale_api_content_sidecar_on_surviving_turn():
+    """A pre-existing ``api_content`` sidecar on the surviving (first)
+    assistant turn must be dropped when the merge rewrites ``content`` —
+    otherwise the sidecar (which takes priority over ``content`` at
+    API-build time, see ``conversation_loop``'s ``api_messages`` build)
+    replays the STALE pre-merge bytes on the next call, silently discarding
+    everything the merge just concatenated on. Same stale-field-survives-
+    the-merge shape as the ``tool_calls`` gap above (#77921), for the
+    ``api_content`` field instead.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {
+            "role": "assistant",
+            "content": "first reply",
+            "api_content": "first reply (stale pre-merge bytes)",
+        },
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert "api_content" not in messages[1]
+    assert messages[1]["content"] == "first reply\nsecond reply"
+
+
+def test_repair_merge_preserves_api_content_sidecar_when_content_unchanged():
+    """Negative control (#78063 review): ``api_content`` must NOT be dropped
+    when the merge does not actually rewrite ``prev["content"]``.
+
+    When the later assistant turn's content is ``None``, neither the
+    both-str branch nor the ``not prev_content`` branch fires (``prev_content``
+    is a truthy string, so ``not prev_content`` is False) -- ``prev["content"]``
+    is left completely untouched. The sidecar is still the exact bytes
+    previously sent for that UNCHANGED content, so dropping it here would
+    diverge replay bytes and break the prompt-cache invariant for no reason.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": None},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+def test_repair_merge_preserves_api_content_sidecar_when_content_unchanged_by_empty_string():
+    """Negative control (wz-heng, #78063 review): ``content_rewritten`` must
+    mean "the value changed", not "entered the assignment branch".
+
+    Later turn's content is ``""`` -- the both-str branch fires and
+    ``prev["content"]`` IS reassigned, but ``joined`` strips the falsy
+    empty string away and collapses back to the original ``prev_content``
+    unchanged. The sidecar must survive because no byte of ``content``
+    actually moved.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
+    """Same negative control, multimodal (list) content on the later turn --
+    the merge intentionally leaves list content alone (see the merge's
+    docstring), so ``prev["content"]`` is untouched and the sidecar must
+    survive."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "clean", "api_content": "wire bytes"},
+        {"role": "assistant", "content": [{"type": "text", "text": "img context"}]},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 2
+    assert messages[1]["content"] == "clean"
+    assert messages[1]["api_content"] == "wire bytes"
+
+
+
 def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
     """A sibling-id replay must not replace the first real result."""
     from agent.agent_runtime_helpers import sanitize_api_messages
@@ -494,6 +594,34 @@ def test_sanitize_preserves_distinct_tool_call_ids():
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_A", "call_B"]
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
+
+
+def test_sanitize_drops_tool_result_with_missing_tool_call_id():
+    """A tool message with NO ``tool_call_id`` must be dropped, not silently
+    passed through.
+
+    Before the fix: ``result_call_ids`` only ever collects TRUTHY ids, so a
+    missing/empty id is never added to that set and can therefore never land
+    in ``orphaned_results`` (a set-difference against ``surviving_call_ids``)
+    either -- the message survives sanitize_api_messages untouched and can
+    reach the provider with no ``tool_call_id`` at all, a schema violation
+    on strict OpenAI-compatible providers (#78071).
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_Z", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_Z", "content": "real result"},
+        {"role": "tool", "tool_call_id": "", "content": "no id"},
+        {"role": "tool", "content": "id key entirely absent"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    tool_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+    assert tool_ids == ["call_Z"]  # only the properly-paired result survives
 
 
 # ── tool_call_id reuse by local servers (#70724) ────────────────────────────

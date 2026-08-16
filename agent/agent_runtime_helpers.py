@@ -683,19 +683,46 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # blocks — fall back to keeping the existing content.
             prev_content = prev.get("content")
             new_content = msg.get("content")
+            content_rewritten = False
             if isinstance(prev_content, str) and isinstance(new_content, str):
                 joined = "\n".join(
                     p for p in (prev_content.strip(), new_content.strip()) if p
                 )
                 prev["content"] = joined
+                # A falsy ``new_content`` (e.g. "") strips to nothing and
+                # ``joined`` collapses back to ``prev_content`` unchanged --
+                # that must NOT count as a rewrite (wz-heng, #78063 review).
+                content_rewritten = joined != prev_content
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
+                content_rewritten = new_content != prev_content
             # Carry reasoning_content from the later turn only if the
             # earlier turn lacks it (strict thinking providers require a
             # reasoning_content on the merged tool-call turn; the first
             # non-empty one suffices).
             if not prev.get("reasoning_content") and msg.get("reasoning_content"):
                 prev["reasoning_content"] = msg["reasoning_content"]
+            # ``prev`` may carry an ``api_content`` sidecar (the exact bytes
+            # previously sent to the API, e.g. a sanitize-divergence stamp —
+            # see ``_flush_messages_to_session_db``) from BEFORE this merge.
+            # The sidecar takes priority over ``content`` at API-build time
+            # (``conversation_loop``'s ``api_messages`` build substitutes it
+            # back in for role ``assistant``), so leaving it in place while
+            # ``prev["content"]`` changes would silently replay the pre-merge
+            # bytes and discard everything this merge just concatenated on —
+            # the same stale-field-survives-the-merge shape as the
+            # ``tool_calls`` gap above, just for a different field. Only drop
+            # it when the merge actually changed the resulting value (e.g.
+            # the later turn's content is ``None``, or either side is
+            # multimodal/list — both branches skip the reassignment and
+            # ``prev["content"]`` is untouched; a falsy ``new_content`` that
+            # strips to nothing also leaves ``joined`` equal to the original
+            # ``prev_content``): in those cases the sidecar is still the
+            # exact bytes previously sent for the UNCHANGED content, and
+            # dropping it would break the prompt-cache replay invariant for
+            # no reason (wz-heng, #78063 review).
+            if content_rewritten:
+                drop_stale_api_content(prev)
             repairs += 1
             continue
         collapsed.append(msg)
@@ -3825,6 +3852,31 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     pass
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
+
+    # --- Drop tool results with a missing/empty tool_call_id ---
+    # The orphan-sweep below only ever adds a TRUTHY ``tool_call_id`` to
+    # ``result_call_ids``, so a message with a missing/empty id is never
+    # added to that set and can therefore never land in ``orphaned_results``
+    # (a set-difference against ``surviving_call_ids``) either — it silently
+    # passes through this chokepoint untouched and can reach the provider
+    # with no ``tool_call_id`` at all, which strict OpenAI-compatible
+    # providers reject as a schema violation. ``repair_message_sequence``'s
+    # Pass 1 already drops this shape (`if tc_id and tc_id in
+    # known_tool_ids`) when it runs first on the same list, but any caller
+    # that reaches this function without going through
+    # ``repair_message_sequence`` first has no such guard. Drop explicitly
+    # here so this "final chokepoint" claim (see module docstring) actually
+    # holds regardless of caller (#78071).
+    _pre_id_filter_count = len(messages)
+    messages = [
+        m for m in messages
+        if not (m.get("role") == "tool" and not (m.get("tool_call_id") or "").strip())
+    ]
+    if len(messages) != _pre_id_filter_count:
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d tool result(s) with missing/empty tool_call_id",
+            _pre_id_filter_count - len(messages),
+        )
 
     assistant_call_variants: List[tuple[Any, frozenset[str]]] = []
     surviving_call_ids: set[str] = set()

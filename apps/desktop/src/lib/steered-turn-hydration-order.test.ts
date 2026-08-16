@@ -115,7 +115,13 @@ describe('toChatMessages on a persisted steered turn', () => {
         ]
       },
       { content: 'never mind, stop that', role: 'user', timestamp: 101.5 },
-      { content: '{"output":"interrupted"}', role: 'tool', timestamp: 102, tool_call_id: 'call-9', tool_name: 'terminal' },
+      {
+        content: '{"output":"interrupted"}',
+        role: 'tool',
+        timestamp: 102,
+        tool_call_id: 'call-9',
+        tool_name: 'terminal'
+      },
       { content: 'Stopped.', role: 'assistant', timestamp: 103 }
     ]
 

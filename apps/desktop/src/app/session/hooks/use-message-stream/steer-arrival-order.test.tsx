@@ -220,7 +220,9 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     // appends/merges below the correction — if the reducer ever changes that,
     // this test is the tripwire.
     expect(steerIndex).toBe(messages.length - 1)
-    expect(messages.filter(message => chatMessageText(message).includes('whole reply already streamed'))).toHaveLength(1)
+    expect(messages.filter(message => chatMessageText(message).includes('whole reply already streamed'))).toHaveLength(
+      1
+    )
     expect(messages.every(message => message.pending !== true)).toBe(true)
   })
 

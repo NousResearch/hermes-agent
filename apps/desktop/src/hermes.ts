@@ -1,6 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   ActionResponse,
   ActionStatusResponse,
@@ -729,11 +730,58 @@ export function getSessionMessages(
   })
 }
 
+/**
+ * The initial hydration page: enough tail to fill the transcript window a few
+ * times over, small enough that opening a long session doesn't ship (and
+ * convert) hundreds of rows nobody has scrolled to. Older rows load on demand
+ * via `getOlderSessionMessages` when "Show earlier" exhausts the in-memory
+ * store (see app/chat/transcript-backfill).
+ */
+export const LATEST_SESSION_MESSAGES_LIMIT = 120
+
 export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
-  return getSessionMessages(id, profile, { limit: 500, order: 'latest', includeCompacted: true })
+  return getSessionMessages(id, profile, {
+    limit: LATEST_SESSION_MESSAGES_LIMIT,
+    order: 'latest',
+    includeCompacted: true
+  }).then(page => {
+    // Record whether the tail was truncated (page came back full) and where
+    // the next older page starts, so "Show earlier" can backfill over REST
+    // (app/chat/transcript-backfill). Keyed under both the requested id and
+    // the resolved id — callers hold either.
+    recordTranscriptTail(id, page, profile)
+
+    if (page.session_id && page.session_id !== id) {
+      recordTranscriptTail(page.session_id, page, profile)
+    }
+
+    return page
+  })
+}
+
+/**
+ * One page of messages OLDER than the `offset` newest rows.
+ *
+ * Backend semantics (`_handle_session_messages` → `SessionDB.get_messages`
+ * with `latest=True`): the offset is measured back from the NEWEST message
+ * and the selected page is returned in chronological order. So after a tail
+ * hydration of N rows, `getOlderSessionMessages(id, profile, N)` returns the
+ * page immediately preceding it, ready to prepend.
+ *
+ * Legacy backends without pagination support return the full transcript and
+ * no `pagination` metadata — callers detect that via the missing field and
+ * treat the response as the complete history (see transcript-backfill).
+ */
+export function getOlderSessionMessages(
+  id: string,
+  profile: string | null | undefined,
+  offset: number,
+  limit: number = LATEST_SESSION_MESSAGES_LIMIT
+): Promise<SessionMessagesResponse> {
+  return getSessionMessages(id, profile, { includeCompacted: true, limit, offset, order: 'latest' })
 }
 
 export async function getAllSessionMessages(

@@ -41,7 +41,9 @@ def _install_test_section(manager: PluginManager, content) -> None:
     )
 
 
-def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(monkeypatch):
+def test_real_aiagent_builds_section_once_and_keeps_it_out_of_static_prefix(
+    monkeypatch, tmp_path
+):
     # Pin the workspace snapshot: build_coding_workspace_block shells out to
     # live `git status`/`git log` on every build, and a git call failing or
     # timing out under test-suite contention makes the two builds differ in
@@ -61,6 +63,9 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
     manager = PluginManager()
     _install_test_section(manager, section)
     monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    # CI merge checkouts are detached HEAD; a second git probe can drop the
+    # branch line. This test is about plugin-section caching, not live git.
+    monkeypatch.setattr("agent.system_prompt.resolve_context_cwd", lambda: tmp_path)
     agent = _real_agent()
 
     first = build_system_prompt(agent)

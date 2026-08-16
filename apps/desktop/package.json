@@ -28,7 +28,7 @@
     "postbuild": "node scripts/assert-dist-built.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
-    "pack": "npm run build && npm run builder -- --dir",
+    "pack": "npm run build && npm run builder -- --dir --publish never",
     "dist": "npm run build && npm run builder",
     "dist:mac": "npm run build && npm run builder -- --mac",
     "dist:mac:dmg": "npm run build && npm run builder -- --mac dmg",

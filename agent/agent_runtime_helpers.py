@@ -2494,6 +2494,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "omp-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://omp"):
+        from agent.copilot_acp_client import OmpACPClient
+
+        client = OmpACPClient(**client_kwargs)
+        _ra().logger.info(
+            "Oh My Pi ACP client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

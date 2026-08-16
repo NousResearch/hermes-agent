@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Oh My Pi ACP** | `hermes model` (spawns local `omp acp`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
@@ -237,6 +238,32 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
+
+### Oh My Pi (ACP)
+
+**`omp-acp` — Oh My Pi ACP agent backend**. Spawns the local `omp` CLI as a subprocess:
+
+```bash
+hermes chat --provider omp-acp --model omp-acp
+# Requires Oh My Pi (`omp`) in PATH
+```
+
+**Permanent config:**
+```yaml
+model:
+  provider: "omp-acp"
+  default: "omp-acp"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `HERMES_OMP_ACP_COMMAND` | Override the Oh My Pi CLI binary path (default: `omp`) |
+| `OMP_CLI_PATH` | Alias for `HERMES_OMP_ACP_COMMAND` |
+| `HERMES_OMP_ACP_ARGS` | Override ACP args (default: `acp`) |
+| `OMP_ACP_BASE_URL` | Override the ACP base URL (default: `acp://omp`) |
+
+Aliases: `omp`, `oh-my-pi`, `pi`.
 
 ### First-Class API-Key Providers
 
@@ -1575,7 +1602,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `omp-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

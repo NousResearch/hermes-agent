@@ -337,6 +337,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "omp-acp": [
+        "omp-acp",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1166,6 +1169,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("omp-acp",        "Oh My Pi ACP",             "Oh My Pi ACP (Spawns omp acp)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),

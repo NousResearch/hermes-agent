@@ -32,6 +32,10 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
+| `HERMES_OMP_ACP_COMMAND` | Override Oh My Pi ACP CLI binary path (default: `omp`) |
+| `OMP_CLI_PATH` | Alias for `HERMES_OMP_ACP_COMMAND` |
+| `HERMES_OMP_ACP_ARGS` | Override Oh My Pi ACP arguments (default: `acp`) |
+| `OMP_ACP_BASE_URL` | Override Oh My Pi ACP base URL |
 | `COPILOT_API_BASE_URL` | Override the Copilot API base URL (`copilot` provider) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |

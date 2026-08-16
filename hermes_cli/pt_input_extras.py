@@ -179,20 +179,11 @@ def install_modify_other_keys_aliases() -> int:
         if existing is not None:
             ctrl_key_map[ch] = existing
 
-    # 0-9: Ctrl+0 = \x00? No — Ctrl+0 doesn't produce a control byte.
-    # Under modifyOtherKeys, Ctrl+0 sends ESC[27;5;48~. prompt_toolkit has
-    # Keys.Control0..Control9; map them.  These don't have raw-byte mappings
-    # in ANSI_SEQUENCES, so map them directly.
-    ctrl_key_map[ord('0')] = Keys.Control0
-    ctrl_key_map[ord('1')] = Keys.Control1
-    ctrl_key_map[ord('2')] = Keys.Control2
-    ctrl_key_map[ord('3')] = Keys.Control3
-    ctrl_key_map[ord('4')] = Keys.Control4
-    ctrl_key_map[ord('5')] = Keys.Control5
-    ctrl_key_map[ord('6')] = Keys.Control6
-    ctrl_key_map[ord('7')] = Keys.Control7
-    ctrl_key_map[ord('8')] = Keys.Control8
-    ctrl_key_map[ord('9')] = Keys.Control9
+    # 0-9: Ctrl+digit codepoints don't have a useful raw-byte mapping
+    # (e.g. chr(ord('0') & 0x1F) = 0x10 = ControlP, not Control0), so map
+    # them directly to Keys.Control0..Keys.Control9.
+    for d in range(10):
+        ctrl_key_map[ord('0') + d] = getattr(Keys, f"Control{d}")
 
     # Symbols that produce control chars:
     # Ctrl+@   (64)  = \x00 = Keys.ControlAt
@@ -209,35 +200,34 @@ def install_modify_other_keys_aliases() -> int:
             ctrl_key_map[codepoint] = existing
 
     changed = 0
-    for codepoint, key_val in ctrl_key_map.items():
-        # modifyOtherKeys format: ESC[27;5;<codepoint>~
-        seq_mok = f"\x1b[27;5;{codepoint}~"
-        if seq_mok not in ANSI_SEQUENCES:
-            ANSI_SEQUENCES[seq_mok] = key_val
-            changed += 1
-        # CSI-u format: ESC[<codepoint>;5u
-        seq_csiu = f"\x1b[{codepoint};5u"
-        if seq_csiu not in ANSI_SEQUENCES:
-            ANSI_SEQUENCES[seq_csiu] = key_val
-            changed += 1
+
+    def _install_paired(modifier: int, mapping: dict) -> None:
+        """Install both modifyOtherKeys (ESC[27;N;CP~) and CSI-u (ESC[CP;Nu)
+        mappings for the given modifier and codepoint→key mapping."""
+        nonlocal changed
+        for codepoint, key_val in mapping.items():
+            for seq in (
+                f"\x1b[27;{modifier};{codepoint}~",
+                f"\x1b[{codepoint};{modifier}u",
+            ):
+                if seq not in ANSI_SEQUENCES:
+                    ANSI_SEQUENCES[seq] = key_val
+                    changed += 1
+
+    # Ctrl+letter / Ctrl+digit / Ctrl+symbol (modifier 5)
+    _install_paired(5, ctrl_key_map)
 
     # -- Alt+letter → (Escape, <letter>) ----
     # Under modifyOtherKeys, Alt+a = ESC[27;3;97~. Without mapping, this
     # leaks as literal text. prompt_toolkit handles bare Alt+letter as
     # (Escape, <letter>), so we map the extended sequences to the same tuple.
+    alt_map: dict[int, tuple] = {}
     for ch in range(ord('a'), ord('z') + 1):
         letter = chr(ch)
         upper = chr(ch - 32)  # uppercase variant
-        alt_key: tuple = (Keys.Escape, letter)
-        for codepoint, alt_val in ((ch, alt_key), (ch - 32, (Keys.Escape, upper))):
-            seq_mok = f"\x1b[27;3;{codepoint}~"
-            if seq_mok not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq_mok] = alt_val
-                changed += 1
-            seq_csiu = f"\x1b[{codepoint};3u"
-            if seq_csiu not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq_csiu] = alt_val
-                changed += 1
+        alt_map[ch] = (Keys.Escape, letter)
+        alt_map[ch - 32] = (Keys.Escape, upper)
+    _install_paired(3, alt_map)
 
     # -- Shift+letter → uppercase letter ----
     # Under modifyOtherKeys=2, some terminals re-encode Shift+a as
@@ -249,18 +239,14 @@ def install_modify_other_keys_aliases() -> int:
     # letters.  Shift+digit symbols are layout-specific (US: '!', AZERTY: '¹',
     # etc.) so they are NOT mapped here — if the terminal sends those under
     # modifyOtherKeys, they will leak, but that's better than wrong input.
+    # Map both the lowercase and uppercase codepoints — some terminals send
+    # the already-shifted codepoint (65 for 'A') with modifier=2.
+    shift_map: dict[int, str] = {}
     for ch in range(ord('a'), ord('z') + 1):
         upper_char = chr(ch - 32)  # 'A'..'Z'
-        for codepoint in (ch, ch - 32):
-            target = upper_char
-            seq_mok = f"\x1b[27;2;{codepoint}~"
-            if seq_mok not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq_mok] = target
-                changed += 1
-            seq_csiu = f"\x1b[{codepoint};2u"
-            if seq_csiu not in ANSI_SEQUENCES:
-                ANSI_SEQUENCES[seq_csiu] = target
-                changed += 1
+        shift_map[ch] = upper_char
+        shift_map[ch - 32] = upper_char
+    _install_paired(2, shift_map)
 
     return changed
 

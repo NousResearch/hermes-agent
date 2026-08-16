@@ -26,8 +26,14 @@ from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
 
 @pytest.fixture(autouse=True)
 def _ensure_alias_installed():
-    """Make every test idempotent — install the alias once per test run."""
+    """Install the alias for each test, then restore ANSI_SEQUENCES to its
+    prior state so 294 mappings don't leak into sibling test files."""
+    from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES as _seq
+    saved = dict(_seq)
     install_modify_other_keys_aliases()
+    yield
+    _seq.clear()
+    _seq.update(saved)
 
 
 def _parse(byte_seq: str):

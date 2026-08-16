@@ -6,6 +6,8 @@
 import contextlib
 import difflib
 import inspect
+import ntpath
+import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -146,20 +148,42 @@ def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
     return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
 
 
+def _overlay_key(path: str, file_ops: Any) -> str:
+    """One validation-overlay key per backend file, however the patch spells it.
+
+    Lexical only (the parser cannot resolve paths on a remote backend): ``x``, ``./x`` and
+    ``<cwd>/x`` share a key, so a second op on an alias validates against the first op's
+    simulated result instead of the stale on-disk file. Case is folded only for Windows-shaped
+    paths: whether a POSIX backend is case-insensitive is not knowable here, and folding on a
+    case-sensitive one would merge two real files.
+    """
+    raw = path.strip()
+    cwd = getattr(getattr(file_ops, "env", None), "cwd", None) or getattr(file_ops, "cwd", None)
+    cwd = cwd if isinstance(cwd, str) else ""
+    if re.match(r"^([A-Za-z]:[\\/]|\\\\)", raw) or (
+            re.match(r"^[A-Za-z]:[\\/]", cwd) and not raw.startswith("/")):
+        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, raw)))
+    if cwd.startswith("/"):
+        raw = posixpath.join(cwd, raw)
+    return posixpath.normpath(raw)
+
+
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     errors: list[str] = []
     real_change_count = 0
-    # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets).
+    # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
+    # keyed by _overlay_key so path aliases share one entry.
     pending_content: dict = {}
     removed_paths: set = set()
 
     def _read(path: str) -> tuple[Optional[str], Optional[str]]:
-        if path in pending_content:
-            return pending_content[path], None
-        if path in removed_paths:
+        key = _overlay_key(path, file_ops)
+        if key in pending_content:
+            return pending_content[key], None
+        if key in removed_paths:
             return None, "file not found"
         r = file_ops.read_file_raw(path)
         return (None, r.error) if r.error else (r.content, None)
@@ -169,9 +193,10 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
         the path absent (``not_found``) frees it: a read that FAILED (no byte transport, a
         directory, an unreadable file) says nothing about what is there, and taking it as free
         writes over the file the check exists to protect."""
-        if path in pending_content:
+        key = _overlay_key(path, file_ops)
+        if key in pending_content:
             return "exists"
-        if path in removed_paths:
+        if key in removed_paths:
             return None
         r = file_ops.read_file_raw(path)
         if not r.error:
@@ -213,11 +238,12 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
                     f"{op.file_path}: hunk {hunk_index} {label} not found"
                     + (f" — {match_error}" if match_error else "")
                     + _no_match_hint(match_error, search_pattern, simulated))
-        pending_content[op.file_path] = simulated
+        pending_content[_overlay_key(op.file_path, file_ops)] = simulated
 
     def _remove(path: str) -> None:
-        removed_paths.add(path)
-        pending_content.pop(path, None)
+        key = _overlay_key(path, file_ops)
+        removed_paths.add(key)
+        pending_content.pop(key, None)
 
     for op in operations:
         if op.operation == OperationType.UPDATE:
@@ -242,7 +268,7 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             elif dst_taken:
                 errors.append(f"{op.new_path}: {dst_taken}")
             elif not src_err:  # only a cleanly-validated move updates the overlay
-                pending_content[op.new_path] = src_content if src_content is not None else ""
+                pending_content[_overlay_key(op.new_path, file_ops)] = src_content if src_content is not None else ""
                 _remove(op.file_path)
         elif op.operation == OperationType.ADD:
             # An Add must create a NEW file. If the target already exists, write_file
@@ -258,8 +284,8 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             elif add_taken:
                 errors.append(f"{op.file_path}: {add_taken}")
             else:
-                removed_paths.discard(op.file_path)
-                pending_content[op.file_path] = '\n'.join(
+                removed_paths.discard(_overlay_key(op.file_path, file_ops))
+                pending_content[_overlay_key(op.file_path, file_ops)] = '\n'.join(
                     line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
     if not errors and real_change_count == 0:
         errors.append("Patch contains no changes (only context lines were provided)")

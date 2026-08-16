@@ -43,6 +43,10 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   process and stdin alive.
 - ``"malformed_frame"`` — writes an invalid frame after ``didOpen``,
   then keeps the process and stdin alive.
+- ``"late_pull"`` — holds every ``textDocument/diagnostic`` unanswered.  On
+  ``$/cancelRequest`` it appends the cancelled id to the file named by
+  ``MOCK_LSP_TRACE`` and only then answers that id with a result carrying a
+  ``late`` marker: a server that finishes work the client already abandoned.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
@@ -88,6 +92,20 @@ def _push_slow(params, is_change, error_diag):
 
 
 _PUSH_HANDLERS = {"by_content": _push_by_content, "slow_push": _push_slow}
+_IGNORED_NOTIFICATIONS = {"initialized", "workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles"}
+
+
+def _late_pull(msg: dict) -> bool:
+    """``late_pull``: hold diagnostic pulls; answer one only after the client cancels it."""
+    if msg.get("method") == "textDocument/diagnostic":
+        return True
+    if msg.get("method") != "$/cancelRequest":
+        return False
+    cancelled = (msg.get("params") or {}).get("id")
+    with open(os.environ["MOCK_LSP_TRACE"], "a", encoding="utf-8") as fh:
+        fh.write(f"{cancelled}\n")
+    write_message({"jsonrpc": "2.0", "id": cancelled, "result": {"kind": "full", "items": [{"late": True}]}})
+    return True
 
 
 def read_message():
@@ -189,13 +207,7 @@ def main():
                 return 0
             continue
 
-        if msg.get("method") == "initialized":
-            continue
-
-        if msg.get("method") == "workspace/didChangeConfiguration":
-            continue
-
-        if msg.get("method") == "workspace/didChangeWatchedFiles":
+        if msg.get("method") in _IGNORED_NOTIFICATIONS:
             continue
 
         if msg.get("method") == "workspace/didChangeWorkspaceFolders":
@@ -287,6 +299,9 @@ def main():
             write_message({"jsonrpc": "2.0", "id": msg["id"], "result": {
                 "contents": {"kind": "plaintext", "value": documents[uri]},
             }})
+            continue
+
+        if script == "late_pull" and _late_pull(msg):
             continue
 
         if msg.get("method") == "textDocument/diagnostic":

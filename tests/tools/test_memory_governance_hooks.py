@@ -24,13 +24,13 @@ def test_real_plugin_governs_prompt_and_durable_write():
         "\n"
         "def _context(target, entries, **kwargs):\n"
         "    if target != 'user':\n"
-        "        return None\n"
+        "        return {'action': 'allow'}\n"
         "    return [entry for entry in entries if not entry.startswith('managed:')]\n"
         "\n"
         "def _pre(action, content=None, **kwargs):\n"
         "    if action == 'add' and content == 'draft fact':\n"
         "        return {'content': 'canonical fact'}\n"
-        "    return None\n"
+        "    return {'action': 'allow'}\n"
         "\n"
         "def _post(action, target, entries, **kwargs):\n"
         "    marker = get_hermes_home() / 'memory-post-hook.txt'\n"
@@ -109,6 +109,52 @@ def test_real_governor_failure_blocks_write_and_raw_prompt_injection():
 
     assert store.format_for_system_prompt("user") is None
     result = store.add("memory", "must remain blocked")
+    assert result == {
+        "success": False,
+        "error": "Memory write blocked because a governance plugin failed.",
+    }
+    assert store.memory_entries == []
+    assert not (memory_dir / "MEMORY.md").exists()
+    plugins._reset_plugin_managers_for_tests()
+
+
+def test_real_governor_abstention_blocks_write_and_raw_prompt_injection():
+    """A registered governor must explicitly transform, allow, skip, or block."""
+    import hermes_cli.plugins as plugins
+
+    hermes_home = get_hermes_home()
+    plugin_dir = hermes_home / "plugins" / "abstaining_memory_governor"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        "name: abstaining_memory_governor\n"
+        "provides_hooks:\n"
+        "  - transform_memory_context\n"
+        "  - pre_memory_write\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "def abstain(*args, **kwargs):\n"
+        "    return None\n"
+        "\n"
+        "def register(ctx):\n"
+        "    ctx.register_hook('transform_memory_context', abstain)\n"
+        "    ctx.register_hook('pre_memory_write', abstain)\n",
+        encoding="utf-8",
+    )
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - abstaining_memory_governor\n",
+        encoding="utf-8",
+    )
+    memory_dir = hermes_home / "memories"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "USER.md").write_text("private native entry", encoding="utf-8")
+
+    plugins._reset_plugin_managers_for_tests()
+    store = MemoryStore()
+    store.load_from_disk()
+
+    assert store.format_for_system_prompt("user") is None
+    result = store.add("memory", "must require an explicit decision")
     assert result == {
         "success": False,
         "error": "Memory write blocked because a governance plugin failed.",

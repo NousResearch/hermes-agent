@@ -168,6 +168,87 @@ class TestMemoryStoreAdd:
         }
         assert store.memory_entries == []
 
+    def test_pre_memory_write_hook_without_decision_blocks_add(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: []
+        )
+
+        result = store.add("memory", "must not pass without a decision")
+
+        assert result == {
+            "success": False,
+            "error": "Memory write blocked because a governance plugin failed.",
+        }
+        assert store.memory_entries == []
+
+    def test_pre_memory_write_malformed_result_blocks_add(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: [{"message": "forgot the directive"}],
+        )
+
+        result = store.add("memory", "must not pass malformed governance")
+
+        assert result["success"] is False
+        assert store.memory_entries == []
+
+    def test_pre_memory_write_explicit_allow_preserves_native_write(
+        self, store, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: [{"action": "allow"}],
+        )
+
+        result = store.add("memory", "  explicitly allowed fact  ")
+
+        assert result["success"] is True
+        assert store.memory_entries == ["explicitly allowed fact"]
+
+    def test_later_block_overrides_earlier_transform(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: [
+                {"content": "normalized fact"},
+                {"action": "block", "message": "later policy denied the write"},
+            ],
+        )
+
+        result = store.add("memory", "original fact")
+
+        assert result == {"success": False, "error": "later policy denied the write"}
+        assert store.memory_entries == []
+
+    def test_later_skip_overrides_earlier_transform(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: [
+                {"content": "normalized fact"},
+                {"action": "skip", "message": "canonical store handled the write"},
+            ],
+        )
+
+        result = store.add("memory", "original fact")
+
+        assert result["success"] is True
+        assert result["message"] == "canonical store handled the write"
+        assert store.memory_entries == []
+
     def test_pre_memory_write_hook_can_skip_duplicate_like_add(self, store, monkeypatch):
         def fake_has_hook(name):
             return name == "pre_memory_write"
@@ -232,6 +313,8 @@ class TestMemoryStoreAdd:
 
         def fake_invoke_hook(name, **kwargs):
             observed.append((name, lock_held))
+            if name == "pre_memory_write":
+                return [{"action": "allow"}]
             return []
 
         monkeypatch.setattr(store, "_file_lock", tracked_lock)
@@ -513,6 +596,63 @@ class TestMemoryStoreSnapshot:
         assert store.format_for_system_prompt("user") is None
         assert store.user_entries == ["private native entry"]
 
+    def test_context_hook_without_decision_omits_unfiltered_native_entries(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "USER.md").write_text("private native entry", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "transform_memory_context",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: []
+        )
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+
+        assert store.format_for_system_prompt("user") is None
+        assert store.user_entries == ["private native entry"]
+
+    def test_context_hook_malformed_result_omits_unfiltered_native_entries(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "USER.md").write_text("private native entry", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "transform_memory_context",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: ["not a list"]
+        )
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+
+        assert store.format_for_system_prompt("user") is None
+        assert store.user_entries == ["private native entry"]
+
+    def test_context_hook_explicit_allow_keeps_native_entries(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "USER.md").write_text("native preference", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "transform_memory_context",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *args, **kwargs: [{"action": "allow"}],
+        )
+
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+
+        assert "native preference" in store.format_for_system_prompt("user")
+
     def test_context_hook_output_is_scanned_before_prompt_injection(
         self, tmp_path, monkeypatch
     ):
@@ -604,6 +744,30 @@ class TestMemoryBatch:
         ))
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
+
+    def test_batch_rejects_non_object_operation_before_governance(
+        self, store, monkeypatch
+    ):
+        invoked = False
+
+        def fake_invoke_hook(*args, **kwargs):
+            nonlocal invoked
+            invoked = True
+            return [{"action": "allow"}]
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+        )
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        result = store.apply_batch("memory", ["not an object"])
+
+        assert result == {
+            "success": False,
+            "error": "operations must contain only objects.",
+        }
+        assert invoked is False
+        assert store.memory_entries == []
 
     def test_batch_hook_transform_and_post_observer_cover_atomic_path(
         self, store, monkeypatch

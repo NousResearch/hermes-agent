@@ -247,11 +247,14 @@ class MemoryStore:
         }
 
     def _transform_prompt_entries(self, target: str, entries: List[str]) -> List[str]:
-        """Apply the first valid context transform without changing live state.
+        """Apply a fail-closed context decision without changing live state.
 
         Hooks run only while the session snapshot is built. This preserves the
         prompt-cache invariant: the transformed block is frozen for the same
-        lifetime as the native MEMORY.md / USER.md snapshot.
+        lifetime as the native MEMORY.md / USER.md snapshot. Once at least one
+        governor is registered, raw passthrough requires an explicit
+        ``{"action": "allow"}``; abstention or malformed output omits the
+        target from the prompt snapshot.
         """
         try:
             from hermes_cli.plugins import has_hook, invoke_hook
@@ -273,27 +276,56 @@ class MemoryStore:
             )
             return []
 
+        first_transform: Optional[List[str]] = None
+        explicit_allow = False
+        invalid_result = False
         for result in results:
+            if isinstance(result, dict):
+                directive = str(result.get("action") or "").strip().lower()
+                if directive in {"allow", "pass"}:
+                    explicit_allow = True
+                else:
+                    invalid_result = True
+                continue
             if not isinstance(result, (list, tuple)):
+                invalid_result = True
                 continue
             if not all(isinstance(entry, str) for entry in result):
                 logger.warning(
-                    "Ignoring transform_memory_context result for %s: entries must be strings",
+                    "Invalid transform_memory_context result for %s: entries must be strings",
                     target,
                 )
+                invalid_result = True
                 continue
             transformed = [entry.strip() for entry in result if entry.strip()]
             rendered_chars = len(ENTRY_DELIMITER.join(transformed)) if transformed else 0
             if rendered_chars > self._char_limit(target):
                 logger.warning(
-                    "Ignoring transform_memory_context result for %s: %s chars exceeds %s-char limit",
+                    "Invalid transform_memory_context result for %s: %s chars exceeds %s-char limit",
                     target,
                     rendered_chars,
                     self._char_limit(target),
                 )
+                invalid_result = True
                 continue
-            return transformed
-        return list(entries)
+            if first_transform is None:
+                first_transform = transformed
+
+        if invalid_result:
+            logger.warning(
+                "Memory context governance returned an invalid result for %s; omitting native entries",
+                target,
+            )
+            return []
+        if first_transform is not None:
+            return first_transform
+        if explicit_allow:
+            return list(entries)
+        logger.warning(
+            "Memory context governance returned no decision for %s; omitting native entries",
+            target,
+        )
+        return []
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -455,26 +487,38 @@ class MemoryStore:
         """Apply a pre-write directive and validate the resulting payload.
 
         The hook runs before the file lock is acquired so plugin callbacks can
-        never hold or re-enter Hermes' memory lock. The first valid dict result
-        wins. It may transform ``content`` / ``old_text`` / ``operations``,
-        return ``action=block`` (``reject`` is accepted as an alias), or return
-        ``action=skip`` when the plugin handled the write elsewhere.
+        never hold or re-enter Hermes' memory lock. All registered results are
+        evaluated with deterministic priority: block, invalid/failure, skip,
+        first transform, then explicit allow. A plugin may transform
+        ``content`` / ``old_text`` / ``operations``, return ``action=block``
+        (``reject`` is accepted as an alias), return ``action=skip`` when it
+        handled the write elsewhere, or return ``action=allow`` for deliberate
+        native passthrough. Abstention is not implicit permission.
 
         Any transformed content is scanned again before persistence.
         """
+        invalid_batch_input = operations is not None and not all(
+            isinstance(operation, dict) for operation in operations
+        )
         payload: Dict[str, Any] = {
             "action": action,
             "target": target,
-            "content": content,
-            "old_text": old_text,
-            "operations": [dict(op) if isinstance(op, dict) else {} for op in operations]
-            if operations is not None
-            else None,
+            "content": content.strip() if content is not None else None,
+            "old_text": old_text.strip() if old_text is not None else None,
+            "operations": [dict(operation) for operation in operations]
+            if operations is not None and not invalid_batch_input
+            else ([] if operations is not None else None),
         }
+        if invalid_batch_input:
+            return payload, {
+                "success": False,
+                "error": "operations must contain only objects.",
+            }
         try:
             from hermes_cli.plugins import has_hook, invoke_hook
 
-            if has_hook("pre_memory_write"):
+            governor_registered = has_hook("pre_memory_write")
+            if governor_registered:
                 results = invoke_hook(
                     "pre_memory_write",
                     _propagate_callback_errors=True,
@@ -496,42 +540,97 @@ class MemoryStore:
                 "error": "Memory write blocked because a governance plugin failed.",
             }
 
+        first_block: Optional[Dict[str, Any]] = None
+        first_skip: Optional[Dict[str, Any]] = None
+        first_transform: Optional[Dict[str, Any]] = None
+        explicit_allow = not governor_registered
+        invalid_result = False
+
         for result in results:
             if not isinstance(result, dict):
+                invalid_result = True
                 continue
             directive = str(result.get("action") or "").strip().lower()
             if directive in {"block", "reject"}:
-                response = result.get("response")
-                if isinstance(response, dict):
-                    return payload, response
-                return payload, {
-                    "success": False,
-                    "error": str(result.get("message") or "Memory write blocked by plugin."),
-                }
+                if first_block is None:
+                    first_block = result
+                continue
             if directive == "skip":
-                response = result.get("response")
-                if isinstance(response, dict):
-                    return payload, response
-                return payload, self._success_response(
-                    target,
-                    str(result.get("message") or "Memory write handled by plugin."),
-                )
+                if first_skip is None:
+                    first_skip = result
+                continue
+            if directive in {"allow", "pass"}:
+                explicit_allow = True
 
             changed = False
             for field in ("content", "old_text"):
-                if field in result and isinstance(result[field], str):
-                    payload[field] = result[field].strip()
-                    changed = True
-            if "operations" in result and isinstance(result["operations"], list):
-                if all(isinstance(operation, dict) for operation in result["operations"]):
-                    payload["operations"] = [dict(operation) for operation in result["operations"]]
+                if field in result:
+                    if isinstance(result[field], str):
+                        changed = True
+                    else:
+                        invalid_result = True
+            if "operations" in result:
+                if isinstance(result["operations"], list) and all(
+                    isinstance(operation, dict) for operation in result["operations"]
+                ):
                     changed = True
                 else:
-                    logger.warning(
-                        "Ignoring pre_memory_write operations transform: items must be dicts"
-                    )
-            if changed:
-                break
+                    invalid_result = True
+            if changed and first_transform is None:
+                first_transform = result
+            elif not changed and directive not in {
+                "allow",
+                "pass",
+                "block",
+                "reject",
+                "skip",
+            }:
+                invalid_result = True
+
+        if first_block is not None:
+            response = first_block.get("response")
+            if isinstance(response, dict):
+                return payload, response
+            return payload, {
+                "success": False,
+                "error": str(first_block.get("message") or "Memory write blocked by plugin."),
+            }
+        if invalid_result:
+            logger.warning(
+                "Memory write governance returned an invalid result; blocking %s on %s",
+                action,
+                target,
+            )
+            return payload, {
+                "success": False,
+                "error": "Memory write blocked because a governance plugin failed.",
+            }
+        if first_skip is not None:
+            response = first_skip.get("response")
+            if isinstance(response, dict):
+                return payload, response
+            return payload, self._success_response(
+                target,
+                str(first_skip.get("message") or "Memory write handled by plugin."),
+            )
+        if first_transform is not None:
+            for field in ("content", "old_text"):
+                if field in first_transform:
+                    payload[field] = first_transform[field].strip()
+            if "operations" in first_transform:
+                payload["operations"] = [
+                    dict(operation) for operation in first_transform["operations"]
+                ]
+        elif not explicit_allow:
+            logger.warning(
+                "Memory write governance returned no decision; blocking %s on %s",
+                action,
+                target,
+            )
+            return payload, {
+                "success": False,
+                "error": "Memory write blocked because a governance plugin failed.",
+            }
 
         if action == "add" and not (payload["content"] or "").strip():
             return payload, {"success": False, "error": "Content cannot be empty."}
@@ -1417,4 +1516,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-

@@ -474,12 +474,7 @@ export default function SkillsPage() {
                     {t.skills.title}
                   </CardTitle>
                   <Badge tone="secondary" className="text-xs">
-                    {t.skills.resultCount
-                      .replace("{count}", String(searchMatchedSkills.length))
-                      .replace(
-                        "{s}",
-                        searchMatchedSkills.length !== 1 ? "s" : "",
-                      )}
+                    {t.skills.resultCount(searchMatchedSkills.length)}
                   </Badge>
                 </div>
               </CardHeader>
@@ -520,9 +515,7 @@ export default function SkillsPage() {
                   </CardTitle>
                   <div className="flex items-center gap-2">
                     <Badge tone="secondary" className="text-xs">
-                      {t.skills.skillCount
-                        .replace("{count}", String(activeSkills.length))
-                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                      {t.skills.skillCount(activeSkills.length)}
                     </Badge>
                     <Button
                       size="sm"

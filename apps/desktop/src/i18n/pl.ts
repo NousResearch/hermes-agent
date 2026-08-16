@@ -3346,8 +3346,7 @@ const plMissingOverrides = {
         'Ten serwer uruchamia na Twoim komputerze lokalny proces za pomocą polecenia widocznego poniżej. Kontynuuj tylko wtedy, gdy ufasz jego źródłu.',
       deepLinkConfirm: 'Dodaj serwer',
       deepLinkNameInvalid: 'Nazwa może zawierać od 1 do 64 liter, cyfr, kropek, łączników lub podkreśleń.',
-      deepLinkNameConflict: (name: string) =>
-        `Serwer o nazwie ${name} już istnieje — wybierz inną nazwę albo anuluj.`,
+      deepLinkNameConflict: (name: string) => `Serwer o nazwie ${name} już istnieje — wybierz inną nazwę albo anuluj.`,
       deepLinkErrorTitle: 'Odrzucono łącze instalacyjne MCP',
       deepLinkErrorName: 'W łączu brakuje nazwy serwera albo jest ona nieprawidłowa.',
       deepLinkErrorConfig: 'Konfiguracja w łączu nie jest prawidłowym dokumentem JSON zakodowanym w formacie base64.',
@@ -3409,8 +3408,7 @@ const plMissingOverrides = {
   cron: {
     modelImpact: {
       title: 'Zaplanowane zadania wymagają przeglądu',
-      message: (count: number) =>
-        `Liczba zaplanowanych zadań pomijanych do czasu przeglądu ustawień modelu: ${count}.`,
+      message: (count: number) => `Liczba zaplanowanych zadań pomijanych do czasu przeglądu ustawień modelu: ${count}.`,
       detailMore: (names: string, remaining: number) => `${names} i jeszcze ${remaining}`,
       review: 'Przejrzyj zaplanowane zadania',
       saveFailed: 'Hermes nie zapisał tej zmiany modelu.'
@@ -3591,8 +3589,7 @@ const plMissingOverrides = {
     technicalDetails: 'Szczegóły techniczne'
   },
   desktop: {
-    editTurnUnavailable:
-      'Ta tura nie znajduje się już w historii serwera (mogła zostać usunięta podczas kompresji).'
+    editTurnUnavailable: 'Ta tura nie znajduje się już w historii serwera (mogła zostać usunięta podczas kompresji).'
   }
 } satisfies TranslationOverrides
 

@@ -447,8 +447,8 @@ export interface Translations {
     filters: string;
     noSkills: string;
     noSkillsMatch: string;
-    skillCount: string;
-    resultCount: string;
+    skillCount: (count: number) => string;
+    resultCount: (count: number) => string;
     noDescription: string;
     toolsets: string;
     toolsetLabel: string;
@@ -475,7 +475,7 @@ export interface Translations {
     resetScopeToast: string;
     rawYaml: string;
     searchResults: string;
-    fields: string;
+    fields: (count: number) => string;
     noFieldsMatch: string;
     configSaved: string;
     yamlConfigSaved: string;
@@ -513,7 +513,7 @@ export interface Translations {
     getKey: string;
     hideAdvanced: string;
     hideValue: string;
-    keysCount: string;
+    keysCount: (count: number) => string;
     llmProviders: string;
     notConfigured: string;
     notSet: string;
@@ -525,7 +525,9 @@ export interface Translations {
     showValue: string;
     customTitle: string;
     customHint: string;
-    customConfigured: string;
+    customConfigured: (count: number) => string;
+    configuredCount: (count: number) => string;
+    configuredSummary: (configured: number, total: number) => string;
     addCustomKey: string;
     customKeyName: string;
     customKeyNamePlaceholder: string;

@@ -9,6 +9,10 @@ interface CatalogLeaf {
   value: unknown
 }
 
+function placeholders(value: string): string[] {
+  return [...value.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]).sort()
+}
+
 function ownLeaves(value: unknown, prefix = ''): Map<string, CatalogLeaf> {
   if (typeof value === 'function' || typeof value === 'string' || value === null) {
     return new Map([[prefix, { kind: value === null ? 'null' : typeof value, value }]])
@@ -72,6 +76,12 @@ describe('Polish Kanban plugin catalog', () => {
     for (const [path, englishLeaf] of englishLeaves) {
       const polishLeaf = polishLeaves.get(path)
       expect(polishLeaf?.kind, path).toBe(englishLeaf.kind)
+
+      if (englishLeaf.kind === 'string' && polishLeaf?.kind === 'string') {
+        expect(placeholders(polishLeaf.value as string), `${path} placeholders`).toEqual(
+          placeholders(englishLeaf.value as string)
+        )
+      }
 
       if (englishLeaf.kind !== 'function' || polishLeaf?.kind !== 'function') {
         continue

@@ -1,11 +1,53 @@
 import { describe, expect, it } from 'vitest'
+import { af } from './af'
+import { ar } from './ar'
 import { LOCALE_META } from './context'
+import { de } from './de'
 import { en } from './en'
+import { es } from './es'
+import { fr } from './fr'
+import { ga } from './ga'
+import { hu } from './hu'
+import { it as itCatalog } from './it'
+import { ja } from './ja'
+import { ko } from './ko'
 import { pl } from './pl'
+import { pt } from './pt'
+import { ru } from './ru'
+import { tr } from './tr'
+import type { Translations } from './types'
+import { uk } from './uk'
+import { zhHant } from './zh-hant'
+import { zh } from './zh'
+
+const catalogs: ReadonlyArray<readonly [string, Translations]> = [
+  ['en', en],
+  ['pl', pl],
+  ['zh', zh],
+  ['zh-hant', zhHant],
+  ['ja', ja],
+  ['de', de],
+  ['es', es],
+  ['fr', fr],
+  ['tr', tr],
+  ['uk', uk],
+  ['af', af],
+  ['ko', ko],
+  ['it', itCatalog],
+  ['ga', ga],
+  ['pt', pt],
+  ['ru', ru],
+  ['hu', hu],
+  ['ar', ar]
+]
 
 interface CatalogLeaf {
   kind: string
   value: unknown
+}
+
+function placeholders(value: string): string[] {
+  return [...value.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]).sort()
 }
 
 function ownLeaves(node: unknown, prefix = ''): Map<string, CatalogLeaf> {
@@ -76,7 +118,7 @@ describe('Polish dashboard localization', () => {
     expect(polishPaths).toHaveLength(englishPaths.length)
   })
 
-  it('preserves runtime leaf kinds, callback arity, and argument flow', () => {
+  it('preserves runtime leaf kinds, callback arity, placeholders, and argument flow', () => {
     const englishLeaves = ownLeaves(en)
     const polishLeaves = ownLeaves(pl)
 
@@ -84,6 +126,11 @@ describe('Polish dashboard localization', () => {
     for (const [path, englishLeaf] of englishLeaves) {
       const polishLeaf = polishLeaves.get(path)
       expect(polishLeaf?.kind, path).toBe(englishLeaf.kind)
+      if (englishLeaf.kind === 'string' && polishLeaf?.kind === 'string') {
+        expect(placeholders(polishLeaf.value as string), `${path} placeholders`).toEqual(
+          placeholders(englishLeaf.value as string)
+        )
+      }
       if (englishLeaf.kind !== 'function' || polishLeaf?.kind !== 'function') continue
 
       const englishFn = englishLeaf.value as (...args: never[]) => unknown
@@ -107,5 +154,55 @@ describe('Polish dashboard localization', () => {
     expect(pl.config.resetDefaults).toBe('Przywróć domyślne')
     expect(pl.sessions.confirmDeleteMessage).toContain('trwałe usunięcie')
     expect(pl.sessions.confirmDeleteMessage).toContain('nie można cofnąć')
+  })
+
+  it('renders count-dependent labels as complete locale-owned messages', () => {
+    expect(pl.skills.skillCount(1)).toBe('Liczba umiejętności: 1')
+    expect(pl.skills.resultCount(22)).toBe('Liczba wyników: 22')
+    expect(pl.config.fields(3)).toBe('3 poz.')
+    expect(pl.env.keysCount(5)).toBe('Liczba kluczy: 5')
+    expect(pl.env.customConfigured(2)).toBe('Liczba skonfigurowanych własnych kluczy: 2')
+    expect(pl.env.configuredCount(3)).toBe('Skonfigurowano: 3')
+    expect(pl.env.configuredSummary(1, 2)).toBe('Skonfigurowano: 1/2')
+
+    expect(en.skills.skillCount(1)).toBe('1 skill')
+    expect(en.skills.skillCount(2)).toBe('2 skills')
+    expect(en.config.fields(1)).toBe('1 field')
+    expect(en.config.fields(3)).toBe('3 fields')
+    expect(en.env.keysCount(2)).toBe('2 keys')
+    expect(en.env.customConfigured(1)).toBe('1 custom key set')
+    expect(en.env.configuredCount(3)).toBe('3 configured')
+    expect(en.env.configuredSummary(1, 2)).toBe('1 of 2 configured')
+  })
+
+  it('keeps every dashboard count callback executable and locale-owned', () => {
+    for (const [locale, catalog] of catalogs) {
+      const oneArgumentCallbacks = [
+        catalog.skills.skillCount,
+        catalog.skills.resultCount,
+        catalog.config.fields,
+        catalog.env.keysCount,
+        catalog.env.customConfigured,
+        catalog.env.configuredCount
+      ]
+
+      for (const callback of oneArgumentCallbacks) {
+        expect(callback.length, `${locale} callback arity`).toBe(1)
+        expect(callback(1), `${locale} callback count=1`).toContain('1')
+        expect(callback(2), `${locale} callback count=2`).toContain('2')
+        expect(callback(2), `${locale} unresolved grammar token`).not.toMatch(/\{(?:count|s)\}|\(s\)/)
+      }
+
+      expect(catalog.env.configuredSummary.length, `${locale} summary arity`).toBe(2)
+      expect(catalog.env.configuredSummary(1, 2), `${locale} summary configured`).toContain('1')
+      expect(catalog.env.configuredSummary(1, 2), `${locale} summary total`).toContain('2')
+    }
+
+    expect(af.skills.skillCount(2)).toBe('2 vaardighede')
+    expect(ar.skills.skillCount(2)).toBe('المهارات: 2')
+    expect(itCatalog.config.fields(2)).toBe('2 campi')
+    expect(ja.env.keysCount(2)).toBe('2 キー')
+    expect(ru.skills.resultCount(2)).toBe('Результаты: 2')
+    expect(tr.config.fields(2)).toBe('2 alan')
   })
 })

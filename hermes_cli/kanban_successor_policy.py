@@ -237,6 +237,17 @@ def evaluate_successor(
         )
 
     # --- 5. Allow create ---
+    # Increment state counters eagerly at evaluate time so that subsequent
+    # evaluate_successor calls in the same tick see updated counts.
+    # This prevents TOCTOU: if the caller evaluates N requests before applying
+    # any, the per-tick budget checks correctly account for all pending creates.
+    # apply_successor must NOT increment these counters again.
+    if state is not None:
+        state.tick_total_created += 1
+        state.tick_per_reason[rc] = state.tick_per_reason.get(rc, 0) + 1
+        state.tick_per_source[req.source_task_id] = (
+            state.tick_per_source.get(req.source_task_id, 0) + 1
+        )
     return SuccessorDecision(allowed=True, action="create", reason="")
 
 
@@ -306,15 +317,8 @@ def apply_successor(
                     "idempotency_key": ikey,
                 },
             )
-        # Update in-tick state counters.
-        if state is not None:
-            state.tick_total_created += 1
-            state.tick_per_reason[req.reason_class] = (
-                state.tick_per_reason.get(req.reason_class, 0) + 1
-            )
-            state.tick_per_source[req.source_task_id] = (
-                state.tick_per_source.get(req.source_task_id, 0) + 1
-            )
+        # NOTE: state counters are incremented by evaluate_successor (not here)
+        # to prevent TOCTOU when evaluate is called multiple times before apply.
         return card_id
 
     # defer or reject — record audit event against source_task_id.

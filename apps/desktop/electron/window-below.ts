@@ -12,6 +12,8 @@
 // permission; we pass titles through only when that permission is ALREADY
 // granted and never trigger the prompt for it.
 
+import { readHyprlandWindows } from './hyprland'
+
 export interface EnumeratedWindow {
   app: string
   bounds: { x: number; y: number; width: number; height: number }
@@ -53,6 +55,17 @@ export interface WindowBelowUnavailable {
 export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv): string {
   if (platform !== 'linux') {
     return 'Could not enumerate windows on this system.'
+  }
+
+  // Hyprland is asked over its own IPC, so reaching here means the socket
+  // didn't answer — telling a Hyprland user to go and install xprop, or to
+  // abandon Wayland, would send them in exactly the wrong direction.
+  if (env.HYPRLAND_INSTANCE_SIGNATURE) {
+    return (
+      'Could not enumerate windows: Hyprland did not answer on its IPC socket. ' +
+      'Check that `hyprctl clients` works from the same session Hermes is ' +
+      'running in.'
+    )
   }
 
   const wayland = env.XDG_SESSION_TYPE === 'wayland' || (Boolean(env.WAYLAND_DISPLAY) && !env.DISPLAY)
@@ -109,10 +122,15 @@ type GetWindowsModule = {
   >
 }
 
-let getWindowsModule: Promise<GetWindowsModule> | null = null
+let getWindowsModule: Promise<GetWindowsModule | null> | null = null
 
-const loadGetWindows = (): Promise<GetWindowsModule> => {
-  getWindowsModule ??= import('get-windows')
+const loadGetWindows = (): Promise<GetWindowsModule | null> => {
+  // get-windows is an optionalDependency: `npm ci` can skip it when its native
+  // install fails, including Linux and Windows ARM64 where 9.3.0 has no
+  // prebuilt. A missing module is therefore a normal state on those targets,
+  // so the lazy import resolves to null instead of rejecting; enumeration then
+  // degrades to the failure note instead of an uncaught error.
+  getWindowsModule ??= import('get-windows').catch(() => null)
 
   return getWindowsModule
 }
@@ -126,31 +144,28 @@ const loadGetWindows = (): Promise<GetWindowsModule> => {
  * rather than nothing, so the agent can tell the user what to fix instead of
  * reporting a blank failure.
  */
-export async function readWindowBelow(
-  selfPid: number,
-  selfBounds: EnumeratedWindow['bounds'],
-  titlesAvailable: boolean
-): Promise<WindowBelowResult | WindowBelowUnavailable> {
-  const unavailable = (): WindowBelowUnavailable => ({
-    error: enumerationFailureNote(process.platform, process.env),
-    platform: process.platform
-  })
-
+async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<EnumeratedWindow[] | null> {
   let raw
 
   try {
-    const { openWindows } = await loadGetWindows()
+    const getWindows = await loadGetWindows()
+
+    if (!getWindows) {
+      return null
+    }
+
+    const { openWindows } = getWindows
     raw = await openWindows(
       process.platform === 'darwin'
         ? { accessibilityPermission: false, screenRecordingPermission: titlesAvailable }
         : undefined
     )
   } catch {
-    return unavailable()
+    return null
   }
 
   if (!Array.isArray(raw)) {
-    return unavailable()
+    return null
   }
 
   // get-windows documents openWindows() as front-to-back, and macOS/Windows
@@ -160,7 +175,7 @@ export async function readWindowBelow(
   // must be reversed to match. (Verified against get-windows 9.3.0.)
   const ordered = process.platform === 'linux' ? [...raw].reverse() : raw
 
-  const windows: EnumeratedWindow[] = ordered.map(w => ({
+  return ordered.map(w => ({
     app: w.owner?.name ?? '',
     bounds: {
       x: w.bounds?.x ?? 0,
@@ -172,6 +187,24 @@ export async function readWindowBelow(
     pid: w.owner?.processId ?? 0,
     title: w.title ?? ''
   }))
+}
+
+export async function readWindowBelow(
+  selfPid: number,
+  selfBounds: EnumeratedWindow['bounds'],
+  titlesAvailable: boolean
+): Promise<WindowBelowResult | WindowBelowUnavailable> {
+  // Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
+  // windows, which the X11 enumerator below cannot, and it answers null
+  // everywhere else so the established path stays the default.
+  const windows = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+
+  if (!windows) {
+    return {
+      error: enumerationFailureNote(process.platform, process.env),
+      platform: process.platform
+    }
+  }
 
   const { below, frontmost } = pickWindowBelow(windows, selfPid, selfBounds)
 

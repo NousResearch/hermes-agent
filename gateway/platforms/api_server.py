@@ -18,6 +18,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/steer      — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
@@ -45,7 +46,7 @@ import hashlib
 import hmac
 import itertools
 import json
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from functools import wraps
 import logging
@@ -1436,6 +1437,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_dbs: Dict[str, Any] = {}
+        self._session_db_cache_lock = threading.Lock()
+        self._session_db_cache_closed = False
         # Last-known-good resolved model per session (keyed by gateway_session_key
         # ONLY — never session_id, which rotates/is ephemeral for one-off API
         # server requests; "*" is the process-wide fallback), mirroring
@@ -1982,7 +1986,15 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.profiles import profiles_to_serve
 
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            served = {
+                name
+                for name, _ in profiles_to_serve(
+                    multiplex=True,
+                    profile_allowlist=getattr(
+                        cfg, "multiplex_profile_allowlist", None
+                    ),
+                )
+            }
         except Exception:
             return _PROFILE_REJECTED
         if profile not in served:
@@ -2083,6 +2095,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
+            ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
         ]
         if _CRON_AVAILABLE:
@@ -2172,15 +2185,29 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_state import SessionDB
 
         key = str(home)
-        cache = getattr(self, "_session_dbs", None)
-        if cache is None:
-            cache = {}
-            self._session_dbs = cache
-        db = cache.get(key)
-        if db is None:
-            db = SessionDB(db_path=home / "state.db")
-            cache[key] = db
-        return db
+        with self._session_db_cache_lock:
+            if self._session_db_cache_closed:
+                return None
+            db = self._session_dbs.get(key)
+            if db is None:
+                db = SessionDB(db_path=home / "state.db")
+                self._session_dbs[key] = db
+            return db
+
+    def _close_cached_session_dbs(self) -> None:
+        """Close SessionDB handles owned by this adapter's profile cache."""
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = True
+            cached = list(self._session_dbs.values())
+            self._session_dbs.clear()
+        shared_db = getattr(self, "_session_db", None)
+        for db in cached:
+            if db is shared_db:
+                continue
+            try:
+                db.close()
+            except Exception:
+                logger.debug("Failed to close API-server SessionDB", exc_info=True)
 
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
@@ -2222,15 +2249,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             home = get_hermes_home()
             key = str(home)
-            cache = getattr(self, "_session_dbs", None)
-            if cache is not None and cache.get(key) is not None:
-                return cache[key]
+            with self._session_db_cache_lock:
+                cached = self._session_dbs.get(key)
+            if cached is not None:
+                return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
-                cache = getattr(self, "_session_dbs", None)
-                if cache is not None and cache.get(key) is not None:
-                    return cache[key]
+                with self._session_db_cache_lock:
+                    cached = self._session_dbs.get(key)
+                if cached is not None:
+                    return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
@@ -3119,6 +3148,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
+                "run_steer": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
@@ -3149,6 +3179,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
@@ -3277,11 +3308,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived",
+            "_lineage_root_id", "pinned", "archived", "hidden",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores these as 0/1; clients reconcile against a real boolean.
-        for flag in ("pinned", "archived"):
+        for flag in ("pinned", "archived", "hidden"):
             if flag in payload:
                 payload[flag] = bool(payload[flag])
         # Avoid exposing full system prompts/model_config through the client API;
@@ -3503,16 +3534,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # sidebar owns (the "keep" flag exempts a chat from the auto-archive
         # sweep). Rejecting them here was silently 400ing every pin the desktop
         # made, so pins only ever lived in that one app's localStorage.
-        allowed = {"title", "end_reason", "pinned", "archived"}
+        # `unread` is the read-state watermark toggle (same desktop owner).
+        allowed = {"title", "end_reason", "pinned", "archived", "hidden", "unread"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
-        for flag in ("pinned", "archived"):
+        for flag in ("pinned", "archived", "hidden", "unread"):
             if flag in body and not isinstance(body[flag], bool):
                 return web.json_response(_openai_error(f"'{flag}' must be a boolean", code="invalid_session_field"), status=400)
 
         db = await self._ensure_session_db_async()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -3522,6 +3556,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await asyncio.to_thread(db.set_session_pinned, session_id, body["pinned"])
         if "archived" in body:
             await asyncio.to_thread(db.set_session_archived, session_id, body["archived"])
+        if "hidden" in body:
+            await asyncio.to_thread(db.set_session_hidden, session_id, body["hidden"])
+        if "unread" in body:
+            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session
@@ -3836,6 +3874,12 @@ class APIServerAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
+        self._set_run_status(
+            run_id,
+            "queued",
+            session_id=session_id,
+            model=body.get("model", self._model_name),
+        )
         seq = 0
 
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
@@ -3878,6 +3922,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "user_message": {"role": "user", "content": user_message},
                     "runtime": runtime_meta,
                 }))
+                self._set_run_status(run_id, "running", last_event="run.started")
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
@@ -3887,6 +3932,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
+                    active_run_id=run_id,
                     gateway_session_key=gateway_session_key,
                     route=route,
                     session_model=session_model,
@@ -3924,21 +3970,52 @@ class APIServerAdapter(BasePlatformAdapter):
                     "interrupted": False,
                     "runtime": effective_runtime,
                 }))
-                await queue.put(_event_payload("run.completed", {
+                # A steer accepted after the final assistant response is drained
+                # into result["pending_steer"] by the turn finalizer instead of
+                # being consumed; surface it so clients can replay it as the
+                # next user turn rather than silently losing it.
+                pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
+                completed_payload = {
                     "session_id": effective_session_id,
                     "message_id": message_id,
                     "completed": True,
                     "messages": turn_messages,
                     "usage": usage,
                     "runtime": effective_runtime,
-                }))
+                }
+                if pending_steer:
+                    completed_payload["pending_steer"] = pending_steer
+                await queue.put(_event_payload("run.completed", completed_payload))
+                self._set_run_status(
+                    run_id,
+                    "completed",
+                    session_id=effective_session_id,
+                    usage=usage,
+                    last_event="run.completed",
+                    **({"pending_steer": pending_steer} if pending_steer else {}),
+                )
+            except asyncio.CancelledError:
+                self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
+                raise
             except Exception as exc:
                 logger.exception("[api_server] session chat stream failed")
+                self._set_run_status(
+                    run_id,
+                    "failed",
+                    error=_redact_api_error_text(exc),
+                    last_event="run.failed",
+                )
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
+                self._active_run_agents.pop(run_id, None)
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
+        # NOTE: deliberately NOT registered in _active_run_tasks — this turn
+        # is already counted by active_agent_work_count() via
+        # _inflight_agent_runs (_run_agent), and a second task-based entry
+        # would double-count it in the shutdown drain. Run-scoped control
+        # needs only the agent ref, registered by _run_agent(active_run_id).
         task = asyncio.create_task(_run_and_signal())
         try:
             self._background_tasks.add(task)
@@ -3968,12 +4045,42 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
                 name, payload = item
                 await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
-        except (asyncio.CancelledError, ConnectionResetError):
-            task.cancel()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            await self._drain_session_stream_task_on_disconnect(
+                run_id, task, interrupt_message="SSE client disconnected", shield_wait=False
+            )
+            logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
+        except asyncio.CancelledError:
+            await self._drain_session_stream_task_on_disconnect(
+                run_id, task, interrupt_message="SSE task cancelled", shield_wait=True
+            )
+            logger.info("Session SSE task cancelled; drained live run %s", run_id)
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    async def _drain_session_stream_task_on_disconnect(
+        self,
+        run_id: str,
+        task: "asyncio.Task",
+        *,
+        interrupt_message: str,
+        shield_wait: bool,
+    ) -> None:
+        """Preserve live run control refs until the executor-backed turn actually exits."""
+        agent = self._active_run_agents.get(run_id)
+        if agent is None:
+            if not task.done():
+                task.cancel()
+                with suppress(Exception):
+                    await task
+            return
+        with suppress(Exception):
+            agent.interrupt(interrupt_message)
+        if not task.done():
+            with suppress(Exception):
+                await (asyncio.shield(task) if shield_wait else task)
 
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/model — backend-ack a Browser model lock."""
@@ -5837,14 +5944,80 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
 
-            from cron.scheduler_provider import resolve_cron_scheduler
+            from cron.scheduler_provider import (
+                provider_supports_split_fire,
+                resolve_cron_scheduler,
+            )
             provider = resolve_cron_scheduler()
 
             loop = asyncio.get_running_loop()
-            # Fire in the background (202 immediately). fire_due claims via the
-            # store CAS, so a retry while this is in flight is de-duped.
+            # Live adapters for delivery parity with the built-in ticker
+            # (gateway/run.py passes runner.adapters to the in-process
+            # scheduler). Without them, _deliver_result cannot resolve a live
+            # transport, so E2EE platforms and relay-fronted logical platforms
+            # (whose only send path IS the live relay adapter — no native
+            # credential exists) fail with "platform 'X' not
+            # configured/enabled" on every external-provider fire even though
+            # the same job delivers fine under the built-in ticker.
+            runner = self.gateway_runner or request.app.get("gateway_runner")
+            if runner is None:
+                try:
+                    from gateway.run import _gateway_runner_ref
+
+                    runner = _gateway_runner_ref()
+                except Exception:
+                    runner = None
+            adapters = getattr(runner, "adapters", None) or None
+
+            if not provider_supports_split_fire(provider):
+                # Legacy single-phase provider: it overrides the documented
+                # ``fire_due`` hook (custom claim/re-arm/telemetry) but
+                # inherits the base ``claim_fire`` — driving it through the
+                # split claim path would silently bypass that override.
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        provider.fire_due,
+                        job_id,
+                        adapters=adapters,
+                        loop=loop,
+                    )
+                )
+                reservation["detached"] = True
+                task.add_done_callback(
+                    lambda _task: _release_pending_api_work(self, reservation)
+                )
+                try:
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except (TypeError, AttributeError):
+                    pass
+                return web.json_response(
+                    {"status": "accepted", "job_id": job_id}, status=202
+                )
+
+            # Persist the attempt and exact store owner before acknowledging NAS.
+            # A failure here is retryable and the reservation remains attached.
+            try:
+                claimed_job = await asyncio.to_thread(provider.claim_fire, job_id)
+            except Exception as exc:
+                logger.error("cron fire admission failed for %s: %s", job_id, exc)
+                return web.json_response(
+                    {"error": "cron fire admission failed", "job_id": job_id},
+                    status=503,
+                )
+            if claimed_job is None:
+                return web.json_response(
+                    {"status": "duplicate", "job_id": job_id},
+                    status=200,
+                )
+
             task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
+                asyncio.to_thread(
+                    provider.fire_claimed,
+                    claimed_job,
+                    adapters=adapters,
+                    loop=loop,
+                )
             )
             reservation["detached"] = True
             task.add_done_callback(
@@ -6110,6 +6283,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
@@ -6144,6 +6318,10 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        If *active_run_id* is supplied, the same live agent is registered in
+        ``_active_run_agents`` while the turn is running so API clients can
+        call run-scoped control endpoints such as ``/v1/runs/{run_id}/steer``.
         """
         loop = asyncio.get_running_loop()
         # Capture before hopping to the executor — ContextVars do not follow
@@ -6179,6 +6357,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
+                    if active_run_id:
+                        self._active_run_agents[active_run_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
                     # Baseline for selective background-process reaping on
                     # SSE client disconnect — mirrors gateway/run.py's
@@ -6320,6 +6500,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     # point can't reap background work this turn left
                     # running on purpose. Mirrors the same race-window guard
                     # in gateway/run.py's _run_sync_with_timeout_lifecycle.
+                    if active_run_id:
+                        self._active_run_agents.pop(active_run_id, None)
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
                         # Symmetric with the registration above: the turn is
@@ -6747,19 +6929,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    _put_event_if_active({
+                    # Undelivered steer text (accepted after the final response;
+                    # see turn_finalizer) rides on the terminal event/status so
+                    # the client can replay it as the next user turn.
+                    pending_steer = result.get("pending_steer") if isinstance(result, dict) else None
+                    completed_event = {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
-                    })
+                    }
+                    if pending_steer:
+                        completed_event["pending_steer"] = pending_steer
+                    _put_event_if_active(completed_event)
                     self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
                         usage=usage,
                         last_event="run.completed",
+                        **({"pending_steer": pending_steer} if pending_steer else {}),
                     )
             except asyncio.CancelledError:
                 self._set_run_status(
@@ -7014,6 +7204,66 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
+    async def _handle_steer_run(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+        # Only genuinely running runs are steerable.  /stop retains agent/task
+        # refs during cooperative shutdown, so the status gate (not the mere
+        # presence of an agent ref) is what rejects stop-then-steer.
+        agent = self._active_run_agents.get(run_id)
+        if status.get("status") != "running" or not hasattr(agent, "steer"):
+            return web.json_response(
+                _openai_error(
+                    f"Run is not currently accepting steer input: {run_id}",
+                    code="run_not_accepting_steer",
+                ),
+                status=409,
+            )
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        raw_text = body.get("input") or body.get("message") or body.get("text") or ""
+        steer_text = _normalize_chat_content(raw_text).strip()
+        if not steer_text:
+            return web.json_response(
+                _openai_error(
+                    "Missing non-empty steer text; expected 'input', 'message', or 'text'.",
+                    code="invalid_steer_input",
+                ),
+                status=400,
+            )
+
+        try:
+            accepted = bool(agent.steer(steer_text))
+        except Exception as exc:
+            logger.exception("[api_server] steer failed for run %s", run_id)
+            return web.json_response(_openai_error(_redact_api_error_text(exc), code="steer_failed"), status=500)
+        if not accepted:
+            return web.json_response(
+                _openai_error(f"Run did not accept steer text: {run_id}", code="steer_not_accepted"),
+                status=409,
+            )
+
+        self._set_run_status(run_id, "running", last_event="run.steered")
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            with suppress(Exception):
+                q.put_nowait({
+                    "event": "run.steered",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "accepted": True,
+                })
+        return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
+
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
         auth_err = self._check_auth(request)
@@ -7143,6 +7393,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
+
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = False
 
         if not self._api_key_passes_startup_guard():
             # A rejected API_SERVER_KEY is a configuration error, not a
@@ -7314,13 +7567,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        if self._site:
-            await self._site.stop()
-            self._site = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._app = None
+        try:
+            if self._site:
+                await self._site.stop()
+                self._site = None
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+        finally:
+            self._close_cached_session_dbs()
+            self._app = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

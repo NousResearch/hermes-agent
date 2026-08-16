@@ -92,6 +92,15 @@ describe('enumerationFailureNote', () => {
     }
   })
 
+  // Hyprland is asked over its own IPC, so the X11 tooling advice would be a
+  // wrong turn — reaching here means the compositor didn't answer.
+  it('points a Hyprland user at their compositor, not at xprop', () => {
+    const note = enumerationFailureNote('linux', { HYPRLAND_INSTANCE_SIGNATURE: 'abc', XDG_SESSION_TYPE: 'wayland' })
+
+    expect(note).toMatch(/Hyprland/)
+    expect(note).not.toMatch(/xprop|X11\/Xorg/)
+  })
+
   it('tells an X11 user which commands are missing', () => {
     const note = enumerationFailureNote('linux', { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' })
 

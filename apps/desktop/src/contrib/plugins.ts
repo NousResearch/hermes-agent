@@ -5,8 +5,9 @@
  *    `HermesPlugin` registers automatically (vite glob — drop a folder in).
  *    None ship in-tree today; reference/demo plugins live in the companion
  *    `hermes-example-plugins` repo.
- *  - RUNTIME: the on-disk door (`<hermes home>/desktop-plugins/<name>/plugin.js`)
- *    — the agent's/user's door, watched + hot-reloaded by the runtime loader.
+ *  - RUNTIME: the on-disk doors (`<hermes home>/desktop-plugins/<name>/plugin.js`
+ *    and the unified-package half `<hermes home>/plugins/<name>/desktop/plugin.js`)
+ *    — the agent's/user's doors, watched + hot-reloaded by the runtime loader.
  */
 
 import { createPluginContext, type HermesPlugin } from './plugin'

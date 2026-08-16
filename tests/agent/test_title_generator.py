@@ -143,7 +143,7 @@ class TestAutoTitleSession:
                 db,
                 "sess-1",
                 "hi",
-                title_callback=seen.append,
+                title_callback=lambda title, source: seen.append(title),
             )
 
         assert db.get_session_title("sess-1") == "Manual Title"
@@ -159,12 +159,14 @@ class TestAutoTitleSession:
                 db,
                 "sess-1",
                 "hello",
-                title_callback=seen.append,
+                title_callback=lambda title, source: seen.append((title, source)),
             )
         db.set_auto_title.assert_called_once_with(
             "sess-1", "Readable Session", source="llm"
         )
-        assert seen == ["Readable Session"]
+        # The stage reaches the consumer, so one that spends a rate-limited
+        # remote call per title can take this and skip the derived one.
+        assert seen == [("Readable Session", "llm")]
 
     def test_upgrades_a_derived_title_but_not_an_llm_one(self, tmp_path):
         """The instant title is provisional; a model title is final.
@@ -276,6 +278,97 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") is None
         mock_auto.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "opener",
+        [
+            "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted",
+            "[CONTEXT SUMMARY]: the user was refactoring the auth module",
+            "[System note: the user switched models]",
+            "[Runtime note: resumed from checkpoint]",
+        ],
+    )
+    def test_skips_every_shape_of_machine_authored_opener(self, tmp_path, opener):
+        """A session named after our own scaffolding is named after us."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", opener, [])
+        assert db.get_session_title("sess-1") is None
+        mock_auto.assert_not_called()
+
+    def test_a_multimodal_turn_counts_as_a_real_question(self, tmp_path):
+        """"Here's a screenshot, fix the login" is a question, parts list or not.
+
+        Judging a turn by `content` alone reads a multimodal one as machinery
+        and undercounts the conversation, so a session deep into its history
+        looks like it is still on its opening turn.
+        """
+        from agent.title_generator import _is_real_user_turn
+
+        assert _is_real_user_turn(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                    {"type": "text", "text": "fix the login button"},
+                ],
+            }
+        )
+        # An image with no words is not a question we can name anything after.
+        assert not _is_real_user_turn(
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}
+        )
+
+    def test_titles_on_a_later_turn_when_the_opener_was_not_titleable(self, tmp_path):
+        """A session whose opener couldn't be titled gets named by a later turn.
+
+        The opener here is a compaction handoff, so turn one leaves the session
+        nameless. Nothing used to reconsider it: the guard that stops re-titling
+        a named session also stopped the nameless one from ever asking again.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        history = [
+            {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] x"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "content": "sure"},
+        ]
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "sess-1", "fix the flaky auth test", history)
+        assert db.get_session_title("sess-1") == "fix the flaky auth test"
+
+    def test_leaves_an_already_titled_session_alone_on_later_turns(self, tmp_path):
+        """The retry is for nameless sessions only; a named one asks nothing."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_session_title("sess-1", "Existing name")
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "content": "sure"},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "and now something else", history)
+        assert db.get_session_title("sess-1") == "Existing name"
+        mock_auto.assert_not_called()
+
+    def test_instant_title_declines_a_name_collision(self, tmp_path):
+        """A colliding derived title is skipped, not scanned into 'hi #2'.
+
+        Common openers collide constantly, and the lineage scan that resolves
+        the collision runs inline on the turn. The model's title lands moments
+        later, so the session is named either way.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="taken", source="cli")
+        db.set_session_title("taken", "hi")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "sess-1", "hi", [])
+        assert db.get_session_title("sess-1") is None
+
 
 
 
@@ -283,6 +376,23 @@ class TestMaybeAutoTitle:
 
 class TestAutoTitleDuplicateHandling:
     """Duplicate auto-title handling and not-found hardening (#50537)."""
+
+    def test_background_stage_names_a_collision_the_instant_stage_declined(
+        self, tmp_path
+    ):
+        """The lineage scan the turn skipped happens here instead.
+
+        The inline stage declines a collision to stay off the critical path, and
+        the model can still come back empty. Between them the session would be
+        left nameless, so the background stage spends the scan the turn wouldn't.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="taken", source="cli")
+        db.set_session_title("taken", "hi")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.generate_title", return_value=None):
+            auto_title_session(db, "sess-1", "hi")
+        assert db.get_session_title("sess-1") == "hi #2"
 
     def test_dedupes_duplicate_title_via_lineage(self):
         db = MagicMock()
@@ -295,7 +405,12 @@ class TestAutoTitleDuplicateHandling:
             return_value="Debugging Import Error",
         ):
             seen = []
-            auto_title_session(db, "sess-1", "hi", title_callback=seen.append)
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                title_callback=lambda title, _source: seen.append(title),
+            )
         db.get_next_title_in_lineage.assert_called_once_with("Debugging Import Error")
         assert db.set_auto_title.call_args_list[-1][0] == (
             "sess-1",
@@ -360,3 +475,88 @@ class TestRuntimeValidator:
             assert called.wait(timeout=10), "auto_title thread never ran"
             kwargs = mock_auto.call_args.kwargs
             assert kwargs["runtime_validator"] is _v
+
+
+class TestModelSwitchMarkerNotTitleable:
+    """Regression: a model-switch marker must never become the session title.
+
+    ``_append_model_switch_marker`` (tui_gateway/server.py) persists its notice
+    with ``role="user"`` because strict OpenAI-compatible providers reject a
+    system message that is not first (#48338). Titling therefore has to
+    recognise it as machine-authored, or switching models before asking the
+    first real question titles the session
+    "[System: The active model for this chat has…".
+    """
+
+    MARKER = (
+        "[System: The active model for this chat has changed to "
+        "deepseek-v4-flash via provider 94mei. From this point forward, use "
+        "this runtime metadata when answering questions about what "
+        "model/provider is active.]"
+    )
+
+    def test_marker_prefix_matches_gateway_constant(self):
+        """The guard must stay in sync with the gateway's marker builder."""
+        from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+        from agent.title_generator import _MACHINE_PREFIXES
+
+        assert _MODEL_SWITCH_MARKER_PREFIX in _MACHINE_PREFIXES
+        assert self.MARKER.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+
+    def test_marker_is_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(self.MARKER) is False
+
+    def test_derive_title_is_unguarded_by_design(self):
+        """``derive_title`` is a dumb formatter; the guard lives in the callers.
+
+        Documents the contract deliberately: every caller checks
+        ``is_titleable_user_message`` first, so ``derive_title`` itself is
+        allowed to format a marker. If a future caller forgets that check, the
+        marker leaks into the title — which is exactly the bug this class
+        guards against.
+        """
+        from agent.title_generator import derive_title
+
+        assert derive_title(self.MARKER) is not None
+
+    def test_unrelated_system_bracket_text_still_titleable(self):
+        """The guard is narrow: real user text starting "[System:" still titles."""
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message("[System: my own note] how do I ...") is True
+
+    def test_real_question_after_marker_still_titles(self):
+        """The marker must not consume the session's one titling opportunity.
+
+        The marker is a role="user" row, so counting it made the first real
+        question look like turn 2 — and titling bailed out entirely, leaving
+        the session permanently untitled.
+        """
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
+        history = [
+            {"role": "user", "content": self.MARKER},
+            {"role": "user", "content": "南京市秦淮区 小时级天气预报"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            import threading
+
+            called = threading.Event()
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-1", "南京市秦淮区 小时级天气预报", history)
+            assert called.wait(timeout=10), "auto_title never ran after marker"
+
+    def test_instant_title_skips_marker_uses_real_message(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+
+        assert apply_instant_title(db, "sess-1", self.MARKER) is None
+        assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
+            "南京市秦淮区 小时级天气预报"
+        )

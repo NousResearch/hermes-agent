@@ -21,6 +21,7 @@ from agent.conversation_compression import (
     compress_context,
 )
 from hermes_state import SessionDB
+from tools.process_registry import format_process_notification
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 
@@ -230,6 +231,149 @@ def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
         ]},
         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
         {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST},
+    ]
+
+    idx = compressor._find_last_user_message_idx(messages, head_end=0)
+    assert idx == 0, "nudge was selected as the anchor instead of the human task"
+    assert messages[idx]["content"] == human["content"]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(
+            {
+                "type": "completion",
+                "session_id": "proc_build",
+                "command": "scripts/run_tests.sh tests/agent/",
+                "exit_code": 0,
+                "output": "42 passed",
+            },
+            id="completion",
+        ),
+        pytest.param(
+            {
+                "type": "watch_match",
+                "session_id": "proc_server",
+                "command": "python server.py",
+                "pattern": "Application startup complete",
+                "output": "Application startup complete",
+            },
+            id="watch_match",
+        ),
+    ],
+)
+def test_background_process_notifications_do_not_become_compaction_anchors(
+    compressor, event
+):
+    notification = format_process_notification(event)
+    assert notification is not None
+    process_turn = {"role": "user", "content": notification}
+    human = {"role": "user", "content": "Refactor the auth module and add tests."}
+    messages = [
+        human,
+        {"role": "assistant", "content": "Working on it."},
+        process_turn,
+    ]
+
+    assert ContextCompressor._is_synthetic_compression_user_turn(process_turn) is True
+    assert ContextCompressor._transcript_has_real_user_turn([process_turn]) is False
+    assert compressor._derive_auto_focus_topic(messages) == (
+        "Recent user focus:\n- Refactor the auth module and add tests."
+    )
+    assert compressor._find_last_user_message_idx(messages, head_end=0) == 0
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(
+            "[System: The previous response was cut off by a "
+            "network error mid-stream. Continue exactly where "
+            "you left off. Do not restart or repeat prior text. "
+            "Finish the answer directly.]",
+            id="length_continuation_network_stub",
+        ),
+        pytest.param(
+            "[System: Your previous response was truncated by the output "
+            "length limit. Continue exactly where you left off. Do not "
+            "restart or repeat prior text. Finish the answer directly.]",
+            id="length_continuation_output_limit",
+        ),
+        pytest.param(
+            "[System: Your previous tool call (write_file) was too large and "
+            "the stream timed out before it could be delivered. Do NOT retry "
+            "the same tool call with the same large content. Instead, break the "
+            "content into multiple smaller tool calls (e.g. use multiple patch "
+            "calls or write smaller files). Each tool call's arguments must be "
+            "under ~8K tokens to avoid stream timeouts.]",
+            id="length_continuation_dropped_tools",
+        ),
+        pytest.param(
+            "[System: Your previous response contained only internal reasoning and "
+            "never produced a visible answer or tool call. Do not keep thinking. "
+            "Produce your final answer as plain text now (or make the tool call "
+            "you were planning).]",
+            id="codex_incomplete_nudge",
+        ),
+        pytest.param(
+            "[System: Continue now. Execute the required tool calls and only "
+            "send your final answer after completing the task.]",
+            id="codex_ack_continuation_nudge",
+        ),
+        pytest.param(
+            "Your previous turn indicated a tool call but none was "
+            "included. Do not narrate a plan or restate intent — issue "
+            "the actual tool call now to continue the task.",
+            id="dropped_toolcall_nudge",
+        ),
+        pytest.param(
+            "You just executed tool calls but returned an "
+            "empty response. Please process the tool "
+            "results above and continue with the task.",
+            id="empty_tool_response_nudge",
+        ),
+    ],
+)
+def test_conversation_loop_retry_nudges_are_synthetic(content):
+    """These are runtime recovery nudges appended by conversation_loop's retry
+    loop (length-continuation, codex incomplete/ack-continuation,
+    dropped-tool-call) — same "ephemeral scaffolding, not a human turn" class
+    as MAX_ITERATIONS_SUMMARY_REQUEST above. A turn interrupted/crashed mid-
+    retry can persist one of these as a plain role="user" row (their
+    _length_continuation_nudge/_dropped_toolcall_nudge metadata tags do not
+    survive SessionDB projection), so recognition must be content-based."""
+    nudge = {"role": "user", "content": content}
+    assert ContextCompressor._is_synthetic_compression_user_turn(nudge) is True
+
+    human = {"role": "user", "content": "Ship the release notes for v2."}
+    assert ContextCompressor._is_synthetic_compression_user_turn(human) is False
+
+
+def test_real_task_wins_over_trailing_dropped_tools_continuation_nudge(compressor):
+    """The dropped-tools continuation nudge interpolates the tool name list,
+    so it can only be recognized by a stable prefix (unlike the other nudges,
+    which are exact-matched) — this proves that prefix path actually wires
+    into anchor selection, not just the classifier in isolation."""
+    human = {"role": "user", "content": "Refactor the auth module and add tests."}
+    messages = [
+        human,
+        {"role": "assistant", "content": "Working on it.", "tool_calls": [
+            {"id": "c1", "function": {"name": "write_file", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {
+            "role": "user",
+            "content": (
+                "[System: Your previous tool call (write_file, patch_file) was "
+                "too large and the stream timed out before it could be "
+                "delivered. Do NOT retry the same tool call with the same "
+                "large content. Instead, break the content into multiple "
+                "smaller tool calls (e.g. use multiple patch calls or write "
+                "smaller files). Each tool call's arguments must be under "
+                "~8K tokens to avoid stream timeouts.]"
+            ),
+        },
     ]
 
     idx = compressor._find_last_user_message_idx(messages, head_end=0)

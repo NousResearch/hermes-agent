@@ -21,6 +21,7 @@ import {
   setCurrentServiceTier,
   setTurnStartedAt
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import { clearDismissedErrorRows } from '@/app/contrib/wiring'
 
@@ -392,6 +393,10 @@ function assistantPartialError(id: string, error: string): ChatMessage {
   }
 }
 
+function transcriptForCache(id: string): ChatMessage[] {
+  return [userMessage(`${id}-user`, id), assistantText(`${id}-assistant`, `reply ${id}`)]
+}
+
 interface ViewHarnessProps {
   activeSessionId: string | null
   onReady: (cache: Cache) => void
@@ -420,6 +425,7 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
   afterEach(() => {
     cleanup()
     $messages.set([])
+    $sessionStates.set({})
   })
 
   it('does not leak a failed turn into another thread on switch', () => {
@@ -565,6 +571,27 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
 
     // The renderer-local pair stays absent after the warm switch.
     expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
+  })
+
+  it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      for (let index = 0; index < 25; index += 1) {
+        cache.updateSessionState(
+          `runtime-${index}`,
+          state => ({ ...state, messages: transcriptForCache(`message-${index}`) }),
+          `stored-${index}`
+        )
+      }
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has('runtime-0')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-0')).toBe(false)
+    expect($sessionStates.get()['runtime-0']).toMatchObject({ storedSessionId: 'stored-0', busy: false })
+    expect($sessionStates.get()['runtime-0']?.messages).toEqual([])
+    expect(cache.getRuntimeIdForStoredSession('stored-24')).toBe('runtime-24')
   })
 
   it('only returns a runtime whose cached state owns the requested stored session', () => {

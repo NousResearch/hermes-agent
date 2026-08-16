@@ -120,6 +120,9 @@ let _correctionSwitchIndex = 0
 /** Per-server counter for the verify-on-stop script. */
 let _verificationStopIndex = 0
 
+/** Per-server counter for the task-panel warm-resume script. */
+let _taskPanelResumeIndex = 0
+
 /** User messages received by the mock, for E2E assertions on real submits. */
 const _receivedUserTexts: string[] = []
 
@@ -131,6 +134,7 @@ function resetScriptIndex(): void {
   _queueStopIndex = 0
   _correctionSwitchIndex = 0
   _verificationStopIndex = 0
+  _taskPanelResumeIndex = 0
   _receivedUserTexts.length = 0
 }
 
@@ -295,6 +299,41 @@ export const VERIFICATION_STOP_TEXT = 'I cannot provide fresh verification evide
 export const BLOCKING_CLARIFY_TRIGGER = 'E2E_BLOCKING_CLARIFY_TRIGGER'
 export const BLOCKING_CLARIFY_QUESTION = 'Keep this test turn running?'
 
+/**
+ * A long live response with a five-row todo card, held open by a foreground tool.
+ * The transcript is deliberately taller than the viewport so warm-session
+ * tests can detect when re-opening the session leaves it above the true bottom.
+ */
+export const TASK_PANEL_RESUME_TRIGGER = 'E2E_TASK_PANEL_RESUME_TRIGGER'
+export const TASK_PANEL_RESUME_TEXT = Array.from(
+  { length: 24 },
+  (_, index) => `Task-panel clearance line ${index + 1}: inspect the restored working session geometry.`,
+).join('\n\n')
+
+const TASK_PANEL_RESUME_SCRIPT: ScriptedTurn[] = [
+  {
+    text: TASK_PANEL_RESUME_TEXT,
+    toolCalls: [
+      {
+        name: 'todo',
+        args: {
+          todos: [
+            { id: 'design', content: 'Design the restored layout', status: 'completed' },
+            { id: 'implement', content: 'Implement the measured clearance', status: 'in_progress' },
+            { id: 'verify', content: 'Verify the latest message stays visible', status: 'pending' },
+            { id: 'review', content: 'Review the visual regression', status: 'pending' },
+            { id: 'ship', content: 'Ship the focused fix', status: 'pending' },
+          ],
+        },
+      },
+      {
+        name: 'terminal',
+        args: { command: 'sleep 60' },
+      },
+    ],
+  },
+]
+
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
   toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
@@ -414,12 +453,36 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
+          const isTaskPanelResumeTrigger = userText.includes(TASK_PANEL_RESUME_TRIGGER)
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
           const isCorrectionSwitchTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
           )
+
+          if (isTaskPanelResumeTrigger) {
+            const turn =
+              TASK_PANEL_RESUME_SCRIPT[_taskPanelResumeIndex] ??
+              TASK_PANEL_RESUME_SCRIPT[TASK_PANEL_RESUME_SCRIPT.length - 1]
+            _taskPanelResumeIndex++
+            const respond = () => {
+              if (stream) {
+                streamScriptedTurn(res, model, turn)
+              } else {
+                nonStreamingScriptedTurn(res, model, turn)
+              }
+            }
+
+            if (holdThisCompletion) {
+              heldCompletionCount++
+              resolveHeldStreamStarted?.()
+              void heldStreamReleased.then(respond)
+            } else {
+              respond()
+            }
+            return
+          }
 
           if (includesBlockingClarifyTrigger(parsed.messages)) {
             if (stream) {

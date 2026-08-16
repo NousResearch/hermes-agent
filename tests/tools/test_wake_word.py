@@ -239,17 +239,40 @@ def test_bundled_hey_hermes_model_ships_on_disk():
 # ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
 #    upstream dscripka/openWakeWord#336) ────────────────────────────────────────
 
-def test_default_framework_is_tflite_on_macos_arm64(monkeypatch):
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
+def test_default_framework_tracks_the_macos_arm64_probe():
+    """``default_inference_framework()`` is exactly the ``_is_macos_arm64()``
+    branch — tflite there, onnx everywhere else.
+
+    Stated as an invariant between the probe and its consumer so it holds on
+    every host, including the macOS runner (where both sides are real) and an
+    Intel Mac (where ONNX is fine and both sides say so).
+    """
+    expected = "tflite" if ww._is_macos_arm64() else "onnx"
+    assert ww.default_inference_framework() == expected
+
+
+@pytest.mark.macos_only
+def test_macos_arm64_prefers_tflite_on_this_host():
+    """On a real ARM64 Mac the default must be tflite (upstream #336).
+
+    Runs on the macOS CI job, where ``platform.machine()`` and
+    ``sys.platform`` are the genuine article rather than a patched pair.
+    """
+    if not ww._is_macos_arm64():
+        pytest.skip("Intel Mac — ONNX works here, nothing to assert")
     assert ww.default_inference_framework() == "tflite"
+    assert ww.resolve_inference_framework({}) == "tflite"
+    assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
+    # The one explicit value we override: pinned onnx is provably dead here.
+    assert ww.resolve_inference_framework(
+        {"openwakeword": {"inference_framework": "onnx"}}
+    ) == "tflite"
 
 
-def test_explicit_framework_kept_off_broken_platform(monkeypatch):
+def test_explicit_framework_kept_where_onnx_works(monkeypatch):
     # An operator who pins a backend keeps it everywhere ONNX actually works.
     calls = _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww.sys, "platform", "linux")
-    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
     )
@@ -258,12 +281,17 @@ def test_explicit_framework_kept_off_broken_platform(monkeypatch):
 
 
 def test_empty_framework_falls_back_to_platform_default(monkeypatch):
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    """Empty/missing config defers to ``default_inference_framework()``.
+
+    The macOS-ARM64 side of the fallback is asserted for real in
+    ``test_macos_arm64_prefers_tflite_on_this_host``; here we pin the
+    delegation itself by swapping the platform probe (a seam in our own
+    module) rather than lying to the interpreter about which OS it is on.
+    """
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: True)
     assert ww.resolve_inference_framework({}) == "tflite"
     assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
-    monkeypatch.setattr(ww.sys, "platform", "linux")
-    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     assert ww.resolve_inference_framework({}) == "onnx"
 
 
@@ -495,8 +523,8 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
         det.stop()
 
 
-def test_windows_silent_hint_names_selected_device(monkeypatch):
-    monkeypatch.setattr(ww.sys, "platform", "win32")
+@pytest.mark.windows_only
+def test_windows_silent_hint_names_selected_device():
     hint = ww.silent_audio_hint(
         {
             "selector": 3,
@@ -507,6 +535,26 @@ def test_windows_silent_hint_names_selected_device(monkeypatch):
     assert "Microphone Array (Windows WASAPI)" in hint
     assert "wake_word.input_device" in hint
     assert "macOS" not in hint
+
+
+@pytest.mark.macos_only
+def test_macos_silent_hint_points_at_privacy_settings():
+    """On macOS a silent stream is almost always the TCC mic permission, so the
+    hint names System Settings rather than the device."""
+    hint = ww.silent_audio_hint(
+        {"selector": 1, "name": "MacBook Pro Microphone", "hostapi": "Core Audio"}
+    )
+    assert "Privacy & Security" in hint
+    assert "Microphone" in hint
+
+
+@pytest.mark.linux_only
+def test_linux_silent_hint_names_selected_device():
+    hint = ww.silent_audio_hint(
+        {"selector": 2, "name": "HD Audio Capture", "hostapi": "ALSA"}
+    )
+    assert "HD Audio Capture (ALSA)" in hint
+    assert "Privacy & Security" not in hint
 
 
 def test_detector_flags_silent_stream_and_recovers(monkeypatch):

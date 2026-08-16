@@ -362,6 +362,131 @@ class TestNotebookExtraction(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
 
+    def test_stream_output_rendered(self):
+        p = os.path.join(self.tmp, "nb_out.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "print('epoch done')",
+             "outputs": [{"output_type": "stream", "name": "stdout",
+                          "text": ["epoch done\n", "loss=0.42\n"]}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("Output (cell 1)", text)
+        self.assertIn("loss=0.42", text)
+
+    def test_error_output_keeps_traceback_strips_ansi(self):
+        p = os.path.join(self.tmp, "nb_err.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "1/0",
+             "outputs": [{"output_type": "error", "ename": "ZeroDivisionError",
+                          "evalue": "division by zero",
+                          "traceback": ["\x1b[31mZeroDivisionError\x1b[0m: division by zero"]}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("Error: ZeroDivisionError: division by zero", text)
+        self.assertNotIn("\x1b", text)
+
+    def test_image_output_replaced_with_placeholder(self):
+        payload = "A" * 4096  # ~3 KB decoded
+        p = os.path.join(self.tmp, "nb_img.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "plot()",
+             "outputs": [{"output_type": "display_data",
+                          "data": {"image/png": payload}}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("[image/png output — 3 KB, omitted]", text)
+        self.assertNotIn(payload, text)
+
+    def test_execute_result_prefers_text_plain_over_html(self):
+        p = os.path.join(self.tmp, "nb_df.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "df.head()",
+             "outputs": [{"output_type": "execute_result",
+                          "data": {"text/html": "<table><tr><td>1</td></tr></table>",
+                                   "text/plain": "   col\n0    1"}}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("   col", text)
+        self.assertNotIn("<table>", text)
+
+    def test_carriage_return_progress_collapsed(self):
+        p = os.path.join(self.tmp, "nb_tqdm.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "train()",
+             "outputs": [{"output_type": "stream",
+                          "text": [" 10%|█\r 50%|█████\r100%|██████████\n"]}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("100%|██████████", text)
+        self.assertNotIn("50%", text)
+
+    def test_widget_output_placeholder(self):
+        p = os.path.join(self.tmp, "nb_widget.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "slider",
+             "outputs": [{"output_type": "display_data",
+                          "data": {"application/vnd.jupyter.widget-view+json": {"model_id": "abc"},
+                                   "text/plain": "IntSlider(value=0)"}}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("[interactive widget — omitted]", text)
+
+    def test_oversized_outputs_truncated(self):
+        from tools.read_extract import _MAX_OUTPUT_CHARS
+        p = os.path.join(self.tmp, "nb_big.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "markdown", "source": "# intro"},
+            {"cell_type": "code", "source": "spam()",
+             "outputs": [{"output_type": "stream",
+                          "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("output chars truncated", text)
+        self.assertIn("— full output: jq -r '.cells[1].outputs' nb_big.ipynb]", text)
+        self.assertLess(len(text), _MAX_OUTPUT_CHARS + 2000)
+
+    def test_oversized_outputs_truncated_v3_jq_hint(self):
+        from tools.read_extract import _MAX_OUTPUT_CHARS
+        p = os.path.join(self.tmp, "nb_v3_big.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "markdown", "source": "# intro"},
+            {"cell_type": "code", "source": "spam()",
+             "outputs": [{"output_type": "stream",
+                          "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
+        ]}], "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertIn("output chars truncated", text)
+        self.assertIn(
+            "— full output: jq -r '.worksheets[0].cells[1].outputs' nb_v3_big.ipynb]",
+            text,
+        )
+
+    def test_legacy_v3_pyout_flat_fields(self):
+        p = os.path.join(self.tmp, "nb_v3.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "code", "source": "1+1",
+             "outputs": [{"output_type": "pyout", "text": ["2"]}]},
+        ]}], "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertIn("Output (cell 1)", text)
+        self.assertIn("2", text)
+
+    def test_malformed_outputs_ignored(self):
+        p = os.path.join(self.tmp, "nb_bad_out.ipynb")
+        _write_notebook(p, [
+            {"cell_type": "code", "source": "ok()",
+             "outputs": ["not-a-dict", {"output_type": "bogus"}, None]},
+            {"cell_type": "code", "source": "also_ok()", "outputs": "not-a-list"},
+        ])
+        text = extract_document_text(p)
+        self.assertIn("ok()", text)
+        self.assertIn("also_ok()", text)
+        self.assertNotIn("Output (cell", text)
+
 
 # ---------------------------------------------------------------------------
 # Word documents (.docx) — #10737

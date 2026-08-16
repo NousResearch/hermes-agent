@@ -3,6 +3,13 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+
+/* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
+   unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
+.titlebar-icon-button .codicon[class*='codicon-'] {
+  font-size: var(--titlebar-icon-size);
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Blanket reduced-motion override: kill ALL CSS animations and transitions
@@ -19,6 +26,27 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Continuous decorative animations otherwise keep Chromium's renderer awake
+   behind another app. main.tsx owns this attribute only for the primary
+   window; wake/pet overlays retain their purpose-built visibility behavior. */
+:root[data-renderer-animations-paused] :is(
+    .shimmer,
+    .quest-glow,
+    .pet-egg,
+    .pet-egg__glow,
+    .pet-egg-shadow,
+    .pet-wobble,
+    .progress-slide,
+    .kanban-arc
+  ),
+:root[data-renderer-animations-paused] .arc-border::before,
+:root[data-renderer-animations-paused]
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true'] {
+  animation-play-state: paused !important;
 }
 
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
@@ -444,7 +472,7 @@
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
-    --composer-width: 48.75rem;
+    --composer-width: 100%;
     --composer-control-size: 1.5rem;
     --composer-control-primary-size: 1.625rem;
     --composer-control-gap: 0.25rem;
@@ -468,8 +496,9 @@
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;
-    --titlebar-control-size: 1.25rem;
-    --titlebar-control-height: 1.375rem;
+    --titlebar-control-size: 24px;
+    --titlebar-control-height: 24px;
+    --titlebar-icon-size: 13.9px;
     --sidebar-content-inline-padding: 1rem;
 
     --sidebar: var(--dt-sidebar-bg);
@@ -1099,6 +1128,13 @@ code {
   border-color: var(--dt-destructive);
 }
 
+/* Drag in progress (sash resize, console resize, tab drag): webview/iframe
+   guests hit-test in their own process and swallow the gesture the moment the
+   pointer crosses them — see lib/guest-pointer-guard.ts. */
+body.guest-pointer-lock :is(webview, iframe) {
+  pointer-events: none;
+}
+
 @layer components {
   /* Chromium 121+ (Electron) prefers standard scrollbar-* over
      ::-webkit-scrollbar and ignores the latter when both are set — platform
@@ -1142,6 +1178,55 @@ code {
   .scrollbar-dt::-webkit-scrollbar-button,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
+  }
+
+  /* Hover-only bars. A thumb sitting on a list you aren't touching is chrome,
+     not information — the gutter is reserved either way, so fading it in and
+     out costs no reflow. Opt-in per surface: the sidebar wants it, a document
+     you're reading down wants its bar where you can see it. */
+  .scrollbar-fade::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    transition: background-color 150ms ease-out;
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--dt-midground) 18%, transparent);
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--dt-midground) 40%, transparent);
+  }
+
+  /* Hover marquee: a truncated line that scrolls its overflow into view while
+     hovered. Opt-in via .hover-marquee + an inner .hover-marquee-inner; the
+     JS side measures the overflow on pointerenter and sets --marquee-d (and
+     data-marquee) only when the text actually overflows, so short titles
+     keep their plain ellipsis and never wiggle. Alternate direction reads
+     back to the start; the 300ms delay keeps casual pointer passes still. */
+  .hover-marquee[data-marquee='true'] {
+    text-overflow: clip;
+  }
+
+  .hover-marquee[data-marquee='true'] > .hover-marquee-inner {
+    display: inline-block;
+    animation: hover-marquee var(--marquee-t, 3s) linear infinite;
+  }
+
+  /* One direction, Spotify-style: scroll the tail in, hold, snap back, hold.
+     The percentages pin the two holds; the travel occupies the middle. */
+  @keyframes hover-marquee {
+    0%,
+    10% {
+      transform: translateX(0);
+    }
+
+    75%,
+    100% {
+      transform: translateX(calc(-1 * var(--marquee-d, 0px)));
+    }
   }
 
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
@@ -1190,6 +1275,15 @@ code {
     .scrollbar-overlay {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* No transition — Firefox doesn't animate scrollbar-color. */
+    .scrollbar-fade {
+      scrollbar-color: transparent transparent;
+    }
+
+    .scrollbar-fade:hover {
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
     }
   }
 }
@@ -1330,7 +1424,7 @@ code {
 }
 
 [data-slot='aui_intro'] > div {
-  max-width: min(var(--composer-width), 82vw);
+  max-width: var(--composer-width);
 }
 
 [data-slot='aui_intro'] p:last-child {
@@ -2271,6 +2365,10 @@ button[data-slot='aui_msg-reactions'] svg {
   --hud-band-inset: 0.5rem;
   /* Clear space above the composer for the exit chip. */
   --hud-chip-strip: 1.625rem;
+  /* How long the exit chip stays after you stop pointing at the HUD. Long
+     enough to cross the gap between the bar and the chip without it
+     evaporating, short enough that it isn't furniture. */
+  --hud-exit-hold: 600ms;
 }
 
 /* Chat surface carries nothing in HUD mode — the visual is the BAND below. */
@@ -2715,7 +2813,11 @@ button[data-slot='aui_msg-reactions'] svg {
   width: 100% !important;
   max-width: none !important;
   transform: none !important;
-  translate: none !important;
+  /* Keep this value indirect. Lightning CSS folds literal identity values into
+     `transform: translate(0)`, which does not override Tailwind's standalone
+     `translate: -50%`; the dock then starts half a HUD width off-screen. */
+  --hud-composer-translate: 0;
+  translate: var(--hud-composer-translate) !important;
   padding: 0 !important;
 }
 
@@ -2788,11 +2890,42 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The exit button. HUD mode has no titlebar, so this is the only visible way
-   back; it lives in the open space off the bar's outer edge, at the right.
+   back; it rides the bar's outer edge at the right.
 
-   A bare themed glyph rather than a chip: it sits over whatever the user is
-   really working in, and a card floating there is a stray fragment of app on
-   their screen.
+   It wears the BAR'S material, not the desktop's. Every shipped control that
+   floats over content the app does not own resolves this the same way — give
+   the control its own substrate and let the glyph read against that, never
+   against the backdrop:
+
+     - Apple HIG, Materials: "Materials help visually separate foreground
+       elements, such as text and controls, from background elements." Controls
+       sit ON a material, never directly on content; even `clear` Liquid Glass
+       is specced with a 35%-opacity dimming layer behind it over bright
+       content.
+       https://developer.apple.com/design/human-interface-guidelines/materials
+     - Firefox picture-in-picture, the closest analogue we have (a small
+       always-on-top window over arbitrary content): the close/unpip buttons
+       are `background-color: rgba(255,255,255,.8)` with a `#000` glyph — an
+       opaque chip, not a bare icon.
+       toolkit/themes/shared/pictureinpicture/player.css
+     - Discord's overlay redesign: "This layer provided contrast against the
+       game making the UI easier to see."
+       https://discord.com/blog/redesigning-the-discord-overlay
+
+   Anything that instead tries to derive contrast from the backdrop is a dead
+   end here. mix-blend-difference composites against the PAGE behind the
+   element, and behind a transparent Electron window that is nothing — the
+   desktop is composited by WindowServer after Chromium has finished drawing
+   the frame (the same reason backdrop-filter can't frost the HUD). A glyph
+   halo has the same flaw from the other side: it guesses one backdrop
+   luminance and is grime over everything else.
+
+   So: the composer bar's exact tokens — same fill, same hairline, same bottom
+   shadow. The bar is the HUD's solved case for "our surface, over an unknown
+   desktop, in either appearance", and theme plus OS light/dark (mode 'system')
+   come free with it, because --dt-card and --ui-text-primary are the pair the
+   whole app is built on. The chip inverts with the appearance instead of
+   betting on one.
 
    Placed from --hud-bar-height rather than CSS anchor(). Lightning CSS drops a
    whole rule containing an `anchor()` on the vertical axis, so the flipped-edge
@@ -2802,19 +2935,43 @@ button[data-slot='aui_msg-reactions'] svg {
   top: auto;
   right: 0.375rem;
   bottom: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.375rem);
-  aspect-ratio: 1;
+  /* Square. `size="icon-titlebar"` sizes width and height from two DIFFERENT
+     vars (--titlebar-control-size / --titlebar-control-height, 20x22 today),
+     which is right in a titlebar row and reads as a dent on a lone floating
+     chip — so height comes off the width instead. */
+  aspect-ratio: 1 / 1;
   height: auto;
-  background: transparent !important;
-  border: 0;
+  background: var(--dt-card) !important;
+  border: 1px solid var(--ui-stroke-secondary) !important;
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 2px -1px rgb(0 0 0 / 0.12);
   color: var(--ui-text-primary) !important;
-  /* Focus only. A turn landing brings the transcript up but doesn't mean you
-     are reaching for the window controls, and at rest this is a lone chip
-     hovering over whatever you're actually working in. */
+  /* Gone until you reach for the HUD. A permanent chip is a fragment of Hermes
+     parked on top of whatever you are really working in; reaching for the bar
+     is the motion that means "I want the app", so that is what brings the way
+     out with it. Hover, not focus — the gate #81893 warned about made the
+     escape hatch depend on the caret landing in the composer, broken exactly
+     when you most want out, whereas pointing at the bar needs nothing to be
+     working.
+
+     `visibility`, not opacity alone: an always-on-top window eats clicks
+     wherever the page hands the hit test something real, so a 0-opacity chip
+     with `pointer-events: auto` would be an invisible button in the corner
+     that drops you out of HUD mode when you click the app behind it.
+     `visibility: hidden` takes it out of `elementFromPoint` as well as off the
+     screen, and it transitions discretely, so it flips in step with the fade
+     rather than needing a second mechanism. */
   opacity: 0;
-  transition: opacity var(--hud-fade) var(--hud-ease-exit);
-  /* Clicks on exactly the same terms as the paint — a faded-out control that
-     still takes them is an invisible button floating over the app behind. */
-  pointer-events: none;
+  visibility: hidden;
+  /* Leaving holds first. The chip sits 0.375rem clear of the bar, so the
+     cursor crosses shell dead space on its way up from the bar to the chip and
+     both hover triggers are false for that moment — without the hold it would
+     fade out from under a hand that is on its way to press it. */
+  transition:
+    opacity var(--hud-fade) var(--hud-ease-exit) var(--hud-exit-hold),
+    visibility 0s linear calc(var(--hud-exit-hold) + var(--hud-fade)),
+    background-color var(--hud-reveal) var(--hud-ease-enter);
+  pointer-events: auto;
 }
 
 /* Flipped, "above the composer" is the reserved strip at the top of the
@@ -2824,15 +2981,53 @@ button[data-slot='aui_msg-reactions'] svg {
   top: 0;
 }
 
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit] {
-  opacity: 0.75;
-  pointer-events: auto;
-  transition-duration: var(--hud-reveal);
+/* What counts as reaching for it: the bar, the transcript band, or the chip
+   itself. The band only answers `:hover` while it is on screen (faded out it
+   is `pointer-events: none`), so this can't reveal the chip over a HUD that
+   isn't there. The chip's own hover is in the set so arriving re-asserts the
+   reveal that the hold above was covering for.
+
+   Hovering the shell at large is deliberately NOT a trigger — most of the
+   HUD's rectangle is empty window over someone else's app, and it is
+   `pointer-events: none` precisely so the cursor passing through means
+   nothing. */
+[data-hud-shell]:has([data-slot='composer-dock']:hover) [data-hud-exit],
+[data-hud-shell]:has([data-slot='composer-bounds']:hover) [data-hud-exit],
+[data-hud-shell] [data-hud-exit]:hover,
+[data-hud-shell] [data-hud-exit]:focus-visible {
+  opacity: 1;
+  visibility: visible;
+  transition-duration: var(--hud-reveal), 0s, var(--hud-reveal);
   transition-delay: 0s;
 }
 
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit]:hover {
-  opacity: 1;
+/* Hover and focus-visible: the app's own control-hover tint, so pointing at it
+   confirms it is a button with the same feedback every other icon button in
+   Hermes gives. Layered OVER the card rather than replacing it —
+   --ui-control-hover-background is a translucent color-mix meant to sit on an
+   opaque titlebar, and here the button IS the opaque surface, so assigning it
+   directly would make the chip see-through on hover. */
+[data-hud-shell] [data-hud-exit]:hover,
+[data-hud-shell] [data-hud-exit]:focus-visible {
+  background:
+    linear-gradient(var(--ui-control-hover-background), var(--ui-control-hover-background)), var(--dt-card) !important;
+}
+
+/* The corner resize handle — a hot corner, not a button. The window is created
+   non-resizable (the transparent-frameless Windows drag-growth bug), so this
+   is the one sanctioned way to change the HUD's size; it drives
+   `hermes:hud:set-bounds`, which flips resizable on for the call.
+
+   Deliberately invisible chrome: no glyph, no border — the corner of the bar
+   reads as the affordance, and painting a handle on a surface that lives over
+   other apps would be a stray UI fragment. It opts in to pointer events the
+   same way every other HUD control does (the shell defaults to none). */
+[data-hud-shell] [data-hud-resize] {
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
 }
 
 /* The composer's drop target is a full-window dashed sheet sized for the app's

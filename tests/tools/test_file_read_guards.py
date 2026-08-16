@@ -212,6 +212,96 @@ class TestDevicePathBlocking(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Non-regular files (FIFOs, sockets, directories)
+# ---------------------------------------------------------------------------
+
+class TestNonRegularFileReads(unittest.TestCase):
+    """Blocking paths the device blocklist structurally cannot cover.
+
+    The blocklist matches literal ``/dev/*`` names. A FIFO is a file *type*
+    and can sit at any path, so no name list catches it. Reading one with no
+    writer blocks in the size probe, and the read helpers pass no timeout, so
+    the turn wedges until the process is killed.
+
+    Each read runs on a worker thread with a wall clock: a thread still alive
+    at the deadline means the call blocked, which fails as an assertion
+    instead of hanging the suite.
+    """
+
+    DEADLINE_SECONDS = 20.0
+
+    def _read_within_deadline(self, path, task_id):
+        import threading
+
+        box = {}
+
+        def call():
+            try:
+                box["raw"] = read_file_tool(path, task_id=task_id)
+            except BaseException as exc:  # noqa: BLE001
+                box["exc"] = exc
+
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        worker.join(self.DEADLINE_SECONDS)
+        self.assertFalse(
+            worker.is_alive(),
+            f"read_file_tool({path!r}) still running after "
+            f"{self.DEADLINE_SECONDS:.0f}s — the read blocked",
+        )
+        if "exc" in box:
+            raise box["exc"]
+        return json.loads(box["raw"])
+
+    def test_read_file_tool_on_fifo_errors_instead_of_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("platform has no os.mkfifo")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fifo_path = os.path.join(tmpdir, "pipe")
+            try:
+                os.mkfifo(fifo_path)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"mkfifo unavailable: {exc}")
+
+            result = self._read_within_deadline(fifo_path, "fifo_read_test")
+
+        # The tool layer intercepts first with a success=False NOTE (a fact
+        # about the file, not an error — merged stat-guard design); the
+        # shell-layer sentinel behind it errors. Accept either surface.
+        surface = result.get("error") or result.get("note") or ""
+        self.assertTrue(surface, f"expected error or note, got: {result}")
+        self.assertIn("not a regular file", surface)
+
+    def test_read_file_tool_on_directory_errors_instead_of_blocking(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._read_within_deadline(tmpdir, "dir_read_test")
+
+        self.assertIn("error", result)
+        self.assertIn("not a regular file", result["error"])
+
+    def test_regular_file_still_reads(self):
+        """The guard must not cost ordinary reads their content."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "notes.txt")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("first line\nsecond line\n")
+
+            result = self._read_within_deadline(target, "regular_read_test")
+
+        self.assertNotIn("error", result)
+        self.assertIn("second line", result["content"])
+
+    def test_missing_file_still_reports_not_found(self):
+        """An absent path keeps the not-found wording, not the type error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = os.path.join(tmpdir, "no-such-file.txt")
+            result = self._read_within_deadline(missing, "missing_read_test")
+
+        self.assertIn("error", result)
+        self.assertNotIn("not a regular file", result["error"])
+
+
+# ---------------------------------------------------------------------------
 # Character-count limits
 # ---------------------------------------------------------------------------
 

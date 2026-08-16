@@ -17,6 +17,7 @@ import {
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  disposeSecondariesForConnection,
   ensureGatewayForProfile,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
@@ -39,6 +40,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
+import { windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -254,15 +256,24 @@ export function useGatewayBoot({
     // resumes are no-op swaps and reconnects target the right backend.
     // Best-effort: a missing preference means "default". Shared by boot + soft
     // switch.
+    //
+    // Helper windows (the HUD) can carry an explicit profile override in their
+    // URL: the HUD is opened ON a conversation, and when that conversation
+    // belongs to a non-primary profile, adopting the primary here resolves the
+    // session id against the wrong backend — the HUD then falls back to the
+    // default profile's last session (#82285). The override wins over the
+    // stored preference; absent, behavior is unchanged.
     async function adoptPrimaryProfile() {
+      const override = windowProfileOverride()
+
       try {
-        const pref = await desktop.profile?.get?.()
-        const profileKey = (pref?.profile ?? '').trim() || 'default'
-        $activeGatewayProfile.set(profileKey)
-        setPrimaryGateway(gateway, profileKey)
-        void ensureGatewayForProfile(profileKey)
+        const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
+        const key = normalizeProfileKey(profileKey)
+        $activeGatewayProfile.set(key)
+        setPrimaryGateway(gateway, key)
+        void ensureGatewayForProfile(key)
       } catch {
-        $activeGatewayProfile.set('default')
+        $activeGatewayProfile.set(normalizeProfileKey(override))
       }
     }
 
@@ -298,7 +309,9 @@ export function useGatewayBoot({
         gateway.close()
         closeSecondaryGateways()
 
-        const conn = await desktop.getConnection()
+        // Same override rule as boot(): a profile-pinned helper window stays
+        // on its pinned profile's backend across a soft switch.
+        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
 
         if (cancelled) {
           return
@@ -422,6 +435,18 @@ export function useGatewayBoot({
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 
+    // Registry lifecycle: a removed connection's secondaries must close NOW
+    // (remote/cloud have no local process whose death would drop the socket —
+    // they'd keep streaming ghost events); a materially edited one is
+    // disposed AND re-dialed so its sockets target the new endpoint.
+    const offConnectionsChanged = desktop.connections?.onChanged?.(payload => {
+      if (!payload || typeof payload.connectionId !== 'string') {
+        return
+      }
+
+      disposeSecondariesForConnection(payload.connectionId, { redial: payload.reason === 'updated' })
+    })
+
     const onOnline = () => reconnectNow()
 
     const onVisible = () => {
@@ -488,7 +513,10 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        // A profile-pinned helper window (the HUD) dials its target profile's
+        // backend directly — ensureBackend spawns/reuses it from the pool.
+        // Everything else keeps dialing the primary.
+        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
 
         if (cancelled) {
           return
@@ -621,6 +649,7 @@ export function useGatewayBoot({
       document.removeEventListener('visibilitychange', onVisible)
       offPowerResume?.()
       offConnectionApplied?.()
+      offConnectionsChanged?.()
       offState()
       offEvent()
       offExit()

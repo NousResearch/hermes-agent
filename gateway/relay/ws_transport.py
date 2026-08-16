@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -57,6 +58,45 @@ _OUTBOUND_TIMEOUT_S = 30.0
 # adapter.disconnect. Three sequential awaits at 1.0s stay under the runner's
 # default 5s adapter disconnect budget (plus the 2s go_idle ACK budget).
 _TEARDOWN_AWAIT_TIMEOUT_S = 1.0
+# Bounded drain for in-flight outbound frames at disconnect: long enough for a
+# platform edit round-trip through the connector, short enough that shutdown
+# stays snappy when the connector is gone. The EFFECTIVE grace is clamped at
+# disconnect time so drain + the three sequential teardown awaits stay inside
+# the runner's adapter-disconnect budget (gateway/run.py wraps disconnect() in
+# asyncio.wait_for; blowing that budget cancels teardown mid-drain, skips the
+# fail-pending loop, and leaves callers blocked on _OUTBOUND_TIMEOUT_S).
+_DISCONNECT_DRAIN_GRACE_S = 5.0
+
+
+def _disconnect_drain_grace_s(budget_s: Optional[float] = None) -> float:
+    """Effective drain grace: clamped to the caller's disconnect budget.
+
+    ``budget_s`` is the REMAINING budget threaded down by the caller
+    (RelayAdapter.disconnect measures what go_idle and monitor teardown
+    already consumed). When None, mirrors
+    gateway/run.py:_adapter_disconnect_timeout_secs (env override with
+    the same variable, same default) rather than importing it — the
+    transport must stay importable without the gateway runner. Reserves
+    the three sequential teardown awaits plus a small margin.
+    """
+    budget = _env_disconnect_budget_s() if budget_s is None else max(0.0, budget_s)
+    reserved = 3 * _TEARDOWN_AWAIT_TIMEOUT_S + 0.5
+    return max(0.0, min(_DISCONNECT_DRAIN_GRACE_S, budget - reserved))
+
+
+def _env_disconnect_budget_s() -> float:
+    """The runner's adapter-disconnect budget, read the same way
+    gateway/run.py:_adapter_disconnect_timeout_secs reads it (same env
+    variable, same default). Callers above the transport use this to
+    apportion the budget across go_idle / monitor teardown / drain."""
+    budget = 5.0  # _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT in gateway/run.py
+    raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+    if raw:
+        try:
+            budget = max(0.0, float(raw))
+        except ValueError:
+            pass
+    return budget
 
 # Phase 7 Unit 7d-B: the application close code the connector sends when it
 # rejects/revokes a gateway's WS upgrade auth (mirrors the connector's
@@ -500,38 +540,69 @@ class WebSocketRelayTransport:
         token = make_upgrade_token(self._gateway_id, self._upgrade_secret)
         return {"Authorization": f"Bearer {token}"}
 
-    async def disconnect(self) -> None:
+    async def disconnect(self, *, budget_s: Optional[float] = None) -> None:
+        """Tear down the socket, draining in-flight outbound frames first.
+
+        ``budget_s`` is the REMAINING wall-clock budget the caller can spend
+        here (RelayAdapter.disconnect threads it down after go_idle / monitor
+        teardown). When None, the env-mirrored runner default applies.
+        """
         self._closing = True
-        if self._supervisor is not None:
-            self._supervisor.cancel()
-            try:
-                await asyncio.wait_for(
-                    self._supervisor, timeout=_TEARDOWN_AWAIT_TIMEOUT_S
-                )
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
-            self._supervisor = None
-        if self._reader is not None:
-            self._reader.cancel()
-            try:
-                await asyncio.wait_for(self._reader, timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
-            self._reader = None
-        if self._ws is not None:
-            try:
-                await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            finally:
-                self._ws = None
-        # Fail any in-flight outbound waiters so callers don't hang.
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.set_exception(RuntimeError("relay transport closed"))
-        self._pending.clear()
-        if self._going_idle_ack is not None and not self._going_idle_ack.done():
-            self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
+        try:
+            # Drain grace: a trailing outbound frame (typically the turn's
+            # finalize edit) may still be awaiting its outbound_result. Failing
+            # it immediately loses a message the connector was about to ack —
+            # staging incident 2026-08-09 froze a Slack reply at its preview
+            # snapshot exactly this way. Give in-flight requests a short bounded
+            # window to resolve before tearing the socket down.
+            pending = [f for f in self._pending.values() if not f.done()]
+            if pending:
+                _grace = _disconnect_drain_grace_s(budget_s)
+                if _grace > 0:
+                    try:
+                        # asyncio.wait (not wait_for+gather): on timeout it must NOT
+                        # cancel the futures — the fail-any-remaining loop below owns
+                        # their terminal state.
+                        await asyncio.wait(pending, timeout=_grace)
+                    except Exception:  # noqa: BLE001 - grace is best-effort
+                        pass
+            if self._supervisor is not None:
+                self._supervisor.cancel()
+                try:
+                    await asyncio.wait_for(
+                        self._supervisor, timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                    pass
+                self._supervisor = None
+            if self._reader is not None:
+                self._reader.cancel()
+                try:
+                    await asyncio.wait_for(self._reader, timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                    pass
+                self._reader = None
+            if self._ws is not None:
+                try:
+                    await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                finally:
+                    self._ws = None
+        finally:
+            # Fail any in-flight outbound waiters so callers don't hang.
+            # Runs in a finally so a cancellation landing anywhere in the
+            # drain/teardown above (the runner's wait_for budget, an outer
+            # cleanup deadline) can NEVER leave a registered future
+            # unresolved — a stranded waiter would otherwise block until
+            # _OUTBOUND_TIMEOUT_S (30s). Idempotent: done futures are
+            # skipped, so a second disconnect() pass is safe.
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError("relay transport closed"))
+            self._pending.clear()
+            if self._going_idle_ack is not None and not self._going_idle_ack.done():
+                self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
 
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:
@@ -696,6 +767,12 @@ class WebSocketRelayTransport:
         *,
         platform: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if self._closing:
+            # Teardown in progress: the disconnect() fail-pending loop may
+            # already have run, so a future registered now would never be
+            # resolved or failed — the caller would block the full
+            # _OUTBOUND_TIMEOUT_S for a socket that is going away. Fail fast.
+            return {"success": False, "error": "relay transport closed"}
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
         request_id = uuid.uuid4().hex

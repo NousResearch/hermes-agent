@@ -131,6 +131,31 @@ class TestEnginesAreSatisfiable:
             "declare, or the install we just performed cannot install deps."
         )
 
+    def test_managed_node_bundles_an_npm_the_engines_accept(self):
+        """The Node major install.sh fetches must ship an npm that clears
+        engines.npm. Node 22 bundles 11.16.0, which is in the excluded
+        11.10–11.16 band — fresh Hermes-managed installs then die at
+        `npm ci` with EBADENGINE (#80769).
+        """
+        npm_range = _root_manifest()["engines"]["npm"]
+        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
+        for line in install_sh.splitlines():
+            if line.startswith("NODE_VERSION="):
+                managed_major = int(line.split("=", 1)[1].strip().strip('"').strip("'"))
+                break
+        else:  # pragma: no cover
+            pytest.fail("install.sh does not define NODE_VERSION")
+        stock_npm = _STOCK_NPM_BY_NODE_MAJOR.get(managed_major)
+        assert stock_npm is not None, (
+            f"install.sh NODE_VERSION={managed_major} is not in the known "
+            f"stock map {_STOCK_NPM_BY_NODE_MAJOR}"
+        )
+        assert _satisfies_range(stock_npm, npm_range), (
+            f"install.sh provisions Node {managed_major}.x (stock npm "
+            f"{stock_npm}), but engines.npm is {npm_range!r}. A fresh "
+            "Hermes-managed install cannot run npm ci."
+        )
+
     def test_desktop_node_floor_is_not_stricter_than_its_toolchain(self):
         """apps/desktop must not demand more Node than its own build tools do.
 

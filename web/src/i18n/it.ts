@@ -617,6 +617,12 @@ export const it: Translations = {
       "Le bacheche ti permettono di separare flussi di lavoro non correlati — una per progetto, repository o dominio. I worker su una bacheca non vedono mai le attività di un'altra.",
     slug: "Slug",
     slugHint: "— minuscolo, trattini, ad es. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nome visualizzato",
     displayNameHint: "(facoltativo)",
     description: "Descrizione",

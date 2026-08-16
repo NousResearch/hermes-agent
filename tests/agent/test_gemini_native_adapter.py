@@ -290,6 +290,47 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert "thinkingConfig" not in request["generationConfig"]
+
+
+def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
+    from agent.gemini_native_adapter import (
+        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+        build_gemini_request,
+    )
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": True, "thinkingLevel": "high"},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    assert request["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "high"
+
+
+def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": False},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert request["generationConfig"]["thinkingConfig"]["includeThoughts"] is False
+
+
 
 
 

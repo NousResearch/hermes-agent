@@ -319,6 +319,23 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        # Slack thread-per-message session keying (native parity: thread_ts =
+        # event.thread_ts or ts) stamps every TOP-LEVEL message's own id as
+        # the session thread. That stamp is a per-message session KEY, not a
+        # durable conversation location — persisting it as origin routing
+        # pins every future delivery inside the ephemeral thread spawned
+        # around the creation message. Recognize it at the source: a Slack
+        # thread id equal to the triggering message's own id is synthetic.
+        # A genuine in-thread creation (thread == the parent's id != this
+        # message's id) keeps its thread.
+        if thread_id and origin_platform == "slack":
+            message_id = get_session_env("HERMES_SESSION_MESSAGE_ID") or None
+            if message_id and str(thread_id) == str(message_id):
+                logger.debug(
+                    "Cron origin: dropping synthetic per-message Slack "
+                    "thread_id=%s (== creation message id)", thread_id,
+                )
+                thread_id = None
         if thread_id:
             logger.debug(
                 "Cron origin captured thread_id=%s for %s:%s",
@@ -432,6 +449,53 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
         return ",".join(parts) if parts else None
     text = str(value).strip()
     return text or None
+
+
+def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
+    """Resolve ``origin`` to a concrete target for cron-context creates.
+
+    A job created FROM a cron run must never store the literal ``origin``:
+    the creating session is ephemeral, so by fire time there is no origin to
+    resolve and the scheduler would fall back to guessing a home channel.
+    Resolve at create time instead, using the creating run's own concrete
+    delivery target — the ``HERMES_CRON_AUTO_DELIVER_*`` contextvars that
+    ``run_job`` publishes per run (already per-job-safe under the parallel
+    pool). Rules:
+
+    * Not a cron-context session → returned unchanged (chat/CLI creates keep
+      today's fire-time ``origin`` semantics, byte-identical).
+    * ``origin`` element (or an omitted value, which the scheduler treats as
+      origin) → replaced with ``platform:chat_id[:thread_id]`` from the
+      creating run's target; ``local`` when the creating run has no concrete
+      target (e.g. its own deliver is ``local``).
+    * Every other element (``local``, ``all``, explicit ``platform:...``)
+      passes through verbatim, including inside comma lists.
+    """
+    from gateway.session_context import get_session_env
+    from utils import is_truthy_value
+
+    if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+        return deliver
+
+    def _creator_target() -> str:
+        platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip()
+        chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+        if not platform or not chat_id:
+            return "local"
+        thread_id = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip()
+        if thread_id:
+            return f"{platform}:{chat_id}:{thread_id}"
+        return f"{platform}:{chat_id}"
+
+    if deliver is None:
+        return _creator_target()
+    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    resolved = [_creator_target() if p.lower() == "origin" else p for p in parts]
+    # De-dup while preserving order: 'origin,local' with a local-target
+    # creator would otherwise store 'local,local'.
+    seen: set = set()
+    unique = [p for p in resolved if not (p in seen or seen.add(p))]
+    return ",".join(unique) if unique else None
 
 
 def _validate_cron_base_url(
@@ -616,9 +680,11 @@ def _execute_job_now(
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    claimed_job = None
     try:
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
+        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        if not isinstance(claimed_job, dict):
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
             # (#60703): that message sends the user chasing a phantom
@@ -639,7 +705,7 @@ def _execute_job_now(
             pass
         return {"claimed": True, "success": False, "error": str(e)}
 
-    return _run_claimed_job(job, extra_prompt=extra_prompt)
+    return _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
 
 
 def _run_claimed_job(
@@ -656,6 +722,7 @@ def _run_claimed_job(
     """
     job_id = job["id"]
     _registered = False
+    fire_owner = None
     try:
         from cron.scheduler import (
             release_running_job,
@@ -681,8 +748,13 @@ def _run_claimed_job(
             }
         _registered = True
 
+        claim = job.get("fire_claim")
+        fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
+        # ``job`` here is the exact claimed snapshot (owner-bearing), so the
+        # shared body fences every terminal write by that owner.
         #
         # A manual `run` executes the job synchronously on the caller's thread,
         # and a cron job is itself a full agent run that routinely takes
@@ -790,10 +862,19 @@ def _run_claimed_job(
             except Exception:
                 pass
         try:
-            mark_job_run(job_id, False, str(e))
+            mark_job_run(
+                job_id,
+                False,
+                str(e),
+                expected_fire_owner=fire_owner,
+            )
         except Exception:
             pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        return {
+            "claimed": True,
+            "success": False,
+            "error": str(e),
+        }
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
@@ -872,6 +953,34 @@ def _try_dispatch_background_run(
     job_id = job["id"]
     job_name = str(job.get("name") or job_id)
 
+    # Reap any execution row this job (or any job) left stranded 'claimed'/
+    # 'running' by a dead owner process -- e.g. a PRIOR one-shot `hermes
+    # cron run` invocation whose dispatched runner died with the exiting
+    # process before writing a terminal status (issue #86721). The
+    # long-lived scheduler ticker already does this once at its own
+    # startup (cron/scheduler.py's self.recover_interrupted()); a one-shot
+    # CLI invocation has no equivalent "startup" moment of its own, so it
+    # never got this self-heal -- leaving a permanently-stale claim that
+    # blocked every subsequent manual run on the same job. Safe and cheap:
+    # only provably-dead owners (PID gone, or PID reused by a different
+    # process per its start time) are reaped; a genuinely live owner's row
+    # is left untouched.
+    try:
+        from cron.executions import recover_interrupted_executions
+
+        _reclaimed = recover_interrupted_executions()
+        if _reclaimed:
+            logger.warning(
+                "Reclaimed %d stale cron execution(s) from dead owner(s) "
+                "before dispatching job '%s'",
+                _reclaimed,
+                job_name,
+            )
+    except Exception as _reap_exc:
+        # Best-effort self-heal; a failure here must not block dispatch —
+        # but stay diagnosable (mirrors the scheduler tick's reap handling).
+        logger.debug("Stale execution reclaim failed: %s", _reap_exc)
+
     # ---- routing capture (on THIS thread; contextvars don't cross the pool) ----
     # Resolved BEFORE the claim: with no routable session there is no durable
     # consumer for a detached completion, so we must not claim-and-dispatch.
@@ -914,7 +1023,10 @@ def _try_dispatch_background_run(
         except Exception:
             pass
 
-        if not claim_job_for_fire(job_id):
+        # Same snapshot claim as _execute_job_now: carry the owner-bearing
+        # record into the run so terminal writes stay fenced by this owner.
+        claimed_job = claim_job_for_fire(job_id, return_job=True)
+        if not isinstance(claimed_job, dict):
             refreshed = get_job(job_id)
             if refreshed is None:
                 reason = "Job no longer exists; nothing to run."
@@ -951,7 +1063,7 @@ def _try_dispatch_background_run(
             "cronjob run: async delegation registry unavailable (%s); "
             "running job '%s' inline.", e, job_name,
         )
-        result = _run_claimed_job(job, extra_prompt=extra_prompt)
+        result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
         result["dispatched"] = False
         return result
 
@@ -966,7 +1078,7 @@ def _try_dispatch_background_run(
     deliver = job.get("deliver", "local")
 
     def _runner() -> Dict[str, Any]:
-        res = _run_claimed_job(job, extra_prompt=extra_prompt)
+        res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
         duration = round(time.time() - started_at, 2)
         refreshed = get_job(job_id) or {}
         lines = [
@@ -1126,7 +1238,9 @@ def cronjob(
                     schedule=schedule,
                     name=name,
                     repeat=repeat,
-                    deliver=_normalize_deliver_param(deliver),
+                    deliver=_resolve_cron_context_deliver(
+                        _normalize_deliver_param(deliver)
+                    ),
                     origin=_origin_from_env(),
                     skills=canonical_skills,
                     model=_normalize_optional_job_value(model),
@@ -1309,7 +1423,9 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = _normalize_deliver_param(deliver)
+                updates["deliver"] = _resolve_cron_context_deliver(
+                    _normalize_deliver_param(deliver)
+                )
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
@@ -1459,7 +1575,7 @@ NOTE: The agent's final response is auto-delivered to the target. Put the primar
 user-facing content in the final response. Cron jobs run autonomously with no user
 present — they cannot ask questions or request clarification.
 
-Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
+Scheduling from cron-run sessions is disabled by default and enabled via cron.allow_agent_scheduling in config.yaml. When enabled, jobs created from a cron run are user-owned in the same flat job table as every other job, and their delivery resolves to the creating job's own persistent target — never to the ephemeral cron-run session. Prefer updating an existing job (list first, then update by job_id) over creating near-duplicates.""",
     "parameters": {
         "type": "object",
         "properties": {

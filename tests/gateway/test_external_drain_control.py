@@ -12,6 +12,7 @@ Q-B, exercises a real `hermes gateway run`); these lock the unit contract.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -119,6 +120,120 @@ class TestInstantiationEpoch:
             assert dc.current_instantiation_epoch() == ""
         finally:
             dc.current_instantiation_epoch.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# requested_at max-age (#85433: same-epoch orphaned marker, no restart)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerMaxAge:
+    def test_fresh_marker_honoured(self, home):
+        dc.write_drain_request(principal="nas")
+        assert dc.drain_requested() is True
+
+    def test_expired_marker_reads_as_absent(self, home):
+        # THE #85433 REGRESSION. A drain-gated action completes WITHOUT a
+        # machine restart, so the epoch still matches — but the writer never
+        # cancelled the drain. The orphan must not wedge the gateway forever.
+        from datetime import datetime, timedelta, timezone
+
+        dc.write_drain_request(principal="nas", suppress_notification=True)
+        body = dc.read_drain_request()
+        assert body is not None
+        body["requested_at"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
+        ).isoformat()
+        dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
+
+        # The marker file is still physically present, with the CURRENT epoch…
+        assert dc.drain_request_path().exists() is True
+        # …but it is ignored because it outlived any legitimate drain.
+        assert dc.drain_requested() is False
+        # The suppression flag of an expired orphan is likewise ignored.
+        assert dc.drain_notification_suppressed() is False
+
+    def test_marker_without_timestamp_still_honoured(self, home):
+        # Leniency contract: no requested_at (legacy/corrupt body) must fail
+        # toward quiescing, exactly like the epoch check.
+        payload = {"action": "drain", "epoch": dc.current_instantiation_epoch()}
+        dc.drain_request_path().write_text(json.dumps(payload), encoding="utf-8")
+        assert dc.drain_requested() is True
+
+    def test_unparseable_timestamp_still_honoured(self, home):
+        payload = {
+            "action": "drain",
+            "epoch": dc.current_instantiation_epoch(),
+            "requested_at": "not-a-timestamp",
+        }
+        dc.drain_request_path().write_text(json.dumps(payload), encoding="utf-8")
+        assert dc.drain_requested() is True
+
+    def test_naive_timestamp_treated_as_utc(self, home):
+        # A writer that stamped a tz-naive ISO string must still expire.
+        from datetime import datetime, timedelta, timezone
+
+        stale_naive = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
+        ).replace(tzinfo=None)
+        payload = {
+            "action": "drain",
+            "epoch": dc.current_instantiation_epoch(),
+            "requested_at": stale_naive.isoformat(),
+        }
+        dc.drain_request_path().write_text(json.dumps(payload), encoding="utf-8")
+        assert dc.drain_requested() is False
+
+    def test_expiry_warning_logged_once_per_marker(self, home, caplog):
+        # The watcher polls every 1s; an expired orphan must warn ONCE, not
+        # once per tick (~86k/day). A refreshed marker that expires again
+        # warns again (new requested_at).
+        import logging
+        from datetime import datetime, timedelta, timezone
+
+        def _write_expired(offset_seconds):
+            dc.write_drain_request(principal="nas")
+            body = dc.read_drain_request()
+            assert body is not None
+            body["requested_at"] = (
+                datetime.now(timezone.utc)
+                - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + offset_seconds)
+            ).isoformat()
+            dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
+
+        _write_expired(60)
+        with caplog.at_level(logging.WARNING, logger="gateway.drain_control"):
+            assert dc.drain_requested() is False
+            assert dc.drain_requested() is False  # second poll tick
+            assert dc.drain_requested() is False  # third poll tick
+        expired_logs = [r for r in caplog.records if "expired drain marker" in r.message]
+        assert len(expired_logs) == 1
+
+        caplog.clear()
+        _write_expired(120)  # a DIFFERENT requested_at that is also expired
+        with caplog.at_level(logging.WARNING, logger="gateway.drain_control"):
+            assert dc.drain_requested() is False
+        expired_logs = [r for r in caplog.records if "expired drain marker" in r.message]
+        assert len(expired_logs) == 1
+
+    def test_rewrite_refreshes_the_clock(self, home):
+        # The sanctioned keep-alive: re-writing the marker bumps requested_at,
+        # so a deliberately long drain stays honoured.
+        from datetime import datetime, timedelta, timezone
+
+        dc.write_drain_request(principal="nas")
+        body = dc.read_drain_request()
+        assert body is not None
+        body["requested_at"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=dc.DRAIN_REQUEST_MAX_AGE_SECONDS + 60)
+        ).isoformat()
+        dc.drain_request_path().write_text(json.dumps(body), encoding="utf-8")
+        assert dc.drain_requested() is False  # expired…
+        dc.write_drain_request(principal="nas")  # …keep-alive re-write
+        assert dc.drain_requested() is True
 
 
 # ---------------------------------------------------------------------------

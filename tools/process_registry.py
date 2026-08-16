@@ -245,6 +245,31 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
+def _is_supervised_gateway_process() -> bool:
+    """Return whether this process is in a supervised Hermes gateway runtime.
+
+    Both supervisor markers and ``_HERMES_GATEWAY`` are inherited by every
+    descendant, and importing ``gateway.run`` also sets the latter. Require
+    this process to own the live gateway PID file as well. That keeps transient
+    systemd scopes limited to the gateway itself instead of terminal children
+    or unrelated interactive CLIs in the same supervised process tree.
+    """
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+
+    try:
+        from gateway.restart import is_gateway_supervisor_process
+        from gateway.status import get_running_pid
+
+        return (
+            is_gateway_supervisor_process()
+            and get_running_pid(cleanup_stale=False) == os.getpid()
+        )
+    except Exception as exc:
+        logger.debug("Could not verify supervised gateway process identity: %s", exc)
+        return False
+
+
 def _build_systemd_scope_argv(
     shell_argv: List[str],
     unit_suffix: str,
@@ -368,6 +393,11 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
+    # Session-db id of the conversation that spawned this process. Lets the
+    # gateway's completion pre-flight (_classify_completion_target) drop
+    # notifications whose spawning session was closed at an explicit user
+    # boundary (/new), instead of injecting them into the chat's NEW session.
+    parent_session_id: str = ""
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
@@ -596,7 +626,7 @@ class ProcessRegistry:
         if not self._global_watch_admit(now):
             return
 
-        self.completion_queue.put({
+        notification = {
             "session_id": session.id,
             "session_key": session.session_key,
             "command": session.command,
@@ -610,7 +640,9 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
             "message_id": session.watcher_message_id,
-        })
+        }
+        _redact_process_result(notification)
+        self.completion_queue.put(notification)
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
@@ -991,36 +1023,26 @@ class ProcessRegistry:
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
-                pty_use_systemd_scope = False
-                try:
-                    from gateway.restart import is_gateway_supervisor_process
-
-                    pty_under_supervisor = is_gateway_supervisor_process()
-                    pty_use_systemd_scope = (
-                        not _IS_WINDOWS
-                        and pty_under_supervisor
-                        and _systemd_run_user_scope_available()
-                    )
-                except Exception:
-                    pty_use_systemd_scope = False
+                pty_in_supervised_gateway = (
+                    not _IS_WINDOWS and _is_supervised_gateway_process()
+                )
+                pty_use_systemd_scope = (
+                    pty_in_supervised_gateway and _systemd_run_user_scope_available()
+                )
 
                 if pty_use_systemd_scope:
                     pty_argv = _build_systemd_scope_argv(
-                        pty_argv, unit_suffix=session.id,
+                        pty_argv,
+                        unit_suffix=session.id,
                     )
                     session.systemd_unit = f"hermes-worker-{session.id}.scope"
                     pty_scope_attempted = True
-                elif not _IS_WINDOWS:
-                    try:
-                        from gateway.restart import is_gateway_supervisor_process as _sup
-                        if _sup():
-                            logger.debug(
-                                "PTY background executor not isolated in a "
-                                "systemd scope (systemd-run --user unavailable); "
-                                "worker shares the gateway cgroup."
-                            )
-                    except Exception:
-                        pass
+                elif pty_in_supervised_gateway:
+                    logger.debug(
+                        "PTY background executor not isolated in a "
+                        "systemd scope (systemd-run --user unavailable); "
+                        "worker shares the gateway cgroup."
+                    )
 
                 pty_proc = _PtyProcessCls.spawn(
                     pty_argv,
@@ -1073,53 +1095,50 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        # Cgroup isolation (#70716): when running under a service manager
-        # (systemd gateway), wrap the worker in its own transient systemd
+        # Cgroup isolation (#70716): when running in the live, supervised
+        # systemd gateway, wrap the worker in its own transient systemd
         # scope so it gets a separate cgroup.  An OOM in the worker then
         # kills only the worker instead of taking down the whole gateway
-        # cgroup (and the messaging control plane with it).  We only do this
-        # for both pipe mode and the PTY path above.
+        # cgroup (and the messaging control plane with it). This applies to
+        # both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
-        use_systemd_scope = False
-        under_supervisor = False
-        try:
-            from gateway.restart import is_gateway_supervisor_process
-
-            under_supervisor = is_gateway_supervisor_process()
-            use_systemd_scope = (
-                not _IS_WINDOWS
-                and under_supervisor
-                and _systemd_run_user_scope_available()
-            )
-        except Exception:
-            use_systemd_scope = False
+        in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
+        use_systemd_scope = (
+            in_supervised_gateway and _systemd_run_user_scope_available()
+        )
 
         if use_systemd_scope:
             unit_suffix = (
-                f"{session.id}-pipe-fallback"
-                if pty_scope_attempted
-                else session.id
+                f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
             )
             spawn_argv = _build_systemd_scope_argv(
-                shell_argv, unit_suffix=unit_suffix,
+                shell_argv,
+                unit_suffix=unit_suffix,
             )
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
-            # systemd-run creates the new session/cgroup for us; do NOT also
-            # set start_new_session (harmless, but redundant and it can mask
-            # scope-creation failures in some systemd versions).
-            popen_start_new_session = False
+            # CRITICAL (#70716 regression): systemd-run --scope does NOT give
+            # the worker a new session — the invoked process keeps the
+            # parent's session and inherits its controlling terminal.  From an
+            # interactive TUI this drops the worker into the same session as
+            # the foreground process group: background spawns then stop the
+            # whole session (observed as 5 dead TUIs in state T / "Arrêté").
+            # start_new_session=True gives systemd-run (and the scoped worker
+            # below it) a private session.  Cgroup isolation is preserved:
+            # the scope is attached to the invoked process, not to the
+            # spawning session.
+            popen_start_new_session = True
         else:
             spawn_argv = shell_argv
             popen_start_new_session = True
-            if not _IS_WINDOWS and under_supervisor:
+            if in_supervised_gateway:
                 # Running under a supervisor but could not get a private
                 # cgroup — the worker shares the gateway cgroup, so an OOM
                 # in the worker can still kill the whole gateway (#70716).
                 logger.debug(
                     "Local background executor not isolated in a systemd scope "
-                    "(supervisor=%s, systemd-run --user available=%s); "
+                    "(in_supervised_gateway=%s, systemd-run --user available=%s); "
                     "worker shares the gateway cgroup.",
-                    under_supervisor,
+                    in_supervised_gateway,
                     _systemd_run_user_scope_available(),
                 )
 
@@ -1163,10 +1182,12 @@ class ProcessRegistry:
             # leak as untracked background processes.
             try:
                 if session.systemd_unit:
-                    # systemd-run --scope shares the gateway's process group
-                    # because start_new_session=False.  Never killpg here: that
-                    # can signal the gateway itself.  Stop the sibling cgroup,
-                    # then safely terminate the wrapper PID tree as fallback.
+                    # The worker runs in its own systemd scope and, since the
+                    # #70716 session-isolation fix, its own session.  Stop the
+                    # scope (kills every process in the worker cgroup), then
+                    # terminate the systemd-run wrapper PID as fallback.
+                    # Never killpg: scope teardown is the authoritative
+                    # cleanup for the worker cgroup.
                     _stop_systemd_unit(session.systemd_unit)
                     self._terminate_host_pid(proc.pid, session.host_start_time)
                 elif not _IS_WINDOWS:
@@ -1549,7 +1570,7 @@ class ProcessRegistry:
         if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
-            self.completion_queue.put({
+            notification = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -1562,7 +1583,9 @@ class ProcessRegistry:
                 # a consumer-observed completion timestamp, this does not vary
                 # based on which watcher notices exit first.
                 "started_at": session.started_at,
-            })
+            }
+            _redact_process_result(notification)
+            self.completion_queue.put(notification)
 
     # ----- Query Methods -----
 
@@ -1833,7 +1856,7 @@ class ProcessRegistry:
             result["note"] = "Process recovered after restart -- output history unavailable"
         return result
 
-    def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
@@ -1847,11 +1870,16 @@ class ProcessRegistry:
         lines = full_output.splitlines()
         total_lines = len(lines)
 
-        # Default: last N lines
-        if offset == 0 and limit > 0:
+        # Default (offset=None): last N lines. An explicit offset=0 means
+        # "start from the first line" — previously it was conflated with
+        # the default and silently returned the TAIL instead of the head
+        # (same falsy-coercion class as the wait() timeout guard; salvaged
+        # from PR #60004, credit @isheng-eqi).
+        if offset is None and limit > 0:
             selected = lines[-limit:]
             observed_completion_output = bool(selected) or total_lines == 0
         else:
+            offset = offset or 0
             selected = lines[offset:offset + limit]
             stop = slice(offset, offset + limit).indices(total_lines)[1]
             observed_completion_output = (
@@ -1892,6 +1920,17 @@ class ProcessRegistry:
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
+
+        # Reject non-positive timeouts — the schema declares minimum=1, but
+        # not every caller enforces schemas before dispatch. timeout=0 is
+        # falsy, so without this guard it silently fell through
+        # (`0 or max_timeout`) to the DEFAULT wait instead of erroring.
+        # Salvaged from PR #60004 (credit @isheng-eqi).
+        if requested_timeout is not None and requested_timeout <= 0:
+            return {
+                "status": "error",
+                "error": f"timeout must be positive (got {requested_timeout})",
+            }
 
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
@@ -2139,8 +2178,26 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter)."""
-        return self.write_stdin(session_id, data + "\n")
+        """Send data + newline to a running process's stdin (like pressing Enter).
+
+        On a Windows PTY session the Enter key is a carriage return: ConPTY
+        cooked input treats ``\\r`` as end-of-line, and a bare ``\\n`` written
+        through pywinpty is NOT delivered as a line terminator — the child's
+        blocking line read (Python ``readline()``, Go ``bufio.Scanner`` as in
+        ``gh auth login``'s "Press Enter to open the browser" prompt) simply
+        never returns and the process hangs while looking healthy. Verified
+        empirically via pywinpty 2.0.15: ``\\n`` -> no line, ``\\r`` /
+        ``\\r\\n`` -> line delivered. Use ``\\r\\n`` so the child sees both the
+        Enter keypress and a conventional newline; POSIX PTYs and Popen pipes
+        keep the plain ``\\n``.
+        """
+        session = self.get(session_id)
+        is_windows_pty = bool(
+            _IS_WINDOWS and session is not None
+            and getattr(session, "_pty", None)
+        )
+        line_ending = "\r\n" if is_windows_pty else "\n"
+        return self.write_stdin(session_id, data + line_ending)
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close the read-only terminal tab mirroring this
@@ -2469,6 +2526,7 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
+                            "parent_session_id": s.parent_session_id,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
@@ -2565,6 +2623,7 @@ class ProcessRegistry:
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
+                parent_session_id=entry.get("parent_session_id", ""),
                 notify_on_complete=entry.get("notify_on_complete", False),
                 watch_patterns=entry.get("watch_patterns", []),
             )
@@ -2586,6 +2645,7 @@ class ProcessRegistry:
                     "thread_id": session.watcher_thread_id,
                     "message_id": session.watcher_message_id,
                     "notify_on_complete": session.notify_on_complete,
+                    "parent_session_id": session.parent_session_id,
                 })
 
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
@@ -2635,6 +2695,7 @@ def _format_async_delegation(evt: dict) -> str:
     error = evt.get("error")
     api_calls = evt.get("api_calls", 0)
     duration = evt.get("duration_seconds", "?")
+    truncated = evt.get("truncated") or evt.get("exit_reason") == "max_iterations"
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
 
@@ -2675,7 +2736,8 @@ def _format_async_delegation(evt: dict) -> str:
             r_summary = r.get("summary")
             r_error = r.get("error")
             r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
-            icon = "✓" if r_status in ("completed", "success") else "✗"
+            r_truncated = r.get("truncated") or r.get("exit_reason") == "max_iterations"
+            icon = "⚠" if r_truncated else ("✓" if r_status in ("completed", "success") else "✗")
             lines.append("")
             header = f"--- {icon} TASK {idx + 1}/{n}"
             if r_goal:
@@ -2685,9 +2747,17 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            if r_truncated:
+                header += ", TRUNCATED: hit max_iterations — work may be incomplete"
             header += ") ---"
             lines.append(header)
             if r_status in ("completed", "success") and r_summary:
+                if r_truncated:
+                    lines.append(
+                        "[TRUNCATED — subagent hit its iteration cap; the "
+                        "summary below may be incomplete. Verify before relying "
+                        "on it, or re-dispatch the unfinished part.]"
+                    )
                 lines.append(r_summary)
             elif r_summary:
                 if r_error:
@@ -2727,9 +2797,16 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
-    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    _trunc = " [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s{_trunc}")
     lines.append("--- RESULT ---")
     if status in ("completed", "success") and summary:
+        if truncated:
+            lines.append(
+                "[TRUNCATED — subagent hit its iteration cap; the summary below "
+                "may be incomplete. Verify before relying on it, or re-dispatch "
+                "the unfinished part.]"
+            )
         lines.append(summary)
     elif status == "interrupted":
         lines.append(
@@ -2762,6 +2839,12 @@ def format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    # Overflow events carry their human-readable summary in `message` —
+    # without this case they fall through to the completion formatter and
+    # surface as a phantom "process exited (exit code ?)" notification.
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
@@ -2913,7 +2996,7 @@ def _handle_process(args, **kw):
             return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
         elif action == "log":
             return json.dumps(_redact_process_result(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
+                session_id, offset=args.get("offset"), limit=args.get("limit", 200))), ensure_ascii=False)
         elif action == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":

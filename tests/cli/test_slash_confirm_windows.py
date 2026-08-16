@@ -8,15 +8,25 @@ Windows (#33961), where the earlier ``sys.platform == "win32"`` → raw ``input(
 fallback deadlocked the daemon thread against prompt_toolkit's stdin ownership.
 
 These tests verify:
-1. Daemon-thread confirm uses the modal via the app loop on Linux AND native
-   Windows (#33961) — never the raw stdin fallback, never a hang.
+1. Daemon-thread confirm uses the modal via the app loop — never the raw stdin
+   fallback, never a hang. Since the #33961 fix this path is platform-agnostic,
+   so it runs on the host as-is.
 2. Main-thread confirm with a running app uses the modal.
 3. The raw stdin fallback is kept ONLY for the safe cases: no running app, and
    (on win32, off-thread) a scheduling failure degrades to a clean cancel.
 4. Empty choices returns None.
+
+**Why the Windows cases are ``windows_only`` rather than ``sys.platform``
+patches.** The deadlock #33961 fixed is a real property of the Windows console:
+a raw ``input()`` off the main thread blocks forever against prompt_toolkit's
+stdin ownership. On Linux the same call returns immediately (or EOFs), so a test
+that patches ``sys.platform`` to ``"win32"`` proves only that we took the
+``if``-branch — the hazard the branch exists to avoid isn't present on the host.
+The one remaining platform-specific behaviour is the ``_stdin_fallback``
+win32-and-off-main-thread clean-cancel; those tests are marked and run on the
+Windows CI job.
 """
 
-import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -62,7 +72,7 @@ def _answer_modal_when_open(cli, response, stop=None):
         time.sleep(0.02)
 
 
-def _run_on_daemon(call, cli, *, platform, response, schedule=None):
+def _run_on_daemon(call, cli, *, response, schedule=None):
     """Invoke ``call`` on a daemon thread — as the process_loop does — answering
     the modal with ``response`` once it opens.
 
@@ -76,8 +86,7 @@ def _run_on_daemon(call, cli, *, platform, response, schedule=None):
 
     def _worker():
         try:
-            with patch.object(sys, "platform", platform), \
-                 patch.object(cli._app.loop, "call_soon_threadsafe", side_effect=schedule or (lambda cb: cb())), \
+            with patch.object(cli._app.loop, "call_soon_threadsafe", side_effect=schedule or (lambda cb: cb())), \
                  patch.object(cli, "_prompt_text_input") as mock_stdin, \
                  patch.object(cli, "_invalidate"), \
                  patch.object(cli, "_capture_modal_input_snapshot", side_effect=lambda: outcome["capture"].append(1)), \
@@ -98,13 +107,13 @@ def _run_on_daemon(call, cli, *, platform, response, schedule=None):
 
 
 class TestModal:
-    """Behaviour of _prompt_text_input_modal across platforms and threads."""
+    """Behaviour of _prompt_text_input_modal across threads."""
 
-    @pytest.mark.parametrize("platform", ["linux", "win32"])
-    def test_daemon_thread_uses_modal_via_app_loop(self, platform):
+    def test_daemon_thread_uses_modal_via_app_loop(self):
         """Off the process_loop daemon thread, the confirm uses the modal via
-        call_soon_threadsafe on every platform — including native Windows, where
-        the old win32 early-return deadlocked on raw input() (#33961)."""
+        call_soon_threadsafe.  Since #33961 this path is the same on every
+        platform — native Windows no longer takes an early return into raw
+        input(), so there is nothing platform-specific left to fake here."""
         cli = _make_cli()
         outcome = _run_on_daemon(
             lambda: cli._prompt_text_input_modal(
@@ -114,7 +123,6 @@ class TestModal:
                 timeout=5,
             ),
             cli,
-            platform=platform,
             response="once",
         )
         assert outcome["stdin_called"] is False, "must use the modal, not raw input()"
@@ -126,8 +134,7 @@ class TestModal:
     def test_main_thread_with_app_uses_modal(self):
         """On the main thread with a running app, the queue-based modal is used."""
         cli = _make_cli()
-        with patch.object(sys, "platform", "darwin"), \
-             patch.object(cli, "_capture_modal_input_snapshot"), \
+        with patch.object(cli, "_capture_modal_input_snapshot"), \
              patch.object(cli, "_restore_modal_input_snapshot"), \
              patch.object(cli, "_invalidate"), \
              patch.object(cli, "_prompt_text_input") as mock_stdin:
@@ -144,8 +151,7 @@ class TestModal:
         mock_stdin.assert_not_called()
         assert result == "once"
 
-
-
+    @pytest.mark.windows_only
     def test_windows_scheduling_failure_clean_cancels(self):
         """win32 off the main thread: if marshaling onto the app loop fails, cancel
         cleanly (None) rather than fall to raw input() (which deadlocks on native
@@ -163,7 +169,6 @@ class TestModal:
                 timeout=5,
             ),
             cli,
-            platform="win32",
             response="once",
             schedule=_raise,
         )
@@ -172,10 +177,15 @@ class TestModal:
         assert cli._slash_confirm_state is None
 
 
+class TestConfirmDestructiveSlash:
+    """End-to-end _confirm_destructive_slash on the process_loop daemon thread.
 
-
-class TestConfirmDestructiveSlashWindows:
-    """End-to-end _confirm_destructive_slash on the native-Windows daemon thread."""
+    This is the flow bug #33961 froze on native Windows.  The fix made it
+    platform-agnostic (modal via the app loop), so the assertion holds on
+    whichever host runs it.  The class carries no OS marker, so the
+    ``windows_only`` lane deselects it — the deadlock tests above are the
+    Windows-side regression guard.
+    """
 
     def _make_interactive_cli(self):
         cli = _make_cli()
@@ -194,9 +204,9 @@ class TestConfirmDestructiveSlashWindows:
         "response, expected",
         [("once", "once"), ("cancel", None)],
     )
-    def test_confirm_destructive_slash_uses_modal_on_windows(self, response, expected):
-        """On native Windows, the bare /new confirm drives the modal (not stdin)
-        and returns the chosen outcome — the bug #33961 froze this path."""
+    def test_confirm_destructive_slash_uses_modal(self, response, expected):
+        """The bare /new confirm drives the modal (not stdin) and returns the
+        chosen outcome — bug #33961 froze this path on native Windows."""
         cli = self._make_interactive_cli()
         with patch("cli.load_cli_config", return_value={"approvals": {"destructive_slash_confirm": True}}):
             outcome = _run_on_daemon(
@@ -205,7 +215,6 @@ class TestConfirmDestructiveSlashWindows:
                     "This starts a fresh session.\nThe current conversation history will be discarded.",
                 ),
                 cli,
-                platform="win32",
                 response=response,
             )
 
@@ -213,6 +222,7 @@ class TestConfirmDestructiveSlashWindows:
         assert outcome["result"] == expected
 
 
+@pytest.mark.windows_only
 class TestNativeWindowsNoRawInputDeadlock:
     """Anti-regression guard exercising the REAL ``_prompt_text_input``.
 
@@ -227,6 +237,11 @@ class TestNativeWindowsNoRawInputDeadlock:
     ``input()`` and assert the worker thread never hangs.  They fail on the
     pre-#33961 code (win32 → ``_prompt_text_input`` → off-main ``input()``)
     and pass once the modal path / clean-cancel fallback is in place.
+
+    ``windows_only``: the deadlock is a property of the Windows console's stdin
+    ownership.  Running this with a patched ``sys.platform`` on Linux exercises
+    a blocking ``input()`` that does not actually deadlock there, so it could
+    never have caught the regression it is named for.
     """
 
     def test_win32_daemon_thread_never_blocks_on_real_input(self):
@@ -251,8 +266,7 @@ class TestNativeWindowsNoRawInputDeadlock:
 
         def _worker():
             try:
-                with patch.object(sys, "platform", "win32"), \
-                     patch("builtins.input", side_effect=_blocking_input), \
+                with patch("builtins.input", side_effect=_blocking_input), \
                      patch.object(cli, "_capture_modal_input_snapshot"), \
                      patch.object(cli, "_restore_modal_input_snapshot"), \
                      patch.object(cli, "_invalidate"):
@@ -306,8 +320,7 @@ class TestNativeWindowsNoRawInputDeadlock:
         outcome = {}
 
         def _worker():
-            with patch.object(sys, "platform", "win32"), \
-                 patch("builtins.input", side_effect=_tracking_input), \
+            with patch("builtins.input", side_effect=_tracking_input), \
                  patch.object(cli, "_invalidate"):
                 outcome["result"] = cli._prompt_text_input_modal(
                     title="/new",

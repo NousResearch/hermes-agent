@@ -19,6 +19,7 @@ selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
 
+import inspect
 import threading
 from abc import ABC, abstractmethod
 from typing import Any
@@ -98,7 +99,23 @@ class CronScheduler(ABC):
 
         return recover_interrupted_executions()
 
-    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
+    @property
+    def supports_force_fire(self) -> bool:
+        """Whether ``fire_due`` accepts the additive ``force`` keyword.
+
+        Signature detection keeps providers written before ``force`` was added
+        source-compatible. Providers accepting ``**kwargs`` are compatible.
+        """
+        return provider_supports_force_fire(self)
+
+    def fire_due(
+        self,
+        job_id: str,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        force: bool = False,
+    ) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
 
@@ -107,26 +124,140 @@ class CronScheduler(ABC):
         ``run_one_job`` body. Built-in never calls this (it has its own tick
         loop); an external provider routes its inbound fire here.
 
-        Returns True if THIS caller claimed and ran the job, False if the claim
-        was lost (another machine/retry won it) or the job no longer exists.
+        Returns True if THIS caller claimed and processed the attempt, even if
+        the job itself failed. Returns False only if the claim was lost
+        (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
-        from cron.executions import create_execution
+        claimed_job = self.claim_fire(job_id, force=force)
+        if claimed_job is None:
+            return False
+        return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
+
+    def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
+        """Durably claim one fire and create its audit attempt before dispatch.
+
+        Webhook transports call this synchronously before acknowledging the
+        external scheduler, then pass the exact owner-bearing snapshot to
+        ``fire_claimed`` in tracked background work.
+        """
+        from cron.executions import create_execution, finish_execution
+        from cron.jobs import claim_job_for_fire
+
+        execution = create_execution(job_id, source=self.name)
+        claim_kwargs = {"return_job": True}
+        if force:
+            claim_kwargs["force"] = True
+        try:
+            claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
+        except BaseException as exc:
+            finish_execution(
+                execution["id"],
+                success=False,
+                error=f"Fire claim failed before dispatch: {type(exc).__name__}: {exc}",
+            )
+            raise
+        if not isinstance(claimed_job, dict):
+            finish_execution(
+                execution["id"],
+                success=False,
+                error="Fire claim was not acquired",
+            )
+            return None
+        claimed_job["execution_id"] = execution["id"]
+        return claimed_job
+
+    def fire_claimed(
+        self,
+        claimed_job: dict,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        cancel_event: Any = None,
+    ) -> bool:
+        """Run an exact snapshot returned by ``claim_fire``.
+
+        ``cancel_event``: optional transport-owned ``threading.Event`` (or
+        compatible) that lets the caller stop this execution cooperatively
+        — e.g. the dashboard lifespan drain signalling pending webhook
+        fires before the event loop shuts down.
+        """
         from cron.scheduler import run_one_job
 
-        if not claim_job_for_fire(job_id):
-            return False  # another machine already claimed this fire
-        job = get_job(job_id)
-        if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
-        return run_one_job(job, adapters=adapters, loop=loop)
+        run_one_job(
+            claimed_job,
+            adapters=adapters,
+            loop=loop,
+            cancel_event=cancel_event,
+        )
+        return True
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):
         arm missing one-shots, cancel orphaned ones, re-arm changed times.
         Built-in: no-op."""
         return None
+
+
+def provider_supports_force_fire(provider: Any) -> bool:
+    """Return whether a provider can safely receive ``fire_due(force=...)``."""
+    try:
+        parameters = inspect.signature(provider.fire_due).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == "force"
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+        for parameter in parameters
+    )
+
+
+def provider_supports_split_fire(provider: Any) -> bool:
+    """Return whether a provider implements the two-phase fire contract.
+
+    The webhook admission path uses ``claim_fire`` + ``fire_claimed`` so the
+    202 response is backed by a durable, owner-fenced claim. A legacy
+    third-party provider that overrides the documented single-phase
+    ``fire_due`` hook (custom claim/re-arm/telemetry behavior) but inherits
+    the base ``claim_fire`` must keep being driven through its own
+    ``fire_due`` — silently routing around its override would drop that
+    behavior. Providers that customize ``claim_fire`` itself are already
+    split-aware and keep the two-phase path.
+    """
+    cls = type(provider)
+    fire_due_impl = getattr(cls, "fire_due", None)
+    claim_fire_impl = getattr(cls, "claim_fire", None)
+    fire_claimed_impl = getattr(cls, "fire_claimed", None)
+    if claim_fire_impl is not None and claim_fire_impl is not CronScheduler.claim_fire:
+        return True
+    # Overriding the second phase is also proof of split-awareness (the
+    # provider composes with the inherited claim path) — e.g. Chronos keeps
+    # its re-arm logic in ``fire_claimed`` only.
+    if fire_claimed_impl is not None and fire_claimed_impl is not CronScheduler.fire_claimed:
+        return True
+    if fire_due_impl is None or fire_due_impl is CronScheduler.fire_due:
+        return True
+    return False
+
+
+def provider_supports_fire_cancel(provider: Any) -> bool:
+    """Return whether ``fire_claimed`` accepts a ``cancel_event`` kwarg."""
+    try:
+        parameters = inspect.signature(provider.fire_claimed).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == "cancel_event"
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+        for parameter in parameters
+    )
 
 
 def resolve_cron_scheduler() -> "CronScheduler":
@@ -167,6 +298,28 @@ def resolve_cron_scheduler() -> "CronScheduler":
             "Failed to load cron.provider '%s' (%s); using built-in ticker", name, e
         )
         return InProcessCronScheduler()
+
+
+def scheduler_for_profile_mode(
+    provider: "CronScheduler", *, multiplex_profiles: bool
+) -> "CronScheduler":
+    """Return a scheduler that can safely serve the gateway's profile mode.
+
+    External providers currently own one unscoped remote registry/client and
+    therefore cannot safely reconcile several profile stores from one process.
+    Fail closed to the built-in multiplex ticker until the provider API carries
+    explicit profile identity through lifecycle and webhook calls.
+    """
+    if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):
+        return provider
+
+    import logging
+
+    logging.getLogger("cron.scheduler_provider").warning(
+        "cron.provider '%s' does not support multiplex_profiles; using built-in ticker",
+        provider.name,
+    )
+    return InProcessCronScheduler()
 
 
 class InProcessCronScheduler(CronScheduler):

@@ -423,6 +423,12 @@ platforms:
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
 
+      # Render live tool calls as Slack-native plan/task cards. This explicit
+      # opt-in activates native progress even when text tool_progress is off.
+      # If Slack rejects the native stream, Hermes keeps one editable text
+      # fallback current for the rest of the turn.
+      native_task_cards: false
+
       # Suggested prompts pinned at the top of Agent view's Messages tab.
       # Either a list of {title, message} rows, or a titled object:
       # {title: "Start here", prompts: [{title: "Plan", message: "..."}]}
@@ -454,6 +460,7 @@ platforms:
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
+| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
@@ -517,6 +524,54 @@ display:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
+
+### Native Streaming (live-typing replies)
+
+Slack's [Agents & AI Apps](https://docs.slack.dev/ai/) feature ships a native
+streaming surface (`chat.startStream` / `chat.appendStream` /
+`chat.stopStream`) that renders the reply as a live-typing message — much
+smoother than the edit-based progressive updates used otherwise. When
+`streaming.enabled` is on (transport `auto` or `draft`), Hermes uses native
+streaming automatically wherever it's available:
+
+- The stream starts on the first frame and appends only deltas (the API is
+  append-only). The streamed message **is** the final message — Hermes seals
+  it via `chat.stopStream` instead of posting a duplicate final reply.
+- If your Slack app doesn't have the AI features enabled (or lacks the
+  `assistant:write` scope), the first failure is cached and Hermes falls back
+  to edit-based streaming with a single log warning naming the fix.
+- Opt-in Block Kit (`rich_blocks: true`) is applied to the sealed message,
+  same as the edit-based finalize path.
+
+No extra configuration is needed beyond enabling streaming:
+
+```yaml
+streaming:
+  enabled: true       # transport auto/draft lights up Slack native streaming
+```
+
+### Native Task Cards (live tool progress)
+
+With `platforms.slack.extra.native_task_cards: true`, live tool calls render
+as Slack-native **plan/task cards** (the same UI Slack's own AI features use)
+instead of text progress bubbles: one card per turn, one row per tool call,
+with per-task running/complete/error states updating in place.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      native_task_cards: true
+```
+
+- This is an explicit progress opt-in — it works even though Slack's default
+  is `tool_progress: off` (text bubbles spam channels; native cards don't).
+- Concurrent calls to the same tool are correlated by real tool-call ID, so
+  parallel `web_search` calls each get their own row with the right status.
+- If the native stream can't start or update, Hermes falls back to a single
+  continuously edited text message so progress stays live for the turn.
+- The card stream is stopped exactly once when the turn finalizes, including
+  on interrupt/disconnect, so no dangling live indicator is left behind.
 
 ### Session Isolation
 

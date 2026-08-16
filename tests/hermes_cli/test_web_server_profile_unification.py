@@ -6,6 +6,8 @@ profile switcher can target any profile's HERMES_HOME. These tests pin:
 reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
+import json
+
 import pytest
 import yaml
 
@@ -48,6 +50,12 @@ def client(monkeypatch, isolated_profiles):
 
 def _cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
+
+
+def _write_jobs(home, jobs):
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    (cron_dir / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
 
 
 class TestProfileScopedConfig:
@@ -158,6 +166,60 @@ class TestProfileScopedMcp:
         )
         assert resp.json()["ok"] is True
 
+    def test_mcp_test_reports_optional_schema_chars(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The probe's per-tool `schema_chars` (details out-param) surfaces as an
+        ADDITIVE per-tool field on the wire; tools without a size stay bare so
+        older/partial probes degrade to 'no estimate' in the renderer."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  sized-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+
+        def fake_probe(name, config, connect_timeout=30, details=None):
+            if details is not None:
+                details["schema_chars"] = {"tool-a": 420}
+            return [("tool-a", "desc-a"), ("tool-b", "desc-b")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+
+        resp = client.post(
+            "/api/mcp/servers/sized-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        tools = {t["name"]: t for t in body["tools"]}
+        assert tools["tool-a"]["schema_chars"] == 420
+        # No size for tool-b → the key is simply absent (additive-optional).
+        assert "schema_chars" not in tools["tool-b"]
+
+    def test_mcp_test_without_schema_chars_keeps_old_wire_shape(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A probe that never fills schema_chars (older code path) produces the
+        exact pre-overlay tool objects — nothing new for old renderers."""
+        import hermes_cli.mcp_config as mcp_config
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  plain-srv:\n    url: http://x/mcp\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mcp_config,
+            "_probe_single_server",
+            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
+        )
+
+        resp = client.post(
+            "/api/mcp/servers/plain-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
+
 
 class TestProfileScopedModel:
     def test_model_set_main_scoped(self, client, isolated_profiles):
@@ -179,6 +241,113 @@ class TestProfileScopedModel:
         default_model = _cfg(isolated_profiles["default"]).get("model", {})
         if isinstance(default_model, dict):
             assert default_model.get("default") != "test/model-1"
+
+    def test_main_assignment_reports_only_target_profile_cron_impact(
+        self, client, isolated_profiles
+    ):
+        stale = {
+            "name": "Worker summary",
+            "enabled": True,
+            "no_agent": False,
+            "provider_snapshot": "openrouter",
+            "model_snapshot": "old/model",
+        }
+        _write_jobs(
+            isolated_profiles["worker_beta"], [{"id": "worker-job", **stale}]
+        )
+        _write_jobs(
+            isolated_profiles["default"],
+            [{"id": "default-job", **stale, "name": "Default summary"}],
+        )
+
+        resp = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["cron_model_impact"] == {
+            "available": True,
+            "guard_enabled": True,
+            "affected_count": 1,
+            "truncated": False,
+            "jobs": [
+                {
+                    "id": "worker-job",
+                    "name": "Worker summary",
+                    "drifted_axes": ["provider", "model"],
+                }
+            ],
+        }
+
+    def test_unavailable_impact_does_not_fail_persisted_assignment(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import cron.jobs
+
+        monkeypatch.setattr(cron.jobs, "load_jobs", lambda: {"malformed": True})
+
+        resp = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["cron_model_impact"]["available"] is False
+        assert _cfg(isolated_profiles["worker_beta"])["model"]["default"] == "new/model"
+
+    def test_auxiliary_and_confirmation_responses_have_no_impact_summary(
+        self, client, isolated_profiles
+    ):
+        _write_jobs(
+            isolated_profiles["worker_beta"],
+            [
+                {
+                    "id": "worker-job",
+                    "enabled": True,
+                    "provider_snapshot": "openrouter",
+                    "model_snapshot": "old/model",
+                }
+            ],
+        )
+
+        auxiliary = client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "provider": "nous",
+                "model": "new/model",
+                "profile": "worker_beta",
+            },
+        )
+        confirmation = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "openrouter",
+                "model": "openai/gpt-5.5-pro",
+                "profile": "worker_beta",
+            },
+        )
+
+        assert auxiliary.status_code == 200
+        assert "cron_model_impact" not in auxiliary.json()
+        assert confirmation.status_code == 200
+        assert confirmation.json()["confirm_required"] is True
+        assert "cron_model_impact" not in confirmation.json()
 
 
 

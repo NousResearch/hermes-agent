@@ -9,6 +9,7 @@ import { SplitButton } from '@/components/ui/split-button'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { notifyError } from '@/store/notifications'
 import {
   $reviewCommitDefault,
@@ -87,7 +88,7 @@ export function ReviewShipBar() {
               runCommit(commitDefault)
             }
           }}
-          placeholder={c.commitPlaceholder}
+          placeholder={c.commitPlaceholder(formatCombo('mod+enter'))}
           rows={1}
           size="sm"
           value={message}

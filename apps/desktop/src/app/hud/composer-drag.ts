@@ -12,6 +12,8 @@ interface PressState {
   armed: boolean
   lastX: number
   lastY: number
+  originH: number
+  originW: number
   pointerId: number
   startX: number
   startY: number
@@ -30,6 +32,10 @@ interface PressState {
  * Deltas are read in SCREEN coordinates. Client coordinates are relative to the
  * window we are moving, so a window that keeps up with the cursor reports the
  * same clientX every frame — zero delta, and the drag dies one pixel in.
+ *
+ * The size is snapshotted at press and sent with every move, so main can pin it
+ * (see hermes:hud:move-by — a transparent frameless window drifts wider on
+ * Windows otherwise). Same shape as the pet overlay's drag.
  */
 export function useHudComposerDrag(enabled: boolean) {
   const [grabbing, setGrabbing] = useState(false)
@@ -64,6 +70,8 @@ export function useHudComposerDrag(enabled: boolean) {
         armed: false,
         lastX: event.screenX,
         lastY: event.screenY,
+        originH: window.outerHeight,
+        originW: window.outerWidth,
         pointerId: event.pointerId,
         startX: event.screenX,
         startY: event.screenY,
@@ -128,7 +136,12 @@ export function useHudComposerDrag(enabled: boolean) {
       state.lastX = event.screenX
       state.lastY = event.screenY
 
-      window.hermesDesktop?.hud?.moveBy?.({ x: dx, y: dy })
+      window.hermesDesktop?.hud?.moveBy?.({
+        x: dx,
+        y: dy,
+        width: state.originW,
+        height: state.originH
+      })
     }
 
     const onUp = (event: PointerEvent) => {

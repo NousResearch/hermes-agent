@@ -1907,7 +1907,7 @@ class HermesACPAgent(acp.Agent):
             # Auto-titling fires inside the turn prologue now; give the agent
             # this session's notifier so a new title reaches the client as a
             # session-info update instead of waiting for the next one.
-            def _notify_title_update(_title: str) -> None:
+            def _notify_title_update(_title: str, _source: str) -> None:
                 if conn:
                     loop.call_soon_threadsafe(
                         asyncio.create_task,

@@ -116,7 +116,15 @@ describe('StatusRule session title', () => {
 
     expect(rendered).toContain('weekly-digest')
     expect(rendered).not.toContain('~/repo')
-    expect(title?.props.backgroundColor).toBe(DEFAULT_THEME.color.accent)
+    // Regression for issue #82465: a raw, full-saturation accent-hue
+    // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
+    // near-white tone never designed to sit on it) rendered at roughly a
+    // 1.5-2:1 contrast ratio -- unreadable. No background fill at all;
+    // the accent color goes on the text instead, matching the theme's
+    // own convention that a raw accent hue is never used as a solid
+    // fill elsewhere (fills are always softened, e.g. activeRow).
+    expect(title?.props.backgroundColor).toBeUndefined()
+    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
   })
 })
 

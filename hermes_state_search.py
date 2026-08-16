@@ -20,6 +20,7 @@ from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY,
     FTS_SQL,
+    FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
     FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS,
@@ -912,12 +913,17 @@ class SessionSearchMixin:
             # its own. Callers must therefore NOT size the result by stat()ing
             # the file; use :meth:`logical_size_bytes`, which is truthful
             # immediately regardless of readers.
+            # PASSIVE, not TRUNCATE: optimize-storage runs from a transient CLI
+            # process; a TRUNCATE reset here would race a live gateway writer
+            # and tear B-tree pages (#45383). (The TRUNCATE was already refused
+            # SQLITE_BUSY while the gateway holds a read-mark, per the note
+            # above; PASSIVE removes the reset attempt entirely.)
             try:
                 with self._lock:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception as exc:
                 logger.debug(
-                    "WAL checkpoint (TRUNCATE) after optimize VACUUM failed: %s",
+                    "WAL checkpoint (PASSIVE) after optimize VACUUM failed: %s",
                     exc,
                 )
 
@@ -1384,7 +1390,6 @@ class SessionSearchMixin:
                 m.session_id,
                 m.role,
                 snippet({table}, -1, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
                 m.timestamp,
                 m.tool_name,
                 s.source,
@@ -1459,6 +1464,8 @@ class SessionSearchMixin:
     def _describe_search_path(self, query: str) -> str:
         """Best-effort name of the routing path a query takes (log-only)."""
         try:
+            if self._fts_stale:
+                return "like_scan_fts_stale"
             sanitized = self._sanitize_fts5_query(query or "")
             if not sanitized:
                 return "empty"
@@ -1477,6 +1484,226 @@ class SessionSearchMixin:
             return "like_scan"
         except Exception:
             return "unknown"
+
+    @staticmethod
+    def _compile_like_boolean_query(
+        query: str,
+    ) -> Tuple[str, List[Any], Optional[str]]:
+        """Compile the supported FTS boolean subset into LIKE predicates.
+
+        Terms within an OR group are ANDed by default, matching FTS5's
+        implicit conjunction. ``NOT`` negates the following term inside that
+        group instead of being discarded, so ``python NOT java`` becomes a
+        positive Python match plus a Java exclusion.
+        """
+        groups: List[List[Tuple[str, bool]]] = [[]]
+        negate_next = False
+        for raw_token in re.findall(r'"[^"]+"|\S+', query):
+            operator = raw_token.upper()
+            if operator == "OR":
+                if groups[-1]:
+                    groups.append([])
+                negate_next = False
+                continue
+            if operator in {"AND", "NEAR"}:
+                continue
+            if operator == "NOT":
+                negate_next = True
+                continue
+
+            term = raw_token.strip('"').strip("*").strip()
+            if term:
+                groups[-1].append((term, negate_next))
+                negate_next = False
+
+        compiled_groups: List[str] = []
+        params: List[Any] = []
+        snippet_term: Optional[str] = None
+        for group in groups:
+            if not group or not any(not negated for _, negated in group):
+                continue
+            clauses: List[str] = []
+            for term, negated in group:
+                escaped = (
+                    term.replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                clause = (
+                    "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
+                    "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
+                    "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
+                )
+                clauses.append(f"NOT {clause}" if negated else clause)
+                params.extend([f"%{escaped}%"] * 3)
+                if snippet_term is None and not negated:
+                    snippet_term = term
+            compiled_groups.append(f"({' AND '.join(clauses)})")
+
+        return " OR ".join(compiled_groups), params, snippet_term
+
+    def _search_messages_like_fallback(
+        self,
+        query: str,
+        *,
+        source_filter: Optional[List[str]],
+        exclude_sources: Optional[List[str]],
+        role_filter: Optional[List[str]],
+        limit: int,
+        offset: int,
+        sort: Optional[str],
+        include_inactive: bool,
+    ) -> List[Dict[str, Any]]:
+        """Search canonical messages while derived FTS state is stale."""
+        predicate, params, snippet_term = self._compile_like_boolean_query(query)
+        if not predicate or snippet_term is None:
+            return []
+
+        where = [f"({predicate})"]
+        if not include_inactive:
+            where.append("(m.active = 1 OR m.compacted = 1)")
+        if source_filter is not None:
+            where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            params.extend(source_filter)
+        if exclude_sources is not None:
+            where.append(
+                f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})"
+            )
+            params.extend(exclude_sources)
+        if role_filter:
+            where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            params.extend(role_filter)
+
+        order = (
+            "ASC"
+            if isinstance(sort, str) and sort.strip().lower() == "oldest"
+            else "DESC"
+        )
+        sql = f"""
+            SELECT m.id, m.session_id, m.role,
+                   substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet,
+                   m.timestamp, m.tool_name,
+                   s.source, s.model, s.started_at AS session_started
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(where)}
+            ORDER BY m.timestamp {order}, m.id {order}
+            LIMIT ? OFFSET ?
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                sql, [snippet_term, *params, limit, offset]
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _refresh_fts_stale_state(self) -> None:
+        """Observe fail-open initiated by another process sharing state.db."""
+        if self._fts_stale or not self._fts_enabled:
+            return
+        try:
+            with self._read_ctx() as conn:
+                stale = conn.execute(
+                    "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+                    (FTS_STALE_KEY,),
+                ).fetchone()
+        except sqlite3.Error:
+            return
+        if stale is not None:
+            self._fts_stale = True
+            self._fts_enabled = False
+            self._trigram_available = False
+            self._fts_cjk_available = False
+
+    def _finalize_search_matches(
+        self,
+        matches: List[Dict[str, Any]],
+        result_fields: Optional[Collection[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Attach neighboring messages and trim full content from results.
+
+        Context (1 message before + after each match) is only loaded when
+        the selected result projection consumes it. Each query takes its
+        own fresh read transaction via _read_ctx, so we never hold a lock
+        across N sequential queries.
+        """
+        context_matches = (
+            matches if result_fields is None or "context" in result_fields else ()
+        )
+        for match in context_matches:
+            try:
+                with self._read_ctx() as conn:
+                    ctx_cursor = conn.execute(
+                        """WITH target AS (
+                               SELECT session_id, timestamp, id
+                               FROM messages
+                               WHERE id = ?
+                           )
+                           SELECT role, content
+                           FROM (
+                               SELECT m.id, m.timestamp, m.role, m.content
+                               FROM messages m
+                               JOIN target t ON t.session_id = m.session_id
+                               WHERE (m.timestamp < t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
+                               ORDER BY m.timestamp DESC, m.id DESC
+                               LIMIT 1
+                           )
+                           UNION ALL
+                           SELECT role, content
+                           FROM messages
+                           WHERE id = ?
+                           UNION ALL
+                           SELECT role, content
+                           FROM (
+                               SELECT m.id, m.timestamp, m.role, m.content
+                               FROM messages m
+                               JOIN target t ON t.session_id = m.session_id
+                               WHERE (m.timestamp > t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
+                               ORDER BY m.timestamp ASC, m.id ASC
+                               LIMIT 1
+                           )""",
+                        (match["id"], match["id"]),
+                    )
+                    context_msgs = []
+                    for row in ctx_cursor.fetchall():
+                        decoded = self._decode_content(row["content"])
+                        if isinstance(decoded, list):
+                            text_parts = [
+                                part.get("text", "")
+                                for part in decoded
+                                if isinstance(part, dict)
+                                and part.get("type") == "text"
+                            ]
+                            text = " ".join(t for t in text_parts if t).strip()
+                            preview = text or "[multimodal content]"
+                        elif isinstance(decoded, str):
+                            preview = decoded
+                        else:
+                            preview = ""
+                        context_msgs.append(
+                            {"role": row["role"], "content": preview[:200]}
+                        )
+                match["context"] = context_msgs
+            except Exception:
+                match["context"] = []
+
+        # Full message content is never selected by any search route: every
+        # SELECT returns snippet + metadata only (saves I/O on multi-MB tool
+        # rows and the tokens a content column would cost downstream). The
+        # context query above re-fetches its 3-message window by id, so
+        # nothing reads content from the match rows themselves. The pop stays
+        # as a belt-and-braces guard for any future route that selects it.
+        for match in matches:
+            match.pop("content", None)
+
+        if result_fields is not None:
+            matches = [
+                {field: match[field] for field in result_fields if field in match}
+                for match in matches
+            ]
+
+        return matches
 
     def _search_messages_impl(
         self,
@@ -1523,14 +1750,29 @@ class SessionSearchMixin:
         """
         result_fields = self._search_message_fields(fields)
 
-        if not self._fts_enabled:
-            return []
-
         if not query or not query.strip():
             return []
 
         query = self._sanitize_fts5_query(query)
         if not query:
+            return []
+
+        self._refresh_fts_stale_state()
+        if self._fts_stale:
+            matches = self._search_messages_like_fallback(
+                query,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+                limit=limit,
+                offset=offset,
+                sort=sort,
+                include_inactive=include_inactive,
+            )
+            return self._finalize_search_matches(
+                matches, result_fields=result_fields
+            )
+        if not self._fts_enabled:
             return []
 
         # Normalise sort. Anything not in the allowed set falls back to None
@@ -1585,7 +1827,6 @@ class SessionSearchMixin:
                 m.session_id,
                 m.role,
                 snippet(messages_fts, -1, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
                 m.timestamp,
                 m.tool_name,
                 s.source,
@@ -1675,7 +1916,6 @@ class SessionSearchMixin:
                         m.session_id,
                         m.role,
                         snippet(messages_fts_cjk, -1, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
                         m.timestamp,
                         m.tool_name,
                         s.source,
@@ -1764,7 +2004,6 @@ class SessionSearchMixin:
                         m.session_id,
                         m.role,
                         snippet(messages_fts_trigram, -1, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
                         m.timestamp,
                         m.tool_name,
                         s.source,
@@ -1857,7 +2096,7 @@ class SessionSearchMixin:
                            substr(m.content,
                                   max(1, instr(m.content, ?) - 40),
                                   120) AS snippet,
-                           m.content, m.timestamp, m.tool_name,
+                           m.timestamp, m.tool_name,
                            s.source, s.model, s.started_at AS session_started
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
@@ -1972,84 +2211,7 @@ class SessionSearchMixin:
                 if tri_matches:
                     matches = tri_matches
 
-        # Add surrounding context (1 message before + after each match) only
-        # when the selected result projection consumes it. Each query takes
-        # its own fresh read transaction via _read_ctx, so we never hold a
-        # lock across N sequential queries.
-        context_matches = (
-            matches if result_fields is None or "context" in result_fields else ()
-        )
-        for match in context_matches:
-            try:
-                with self._read_ctx() as conn:
-                    ctx_cursor = conn.execute(
-                        """WITH target AS (
-                               SELECT session_id, timestamp, id
-                               FROM messages
-                               WHERE id = ?
-                           )
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
-                               ORDER BY m.timestamp DESC, m.id DESC
-                               LIMIT 1
-                           )
-                           UNION ALL
-                           SELECT role, content
-                           FROM messages
-                           WHERE id = ?
-                           UNION ALL
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
-                               ORDER BY m.timestamp ASC, m.id ASC
-                               LIMIT 1
-                           )""",
-                        (match["id"], match["id"]),
-                    )
-                    context_msgs = []
-                    for r in ctx_cursor.fetchall():
-                        raw = r["content"]
-                        decoded = self._decode_content(raw)
-                        # Multimodal context: render a compact text-only
-                        # summary for search previews.
-                        if isinstance(decoded, list):
-                            text_parts = [
-                                p.get("text", "") for p in decoded
-                                if isinstance(p, dict) and p.get("type") == "text"
-                            ]
-                            text = " ".join(t for t in text_parts if t).strip()
-                            preview = text or "[multimodal content]"
-                        elif isinstance(decoded, str):
-                            preview = decoded
-                        else:
-                            preview = ""
-                        context_msgs.append(
-                            {"role": r["role"], "content": preview[:200]}
-                        )
-                match["context"] = context_msgs
-            except Exception:
-                match["context"] = []
-
-        # Remove full content from result (snippet is enough, saves tokens)
-        for match in matches:
-            match.pop("content", None)
-
-        if result_fields is not None:
-            matches = [
-                {field: match[field] for field in result_fields if field in match}
-                for match in matches
-            ]
-
-        return matches
+        return self._finalize_search_matches(matches, result_fields=result_fields)
 
     def _search_unindexed_gap(
         self,
@@ -2111,7 +2273,7 @@ class SessionSearchMixin:
                    substr(m.content,
                           max(1, instr(m.content, ?) - 40),
                           120) AS snippet,
-                   m.content, m.timestamp, m.tool_name,
+                   m.timestamp, m.tool_name,
                    s.source, s.model, s.started_at AS session_started
             FROM messages m
             JOIN sessions s ON s.id = m.session_id

@@ -389,6 +389,61 @@ class TestBuildConverseKwargs:
         assert "toolConfig" in kwargs
         assert len(kwargs["toolConfig"]["tools"]) == 1
 
+    def test_default_max_tokens_stays_4096(self):
+        """Callers that don't pass max_tokens keep the historical 4096 cap —
+        the None-omission behavior is strictly opt-in."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model", messages=[{"role": "user", "content": "Hi"}],
+        )
+        assert kwargs["inferenceConfig"]["maxTokens"] == 4096
+
+    def test_max_tokens_none_omits_cap(self):
+        """max_tokens=None omits inferenceConfig.maxTokens so Bedrock uses the
+        model's maximum allowed output (the Converse field is optional)."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=None,
+            temperature=0.1,
+        )
+        assert "maxTokens" not in kwargs["inferenceConfig"]
+        # Other inference params still flow through.
+        assert kwargs["inferenceConfig"]["temperature"] == 0.1
+
+    def test_max_tokens_none_and_no_sampling_drops_empty_inference_config(self):
+        """When every inference param is absent, don't send an empty
+        inferenceConfig object on the wire."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model="test-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=None,
+        )
+        assert "inferenceConfig" not in kwargs
+
+    def test_call_converse_stream_omits_cap_for_none(self):
+        """The streaming entry point funnels through the same builder — pin
+        that max_tokens=None omits the cap there too."""
+        from unittest.mock import MagicMock, patch as mock_patch
+        from agent.bedrock_adapter import call_converse_stream
+        boto3_client = MagicMock()
+        boto3_client.converse_stream.return_value = {"stream": []}
+        with mock_patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=boto3_client,
+        ):
+            call_converse_stream(
+                region="us-east-1",
+                model="test-model",
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=None,
+                temperature=0.2,
+            )
+        wire_kwargs = boto3_client.converse_stream.call_args.kwargs
+        assert "maxTokens" not in wire_kwargs.get("inferenceConfig", {})
+
 
 
 

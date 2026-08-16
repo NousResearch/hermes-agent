@@ -220,15 +220,18 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
     )
 
 
+@pytest.mark.windows_only
 @pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
+    """Faking sys.platform="win32" on Linux could not reach the real Windows
+    detach branch (msvcrt/creationflags spawn, Lib/site-packages venv layout);
+    this runs on the Windows CI job instead."""
     runner, _adapter = make_restart_runner()
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
     site_packages.mkdir(parents=True)
 
-    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
@@ -260,19 +263,23 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert kwargs["stderr"] is subprocess.DEVNULL
 
 
+@pytest.mark.windows_only
 @pytest.mark.asyncio
 async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
     """The restart watcher must run sys.executable (console python) under the
     hidden-console detach kwargs — NOT swap in GUI-subsystem pythonw.exe,
     which would leave the watcher console-less and make its descendants
-    flash visible conhosts (#54220/#56747)."""
+    flash visible conhosts (#54220/#56747).
+
+    Faking sys.platform on Linux could not enter the Windows-only watcher
+    spawn branch this asserts on, so it runs on the Windows CI job.
+    """
     runner, _adapter = make_restart_runner()
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
     site_packages.mkdir(parents=True)
 
-    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
     monkeypatch.setattr(gateway_run.sys, "executable", r"C:\venv\Scripts\python.exe")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
@@ -368,3 +375,96 @@ async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, mo
     assert "shutting down" in adapter.sent[0]
 
 
+
+
+def _wedged_agent(idle_seconds: float = 4000.0) -> MagicMock:
+    """Agent double whose activity summary reports it idle past the timeout."""
+    agent = MagicMock()
+    agent.get_activity_summary = MagicMock(
+        return_value={"seconds_since_activity": idle_seconds}
+    )
+    return agent
+
+
+def _live_agent(idle_seconds: float = 1.0) -> MagicMock:
+    agent = MagicMock()
+    agent.get_activity_summary = MagicMock(
+        return_value={"seconds_since_activity": idle_seconds}
+    )
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_request_restart_skips_wait_when_only_wedged_turns(monkeypatch):
+    """A turn idle past agent.gateway_timeout must not defer the restart.
+
+    Regression: a WhatsApp turn wedged for 30+ min pinned `hermes update`
+    in "draining" for the full restart_after_turn_timeout cap — the
+    after-turn wait counted the wedged agent as active work even though
+    the inactivity watchdog had already declared it dead (Aug 2026).
+    """
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    # A cap long enough that the test would hang without the wedge bypass.
+    runner._restart_after_turn_timeout = 300.0
+    runner._running_agents["agent:main:whatsapp:dm:1"] = _wedged_agent()
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+    # Wedged agent stays in the map — stop() owns the interrupt from here.
+    assert runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_request_restart_still_waits_for_live_turn_alongside_wedged(monkeypatch):
+    """Mixed live + wedged: the live turn is honored, the wedged one ignored."""
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
+    runner._restart_after_turn_timeout = 300.0
+    live_key = "agent:main:telegram:dm:2"
+    runner._running_agents["agent:main:whatsapp:dm:1"] = _wedged_agent()
+    runner._running_agents[live_key] = _live_agent()
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+
+    # Live turn active → stop() must not run yet, wedged turn notwithstanding.
+    await asyncio.sleep(0.25)
+    runner.stop.assert_not_awaited()
+
+    # Live turn finishes → restart proceeds without waiting on the wedged one.
+    del runner._running_agents[live_key]
+    await asyncio.wait_for(runner._restart_task, timeout=5.0)
+    runner.stop.assert_awaited_once()
+
+
+def test_wedged_agent_count_disabled_timeout_counts_nothing(monkeypatch):
+    """gateway_timeout=0 (unbounded turns) disables wedge detection."""
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0")
+    runner, _adapter = make_restart_runner()
+    runner._running_agents["agent:main:telegram:dm:1"] = _wedged_agent(10**6)
+    assert runner._wedged_agent_count() == 0
+
+
+def test_wedged_agent_count_ignores_sentinels_and_bad_summaries(monkeypatch):
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    runner, _adapter = make_restart_runner()
+    broken = MagicMock()
+    broken.get_activity_summary = MagicMock(side_effect=RuntimeError("boom"))
+    non_dict = MagicMock()  # auto-attr summary returns a MagicMock, not a dict
+    runner._running_agents.update(
+        {
+            "pending": gateway_run._AGENT_PENDING_SENTINEL,
+            "broken": broken,
+            "non_dict": non_dict,
+            "wedged": _wedged_agent(),
+            "live": _live_agent(),
+        }
+    )
+    assert runner._wedged_agent_count() == 1

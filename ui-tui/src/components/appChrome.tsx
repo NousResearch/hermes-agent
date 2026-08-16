@@ -750,12 +750,7 @@ export function StatusRule({
         <>
           <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
           <Box flexShrink={0} width={rightWidth}>
-            <Text
-              backgroundColor={sessionTitle ? t.color.accent : undefined}
-              bold={!!sessionTitle}
-              color={sessionTitle ? t.color.statusFg : t.color.label}
-              wrap="truncate-end"
-            >
+            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
               {rightLabel}
             </Text>
           </Box>

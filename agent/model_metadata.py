@@ -3652,13 +3652,20 @@ def estimate_tokens_rough(text: str) -> int:
     if text.isascii():
         # O(1) fast path — ASCII text cannot contain token-dense CJK chars.
         return (len(text) + 3) // 4
-    dense = len(text) - len(_CJK_DENSE_RE.sub("", text))
+    stripped = _CJK_DENSE_RE.sub("", text)
+    dense = len(text) - len(stripped)
     if not dense:
-        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): keep the
-        # classic ~4 chars/token rule.
-        return (len(text) + 3) // 4
-    sparse = len(text) - dense
-    return dense + ((sparse + 3) // 4)
+        # Non-ASCII but no CJK (accents, Cyrillic, emoji, ...): count UTF-8
+        # BYTES at ~4/token instead of characters. The byte width is the
+        # corrective: Cyrillic/Greek/Arabic are 2 bytes per char, so they
+        # count as ~chars/2 — matching their real BPE cost (~2-3 chars per
+        # token) where chars/4 under-counted them ~2x and let sessions ride
+        # the provider's context ceiling below the compaction threshold.
+        # ASCII spans inside mixed text still count at 1 byte each.
+        return (len(text.encode("utf-8")) + 3) // 4
+    # Mixed CJK + other: dense chars stay ~1 token each; the sparse
+    # remainder is byte-counted for the same corrective.
+    return dense + ((len(stripped.encode("utf-8")) + 3) // 4)
 
 
 def estimate_messages_tokens_rough(

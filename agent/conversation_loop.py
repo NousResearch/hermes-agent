@@ -780,6 +780,65 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        # Bot Chat capability epoch: an eternal bot session must adopt
+        # user-initiated capability changes (skills/toolsets/MCP/SOUL/roster)
+        # on the next message, not at /new or compression. The stored prompt
+        # embeds a fingerprint of the capability surface; a mismatch against
+        # disk is a deliberate, once-per-change rebuild — the /model
+        # exception applied to capabilities. Prompts without the stamp
+        # (every non-Bot-Chat session) never take this branch, and the check
+        # fails closed to "reuse" so a probe failure can't burn cache.
+        _bot_stale = False
+        try:
+            from tools.bot_mode_probe import stored_prompt_capability_stale
+
+            _home_for_epoch = None
+            try:
+                from agent.system_prompt import _agent_home
+
+                _home_for_epoch = _agent_home(agent)
+            except Exception:
+                pass
+            _bot_stale = stored_prompt_capability_stale(stored_prompt, _home_for_epoch)
+        except Exception:
+            _bot_stale = False
+        if _bot_stale:
+            logger.info(
+                "Bot Chat capability epoch changed for session %s; rebuilding "
+                "system prompt to adopt the new capability surface (one-time "
+                "prefix-cache break).",
+                agent.session_id,
+            )
+            agent._session_title_hint = "Bot Chat"
+            # The skills index inside the prompt comes from a two-layer cache
+            # (in-process LRU + disk snapshot) that doesn't watch the skills
+            # dir; a capability refresh must rebuild THROUGH it or a freshly
+            # installed skill stays invisible in the new prompt.
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+            agent._cached_system_prompt = agent._build_system_prompt(system_message)
+            agent._bot_capability_refreshed = True
+            # Persist the refreshed prompt so the NEXT turn restores the new
+            # bytes verbatim — the cache break is once per capability change,
+            # never per turn. (on_session_start deliberately not re-fired:
+            # this is a continuation, not a new session.)
+            if agent._session_db:
+                try:
+                    agent._session_db.update_system_prompt(
+                        agent.session_id, agent._cached_system_prompt
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Session DB update_system_prompt failed after Bot Chat "
+                        "capability refresh (session=%s): %s. The refresh will "
+                        "re-fire next turn.",
+                        agent.session_id, exc,
+                    )
+            return
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt

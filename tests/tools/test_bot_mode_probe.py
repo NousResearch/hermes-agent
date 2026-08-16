@@ -101,3 +101,71 @@ def test_never_raises_on_garbage(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: (_ for _ in ()).throw(OSError("boom")))
     bot_mode_probe._reset_cache_for_tests()
     assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
+
+
+# ── capability epoch ─────────────────────────────────────────────────────────
+
+
+def test_fingerprint_stable_when_nothing_changes(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    assert bot_mode_probe.capability_fingerprint(home) == bot_mode_probe.capability_fingerprint(home)
+
+
+def test_fingerprint_changes_on_each_capability_axis(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    base = bot_mode_probe.capability_fingerprint(home)
+
+    # new skill installed
+    skill = home / "skills" / "web" / "scraping"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: scraping\n---\n", encoding="utf-8")
+    after_skill = bot_mode_probe.capability_fingerprint(home)
+    assert after_skill != base
+
+    # toolset pin changed
+    (home / "config.yaml").write_text("tools:\n  enabled_toolsets: [web]\n", encoding="utf-8")
+    after_tools = bot_mode_probe.capability_fingerprint(home)
+    assert after_tools != after_skill
+
+    # MCP server added
+    (home / "config.yaml").write_text(
+        "tools:\n  enabled_toolsets: [web]\nmcp_servers:\n  github:\n    preset: github\n",
+        encoding="utf-8",
+    )
+    after_mcp = bot_mode_probe.capability_fingerprint(home)
+    assert after_mcp != after_tools
+
+    # SOUL edited
+    (home / "SOUL.md").write_text("# New identity\n", encoding="utf-8")
+    after_soul = bot_mode_probe.capability_fingerprint(home)
+    assert after_soul != after_mcp
+
+    # teammate added to the roster
+    _make_bot_profile(home, "coder", managed=True)
+    assert bot_mode_probe.capability_fingerprint(home) != after_soul
+
+
+def test_stored_prompt_staleness(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    stamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    # unchanged surface → not stale (cache preserved)
+    assert not bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+
+    # capability change → stale exactly once
+    skill = home / "skills" / "new-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: new-skill\n---\n", encoding="utf-8")
+    assert bot_mode_probe.stored_prompt_capability_stale(stamped, home)
+    restamped = "system stuff\n\n" + bot_mode_probe.epoch_line(home)
+    assert not bot_mode_probe.stored_prompt_capability_stale(restamped, home)
+
+    # prompts without a stamp (every non-Bot-Chat session) are never stale
+    assert not bot_mode_probe.stored_prompt_capability_stale("ordinary prompt", home)
+    assert not bot_mode_probe.stored_prompt_capability_stale("", home)

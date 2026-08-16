@@ -158,6 +158,108 @@ def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, forc
         return _cached[resolved]
 
 
+# ── capability epoch ─────────────────────────────────────────────────────────
+#
+# Bot Chat sessions are effectively eternal — the "new sessions come along
+# often" assumption behind build-once system prompts does not hold. When the
+# user changes a bot's capabilities (skills, toolsets, MCP servers, SOUL) or
+# the teammate roster changes, they expect the change to work on the NEXT
+# message. The fingerprint below hashes exactly that capability surface; the
+# built Bot Chat prompt embeds it, and the restore path in
+# agent/conversation_loop.py rebuilds the prompt when the stored epoch no
+# longer matches the disk state. This is the /model exception applied to
+# capabilities: a LOUD, USER-INITIATED, once-per-change cache break — never
+# a per-turn drift (unchanged state hashes identically and the stored bytes
+# are reused verbatim).
+
+_EPOCH_PREFIX = "Capability epoch: "
+_EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
+
+
+def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
+    """12-hex digest of the capability surface for ``home``'s profile.
+
+    Sources: the profile's disabled skills + enabled toolsets + MCP server
+    config (config.yaml), SOUL.md bytes, installed skill names, and the
+    Bot-Mode roster (managed profile names). Deliberately NOT cached — the
+    whole point is detecting on-disk drift; callers compare it against the
+    epoch embedded in a stored prompt. Never raises.
+    """
+    import hashlib
+    import json
+
+    resolved = Path(str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")))
+    surface: dict = {}
+    try:
+        import yaml
+
+        cfg_path = resolved / "config.yaml"
+        cfg = {}
+        if cfg_path.is_file():
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8", errors="replace")) or {}
+        skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
+        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+        skills_cfg = skills_cfg or {}
+        tools_cfg = tools_cfg or {}
+        surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
+        surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
+        mcp = cfg.get("mcp_servers")
+        surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
+    except Exception:
+        pass
+    try:
+        soul = resolved / "SOUL.md"
+        surface["soul"] = hashlib.sha256(soul.read_bytes()).hexdigest() if soul.is_file() else ""
+    except Exception:
+        surface["soul"] = ""
+    try:
+        names = []
+        skills_root = resolved / "skills"
+        if skills_root.is_dir():
+            for skill_md in skills_root.glob("**/SKILL.md"):
+                names.append(str(skill_md.parent.relative_to(skills_root)))
+        surface["skills"] = sorted(names)
+    except Exception:
+        surface["skills"] = []
+    try:
+        root = _hermes_root(resolved)
+        surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))
+    except Exception:
+        surface["roster"] = []
+    try:
+        blob = json.dumps(surface, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()[:12]
+    except Exception:
+        return "unavailable"
+
+
+def epoch_line(home: str | os.PathLike | None = None) -> str:
+    """The epoch stamp appended to a Bot Chat prompt."""
+    return f"{_EPOCH_PREFIX}{capability_fingerprint(home)}"
+
+
+def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
+    """True when ``stored_prompt`` is a Bot Chat prompt whose embedded
+    capability epoch no longer matches the current disk state.
+
+    Non-Bot-Chat prompts (no epoch stamp) are never stale by this check.
+    Fails closed to "not stale" — a broken probe must never turn into a
+    rebuild-every-turn cache burner.
+    """
+    import re
+
+    try:
+        m = re.search(_EPOCH_RE_TEXT, stored_prompt or "")
+        if not m:
+            return False
+        current = capability_fingerprint(home)
+        if current == "unavailable":
+            return False
+        return m.group(1) != current
+    except Exception:
+        return False
+
+
 def _reset_cache_for_tests() -> None:
     with _lock:
         _cached.clear()

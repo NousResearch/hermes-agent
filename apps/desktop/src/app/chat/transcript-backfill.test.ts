@@ -239,6 +239,7 @@ describe('backfillOlderTranscriptPage', () => {
       isCurrent: () => true,
       applyOlderPage: vi.fn()
     })
+
     const second = backfillOlderTranscriptPage({
       storedSessionId: 'stored-1',
       isCurrent: () => true,

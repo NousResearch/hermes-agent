@@ -1576,6 +1576,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 existing.media_types.extend(event.media_types)
             # A later event may be the one that consumes the immediate group
             # history watermark. Preserve that context when batching triggers.
+            # Only the first context in a batch survives, and that is the dedup
+            # rule, not an oversight: the watermark advances once per build, so
+            # two events in one batch carry disjoint windows, and the later one
+            # holds whatever arrived during the batching pause. Concatenating
+            # them would splice a second "[Recent group messages]" header into
+            # the block; keeping the later one instead would silently drop the
+            # older window. Dropping the later window costs at most the few
+            # messages sent inside the batch quiet period, which the durable
+            # observe path still records.
             if event.channel_context and not existing.channel_context:
                 existing.channel_context = event.channel_context
 

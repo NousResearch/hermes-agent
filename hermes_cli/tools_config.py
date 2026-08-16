@@ -4963,7 +4963,13 @@ def _reconfigure_provider(
                 img_cfg = config.setdefault("image_gen", {})
                 if isinstance(img_cfg, dict):
                     img_cfg["provider"] = "fal"
-                    img_cfg["use_gateway"] = False
+                    # A managed (Nous Subscription) row also carries
+                    # imagegen_backend="fal" — the model picker runs AFTER
+                    # _write_provider_config set use_gateway=True, so an
+                    # unconditional False here silently flipped managed
+                    # picks onto the user's personal FAL_KEY (same class
+                    # as fe63353cb, which fixed the plugin-provider path).
+                    img_cfg["use_gateway"] = bool(managed_feature)
         # STT providers prompt for model selection on reconfig too.
         if provider.get("stt_provider") and not managed_feature:
             _configure_stt_model(provider["stt_provider"], config)
@@ -5006,7 +5012,9 @@ def _reconfigure_provider(
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict):
                 img_cfg["provider"] = "fal"
-                img_cfg["use_gateway"] = False
+                # Same managed-row guard as the no-env-vars branch above:
+                # never clobber a Nous-managed pick back onto direct keys.
+                img_cfg["use_gateway"] = bool(managed_feature)
 
     # STT providers prompt for model selection on reconfig too.
     if provider.get("stt_provider") and not managed_feature:

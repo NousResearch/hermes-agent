@@ -793,7 +793,12 @@ export interface Translations {
       deepLinkErrorConfig: string
       deepLinkErrorShape: string
       deepLinkErrorUrl: string
-      deepLinkErrorTooLarge: string
+      deepLinkErrorTooLarge: string,
+      importButton: string
+      importPlaceholder: string
+      importNoMatch: string
+      importConfirm: string
+      importConfirmMany: (count: number) => string
     }
     model: {
       loading: string
@@ -1418,6 +1423,7 @@ export interface Translations {
     showAllProfiles: string
     switchToProfile: (name: string) => string
     manageProfiles: string
+    connectGateway: string
     actions: string
     color: string
     colorFor: string

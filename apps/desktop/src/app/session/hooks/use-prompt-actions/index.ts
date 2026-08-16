@@ -36,6 +36,7 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -864,7 +865,7 @@ export function usePromptActions({
       // stale session deletes the wrong transcript.
       const sessionId = activeSessionIdRef.current
 
-      if (!sessionId || $busy.get()) {
+      if (!sessionId || $sessionStates.get()[sessionId]?.busy) {
         return
       }
 

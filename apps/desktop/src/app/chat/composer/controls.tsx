@@ -13,7 +13,6 @@ import {
   Layers3,
   Loader2,
   Square,
-  SteeringWheel,
   Volume2,
   VolumeX
 } from '@/lib/icons'
@@ -87,7 +86,10 @@ export function ComposerControls({
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
-  const busyLabel = busyAction === 'queue' ? c.queueMessage : busyAction === 'steer' ? c.steer : c.stop
+  // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
+  // only when the composer is empty and a turn is running.
+  const showStop = busy && !hasComposerPayload
+  const showQueueButton = busyAction !== 'stop' && hasComposerPayload
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
@@ -95,7 +97,7 @@ export function ComposerControls({
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
       <WakeWordButton disabled={disabled} />
-      {busyAction === 'steer' ? (
+      {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
             aria-label={c.queueMessage}
@@ -129,36 +131,21 @@ export function ComposerControls({
       ) : (
         <Tip
           label={
-            busy ? (
-              <TipKeybindLabel
-                actionId={
-                  busyAction === 'steer'
-                    ? 'composer.steer'
-                    : busyAction === 'queue'
-                      ? 'composer.queue'
-                      : 'composer.send'
-                }
-                text={busyLabel}
-              />
+            showStop ? (
+              <TipKeybindLabel actionId="composer.send" text={c.stop} />
             ) : (
               <TipKeybindLabel actionId="composer.send" text={c.send} />
             )
           }
         >
           <Button
-            aria-label={busy ? busyLabel : c.send}
+            aria-label={showStop ? c.stop : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
           >
-            {busy ? (
-              busyAction === 'queue' ? (
-                <Layers3 className={iconSize.sm} />
-              ) : busyAction === 'steer' ? (
-                <SteeringWheel className={iconSize.sm} />
-              ) : (
-                <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-              )
+            {showStop ? (
+              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
             ) : (
               <Codicon name="arrow-up" size="0.875rem" />
             )}

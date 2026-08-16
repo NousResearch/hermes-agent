@@ -1209,6 +1209,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     // never heard about. The busy path must park the kickoff on the composer
     // queue so the settle drain sends it.
     $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
 
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     const states: Record<string, unknown>[] = []
@@ -1262,6 +1266,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
     expect(renderedText).toContain('queued')
 
+    dropSessionState(RUNTIME_SESSION_ID)
     $queuedPromptsBySession.set({})
   })
 
@@ -2159,8 +2164,12 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
-  it('a normal (non-queue) submit still respects the busyRef guard', async () => {
-    const busyRef = { current: true }
+  it('a normal (non-queue) submit is blocked when the target session is busy', async () => {
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
+    const busyRef = { current: false }
     const requestGateway = vi.fn(async () => ({}) as never)
 
     let handle: HarnessHandle | null = null
@@ -2177,6 +2186,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    dropSessionState(RUNTIME_SESSION_ID)
   })
 })
 

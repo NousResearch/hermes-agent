@@ -134,7 +134,12 @@ export function activeGateway(): HermesGateway | null {
     return g.primaryGateway
   }
 
-  return g.secondaries.get(g.activeKey)?.gateway ?? g.primaryGateway
+  // A named scope resolves to ITS socket or nothing. Falling back to the
+  // primary here would silently route calls (sends, session ops, roster
+  // requests) to the WRONG backend whenever the scope's entry is gone —
+  // teardown sites keep the invariant "activeKey always resolves" by
+  // re-pointing the active key at the primary when they evict it.
+  return g.secondaries.get(g.activeKey)?.gateway ?? null
 }
 
 // Mirror a backend's connection state into the global composer state, but only
@@ -488,6 +493,18 @@ function disposeSecondary(entry: Secondary): void {
   entry.gateway.close()
 }
 
+// Invariant restore for every eviction path: if the active key names a
+// secondary that no longer exists, fall back to the primary EXPLICITLY (atoms
+// and composer state follow) instead of leaving a dangling key that
+// activeGateway() can no longer resolve. Without this, a soft gateway switch
+// (closeSecondaryGateways in use-gateway-boot) left activeKey pointing at an
+// evicted registry scope and every call silently hit the primary backend.
+function restoreActiveToPrimaryIfEvicted(): void {
+  if (g.activeKey !== g.primaryProfile && !g.secondaries.has(g.activeKey)) {
+    setActive(g.primaryProfile)
+  }
+}
+
 // Close + evict secondaries whose profile is neither active nor in `keep`
 // (profiles with a running / needs-input session). Bounds cost to live work.
 // `keep` carries PROFILE names (session ownership is profile-keyed), so a
@@ -503,6 +520,8 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
     disposeSecondary(entry)
     g.secondaries.delete(key)
   }
+
+  restoreActiveToPrimaryIfEvicted()
 }
 
 export function closeSecondaryGateways(): void {
@@ -511,6 +530,7 @@ export function closeSecondaryGateways(): void {
   }
 
   g.secondaries.clear()
+  restoreActiveToPrimaryIfEvicted()
 }
 
 // Self-accept so editing this module (or a fan-out that lands here) is an

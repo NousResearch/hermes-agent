@@ -191,12 +191,16 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     resolved = Path(str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")))
     surface: dict = {}
     try:
-        import yaml
+        # Canonical loader (managed overlay + env expansion + normalization),
+        # scoped to the bot's home via the override the loaders already honor.
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        cfg_path = resolved / "config.yaml"
-        cfg = {}
-        if cfg_path.is_file():
-            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8", errors="replace")) or {}
+        token = set_hermes_home_override(str(resolved))
+        try:
+            cfg = load_config_readonly() or {}
+        finally:
+            reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
         skills_cfg = skills_cfg or {}

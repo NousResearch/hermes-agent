@@ -174,6 +174,18 @@ def test_explicit_suggestions_file_monkeypatch_still_wins(tmp_path, monkeypatch)
     assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["patched"]
 
 
+def test_explicit_suggestions_file_wins_over_split_cron_dir(tmp_path, monkeypatch):
+    import cron.suggestions as suggestions
+
+    patched_file = tmp_path / "file-dir" / "suggestions.json"
+    monkeypatch.setattr(suggestions, "CRON_DIR", tmp_path / "cron-dir")
+    monkeypatch.setattr(suggestions, "SUGGESTIONS_FILE", patched_file)
+
+    assert _add(suggestions, key="patched") is not None
+    assert patched_file.is_file()
+    assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["patched"]
+
+
 class TestCatalog:
     def test_seed_registers_all_entries(self, store):
         from cron.suggestion_catalog import CATALOG, seed_catalog_suggestions

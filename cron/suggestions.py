@@ -79,7 +79,7 @@ def _current_store() -> tuple[Path, Path]:
     cron_changed = CRON_DIR != _IMPORT_STORE[0]
     file_changed = SUGGESTIONS_FILE != _IMPORT_STORE[1]
     if file_changed:
-        return (CRON_DIR if cron_changed else SUGGESTIONS_FILE.parent), SUGGESTIONS_FILE
+        return SUGGESTIONS_FILE.parent, SUGGESTIONS_FILE
     if cron_changed:
         return CRON_DIR, CRON_DIR / "suggestions.json"
     from cron.jobs import _current_cron_store

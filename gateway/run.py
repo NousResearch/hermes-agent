@@ -6601,6 +6601,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
+        self._restart_command_lock = asyncio.Lock()
+        self._restart_notification_request_id: Optional[str] = None
         self._exit_cleanly = False
         self._exit_with_failure = False
         self._exit_reason: Optional[str] = None
@@ -23666,6 +23668,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         cleanup_marker = False
         marker_payload = None
+        marker_request_id = None
         try:
             try:
                 marker_payload = notify_path.read_text(encoding="utf-8")
@@ -23737,6 +23740,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
+            marker_request_id = data.get("request_id")
+            if getattr(self, "_restart_notification_request_id", None) is None:
+                self._restart_notification_request_id = marker_request_id
+
             platform = Platform(platform_str)
             # Parsing and route admission succeeded. From here onward, terminal
             # outcomes consume this generation unless a safe retry/shutdown path
@@ -23776,6 +23783,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         chat_id,
                         _RESTART_NOTIFICATION_RETRY_TIMEOUT_SECS,
                         error,
+                    )
+                    return None
+
+                # /restart publishes the next request ID on this event loop
+                # before its atomic marker write starts in a worker thread.
+                # Treat that announcement as the ownership handoff even while
+                # the old bytes are still visible on disk.
+                if self._restart_notification_request_id != marker_request_id:
+                    cleanup_marker = False
+                    logger.info(
+                        "Stopping superseded restart notification worker before "
+                        "the next delivery attempt"
                     )
                     return None
 
@@ -23845,6 +23864,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # before this task starts, so revalidate ownership, shutdown state,
                         # and the hard deadline at the last synchronous point before
                         # transport.send.
+                        if self._restart_notification_request_id != marker_request_id:
+                            return False, True, None
                         try:
                             dispatch_marker_payload = notify_path.read_text(
                                 encoding="utf-8"
@@ -24010,25 +24031,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         finally:
             if cleanup_marker:
-                # The only supported writer is the synchronous /restart handler on
-                # this gateway event loop. With no await between comparison and
-                # unlink, that producer cannot replace the marker in this section.
-                try:
-                    marker_is_current = (
-                        marker_payload is None
-                        or notify_path.read_text(encoding="utf-8") == marker_payload
+                # /restart announces a new request ID on the event loop before
+                # offloading its atomic marker write. Check that in-memory
+                # generation first: the writer thread could otherwise replace
+                # the file between this worker's final read and unlink.
+                if (
+                    getattr(self, "_restart_notification_request_id", None)
+                    != marker_request_id
+                ):
+                    logger.info(
+                        "Preserving newer restart notification marker after "
+                        "earlier delivery attempt"
                     )
-                    if marker_is_current:
-                        notify_path.unlink(missing_ok=True)
-                    else:
-                        logger.info(
-                            "Preserving newer restart notification marker after "
-                            "earlier delivery attempt"
+                else:
+                    try:
+                        marker_is_current = (
+                            marker_payload is None
+                            or notify_path.read_text(encoding="utf-8") == marker_payload
                         )
-                except FileNotFoundError:
-                    pass
-                except (OSError, UnicodeError) as e:
-                    logger.warning("Restart notification marker cleanup failed: %s", e)
+                        if marker_is_current:
+                            notify_path.unlink(missing_ok=True)
+                        else:
+                            logger.info(
+                                "Preserving newer restart notification marker after "
+                                "earlier delivery attempt"
+                            )
+                    except FileNotFoundError:
+                        pass
+                    except (OSError, UnicodeError) as e:
+                        logger.warning(
+                            "Restart notification marker cleanup failed: %s", e
+                        )
 
     async def _send_home_channel_startup_notifications(
         self,

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -93,6 +94,139 @@ async def test_restart_command_gives_identical_route_a_unique_request_id(
     assert {k: v for k, v in first.items() if k != "request_id"} == {
         k: v for k, v in second.items() if k != "request_id"
     }
+
+
+@pytest.mark.asyncio
+async def test_restart_command_serializes_async_marker_writes(tmp_path, monkeypatch):
+    """Concurrent restart commands cannot reorder their worker-thread writes."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    import gateway.slash_commands as gateway_slash
+
+    notify_write_started = threading.Event()
+    allow_notify_write = threading.Event()
+    notify_payloads = []
+
+    def _blocking_atomic_json_write(path, payload, **_kwargs):
+        path = Path(path)
+        if path.name == ".restart_notify.json":
+            notify_payloads.append(dict(payload))
+            notify_write_started.set()
+            assert allow_notify_write.wait(timeout=2)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        gateway_slash,
+        "atomic_json_write",
+        _blocking_atomic_json_write,
+    )
+
+    runner, _adapter = make_restart_runner()
+
+    def _request_restart(**_kwargs):
+        runner._restart_requested = True
+        return True
+
+    runner.request_restart = MagicMock(side_effect=_request_restart)
+    first_event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="first"),
+        message_id="m1",
+    )
+    second_event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="second"),
+        message_id="m2",
+    )
+
+    first_task = asyncio.create_task(runner._handle_restart_command(first_event))
+    assert await asyncio.to_thread(notify_write_started.wait, 2)
+    second_task = asyncio.create_task(runner._handle_restart_command(second_event))
+    await asyncio.sleep(0)
+
+    try:
+        assert not second_task.done()
+    finally:
+        allow_notify_write.set()
+
+    await asyncio.gather(first_task, second_task)
+
+    runner.request_restart.assert_called_once()
+    assert len(notify_payloads) == 1
+    assert notify_payloads[0]["chat_id"] == "first"
+    marker = json.loads(
+        (tmp_path / ".restart_notify.json").read_text(encoding="utf-8")
+    )
+    assert marker["chat_id"] == "first"
+
+
+@pytest.mark.asyncio
+async def test_restart_command_cancellation_does_not_orphan_marker_writer(
+    tmp_path, monkeypatch
+):
+    """Cancellation keeps the command lock until its worker write completes."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    import gateway.slash_commands as gateway_slash
+
+    first_write_started = threading.Event()
+    second_write_started = threading.Event()
+    allow_first_write = threading.Event()
+
+    def _ordered_atomic_json_write(path, payload, **_kwargs):
+        path = Path(path)
+        if path.name == ".restart_notify.json":
+            if payload["chat_id"] == "first":
+                first_write_started.set()
+                assert allow_first_write.wait(timeout=2)
+            else:
+                second_write_started.set()
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(gateway_slash, "atomic_json_write", _ordered_atomic_json_write)
+
+    runner, _adapter = make_restart_runner()
+
+    def _request_restart(**_kwargs):
+        runner._restart_requested = True
+        return True
+
+    runner.request_restart = MagicMock(side_effect=_request_restart)
+    first_event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="first"),
+        message_id="m1",
+    )
+    second_event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="second"),
+        message_id="m2",
+    )
+
+    first_task = asyncio.create_task(runner._handle_restart_command(first_event))
+    assert await asyncio.to_thread(first_write_started.wait, 2)
+    first_task.cancel()
+    await asyncio.sleep(0)
+    first_task.cancel()
+    second_task = asyncio.create_task(runner._handle_restart_command(second_event))
+    second_started_before_release = await asyncio.to_thread(
+        second_write_started.wait, 0.2
+    )
+
+    allow_first_write.set()
+    results = await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+    assert not second_started_before_release
+    assert isinstance(results[0], asyncio.CancelledError)
+    runner.request_restart.assert_called_once()
+    marker = json.loads(
+        (tmp_path / ".restart_notify.json").read_text(encoding="utf-8")
+    )
+    assert marker["chat_id"] == "second"
 
 
 @pytest.mark.asyncio
@@ -550,6 +684,45 @@ async def test_send_restart_notification_stops_when_marker_replaced_during_backo
     assert delivered_target is None
     send.assert_awaited_once()
     assert json.loads(notify_path.read_text(encoding="utf-8"))["request_id"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_stops_when_async_replacement_is_announced(
+    tmp_path, monkeypatch
+):
+    """A queued worker-thread write supersedes old bytes before its retry."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    old_payload = json.dumps(
+        {"platform": "telegram", "chat_id": "42", "request_id": "old"}
+    )
+    notify_path.write_text(old_payload, encoding="utf-8")
+
+    runner, adapter = make_restart_runner()
+    calls = 0
+
+    async def _announce_replacement_before_write(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            runner._restart_notification_request_id = "new"
+            return SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            )
+        return SendResult(success=True, message_id="must-not-send")
+
+    send = AsyncMock(side_effect=_announce_replacement_before_write)
+    adapter.send = send
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", AsyncMock())
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    send.assert_awaited_once()
+    assert notify_path.read_text(encoding="utf-8") == old_payload
 
 
 @pytest.mark.asyncio
@@ -1065,6 +1238,68 @@ async def test_send_restart_notification_preserves_replacement_marker(
 
     assert delivered_target == ("telegram", "42", None)
     assert json.loads(notify_path.read_text(encoding="utf-8"))["request_id"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_does_not_unlink_async_replacement(
+    tmp_path, monkeypatch
+):
+    """A worker-thread replacement between final read/unlink must survive."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    old_payload = json.dumps(
+        {"platform": "telegram", "chat_id": "42", "request_id": "old"}
+    )
+    new_payload = json.dumps(
+        {"platform": "telegram", "chat_id": "42", "request_id": "new"}
+    )
+    notify_path.write_text(old_payload, encoding="utf-8")
+
+    runner, adapter = make_restart_runner()
+    allow_replacement = threading.Event()
+    replacement_done = threading.Event()
+
+    def _replace_marker():
+        allow_replacement.wait(timeout=2)
+        notify_path.write_text(new_payload, encoding="utf-8")
+        replacement_done.set()
+
+    writer = threading.Thread(target=_replace_marker)
+    writer.start()
+
+    real_read_text = Path.read_text
+
+    def _read_while_replacement_completes(path, *args, **kwargs):
+        if (
+            path == notify_path
+            and getattr(runner, "_restart_notification_request_id", None) == "new"
+            and not allow_replacement.is_set()
+        ):
+            allow_replacement.set()
+            assert replacement_done.wait(timeout=2)
+            return old_payload
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_while_replacement_completes)
+
+    async def _send_while_replacement_is_queued(*_args, **_kwargs):
+        # Mirrors _handle_restart_command: publish the generation before its
+        # atomic write is dispatched to a worker thread.
+        runner._restart_notification_request_id = "new"
+        return SendResult(success=True, message_id="sent")
+
+    adapter.send = AsyncMock(side_effect=_send_while_replacement_is_queued)
+
+    try:
+        delivered_target = await runner._send_restart_notification()
+    finally:
+        allow_replacement.set()
+        writer.join(timeout=2)
+
+    assert delivered_target == ("telegram", "42", None)
+    assert replacement_done.is_set()
+    assert notify_path.read_text(encoding="utf-8") == new_payload
 
 
 @pytest.mark.asyncio

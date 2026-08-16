@@ -3963,11 +3963,23 @@ class SessionStore:
             )
             return True
         except Exception as e:
-            logger.debug("Failed to rewrite transcript in DB: %s", e)
+            # Durable rewinds deliberately fail closed when the loaded snapshot
+            # no longer maps byte-for-byte to the active rows. Keep the client
+            # response neutral, but retain the concrete invariant here so a
+            # rejected /retry is diagnosable without exposing transcript data.
+            logger.warning(
+                "Refused to rewrite transcript for session %s: %s",
+                session_id,
+                e,
+            )
             return False
 
     def load_transcript(
-        self, session_id: str, *, include_row_ids: bool = False
+        self,
+        session_id: str,
+        *,
+        include_row_ids: bool = False,
+        repair_alternation: bool = True,
     ) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
 
@@ -4000,13 +4012,12 @@ class SessionStore:
         except Exception:
             pass
         try:
-            # repair_alternation: this load feeds LIVE REPLAY. A durable
-            # user;user wedge (e.g. a turn that persisted no assistant row)
-            # would otherwise re-trigger the pre-request repair on every
-            # request forever — heal it once at the restore boundary.
+            # Live replay repairs durable role wedges at the restore boundary.
+            # Snapshot-sensitive rewrites such as /retry opt out: synthetic or
+            # coalesced turns cannot be mapped losslessly back to durable rows.
             return self._db.get_messages_as_conversation(
                 session_id,
-                repair_alternation=True,
+                repair_alternation=repair_alternation,
                 include_row_ids=include_row_ids,
             )
         except Exception as e:

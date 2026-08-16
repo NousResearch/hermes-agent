@@ -2638,7 +2638,9 @@ class GatewaySlashCommandsMixin:
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         history = await self.async_session_store.load_transcript(
-            session_entry.session_id, include_row_ids=True
+            session_entry.session_id,
+            include_row_ids=True,
+            repair_alternation=False,
         )
         
         # Find the last *real* user message. Timeline bookkeeping rows carry

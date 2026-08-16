@@ -165,6 +165,77 @@ async def test_gateway_retry_aborts_when_canonical_rewrite_fails(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_gateway_retry_uses_unrepaired_durable_snapshot(tmp_path, monkeypatch):
+    """A persisted role wedge must not synthesize rows before durable rewind.
+
+    Normal live replay repairs consecutive user turns. A /retry snapshot must
+    instead preserve the exact row projection so every expected id and retained
+    prefix entry still maps to the transaction's active rows.
+    """
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+    db = store._db
+    assert db is not None
+
+    session_id = "retry_unrepaired_snapshot"
+    db.create_session(session_id=session_id, source="test")
+    db.append_messages_batch(
+        session_id,
+        [
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": "retry me"},
+            {"role": "assistant", "content": "superseded"},
+        ],
+    )
+    assert len(store.load_transcript(session_id)) == 2
+    assert len(
+        store.load_transcript(session_id, repair_alternation=False)
+    ) == 3
+
+    gw = GatewayRunner.__new__(GatewayRunner)
+    gw.config = config
+    gw.session_store = store
+    session_entry = MagicMock(session_id=session_id)
+    session_entry.last_prompt_tokens = 111
+    gw.session_store.get_or_create_session = MagicMock(return_value=session_entry)
+
+    async def fake_handle_message(event):
+        store.append_to_transcript(
+            session_id, {"role": "user", "content": event.text}
+        )
+        store.append_to_transcript(
+            session_id, {"role": "assistant", "content": "replacement"}
+        )
+        return "replacement"
+
+    gw._handle_message = AsyncMock(side_effect=fake_handle_message)
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == "replacement"
+    active = db.get_messages(session_id)
+    assert [(m["role"], m["content"]) for m in active] == [
+        ("user", "first"),
+        ("user", "retry me"),
+        ("assistant", "replacement"),
+    ]
+    inactive = [
+        m
+        for m in db.get_messages(session_id, include_inactive=True)
+        if not m["active"]
+    ]
+    assert [(m["role"], m["content"]) for m in inactive] == [
+        ("user", "retry me"),
+        ("assistant", "superseded"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails(
     tmp_path, monkeypatch
 ):

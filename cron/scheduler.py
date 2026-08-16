@@ -3204,7 +3204,11 @@ def _run_job_script(
     # Path operations raise ValueError *after* expanduser (expanduser never
     # expands "~user" there, so the try below never fires) — reject eagerly
     # so both platforms fail cleanly instead of crashing the scheduler.
-    if "\x00" in script_path:
+    # str() first so the guard itself can never raise TypeError on a
+    # non-str script_path (e.g. a Path passed by a future caller) — the
+    # guard must be crash-proof even though every current call site
+    # passes a plain str (#86832 review).
+    if "\x00" in str(script_path):
         return False, f"Blocked: script path contains a NUL byte: {script_path!r}"
 
     try:

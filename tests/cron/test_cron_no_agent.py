@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 from unittest.mock import patch
 
@@ -292,6 +293,24 @@ def test_run_job_script_nul_rejected_before_any_path_call(hermes_env, monkeypatc
     ok, output = scheduler_module._run_job_script("nul\x00byte.sh")
     assert ok is False
     assert "NUL byte" in output
+
+
+def test_run_job_script_accepts_pathlike_script_path(hermes_env):
+    """The eager NUL guard must not crash on a non-str script_path.
+
+    ``"\x00" in script_path`` raises TypeError for a pathlib.Path (not
+    iterable), so a Path passed by a future caller would crash the
+    scheduler at the guard itself. The guard coerces with str() first;
+    a valid Path must still run the script end-to-end (regression for
+    the #86832 review point)."""
+    from cron.scheduler import _run_job_script
+
+    script = hermes_env / "scripts" / "probe.py"
+    script.write_text('print("pathlike ok")\n', encoding="utf-8")
+
+    ok, output = _run_job_script(pathlib.Path(script))
+    assert ok is True
+    assert "pathlike ok" in output
 
 
 # ---------------------------------------------------------------------------

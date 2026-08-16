@@ -46,12 +46,24 @@ def _sidecars(directory):
 
 @pytest.fixture
 def clean_registry():
-    """Keep the module-level connection registry from leaking across tests."""
-    yield
+    """Isolate a test from the module-level connection registry.
+
+    Clears on both sides, not just teardown: a test that leaks a tracked
+    connection (an earlier failure, or a test that does not take this
+    fixture) would otherwise leave the registry dirty and make the *next*
+    test's refusal assertion pass for the wrong reason.
+    """
     import hermes_cli.sqlite_safe_read as mod
 
-    with mod._live_lock:
-        mod._live_connections.clear()
+    def _clear():
+        with mod._live_lock:
+            mod._live_connections.clear()
+
+    _clear()
+    try:
+        yield
+    finally:
+        _clear()
 
 
 class TestReadJournalMode:

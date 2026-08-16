@@ -13,9 +13,8 @@ import plugins.image_gen.openai as openai_plugin
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
 _PNG_HEX = (
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-    "890000000d49444154789c6300010000000500010d0a2db40000000049454e44"
-    "ae426082"
+    "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c02"
+    "0000000b4944415478da6364600000000600023081d02f0000000049454e44ae426082"
 )
 
 
@@ -213,10 +212,10 @@ class TestSourceImageLoading:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         img = tmp_path / "pic.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+        img.write_bytes(bytes.fromhex(_PNG_HEX))
 
         data, name = openai_plugin._load_image_bytes(str(img))
-        assert data == b"\x89PNG\r\n\x1a\nfake-image-bytes"
+        assert data == bytes.fromhex(_PNG_HEX)
         assert name == "pic.png"
 
 
@@ -400,7 +399,7 @@ class TestGenerate:
 class TestSourceImageHardening:
     """_load_image_bytes delegates local/data-URI validation to the resolver."""
 
-    _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    _PNG = bytes.fromhex(_PNG_HEX)
 
     def test_local_image_bytes_and_name(self, tmp_path):
         path = tmp_path / "cat.png"

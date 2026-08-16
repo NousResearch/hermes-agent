@@ -208,7 +208,8 @@ class TestLocalSourceConsent:
         assert result["error_type"] == error_type
 
     @pytest.mark.parametrize("managed,source_kind", [
-        (False, "local"), (True, "local"), (False, "remote"), (False, "data"),
+        (False, "local"), (True, "local"), (False, "remote"),
+        (False, "data"), (False, "mislabelled_data"),
     ])
     def test_sources_reach_selected_fal_endpoint_with_local_consent(
         self, cfg_home, monkeypatch, tmp_path, managed, source_kind
@@ -222,7 +223,9 @@ class TestLocalSourceConsent:
         source.write_bytes(pixels)
         data_url = f"data:image/png;base64,{base64.b64encode(pixels).decode('ascii')}"
         source_ref = (str(source) if source_kind == "local" else
-                      "https://example.com/attached.png" if source_kind == "remote" else data_url)
+                      "https://example.com/attached.png" if source_kind == "remote" else
+                      data_url.replace("image/png", "image/jpeg") if source_kind == "mislabelled_data" else
+                      data_url)
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
         monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: not managed)
 
@@ -259,7 +262,9 @@ class TestLocalSourceConsent:
         }))
 
         assert result["success"] is True
-        expected_source = (data_url if managed else "https://fal.storage/attached.png") if source_kind == "local" else source_ref
+        expected_source = ((data_url if managed else "https://fal.storage/attached.png")
+                           if source_kind == "local" else data_url if source_kind == "mislabelled_data"
+                           else source_ref)
         assert fake.uploads == ([(pixels, "image/png")] if source_kind == "local" and not managed else [])
         expected_payload = image_tool._build_fal_edit_payload(
             "fal-ai/nano-banana-pro", "make it night", [expected_source])

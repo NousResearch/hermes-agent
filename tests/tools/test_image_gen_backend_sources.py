@@ -14,7 +14,8 @@ import importlib
 
 import pytest
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
 
 
 def _data_url(raw: bytes, mime: str = "image/png") -> str:
@@ -24,7 +25,7 @@ def _data_url(raw: bytes, mime: str = "image/png") -> str:
 def _fal(src):
     import tools.image_generation_tool as igt
 
-    return igt._resolve_fal_source_image(src, managed=False)
+    return igt._resolve_fal_source_image(src, None, managed=False)
 
 
 def _xai(src):
@@ -48,7 +49,7 @@ def _openai(src):
 def _codex(src):
     codex_plugin = importlib.import_module("plugins.image_gen.openai-codex")
 
-    return codex_plugin._to_input_image_part(src)["image_url"]
+    return codex_plugin._to_input_image(src)["image_url"]
 
 
 _WRAPPERS = {
@@ -156,4 +157,4 @@ class TestCapComposition:
         monkeypatch.setattr(codex_plugin, "_MAX_INPUT_IMAGE_BYTES", 1024)
 
         with pytest.raises(isrc.SourceTooLarge, match="exceeds the .*MB limit"):
-            codex_plugin._to_input_image_part(str(big))
+            codex_plugin._to_input_image(str(big))

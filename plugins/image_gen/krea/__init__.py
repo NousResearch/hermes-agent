@@ -309,11 +309,19 @@ def _collect_style_refs(
 def _resolve_style_refs(refs: List[Any]) -> List[Any]:
     from tools.image_source import resolve_source_to_url_sync
 
-    return [
-        {"url": resolve_source_to_url_sync(ref), "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH}
-        if isinstance(ref, str) else ref
-        for ref in refs
-    ]
+    resolved: List[Any] = []
+    for ref in refs:
+        if isinstance(ref, str):
+            resolved.append({"url": resolve_source_to_url_sync(ref),
+                             "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH})
+            continue
+        if isinstance(ref, dict) and isinstance(ref.get("url"), str):
+            rich_ref = dict(ref)
+            rich_ref["url"] = resolve_source_to_url_sync(ref["url"])
+            resolved.append(rich_ref)
+            continue
+        resolved.append(ref)
+    return resolved
 
 
 def _build_payload(

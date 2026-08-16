@@ -622,3 +622,116 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# Handoffs that hand a decision back to the origin must wake it, not only ping
+# it: `review_requested` (implementation done, waiting for a reviewer) and
+# `block_loop_detected` (routed to triage) are terminal kinds just like
+# `blocked`.
+# ---------------------------------------------------------------------------
+
+
+def _wake_text(adapter):
+    """Text of the single synthetic wake turn injected into the adapter."""
+    assert len(adapter.handled) == 1, (
+        f"expected exactly one wake turn, got {len(adapter.handled)}"
+    )
+    return getattr(adapter.handled[0], "text", "") or ""
+
+
+def _review_handoff_task(*, delivery_mode="notify+wake"):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="implement the thing",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode=delivery_mode,
+        )
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.request_review(
+            conn, tid, summary="implementation done", expected_run_id=run_id,
+        ) is True
+        return tid
+    finally:
+        conn.close()
+
+
+def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
+    """A review handoff wakes the origin on top of the passive ping."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-wake.db"))
+    kb.init_db()
+    tid = _review_handoff_task()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "the passive review ping is unchanged"
+    assert "ready for review" in adapter.sent[0]["text"]
+    assert tid in _wake_text(adapter)
+
+
+def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
+    """A triage escalation wakes the origin so a decision gets made."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "triage-wake.db"))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="loops forever",
+            assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode="notify+wake",
+        )
+        kb._append_event(
+            conn, tid, "block_loop_detected",
+            {"reason": "needs credentials", "kind": "needs_input",
+             "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in _wake_text(adapter)
+
+
+def test_review_requested_does_not_wake_a_notify_only_subscription(
+    tmp_path, monkeypatch,
+):
+    """delivery_mode still decides whether a wake-worthy kind wakes at all."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-notify.db"))
+    kb.init_db()
+    _review_handoff_task(delivery_mode="notify")
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == [], (
+        "notify-only subscriptions must not be woken by a review handoff"
+    )

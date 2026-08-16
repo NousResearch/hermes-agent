@@ -781,7 +781,16 @@ class GatewayKanbanWatchersMixin:
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
                         task_terminal = task and task.status == "archived"
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        # Kinds that hand a decision back to the origin, so the
+                        # origin has to take a turn. ``review_requested`` (the
+                        # implementation is done and waits for a reviewer) and
+                        # ``block_loop_detected`` (routed to triage) belong here
+                        # for the same reason ``blocked`` does. ``status`` /
+                        # ``archived`` / ``unblocked`` stay out: bookkeeping.
+                        _WAKE_KINDS = (
+                            "completed", "gave_up", "crashed", "timed_out",
+                            "blocked", "review_requested", "block_loop_detected",
+                        )
                         _wake_kinds = (
                             {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                             if wake_agent
@@ -818,6 +827,8 @@ class GatewayKanbanWatchersMixin:
                             if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                             if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
                             if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                            if "review_requested" in _wake_kinds: _parts.append(t("gateway.kanban.wake.review_requested"))
+                            if "block_loop_detected" in _wake_kinds: _parts.append(t("gateway.kanban.wake.block_loop_detected"))
                             _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                             _synth = t(
                                 "gateway.kanban.wake.message",

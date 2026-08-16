@@ -143,9 +143,7 @@ describe('mutateAndRefreshCronJobs', () => {
   it('allows overlapping same-profile mutations to authoritatively refresh', async () => {
     const first = deferred<string>()
     const second = deferred<string>()
-    getCronJobs
-      .mockResolvedValueOnce([{ id: 'after-second' }])
-      .mockResolvedValueOnce([{ id: 'after-both' }])
+    getCronJobs.mockResolvedValueOnce([{ id: 'after-second' }]).mockResolvedValueOnce([{ id: 'after-both' }])
 
     const firstResult = mutateAndRefreshCronJobs('work', () => first.promise)
     const secondResult = mutateAndRefreshCronJobs('work', () => second.promise)

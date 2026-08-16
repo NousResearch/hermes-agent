@@ -302,6 +302,39 @@ class TestSessionLifecycle:
         assert session["ended_at"] is None
 
 
+    def test_branch_resume_does_not_include_parent_messages_added_after_fork(self, db):
+        """A branch owns its copied transcript, not the parent's later turns."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="before branch")
+        db.append_message("parent", role="assistant", content="initial answer")
+
+        db.create_session(
+            "branch",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch", role="user", content="before branch")
+        db.append_message("branch", role="assistant", content="initial answer")
+
+        # The original conversation can be resumed after the fork. Those new
+        # rows must not leak into the already-created branch's transcript.
+        db.append_message("parent", role="user", content="after branch")
+        db.append_message("parent", role="assistant", content="later answer")
+
+        _, display_history = db.get_resume_conversations("branch")
+
+        assert [message["content"] for message in display_history] == [
+            "before branch",
+            "initial answer",
+        ]
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation("branch", include_ancestors=True)
+        ] == ["before branch", "initial answer"]
+        assert db.get_ancestor_display_prefix("branch") == []
+
+
 
 
 
@@ -473,6 +506,7 @@ class TestSessionLifecycle:
             results = db.search_messages("大别山")
             assert len(results) == 1
             # Note: search_messages strips 'content' from results; use 'snippet'.
+            assert "content" not in results[0]
             assert "大别山" in results[0]["snippet"]
         finally:
             db.close()
@@ -739,6 +773,8 @@ class TestFTS5Search:
         # At least one result should mention docker
         snippets = [r.get("snippet", "") for r in results]
         assert any("docker" in s.lower() or "Docker" in s for s in snippets)
+        # Results never carry full content; snippet + metadata only.
+        assert all("content" not in r for r in results)
 
 
 
@@ -1020,6 +1056,8 @@ class TestDeleteAndExport:
 
 
 
+    def test_export_nonexistent(self, db):
+        assert db.export_session("nope") is None
 
 
 

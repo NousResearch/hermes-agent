@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 
 import { Thread } from '.'
+import { MESSAGE_PARTS_COMPONENTS } from './message-parts'
 
 import {
   buildGroups,
@@ -24,8 +25,14 @@ import {
   shouldRestoreResumeAnchor,
   subscribeToThreadForeground,
   transcriptPaneBudget,
-  type ThreadCommitReceipt
+  type ThreadCommitReceipt,
+  useThreadMessagePartRangeCommitCallback
 } from './list'
+
+const mutableToolComponents = MESSAGE_PARTS_COMPONENTS.tools as {
+  Fallback: typeof MESSAGE_PARTS_COMPONENTS.tools.Fallback
+}
+const originalToolFallback = mutableToolComponents.Fallback
 
 type ResizeObserverRecord = {
   callback: ResizeObserverCallback
@@ -86,6 +93,7 @@ Element.prototype.animate = function animate() {
 
 afterEach(() => {
   cleanup()
+  mutableToolComponents.Fallback = originalToolFallback
   resizeObserverRecords = []
   vi.restoreAllMocks()
 })
@@ -557,6 +565,7 @@ describe('Thread leaf commit receipt', () => {
       chainSignature: '',
       headMessage: null,
       contentSignature: '[]',
+      publicationIdentity: 'standalone',
       complete: true
     })
   })
@@ -571,14 +580,14 @@ describe('Thread leaf commit receipt', () => {
     )
   })
 
-  it('requires Text and Reasoning commits while excluding non-authoritative parts', () => {
+  it('requires Text, Reasoning, and Tool commits', () => {
     const reasoning = { type: 'reasoning', text: 'Thinking', status: { type: 'running' } }
 
     expect(partRequiresCommit({ type: 'text', text: 'Answer' })).toBe(true)
     expect(partRequiresCommit(reasoning)).toBe(true)
     expect(partRequiresCommit({ ...reasoning, text: '' })).toBe(true)
     expect(partRequiresCommit({ ...reasoning, status: { type: 'complete' } })).toBe(true)
-    expect(partRequiresCommit({ type: 'tool-call' })).toBe(false)
+    expect(partRequiresCommit({ type: 'tool-call' })).toBe(true)
   })
 
   it('prunes committed object graphs outside the current rendered chain', () => {
@@ -617,51 +626,183 @@ describe('Thread leaf commit receipt', () => {
     })
   })
 
-  it('does not wait for a separately rendered tool leaf before publishing structured text', async () => {
+  it('does not complete an ordinary Tool until that Tool component acknowledges its committed DOM', async () => {
+    mutableToolComponents.Fallback = function ControlledToolCommit() {
+      const acknowledgeTool = useThreadMessagePartRangeCommitCallback(0, 0)
+
+      return createElement('button', { onClick: () => acknowledgeTool?.(), type: 'button' }, 'Acknowledge Tool DOM')
+    }
+
     const structured = {
-      ...receiptAssistant('Structured settled answer'),
+      ...receiptAssistant('Answer after tool'),
       content: [
         {
           type: 'tool-call',
-          toolCallId: 'todo-1',
-          toolName: 'todo',
-          args: { todos: [] },
-          argsText: '{"todos":[]}',
-          result: { todos: [] }
+          toolCallId: 'terminal-1',
+          toolName: 'terminal',
+          args: { command: 'pwd' },
+          argsText: '{"command":"pwd"}',
+          result: { output: '/work' }
         },
-        { type: 'text', text: 'Structured settled answer' }
+        { type: 'text', text: 'Answer after tool' }
       ]
     } as ThreadMessage
-    const observations: { receipt: ThreadCommitReceipt; settledDomPresent: boolean }[] = []
-    const onCommitReceipt = (receipt: ThreadCommitReceipt) => {
-      observations.push({ receipt, settledDomPresent: screen.queryByText('Structured settled answer') !== null })
-    }
+    const receipts: ThreadCommitReceipt[] = []
 
     render(
       createElement(LeafReceiptHarness, {
-        messages: [receiptUser('Structured prompt'), structured],
-        onCommitReceipt,
+        messages: [receiptUser('Run a command'), structured],
+        onCommitReceipt: receipt => receipts.push(receipt),
         revision: 8
       })
     )
 
-    await screen.findByText('Structured settled answer')
+    await screen.findByText('Answer after tool')
+    const acknowledgeButton = await screen.findByRole('button', { name: 'Acknowledge Tool DOM' })
+    expect(receipts.some(receipt => receipt.revision === 8 && receipt.complete)).toBe(false)
+
+    fireEvent.click(acknowledgeButton)
+    await waitFor(() => expect(receipts.some(receipt => receipt.revision === 8 && receipt.complete)).toBe(true))
+  })
+
+  it.each([
+    {
+      label: 'ordinary',
+      summary: 'Explored 2 files',
+      tools: [
+        {
+          type: 'tool-call',
+          toolCallId: 'read-file-collapsed-1',
+          toolName: 'read_file',
+          args: { path: 'alpha.ts' },
+          argsText: '{"path":"alpha.ts"}',
+          result: { content: 'alpha' }
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'search-files-collapsed-1',
+          toolName: 'search_files',
+          args: { pattern: 'alpha' },
+          argsText: '{"pattern":"alpha"}',
+          result: { matches: [] }
+        }
+      ]
+    },
+    {
+      label: 'ordinary and deliberately silent',
+      summary: 'Ran 1 command, used 1 tool',
+      tools: [
+        {
+          type: 'tool-call',
+          toolCallId: 'terminal-collapsed-1',
+          toolName: 'terminal',
+          args: { command: 'pwd' },
+          argsText: '{"command":"pwd"}',
+          result: { output: '/work' }
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'todo-collapsed-1',
+          toolName: 'todo',
+          args: { todos: [] },
+          argsText: '{"todos":[]}',
+          result: { todos: [] }
+        }
+      ]
+    }
+  ])('acknowledges a collapsed $label Tool run only after its summary DOM commits', async ({ summary, tools }) => {
+    const structured = {
+      ...receiptAssistant('Answer after collapsed tools'),
+      content: [...tools, { type: 'text', text: 'Answer after collapsed tools' }]
+    } as ThreadMessage
+    const observations: {
+      complete: boolean
+      summaryDomPresent: boolean
+      toolGroupDomPresent: boolean
+    }[] = []
+    const onCommitReceipt = (receipt: ThreadCommitReceipt) => {
+      if (receipt.revision === 12) {
+        observations.push({
+          complete: receipt.complete,
+          summaryDomPresent: screen.queryByText(summary) !== null,
+          toolGroupDomPresent: document.querySelector('[data-tool-group]') !== null
+        })
+      }
+    }
+
+    render(
+      createElement(LeafReceiptHarness, {
+        messages: [receiptUser('Run collapsed tools'), structured],
+        onCommitReceipt,
+        revision: 12
+      })
+    )
+
+    await screen.findByText(summary)
+    expect(document.querySelector('[data-tool-group]')).toBeTruthy()
+    expect(document.querySelector('[data-tool-row]')).toBeNull()
     await waitFor(() => {
-      expect(
-        observations.map(observation => ({
-          revision: observation.receipt.revision,
-          headText: receiptHeadText(observation.receipt),
-          domPresent: observation.settledDomPresent,
-          complete: observation.receipt.complete
-        }))
-      ).toContainEqual({
-        revision: 8,
-        headText: 'Structured settled answer',
-        domPresent: true,
-        complete: true
+      expect(observations).toContainEqual({
+        complete: true,
+        summaryDomPresent: true,
+        toolGroupDomPresent: true
       })
     })
+    expect(
+      observations
+        .filter(observation => observation.complete)
+        .every(observation => observation.summaryDomPresent && observation.toolGroupDomPresent)
+    ).toBe(true)
   })
+
+  it.each(['todo', 'react_to_message'])(
+    'acknowledges a deliberately null %s Tool from ChainToolFallback',
+    async toolName => {
+      const structured = {
+        ...receiptAssistant('Structured settled answer'),
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: `${toolName}-1`,
+            toolName,
+            args: { todos: [] },
+            argsText: '{"todos":[]}',
+            result: { todos: [] }
+          },
+          { type: 'text', text: 'Structured settled answer' }
+        ]
+      } as ThreadMessage
+      const observations: { receipt: ThreadCommitReceipt; settledDomPresent: boolean }[] = []
+      const onCommitReceipt = (receipt: ThreadCommitReceipt) => {
+        observations.push({ receipt, settledDomPresent: screen.queryByText('Structured settled answer') !== null })
+      }
+
+      render(
+        createElement(LeafReceiptHarness, {
+          messages: [receiptUser('Structured prompt'), structured],
+          onCommitReceipt,
+          revision: 8
+        })
+      )
+
+      await screen.findByText('Structured settled answer')
+      await waitFor(() => {
+        expect(
+          observations.map(observation => ({
+            revision: observation.receipt.revision,
+            headText: receiptHeadText(observation.receipt),
+            domPresent: observation.settledDomPresent,
+            complete: observation.receipt.complete
+          }))
+        ).toContainEqual({
+          revision: 8,
+          headText: 'Structured settled answer',
+          domPresent: true,
+          complete: true
+        })
+      })
+    }
+  )
 
   it('acknowledges collapsed completed reasoning that has no mounted DOM leaf', async () => {
     const structured = {

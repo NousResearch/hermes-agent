@@ -76,16 +76,25 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'profile.create', category: 'profiles', defaults: [] },
 
   // ── Session ──────────────────────────────────────────────────────────────
-  { id: 'session.new', category: 'session', defaults: ['mod+n', 'shift+n'] },
+  // `shift+n` was dropped from the defaults (#76185): a bare shifted letter
+  // hijacked normal typing — pressing uppercase N outside an input (or via an
+  // IME) created a new session unexpectedly. The deliberate ⌘/Ctrl+N chord
+  // stays; users who liked ⇧N can rebind it in the panel.
+  { id: 'session.new', category: 'session', defaults: ['mod+n'] },
   { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.
-  { id: 'session.next', category: 'session', defaults: ['ctrl+tab'] },
-  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab'] },
+  { id: 'session.next', category: 'session', defaults: ['ctrl+tab', 'ctrl+pagedown'] },
+  { id: 'session.prev', category: 'session', defaults: ['ctrl+shift+tab', 'ctrl+pageup'] },
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  // Archive the active session. Ships unbound (like `session.togglePin`) so an
+  // irreversible-feeling, mouse-only action doesn't silently claim a chord for
+  // every user — surfaced in the panel for opt-in binding (the issue suggests
+  // ⌘⇧⌫ / Ctrl+Shift+⌫).
+  { id: 'session.archive', category: 'session', defaults: [] },
   // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
   { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
   // ⌘O — the editor-standard "open folder" chord (VS Code ⌘O, Zed's

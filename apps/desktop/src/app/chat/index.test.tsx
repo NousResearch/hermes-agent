@@ -33,16 +33,31 @@ const threadRenderCount = vi.hoisted(() => ({ current: 0 }))
 const revealTrace = vi.hoisted(() => ({ counter: 0, sequence: [] as TraceEvent[] }))
 // Lets a test hold back Thread receipts so a stale pre-switch receipt can be
 // proven incapable of revealing a switched-to session.
-const receiptGate = vi.hoisted(() => ({ suppressed: false }))
+const receiptGate = vi.hoisted(() => ({
+  fallbackPublicationIdentity: 'primary:runtime-1',
+  suppressed: false,
+  suppressedPublicationIdentity: null as string | null
+}))
 
 type TraceEvent =
   | { at: number; hidden: boolean; kind: 'commit'; messageCount: number; revision: number }
-  | { at: number; chainSignature: string; headMessageId: string | null; kind: 'receipt'; revision: number }
+  | {
+      at: number
+      chainSignature: string
+      headMessageId: string | null
+      kind: 'receipt'
+      publicationIdentity: string
+      revision: number
+    }
 
 vi.mock('@/components/assistant-ui/thread', async () => {
   const React = await import('react')
   const { useLayoutEffect } = await import('react')
   const { useThread } = await import('@assistant-ui/react')
+  const listModule = (await import('@/components/assistant-ui/thread/list')) as Record<string, unknown>
+  const usePublicationIdentity =
+    (listModule.useThreadPublicationIdentity as (() => string) | undefined) ??
+    (() => receiptGate.fallbackPublicationIdentity)
 
   return {
     Thread: (props: {
@@ -51,30 +66,37 @@ vi.mock('@/components/assistant-ui/thread', async () => {
     }) => {
       threadRenderCount.current += 1
       const { messages } = useThread()
+      const publicationIdentity = usePublicationIdentity()
       const committedMessages = messages.filter(message => message.metadata?.isOptimistic !== true)
 
       useLayoutEffect(() => {
-        if (!props.onCommitReceipt || receiptGate.suppressed) {
+        if (
+          !props.onCommitReceipt ||
+          receiptGate.suppressed ||
+          receiptGate.suppressedPublicationIdentity === publicationIdentity
+        ) {
           return
         }
 
-        const receipt: ThreadCommitReceipt = {
+        const receipt = {
           revision: props.resumePublicationRevision ?? 0,
           chainSignature: committedMessages.map(message => message.id).join('\n'),
           headMessage: committedMessages.at(-1) ?? null,
           contentSignature: commitReceiptContentSignature(committedMessages),
+          publicationIdentity,
           complete: true
-        }
+        } as ThreadCommitReceipt & { publicationIdentity: string }
 
         revealTrace.sequence.push({
           at: revealTrace.counter++,
           kind: 'receipt',
           revision: receipt.revision,
           chainSignature: receipt.chainSignature,
-          headMessageId: receipt.headMessage?.id ?? null
+          headMessageId: receipt.headMessage?.id ?? null,
+          publicationIdentity
         })
         props.onCommitReceipt(receipt)
-      })
+      }, [committedMessages, props, publicationIdentity])
 
       return React.createElement('div', {
         'data-testid': 'thread',
@@ -127,7 +149,9 @@ describe('ChatView render isolation', () => {
     threadRenderCount.current = 0
     revealTrace.counter = 0
     revealTrace.sequence.length = 0
+    receiptGate.fallbackPublicationIdentity = 'primary:runtime-1'
     receiptGate.suppressed = false
+    receiptGate.suppressedPublicationIdentity = null
     $activeSessionId.set('runtime-1')
     $awaitingResponse.set(false)
     $busy.set(false)
@@ -145,7 +169,9 @@ describe('ChatView render isolation', () => {
 
   afterEach(() => {
     cleanup()
+    receiptGate.fallbackPublicationIdentity = 'primary:runtime-1'
     receiptGate.suppressed = false
+    receiptGate.suppressedPublicationIdentity = null
     vi.restoreAllMocks()
     $activeSessionId.set(null)
     $awaitingResponse.set(false)
@@ -461,6 +487,8 @@ describe('ChatView render isolation', () => {
       resumePublicationRevision: 7
     })
     $activeSessionId.set('runtime-A')
+    receiptGate.fallbackPublicationIdentity = 'primary:runtime-A'
+    receiptGate.suppressedPublicationIdentity = 'primary:runtime-B'
     $selectedStoredSessionId.set('stored-A')
     $sessionStates.set({ 'runtime-A': sessionState('stored-A') })
     $sessions.set([
@@ -555,17 +583,34 @@ describe('ChatView render isolation', () => {
       (event): event is Extract<TraceEvent, { kind: 'commit' }> =>
         event.kind === 'commit' && event.messageCount === 1 && event.revision === 7
     )
-    const bReceipts = postSwitch.filter(
+    // The first commit of B's transcript must be hidden, and an old-runtime
+    // receipt with byte-identical revision/id/content/status cannot reveal it.
+    expect(bCommits.length).toBeGreaterThan(0)
+    expect(bCommits[0]).toMatchObject({ hidden: true })
+    expect(bCommits.at(-1)).toMatchObject({ hidden: true })
+
+    receiptGate.suppressedPublicationIdentity = null
+    act(() => {
+      $sessionStates.set({
+        'runtime-A': sessionState('stored-A'),
+        'runtime-B': { ...sessionState('stored-B'), messages: [...identicalMessages] }
+      })
+    })
+
+    const acceptedBEvents = revealTrace.sequence.filter(event => event.at >= switchAt)
+    const acceptedBCommits = acceptedBEvents.filter(
+      (event): event is Extract<TraceEvent, { kind: 'commit' }> =>
+        event.kind === 'commit' && event.messageCount === 1 && event.revision === 7
+    )
+    const acceptedBReceipts = acceptedBEvents.filter(
       (event): event is Extract<TraceEvent, { kind: 'receipt' }> => event.kind === 'receipt'
     )
 
-    // The first commit of B's transcript must be hidden...
-    expect(bCommits.length).toBeGreaterThan(0)
-    expect(bCommits[0]).toMatchObject({ hidden: true })
     // ...and only a complete receipt for the current session may reveal it.
-    expect(bReceipts.length).toBeGreaterThan(0)
-    const firstVisibleB = bCommits.find(commit => !commit.hidden)
-    expect(firstVisibleB?.at ?? -1).toBeGreaterThan(bReceipts[0].at)
+    expect(acceptedBReceipts.some(receipt => receipt.publicationIdentity === 'primary:runtime-B')).toBe(true)
+    const firstVisibleB = acceptedBCommits.find(commit => !commit.hidden)
+    const firstCurrentReceipt = acceptedBReceipts.find(receipt => receipt.publicationIdentity === 'primary:runtime-B')
+    expect(firstVisibleB?.at ?? -1).toBeGreaterThan(firstCurrentReceipt?.at ?? -1)
 
     // A receipt captured while arming at B must not reveal C later: hide the
     // pane (a B receipt is recorded and accepted), switch to byte-identical C
@@ -760,7 +805,7 @@ describe('ChatView render isolation', () => {
     })
   })
 
-  it('binds reveal matching to the complete semantic chain, revision, and completeness', () => {
+  it('binds reveal matching to runtime publication identity, semantic chain, revision, and completeness', () => {
     const threadAssistant = (id: string, text: string): ThreadMessage =>
       ({
         id,
@@ -779,20 +824,25 @@ describe('ChatView render isolation', () => {
     const firstMessage = threadAssistant('assistant-1', 'First answer')
     const headMessage = threadAssistant('assistant-2', 'Settled answer')
     const contentSignature = commitReceiptContentSignature([firstMessage, headMessage])
-    const expectation: RevealExpectation = {
+    const expectation = {
       chainSignature: 'assistant-1\nassistant-2',
       headMessage,
-      contentSignature
-    }
-    const receipt: ThreadCommitReceipt = {
+      contentSignature,
+      publicationIdentity: 'primary:runtime-B'
+    } as RevealExpectation & { publicationIdentity: string }
+    const receipt = {
       revision: 8,
       chainSignature: expectation.chainSignature,
       headMessage,
       contentSignature,
+      publicationIdentity: expectation.publicationIdentity,
       complete: true
-    }
+    } as ThreadCommitReceipt & { publicationIdentity: string }
 
     expect(revealMatchesExpectation(receipt, expectation, 8)).toBe(true)
+    expect(revealMatchesExpectation({ ...receipt, publicationIdentity: 'primary:runtime-A' }, expectation, 8)).toBe(
+      false
+    )
     expect(revealMatchesExpectation({ ...receipt, revision: 7 }, expectation, 8)).toBe(false)
     expect(revealMatchesExpectation({ ...receipt, chainSignature: 'assistant-1' }, expectation, 8)).toBe(false)
     expect(
@@ -809,5 +859,40 @@ describe('ChatView render isolation', () => {
       )
     ).toBe(false)
     expect(revealMatchesExpectation({ ...receipt, complete: false }, expectation, 8)).toBe(false)
+
+    const oldUser = {
+      id: 'user-same',
+      role: 'user',
+      content: [{ type: 'text', text: 'Same prompt' }],
+      attachments: [{ id: 'old-attachment', type: 'file', name: 'old.txt' }],
+      createdAt: new Date(0),
+      metadata: { custom: { source: 'runtime-A' } }
+    } as unknown as ThreadMessage
+    const newUser = {
+      ...oldUser,
+      attachments: [{ id: 'new-attachment', type: 'file', name: 'new.txt' }],
+      metadata: { custom: { source: 'runtime-B' } }
+    } as unknown as ThreadMessage
+    const metadataBlindSignature = commitReceiptContentSignature([oldUser])
+
+    expect(metadataBlindSignature).toBe(commitReceiptContentSignature([newUser]))
+    expect(
+      revealMatchesExpectation(
+        {
+          ...receipt,
+          chainSignature: oldUser.id,
+          contentSignature: metadataBlindSignature,
+          headMessage: oldUser,
+          publicationIdentity: 'primary:runtime-A'
+        },
+        {
+          chainSignature: newUser.id,
+          contentSignature: commitReceiptContentSignature([newUser]),
+          headMessage: newUser,
+          publicationIdentity: 'primary:runtime-B'
+        } as RevealExpectation & { publicationIdentity: string },
+        8
+      )
+    ).toBe(false)
   })
 })

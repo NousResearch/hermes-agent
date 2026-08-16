@@ -23,7 +23,11 @@ import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
-import { commitReceiptContentSignature, type ThreadCommitReceipt } from '@/components/assistant-ui/thread/list'
+import {
+  commitReceiptContentSignature,
+  type ThreadCommitReceipt,
+  ThreadPublicationIdentityProvider
+} from '@/components/assistant-ui/thread/list'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
@@ -79,6 +83,7 @@ import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { ProfileTag } from './profile-tag'
+import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
@@ -195,6 +200,7 @@ interface ChatRuntimeBoundaryProps {
   onRevealExpectationChange: (expectation: RevealExpectation) => void
   onRevealReadyChange: (ready: boolean) => void
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  publicationIdentity: string
   requireRevealReceipt: boolean
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
@@ -323,6 +329,7 @@ export interface RevealExpectation {
   chainSignature: string
   headMessage: ThreadMessage | null
   contentSignature: string
+  publicationIdentity: string
 }
 
 export function revealMatchesExpectation(
@@ -334,7 +341,8 @@ export function revealMatchesExpectation(
     receipt.complete &&
     receipt.revision === revision &&
     receipt.chainSignature === expectation.chainSignature &&
-    receipt.contentSignature === expectation.contentSignature
+    receipt.contentSignature === expectation.contentSignature &&
+    receipt.publicationIdentity === expectation.publicationIdentity
   )
 }
 
@@ -357,6 +365,7 @@ function ChatRuntimeBoundary({
   onRevealExpectationChange,
   onRevealReadyChange,
   onThreadMessagesChange,
+  publicationIdentity,
   requireRevealReceipt,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
@@ -406,6 +415,15 @@ function ChatRuntimeBoundary({
     onCancel: async () => onCancel(),
     onReload
   })
+  const [adapterPublicationIdentity, setAdapterPublicationIdentity] = useState(publicationIdentity)
+
+  // The incremental runtime applies a new adapter in its passive effect. Keep
+  // the leaf identity on the adapter that is actually published until that
+  // effect has run; otherwise an old runtime's layout receipt can be mislabeled
+  // as the incoming surface during the switch commit.
+  useEffect(() => {
+    setAdapterPublicationIdentity(publicationIdentity)
+  }, [publicationIdentity])
 
   // Bind the reveal to the active repository chain actually handed to the
   // windowed runtime. The store may contain older pages that this Thread does
@@ -416,9 +434,10 @@ function ChatRuntimeBoundary({
     () => ({
       chainSignature: expectedChain.map(message => message.id).join('\n'),
       headMessage: expectedChain.at(-1) ?? null,
-      contentSignature: requireRevealReceipt ? commitReceiptContentSignature(expectedChain) : '[]'
+      contentSignature: requireRevealReceipt ? commitReceiptContentSignature(expectedChain) : '[]',
+      publicationIdentity
     }),
-    [expectedChain, requireRevealReceipt]
+    [expectedChain, publicationIdentity, requireRevealReceipt]
   )
 
   // A descendant leaf receipt fires in the layout phase before this boundary's
@@ -434,7 +453,9 @@ function ChatRuntimeBoundary({
 
   return (
     <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      <ThreadPublicationIdentityProvider value={adapterPublicationIdentity}>
+        <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      </ThreadPublicationIdentityProvider>
     </TranscriptWindowProvider>
   )
 }
@@ -482,6 +503,9 @@ export const ChatView = memo(function ChatView({
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  const publicationIdentity = isPrimary
+    ? `primary:${activeSessionId ?? 'draft'}`
+    : `tile:${storedId ?? 'unbound'}:${activeSessionId ?? 'unbound'}`
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
@@ -511,7 +535,8 @@ export const ChatView = memo(function ChatView({
   const revealExpectationRef = useRef<RevealExpectation>({
     chainSignature: '',
     headMessage: null,
-    contentSignature: '[]'
+    contentSignature: '[]',
+    publicationIdentity
   })
   const lastCommitReceiptRef = useRef<ThreadCommitReceipt | null>(null)
   // While the route names a session the store hasn't bound yet, the thread is
@@ -629,7 +654,7 @@ export const ChatView = memo(function ChatView({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
+  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
   routeSessionMismatchRef.current = routeSessionMismatch
 
   // `runtimeRevealReady` initializes from pane visibility once, and a visible
@@ -677,7 +702,6 @@ export const ChatView = memo(function ChatView({
       setRuntimeRevealReady(false)
     }
   }
-
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
@@ -825,6 +849,7 @@ export const ChatView = memo(function ChatView({
         onRevealExpectationChange={handleRevealExpectationChange}
         onRevealReadyChange={setRuntimeRevealReady}
         onThreadMessagesChange={onThreadMessagesChange}
+        publicationIdentity={publicationIdentity}
         requireRevealReceipt={!runtimeRevealReady}
         suppressMessages={routeSessionMismatch}
       >

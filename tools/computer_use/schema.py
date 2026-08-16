@@ -291,12 +291,26 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "enum": ["isolated_new", "isolated_named", "existing_profile"],
                 "description": (
                     "Browser preparation mode. existing_profile is decided by "
-                    "cua-driver's immutable permission mode: standard requires a "
-                    "certified protected host; explicit Hermes YOLO uses a private "
+                    "cua-driver's immutable permission mode: in standard mode "
+                    "it requires the user's config opt-in "
+                    "computer_use.grant_existing_profile: true (if refused, "
+                    "report that key to the user — you cannot grant it); "
+                    "bounded mode authorizes via the reviewed capability "
+                    "manifest; explicit Hermes YOLO uses a private "
                     "unrestricted daemon."
                 ),
             },
             "profile_name": {"type": "string", "description": "Name for isolated_named setup."},
+            "approval_token": {
+                "type": "string",
+                "description": (
+                    "Optional single-use setup token the USER minted with "
+                    "`hermes computer-use browser-approve` and pasted to you; "
+                    "never invent one. Legacy path on current cua-driver "
+                    "builds — the supported existing-profile route is the "
+                    "computer_use.grant_existing_profile config opt-in."
+                ),
+            },
             "allow_launch": {
                 "type": "boolean",
                 "description": "Explicitly allow launch of a driver-owned isolated browser.",

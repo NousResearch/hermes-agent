@@ -598,6 +598,7 @@ compression:
   enabled: true                                     # 开启/关闭压缩
   threshold: 0.50                                   # 在上下文限制的此百分比时压缩
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
+  tail_mode: legacy                                 # 尾部保留策略："legacy"（0.20×窗口的逐字尾部）或 "lean"（截取 2.5% 窗口、10K-25K 上下限的精简尾部，摘要中附带分块摘录、锚点索引与 session_search 恢复指引 — 压缩后保留 token 约减少 3 倍）
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
   hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
   context_timeout_seconds: 120                      # Agent 侧 compress_context 无进展超时（秒）—— 见下文

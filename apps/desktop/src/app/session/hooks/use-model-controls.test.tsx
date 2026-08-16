@@ -213,9 +213,42 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
     expect($currentProvider.get()).toBe('nous')
     expect(getCurrentModelSource()).toBe('default')
-    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toMatchObject({
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toEqual({
       model: 'poolside/laguna-xs-2.1:free',
-      provider: 'nous'
+      provider: 'nous',
+      providers: [
+        {
+          models: ['poolside/laguna-xs-2.1:free'],
+          name: 'nous',
+          slug: 'nous'
+        }
+      ]
+    })
+  })
+
+  it('preserves a populated model catalog when painting a saved profile default', () => {
+    const queryClient = new QueryClient()
+    const providers = [{ models: ['tencent/hy3:free'], name: 'Nous', slug: 'nous' }]
+
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'tencent/hy3:free',
+      provider: 'nous',
+      providers
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    result.current.applySavedMainModel('nous', 'poolside/laguna-xs-2.1:free')
+
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toEqual({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous',
+      providers
     })
   })
 

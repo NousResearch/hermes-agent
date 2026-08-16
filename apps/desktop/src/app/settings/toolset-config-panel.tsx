@@ -50,6 +50,22 @@ interface ToolsetConfigPanelProps {
  *  backend's _MODEL_CATALOG_TOOLSETS map). */
 const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
 
+/**
+ * `useNavigate` throws when there is no react-router context. Inside Settings
+ * (the panel's original home) there always is one, so behavior is unchanged;
+ * embedded in a plugin dialog OUTSIDE the router there is none, and this
+ * degrades to `null` instead of crashing the whole panel. Router presence is
+ * stable for a mounted instance's lifetime, so the try/catch never changes the
+ * hook count between renders (rules-of-hooks safe).
+ */
+function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
+  try {
+    return useNavigate()
+  } catch {
+    return null
+  }
+}
+
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
   if (provider.env_vars.length === 0) {
     return true
@@ -91,7 +107,7 @@ interface EnvVarFieldProps {
 function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
-  const navigate = useNavigate()
+  const navigate = useOptionalNavigate()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -99,7 +115,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
 
   // Internal route change to Settings → API Keys (tools sub-view) with the
   // deep-link param keys-settings consumes to scroll + flash this key's card.
-  const openInKeys = () => navigate(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
+  // No-op when there is no router (embedded outside Settings, e.g. a plugin
+  // dialog): the "Manage keys" affordance simply doesn't navigate there.
+  const openInKeys = () => navigate?.(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
 
   async function handleSave() {
     if (!value) {

@@ -87,3 +87,21 @@ def test_update_no_longer_invokes_the_hermes_exe_shim() -> None:
         "exact self-lock this fix removes -- route it through $pythonExe "
         "instead."
     )
+
+
+def test_desktop_relaunch_waits_for_an_in_place_rebuild() -> None:
+    source = _read()
+    relaunch = re.search(
+        r"function Start-DesktopRelaunch \{(?P<body>.*?)\n\}\n\nfunction Invoke-HermesStep",
+        source,
+        re.DOTALL,
+    )
+    assert relaunch, "Expected Start-DesktopRelaunch in the Windows hand-off script."
+
+    body = relaunch.group("body")
+    assert "if (-not $RelaunchExe) { return $false }" in body
+    assert "$relaunchDeadline = (Get-Date).AddSeconds(120)" in body
+    assert "while (-not (Test-Path -LiteralPath $RelaunchExe))" in body
+    assert "if ((Get-Date) -ge $relaunchDeadline)" in body
+    assert "Start-Sleep -Milliseconds 500" in body
+    assert "[System.Windows.Forms.Application]::DoEvents()" in body

@@ -916,7 +916,9 @@ def _(rid, params: dict) -> dict:
         # lands on a durable user;user pair would otherwise re-fire the
         # pre-request repair on every request from here on.
         try:
-            active = db.get_messages_as_conversation(session_key, repair_alternation=True)
+            active = db.get_messages_as_conversation(
+                session_key, repair_alternation=True, include_row_ids=True
+            )
         except Exception:
             active = []
         with session["history_lock"]:
@@ -1660,6 +1662,23 @@ def _(rid, params: dict) -> dict:
 @method("cron.manage")
 def _(rid, params: dict) -> dict:
     action, jid = params.get("action", "list"), params.get("name", "")
+    # Optional profile scoping: cronjob() keys off HERMES_HOME, so scoping the
+    # env override lets a per-profile cron store be listed/mutated even when
+    # that profile runs a separate gateway. Omitted/None = the launch profile.
+    # Mirrors ``skills.manage`` / ``mcp.catalog``.
+    profile = str(params.get("profile") or "").strip()
+    token = None
+    if profile:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            from hermes_constants import set_hermes_home_override
+
+            profile_dir = get_profile_dir(profile)
+            if not profile_dir or not profile_dir.is_dir():
+                return _err(rid, 4064, f"profile '{profile}' not found")
+            token = set_hermes_home_override(str(profile_dir))
+        except Exception as e:
+            return _err(rid, 5023, str(e))
     try:
         from tools.cronjob_tools import cronjob
 
@@ -1700,6 +1719,14 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
         return _err(rid, 5023, str(e))
+    finally:
+        if token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+
+                reset_hermes_home_override(token)
+            except Exception:
+                pass
 
 
 @method("learning.frames")

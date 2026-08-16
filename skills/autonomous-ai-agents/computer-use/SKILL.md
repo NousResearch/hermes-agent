@@ -140,6 +140,17 @@ Walk it in order:
    (it's a visible focus change) and is only appropriate when the user isn't
    actively working. Classic cases: Electron/Chromium consent dialogs (e.g.
    tldraw offline's "Run Script"), DirectInput games, raw-input canvases.
+6. **Keystrokes verified-lost on a KDE/Qt editor → use the app's own I/O.**
+   Some Qt text components (KTextEditor: Kate, KWrite, KDevelop) discard
+   SYNTHETIC X keystrokes entirely — foreground `type` reports ok
+   ("Typed N characters into the focused widget", `effect:"unverifiable"`)
+   but a fresh AX capture shows the text never arrived, and raw XTest fails
+   identically (proven live, Aug 2026 — it is the toolkit, not the driver;
+   the same foreground route works on kcalc/Chrome). After ONE such
+   verified-lost round trip, stop retrying input rungs: write the file with
+   terminal/file tools and let the editor reload it, or drive the app's
+   DBus/CLI interface. Never loop the ladder against a surface that
+   verifiably swallows synthetic input.
 
 ```
 computer_use(action="click", element=7)
@@ -180,11 +191,31 @@ browser tools. The contract is capability-based:
 `cua_browser_prepare` is a separate approved setup action. Driver-owned
 `isolated_new`/`isolated_named` profiles require explicit `allow_launch=true`.
 An `existing_profile` is decided by cua-driver's immutable permission mode.
-Normal Hermes sessions use `standard`, which requires a certified protected
-host and fails closed when Hermes has none. Explicit Hermes YOLO (`--yolo`,
-`/yolo`, or `approvals.mode: off`) launches a private embedded cua-driver in
-`unrestricted` after that risk acceptance, so there are no runtime Cua
-approval prompts. Never invent, store, log, or reuse a grant token.
+Prefer `isolated_new` unless the task genuinely needs the user's signed-in
+session — attaching to an existing profile exposes its live pages, cookies,
+and storage over the browser protocol.
+
+Authorization paths for `existing_profile`, in preference order:
+
+1. **Config grant (standard mode).** When
+   `computer_use.grant_existing_profile: true` is set, the runtime is
+   launched pre-authorized (`--grant existing-profile`) and the prepare
+   succeeds against the exact proven `(pid, window_id)`. If it's not set,
+   the prepare fails closed — tell the user to flip that config key (and
+   restart the session) if they want this; do not retry or work around it.
+2. **Bounded manifest.** When `computer_use.permission_mode: bounded` is
+   configured with a reviewed `capability_manifest`, prepares inside the
+   manifest's scope succeed without prompts and everything else fails closed.
+3. **Explicit Hermes YOLO** (`--yolo`, `/yolo`, or `approvals.mode: off`)
+   launches a private embedded cua-driver in `unrestricted` after that risk
+   acceptance, so there are no runtime Cua approval prompts.
+
+A user may also paste a token from `hermes computer-use browser-approve`
+(pass it as `approval_token`); current cua-driver builds treat that as a
+disabled legacy path, so expect the config grant to be the working route.
+Without any of these, `existing_profile` fails closed — report the refusal
+and name the config key; do not retry, downgrade trust, or work around it.
+Never invent, store, log, or reuse a grant token.
 
 Use the native capture/AX/pixel/foreground ladder for browser chrome, browser
 permission UI, OS prompts, native dialogs, extension surfaces, unsupported

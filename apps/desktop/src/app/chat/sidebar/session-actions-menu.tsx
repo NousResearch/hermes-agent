@@ -20,8 +20,16 @@ import {
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  preventCloseButtonAutoFocus
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -36,12 +44,15 @@ import {
   $connection,
   $selectedStoredSessionId,
   $sessions,
+  $unreadFinishedSessionIds,
+  markSessionRead,
   sessionMatchesStoredId,
   sessionPinId,
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles } from '@/store/session-states'
+import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
@@ -95,8 +106,12 @@ interface SessionActions {
   sessionId: string
   title: string
   pinned?: boolean
+  /** Backend-derived read state — drives the Mark as unread/read label. */
+  unread?: boolean
   profile?: string
   onPin?: () => void
+  /** Toggle the persisted read-state watermark for this row. */
+  onToggleUnread?: () => void
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
@@ -177,8 +192,10 @@ function useSessionActions({
   sessionId,
   title,
   pinned = false,
+  unread = false,
   profile,
   onPin,
+  onToggleUnread,
   onBranch,
   onArchive,
   onDelete,
@@ -198,9 +215,13 @@ function useSessionActions({
   // action leaves the restore alone (it's the correct behavior for them). Mirrors
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
+  // The row's finished-unread dot is cleared by opening the session (main or
+  // tile) — this menu item is the explicit escape hatch for the rest.
+  const isUnread = useStore($unreadFinishedSessionIds).includes(sessionId)
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
@@ -287,6 +308,34 @@ function useSessionActions({
       onSelect: () => {
         triggerHaptic('selection')
         onPin?.()
+      }
+    }),
+    // One read-state item, driven by BOTH unread sources: the transient
+    // finished-unread dot (isUnread) and the backend watermark (unread).
+    // "Mark as read" clears whichever is lit; "Mark as unread" arms the
+    // persisted watermark so the dot survives restarts.
+    spec({
+      disabled: !sessionId || (!onToggleUnread && !isUnread),
+      // Closed envelope = unread, open envelope = read (codicon has mail and
+      // mail-read, but no mail-unread glyph — verified against the font css).
+      icon: unread || isUnread ? 'mail-read' : 'mail',
+      label: unread || isUnread ? r.markRead : r.markUnread,
+      onSelect: () => {
+        triggerHaptic('selection')
+
+        if (unread || isUnread) {
+          // Clear the transient family dot immediately (and ack the persisted
+          // watermark/marker so a list refresh doesn't repaint it)…
+          markSessionRead(sessionId)
+          ackStoredSessionId(sessionId)
+
+          // …and retire the persisted watermark when the row carries one.
+          if (unread) {
+            onToggleUnread?.()
+          }
+        } else {
+          onToggleUnread?.()
+        }
       }
     })
   ]
@@ -399,7 +448,15 @@ function useSessionActions({
       label: t.common.delete,
       onSelect: () => {
         triggerHaptic('warning')
-        onDelete?.()
+
+        // Deleting is irreversible (the CLI path asks y/N; the desktop used to
+        // fire instantly on click). Gate it behind an explicit confirm — see
+        // #61470. The dialog owns the delete call, so every surface that routes
+        // through this menu (sidebar rows, tab menus, the chat header) gets the
+        // guard for free.
+        if (onDelete) {
+          setDeleteOpen(true)
+        }
       },
       variant: 'destructive'
     }
@@ -484,7 +541,50 @@ function useSessionActions({
     }
   }
 
-  return { onCloseAutoFocus, renameDialog, renderItems }
+  const deleteDialog = (
+    <DeleteSessionDialog
+      onConfirm={() => {
+        onDelete?.()
+      }}
+      onOpenChange={setDeleteOpen}
+      open={deleteOpen}
+      sessionTitle={title}
+    />
+  )
+
+  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
+}
+
+interface DeleteSessionDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+  sessionTitle: string
+}
+
+// Thin wrapper over ConfirmDialog — the single choke point for every session
+// delete entry point (sidebar rows, tab menus, the chat header). Deleting a
+// session is irreversible and the desktop used to fire it instantly on click
+// (#61470); this mirrors the CLI's y/N guard. onConfirm is the fire-and-forget
+// delete call; ConfirmDialog owns the busy/done beat and Enter-to-confirm.
+function DeleteSessionDialog({ open, onOpenChange, onConfirm, sessionTitle }: DeleteSessionDialogProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+
+  return (
+    <ConfirmDialog
+      busyLabel={r.deleting}
+      confirmLabel={t.common.delete}
+      description={r.deleteDesc(sessionTitle)}
+      destructive
+      doneLabel={r.deleted}
+      onClose={() => onOpenChange(false)}
+      onConfirm={onConfirm}
+      onOpenAutoFocus={preventCloseButtonAutoFocus}
+      open={open}
+      title={r.deleteTitle}
+    />
+  )
 }
 
 interface SessionActionsMenuProps
@@ -494,7 +594,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -509,6 +609,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         {children}
       </ActionsMenu>
       {renameDialog}
+      {deleteDialog}
     </>
   )
 }
@@ -519,7 +620,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -532,6 +633,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
         {children}
       </ActionsContextMenu>
       {renameDialog}
+      {deleteDialog}
     </>
   )
 }
@@ -597,7 +699,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
               event.preventDefault()
               void submit()
             } else if (event.key === 'Escape') {

@@ -1,8 +1,9 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { useStore } from '@nanostores/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type * as React from 'react'
-import { type FC, useRef } from 'react'
+import { type FC, useEffect, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -10,19 +11,23 @@ import { type SidebarListRow } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import { $sessionListDensity } from '@/store/session-list-density'
 
 import { SidebarDateDivider } from './chrome'
 import { SidebarSessionRow } from './session-row'
+import { sessionRowEstimate } from './session-row-details'
 
 interface SessionRowCommonProps {
   branchStem?: string
   card?: boolean
   isPinned: boolean
   isSelected: boolean
+  unread: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
   onPin: () => void
+  onToggleUnread: () => void
   onResume: () => void
   reorderable?: boolean
   showProfile?: boolean
@@ -41,16 +46,17 @@ export interface VirtualSessionListProps {
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
+  onToggleUnread: (sessionId: string) => void
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
 }
 
-const ROW_ESTIMATE_PX = 28
 // Matches the card's typical rendered height (four lines when a preview
 // exists) so long card lists don't jump under the scroll thumb before
 // self-measurement catches up.
 const CARD_ROW_ESTIMATE_PX = 66
+const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
@@ -64,6 +70,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onDeleteSession,
   onResumeSession,
   onTogglePin,
+  onToggleUnread,
   pinned,
   showProfileTags = false,
   sortable
@@ -71,10 +78,19 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const density = useStore($sessionListDensity)
 
   const virtualizer = useVirtualizer({
     count: listRows.length,
-    estimateSize: () => (card ? CARD_ROW_ESTIMATE_PX : ROW_ESTIMATE_PX),
+    estimateSize: (index: number) => {
+      const row = listRows[index]
+
+      if (row?.kind === 'divider') {
+        return DIVIDER_ESTIMATE_PX
+      }
+
+      return card ? CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
+    },
     getItemKey: index => {
       const row = listRows[index]
 
@@ -85,6 +101,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     initialRect: { height: 600, width: 240 },
     overscan: OVERSCAN_ROWS
   })
+
+  // Rows are measured after paint, so changing density must invalidate cached
+  // measurements from the previous mode before off-screen rows re-enter.
+  useEffect(() => virtualizer.measure(), [density, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
@@ -128,9 +148,11 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
+      onToggleUnread: () => onToggleUnread(session.id),
       onResume: () => onResumeSession(session.id),
       reorderable,
-      showProfile: showProfileTags
+      showProfile: showProfileTags,
+      unread: session.unread === true
     }
 
     return reorderable ? (
@@ -155,13 +177,21 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       // fade bar reserves its 4px on every platform but stays invisible until
       // hover — and the wrapper no longer stacks a second scroller, so the
       // double-gutter this class change was reaching for is already gone.
-      className={cn(
-        'scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
-        className
-      )}
+      //
+      // No `overscroll-contain` here: this scroller is NESTED inside the
+      // sidebar's own scroll container (index.tsx SCROLL_Y). Containing
+      // overscroll on the inner scroller swallowed wheel events at its scroll
+      // boundaries instead of chaining them to the outer sidebar scroller,
+      // which read as a wheel dead-zone mid-list once 25+ sessions
+      // virtualized (#84964) — the scrollbar still dragged, only the wheel
+      // died. The outer sidebar scroller keeps its own overscroll-contain, so
+      // the gesture still never escapes the sidebar.
+      className={cn('scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto', className)}
       ref={scrollerRef}
     >
-      <div className="relative" style={{ height: `${totalSize}px` }}>{rows}</div>
+      <div className="relative" style={{ height: `${totalSize}px` }}>
+        {rows}
+      </div>
     </div>
   )
 }

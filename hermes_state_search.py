@@ -1390,7 +1390,6 @@ class SessionSearchMixin:
                 m.session_id,
                 m.role,
                 snippet({table}, -1, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
                 m.timestamp,
                 m.tool_name,
                 s.source,
@@ -1583,7 +1582,7 @@ class SessionSearchMixin:
         sql = f"""
             SELECT m.id, m.session_id, m.role,
                    substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet,
-                   m.content, m.timestamp, m.tool_name,
+                   m.timestamp, m.tool_name,
                    s.source, s.model, s.started_at AS session_started
             FROM messages m
             JOIN sessions s ON s.id = m.session_id
@@ -1689,7 +1688,12 @@ class SessionSearchMixin:
             except Exception:
                 match["context"] = []
 
-        # Remove full content from result (snippet is enough, saves tokens)
+        # Full message content is never selected by any search route: every
+        # SELECT returns snippet + metadata only (saves I/O on multi-MB tool
+        # rows and the tokens a content column would cost downstream). The
+        # context query above re-fetches its 3-message window by id, so
+        # nothing reads content from the match rows themselves. The pop stays
+        # as a belt-and-braces guard for any future route that selects it.
         for match in matches:
             match.pop("content", None)
 
@@ -1823,7 +1827,6 @@ class SessionSearchMixin:
                 m.session_id,
                 m.role,
                 snippet(messages_fts, -1, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
                 m.timestamp,
                 m.tool_name,
                 s.source,
@@ -1913,7 +1916,6 @@ class SessionSearchMixin:
                         m.session_id,
                         m.role,
                         snippet(messages_fts_cjk, -1, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
                         m.timestamp,
                         m.tool_name,
                         s.source,
@@ -2002,7 +2004,6 @@ class SessionSearchMixin:
                         m.session_id,
                         m.role,
                         snippet(messages_fts_trigram, -1, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
                         m.timestamp,
                         m.tool_name,
                         s.source,
@@ -2095,7 +2096,7 @@ class SessionSearchMixin:
                            substr(m.content,
                                   max(1, instr(m.content, ?) - 40),
                                   120) AS snippet,
-                           m.content, m.timestamp, m.tool_name,
+                           m.timestamp, m.tool_name,
                            s.source, s.model, s.started_at AS session_started
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
@@ -2272,7 +2273,7 @@ class SessionSearchMixin:
                    substr(m.content,
                           max(1, instr(m.content, ?) - 40),
                           120) AS snippet,
-                   m.content, m.timestamp, m.tool_name,
+                   m.timestamp, m.tool_name,
                    s.source, s.model, s.started_at AS session_started
             FROM messages m
             JOIN sessions s ON s.id = m.session_id

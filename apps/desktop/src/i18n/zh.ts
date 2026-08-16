@@ -201,7 +201,7 @@ export const zh: Translations = {
     enterHud: 'HUD 模式',
     exitHud: '退出 HUD 模式',
     layoutEditor: '布局编辑器',
-    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
+    layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
 
   keybinds: {
@@ -248,6 +248,7 @@ export const zh: Translations = {
       'session.slot.9': '切换到最近会话 9',
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
+      'session.archive': '归档当前会话',
       'workspace.newWorktree': '新建工作树',
       'workspace.openFolder': '打开文件夹为项目',
       'composer.focus': '聚焦输入框',
@@ -334,6 +335,7 @@ export const zh: Translations = {
       providerApiKeys: 'API 密钥',
       providerCustomEndpoints: '自定义端点',
       gateway: '网关',
+      connections: '连接',
       apiKeys: '工具与密钥',
       keybinds: '键盘快捷键',
       keysTools: '工具',
@@ -447,9 +449,16 @@ export const zh: Translations = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      reasoningCollapsedTitle: '默认折叠推理过程',
+      reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      sessionDensityTitle: '会话列表密度',
+      sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
+      sessionDensityCompact: '紧凑',
+      sessionDensityComfortable: '舒适',
+      sessionDensityDetailed: '详细',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -462,6 +471,8 @@ export const zh: Translations = {
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
+      composerPopoutTitle: '悬浮输入框',
+      composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
@@ -791,8 +802,12 @@ export const zh: Translations = {
       autosaveFailed: '自动保存失败',
       imported: '配置已导入',
       invalidJson: '配置 JSON 无效',
+      toolsetsWipeConfirm:
+        '确定移除所有已启用的工具集吗？这将禁用记忆、终端、网络搜索、委派以及大多数其他工具，直到你重新启用它们。',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      disableF12Title: '禁用 F12 开发者工具',
+      disableF12Desc: '阻止 F12 打开开发者工具。Ctrl+Shift+I（Mac 上为 Cmd+Opt+I）仍然可用。',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
@@ -827,6 +842,48 @@ export const zh: Translations = {
       replace: '替换',
       set: '设置',
       clear: '清除'
+    },
+    // v2 多连接注册表：设置 → 连接。
+    connections: {
+      title: '连接',
+      intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——全部保存在这里。',
+      stagedNote: '聊天和智能体列表会跟随你选择的来源；应用管理的窗口后端仍在“设置 → 网关”中选择。',
+      loadFailed: '无法加载连接',
+      primaryPill: '主连接',
+      managedPill: '本机',
+      addConnection: '添加连接',
+      editConnection: '编辑',
+      removeConnection: '移除',
+      removeConfirmTitle: '移除此连接？',
+      removeConfirmDesc: (label: string) => `“${label}”将从本应用移除。实例本身不受影响——你可以随时重新添加。`,
+      makePrimary: '设为主连接',
+      testConnection: '测试',
+      testOk: '可访问',
+      testFailed: '连接测试失败',
+      saveFailed: '无法保存连接',
+      removeFailed: '无法移除连接',
+      updateAll: '更新所有实例',
+      updateAllRunning: '正在更新所有实例…',
+      updateAllDone: '更新已分发',
+      updateAllFailed: '批量更新失败',
+      updateSkippedCloud: '由 Hermes Cloud 托管',
+      kindLocal: '本地',
+      kindRemote: '远程网关',
+      kindCloud: 'Hermes Cloud',
+      kindSsh: 'SSH',
+      kindLocalDesc: '由本应用管理的 Hermes 运行时。',
+      kindRemoteDesc: '可通过 HTTP(S) 访问的 Hermes 网关——局域网、Tailscale 或互联网。',
+      kindCloudDesc: '通过你的 Hermes Cloud 账户发现的托管实例。',
+      kindSshDesc: '通过 SSH 访问的 Hermes 安装。',
+      labelTitle: '名称',
+      labelDesc: '必填。此实例出现的所有位置都会显示该名称；必须唯一（例如“家庭服务器”、“工作笔记本”）。',
+      labelPlaceholder: '家庭服务器',
+      urlTitle: '网关 URL',
+      sshHostTitle: 'SSH 主机',
+      save: '保存连接',
+      saving: '保存中…',
+      cancel: '取消',
+      empty: '尚未注册任何连接。'
     },
     gateway: {
       loading: '正在加载网关设置...',
@@ -1214,7 +1271,6 @@ export const zh: Translations = {
     tabToolsets: '工具集',
     configuringProfile: '正在配置：',
     tabMcp: 'MCP',
-    tabHub: '浏览技能中心',
     all: '全部',
     searchSkills: '搜索技能…',
     searchToolsets: '搜索工具集…',
@@ -1307,6 +1363,11 @@ export const zh: Translations = {
       updateStarted: '正在更新已安装技能…',
       actionFailed: '技能操作失败',
       actionLog: '操作日志',
+      alreadyInstalled: name => `“${name}”已安装`,
+      pickerTitle: '技能中心',
+      pickerBrowse: '浏览完整技能中心',
+      pickerHide: '隐藏技能中心浏览器',
+      pickerHint: '点击任意技能上的“+ Add to this Agent”即可安装，安装后会出现在上方列表中。',
       loadFailed: '技能中心加载失败',
       previewFailed: '技能预览失败',
       scanFailed: '安全扫描失败',
@@ -2158,9 +2219,14 @@ export const zh: Translations = {
     loading: '加载中…',
     loadMore: '加载更多',
     loadCount: step => `再加载 ${step} 个`,
+    messageCount: count => `${count} 条消息`,
+    toolCallCount: count => `${count} 次工具调用`,
     row: {
       pin: '置顶',
       unpin: '取消置顶',
+      markUnread: '标记为未读',
+      markRead: '标记为已读',
+      unreadFailed: '无法更新未读状态',
       copyId: '复制 ID',
       export: '导出',
       branchFrom: '分支',
@@ -2187,6 +2253,10 @@ export const zh: Translations = {
       renameTitle: '重命名会话',
       renameDesc: '留空则清除。',
       untitledPlaceholder: '无标题会话',
+      deleteTitle: '删除会话？',
+      deleteDesc: title => `这将永久删除“${title}”，且无法撤销。`,
+      deleting: '正在删除…',
+      deleted: '会话已删除',
       untitledChat: id => `会话 ${id}`,
       messageCount: count => `${count} 条消息`,
       todoProgress: '任务完成度',
@@ -2205,7 +2275,8 @@ export const zh: Translations = {
     statusDivider: {
       working: '进行中',
       done: '已完成'
-    }
+    },
+    markAllRead: '全部标记为已读'
   },
 
   composer: {
@@ -2343,6 +2414,12 @@ export const zh: Translations = {
       done: skill => `已添加 /${skill}`,
       doneTip: '发送时将加载该技能'
     },
+    githubSuggestions: {
+      label: '设置 GitHub',
+      tip: '这里通过 gh CLI 技能使用 GitHub — 点击连接你的账号',
+      done: '已添加 /github-auth',
+      doneTip: '发送消息后，agent 将引导你完成 GitHub 登录'
+    },
     repairSuggestions: {
       label: server => `重新连接 ${server}`,
       tip: server => `${server} 调用刚因连接错误失败`,
@@ -2421,7 +2498,7 @@ export const zh: Translations = {
       scopeLastTurn: '上一轮',
       commit: '提交',
       commitAndPush: '提交并推送',
-      commitPlaceholder: '信息（⌘↵ 提交）',
+      commitPlaceholder: shortcut => `信息（${shortcut} 提交）`,
       generateCommitMessage: '生成提交信息',
       stopGenerating: '停止生成',
       createPr: '创建 PR',
@@ -2975,6 +3052,7 @@ export const zh: Translations = {
       thought: '已思考',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
+      turnDuration: duration => `本轮耗时 ${duration}`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
       copy: '复制',

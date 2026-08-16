@@ -331,6 +331,7 @@ export interface HermesConfig {
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    timestamps?: boolean
   }
   desktop?: {
     repo_scan_enabled?: boolean
@@ -501,6 +502,11 @@ export interface SessionInfo {
    *  elsewhere. Undefined against a backend predating the flag; treat that as
    *  "no opinion" and leave the local pin set alone. */
   pinned?: boolean
+  /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
+   *  see `SessionDB.session_unread`). True when the conversation was
+   *  explicitly marked unread or a response arrived after it was last read.
+   *  Undefined against a backend predating the flag; treat as read. */
+  unread?: boolean
   preview: null | string
   source: null | string
   started_at: number
@@ -652,6 +658,8 @@ export interface SessionResumeResponse {
   session_key?: string
   started_at?: number
   status?: string
+  /** Epoch seconds the current turn started, or null when idle. */
+  turn_started_at?: number | null
 }
 
 export interface SessionRuntimeInfo {
@@ -1421,6 +1429,10 @@ export interface McpCatalogEntry {
   bootstrap: string[]
   default_enabled: string[] | null
   post_install: string
+  /** Composer-suggestion triggers (present when the manifest declares a
+   *  `suggest` block; null/absent on entries without one and on older
+   *  backends that predate the field). */
+  suggest?: { keywords: string[]; hosts: string[] } | null
   needs_install: boolean
   installed: boolean
   enabled: boolean

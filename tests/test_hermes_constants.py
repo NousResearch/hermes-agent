@@ -64,6 +64,64 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == local_appdata / "hermes"
 
+    def test_result_memoised_until_env_or_home_changes(self, tmp_path, monkeypatch):
+        """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
+
+        get_default_hermes_root() resolves HERMES_HOME against the native
+        home (~80us of path resolution) and is called at 31+ sites — every
+        _load_global_auth_store() (per provider row in the /model picker),
+        kanban, backup, gateway, update. The memo is keyed on
+        (native home, HERMES_HOME) compared for free each call.
+        """
+        # HERMES_HOME set to a Docker-profile path: every call resolves the
+        # env path against the native home (the ~80us work the memo skips).
+        docker_root = tmp_path / "opt" / "data"
+        profile = docker_root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Probe the expensive inner work: the memo check itself calls
+        # _get_platform_default_hermes_home() on every call (even hits), so
+        # count Path.resolve on the env path instead — only the actual
+        # resolution branch pays it.
+        resolve_calls = {"n": 0}
+        orig_resolve = Path.resolve
+
+        def counting_resolve(self, *a, **k):
+            resolve_calls["n"] += 1
+            return orig_resolve(self, *a, **k)
+
+        monkeypatch.setattr(Path, "resolve", counting_resolve)
+        # raising=False: on pre-fix code the memo attribute doesn't exist
+        # (that IS the fix); the reset is a no-op there so the measured-work
+        # assertion below fails genuinely instead of erroring.
+        monkeypatch.setattr(
+            hermes_constants, "_default_hermes_root_memo", None, raising=False
+        )
+
+        first = get_default_hermes_root()
+        first_count = resolve_calls["n"]
+        for _ in range(10):
+            get_default_hermes_root()
+        assert resolve_calls["n"] == first_count, (
+            "repeated calls must be memo hits (no path resolution on hits), "
+            f"resolve went {first_count} -> {resolve_calls['n']}"
+        )
+        assert first == docker_root
+
+        # HERMES_HOME change invalidates the memo (fresh resolution).
+        other_profile = docker_root / "profiles" / "writer"
+        other_profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(other_profile))
+        before = resolve_calls["n"]
+        assert get_default_hermes_root() == docker_root
+        assert resolve_calls["n"] > before, (
+            "HERMES_HOME change must force a fresh resolution"
+        )
+
+
+
 
 
 class TestGetHermesHome:

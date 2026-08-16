@@ -49,6 +49,7 @@ export interface ThreadCommitReceipt {
   chainSignature: string
   headMessage: ThreadMessage | null
   contentSignature: string
+  publicationIdentity: string
   complete: boolean
 }
 
@@ -60,6 +61,10 @@ type ThreadMessageCommitReport = {
 type ThreadMessageCommitReporter = (report: ThreadMessageCommitReport) => void
 
 const ThreadMessageCommitContext = createContext<ThreadMessageCommitReporter | null>(null)
+const ThreadPublicationIdentityContext = createContext('standalone')
+
+export const ThreadPublicationIdentityProvider = ThreadPublicationIdentityContext.Provider
+export const useThreadPublicationIdentity = (): string => useContext(ThreadPublicationIdentityContext)
 
 /** Report the commit boundary for a message row itself. */
 export function useReportThreadMessageCommit(waitForParts = false): void {
@@ -164,7 +169,7 @@ export function commitReceiptChain(messages: readonly ThreadMessage[]): {
 export function partRequiresCommit(part: object): boolean {
   const type = (part as { type?: string }).type
 
-  return type === 'text' || type === 'reasoning'
+  return type === 'text' || type === 'reasoning' || type === 'tool-call'
 }
 
 export function pruneCommitMap<T>(map: Map<string, T>, messages: readonly { id: string }[]): void {
@@ -546,6 +551,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Skip its full serialization outside the short-lived reveal handshake.
   const threadMessages = useAuiState(s => s.thread.messages)
   const paneVisible = usePaneVisible()
+  const publicationIdentity = useThreadPublicationIdentity()
   const {
     chainSignature: committedChainSignature,
     headMessage: committedHeadMessage,
@@ -799,6 +805,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     chainSignature: committedChainSignature,
     headMessage: committedHeadMessage,
     contentSignature: committedContentSignature,
+    publicationIdentity,
     complete: isThreadRenderComplete(hiddenCount, renderBudget, paneBudget),
     renderedMessages
   })
@@ -807,6 +814,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     chainSignature: committedChainSignature,
     headMessage: committedHeadMessage,
     contentSignature: committedContentSignature,
+    publicationIdentity,
     complete: isThreadRenderComplete(hiddenCount, renderBudget, paneBudget),
     renderedMessages
   }
@@ -834,6 +842,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         chainSignature: '',
         headMessage: null,
         contentSignature: '[]',
+        publicationIdentity: expected.publicationIdentity,
         complete: true
       })
     }
@@ -844,6 +853,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     hiddenCount,
     onCommitReceipt,
     paneVisible,
+    publicationIdentity,
     renderBudget,
     renderedMessages,
     resumePublicationRevision
@@ -890,6 +900,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         chainSignature: expected.chainSignature,
         headMessage: expected.headMessage,
         contentSignature: expected.contentSignature,
+        publicationIdentity: expected.publicationIdentity,
         complete: true
       })
     }

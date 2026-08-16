@@ -293,6 +293,41 @@ def test_explainer_disabled_via_env():
         assert agent._turn_completion_explainer_enabled() is False
 
 
+def test_explainer_config_read_once_then_cached():
+    """Measured-work pin: the config lookup happens once per agent.
+
+    The explainer gate runs at the end of every turn, so a fresh
+    ``load_config()`` per call is wasted work (measured ~0.9 ms/call on a
+    warm mtime-cache on this host; per-turn config reads were killed
+    repo-wide in #74211, and this seam was missed).  The config read must
+    be cached after the first call; the env-var override must still win on
+    every call, cached or not.
+    """
+    agent = _make_agent()
+    calls = {"n": 0}
+
+    def counting_load():
+        calls["n"] += 1
+        return {"display": {"turn_completion_explainer": True}}
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
+        with patch("hermes_cli.config.load_config", counting_load):
+            # First call reads config and caches the result.
+            assert agent._turn_completion_explainer_enabled() is True
+            assert calls["n"] == 1
+            # Subsequent calls must not re-read config.
+            assert agent._turn_completion_explainer_enabled() is True
+            assert agent._turn_completion_explainer_enabled() is True
+            assert calls["n"] == 1
+            # Env override stays authoritative even after the cache is warm.
+            with patch.dict(
+                os.environ, {"HERMES_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
+            ):
+                assert agent._turn_completion_explainer_enabled() is False
+            assert calls["n"] == 1  # env path never touches config
+
+
 
 
 # --------------------------------------------------------------------------

@@ -51,7 +51,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
 
 from hermes_constants import (
     get_hermes_home,
@@ -5950,6 +5950,7 @@ class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
     rule_key: Optional[str] = None
+    modified_args: Optional[Dict[str, Any]] = None
 
 
 def set_thread_tool_whitelist(
@@ -6022,8 +6023,23 @@ def _get_pre_tool_call_directive_details(
         middleware_trace=list(middleware_trace or []),
     )
 
+    block_msg: Optional[str] = None
+    modified_args: Optional[Dict[str, Any]] = None
+
     for result in hook_results:
         if not isinstance(result, dict):
+            continue
+        # "modify" action — transform tool_input before dispatch.
+        # Processed before the block/approve gate so modify directives
+        # are visible even when a later hook blocks. Hooks accumulate:
+        # each modify directive shallow-merges its keys into one
+        # accumulated dict built from the original args on first hit.
+        if result.get("action") == "modify":
+            partial = result.get("args")
+            if isinstance(partial, dict) and partial:
+                if modified_args is None:
+                    modified_args = dict(args) if isinstance(args, dict) else {}
+                modified_args.update(partial)
             continue
         action = result.get("action")
         if action not in ("block", "approve"):
@@ -6038,9 +6054,12 @@ def _get_pre_tool_call_directive_details(
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key)
+        return _PreToolCallDirective(
+            action=action, message=message, rule_key=rule_key,
+            modified_args=modified_args,
+        )
 
-    return _PreToolCallDirective()
+    return _PreToolCallDirective(modified_args=modified_args)
 
 
 def get_pre_tool_call_directive(
@@ -6122,6 +6141,29 @@ def resolve_pre_tool_block(
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
+    return _resolve_block_from_details(
+        details, tool_name,
+        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+    )
+
+
+def _resolve_block_from_details(
+    details: "_PreToolCallDirective",
+    tool_name: str,
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+    session_id: str = "",
+) -> Optional[str]:
+    """Resolve a fetched directive to a final block message (or ``None``).
+
+    Shared by :func:`resolve_pre_tool_block` and
+    :func:`_dispatch_pre_tool_call_hooks` so the security-critical
+    fail-closed approval logic lives in exactly ONE place: ``block``
+    blocks with its message; an ``approve`` directive whose gate errors,
+    denies, or times out is fail-closed to a block; anything else
+    proceeds.
+    """
     if details.action == "block":
         return details.message
     if details.action == "approve":
@@ -6163,6 +6205,46 @@ def resolve_pre_tool_block(
                 or f"BLOCKED: plugin approval required for {tool_name}"
             )
     return None
+
+
+def _dispatch_pre_tool_call_hooks(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Invoke ``pre_tool_call`` hooks once and process all response types.
+
+    Returns a ``(block_message, modified_args)`` tuple:
+    - ``block_message`` — the first block/approve directive's resolved message
+      (or ``None`` when the call may proceed).  Shares the exact fail-closed
+      approval-gate logic of :func:`resolve_pre_tool_block` via
+      :func:`_resolve_block_from_details`, including the observability
+      context set around the human-approval gate.
+    - ``modified_args`` — merged args from ``modify`` directives
+      (or ``None`` when no hook requested modification).
+
+    This is the single invocation point for ``pre_tool_call`` hooks.
+    Callers that only need block detection should keep using
+    :func:`get_pre_tool_call_block_message` or
+    :func:`resolve_pre_tool_block` for backward compat.
+    Callers that also need input transformation should call this
+    function and apply ``modified_args`` if not ``None``.
+    """
+    details = _get_pre_tool_call_directive_details(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    block_msg = _resolve_block_from_details(
+        details, tool_name,
+        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+    )
+    return (block_msg, details.modified_args)
 
 
 def get_pre_verify_continue_message(

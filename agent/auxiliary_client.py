@@ -1283,7 +1283,7 @@ def _to_openai_base_url(base_url: str) -> str:
         # ZAI uses /api/anthropic for the Coding Plan's Anthropic wire.  The
         # matching OpenAI-wire endpoint is /api/coding/paas/v4; /api/paas/v4
         # is the independently billed general API.
-        if "open.bigmodel.cn" in url or "bigmodel" in url or "api.z.ai" in url:
+        if base_url_host_matches(url, "open.bigmodel.cn") or base_url_host_matches(url, "api.z.ai"):
             rewritten = url[: -len("/anthropic")] + "/coding/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
@@ -1297,7 +1297,7 @@ def _to_openai_base_url(base_url: str) -> str:
             url,
         )
         return url
-    if "api.kimi.com" in url and url.endswith("/coding"):
+    if base_url_host_matches(url, "api.kimi.com") and url.endswith("/coding"):
         # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
         # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)
         # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.
@@ -1627,14 +1627,18 @@ class _CodexCompletionsAdapter:
                 or base_url_host_matches(_host_src, "models.github.ai")
             )
             if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
-                # Scope by the owning turn's session so two unrelated sessions
-                # with the same instructions/tools (e.g. compression, MoA,
-                # flush_memories firing back-to-back on different sessions)
-                # don't bucket-share a prompt cache slot (#78941). The main
-                # transport (agent/transports/codex.py::build_kwargs) does the
-                # same; this adapter had no session handle before
-                # set_runtime_main() started threading one through.
-                _scope = _cache_scope_from_session_id(_runtime_main_value("session_id"))
+                # Scope by the owning turn's conversation so two unrelated
+                # sessions with the same instructions/tools (e.g. compression,
+                # MoA, flush_memories firing back-to-back on different
+                # sessions) don't bucket-share a prompt cache slot (#78941).
+                # Prefer the rotation-stable logical scope threaded through
+                # set_runtime_main() (compression-lineage root, #79017) and
+                # fall back to the physical session id, mirroring the main
+                # transport (agent/transports/codex.py::build_kwargs).
+                _scope = _cache_scope_from_session_id(
+                    _runtime_main_value("cache_scope")
+                    or _runtime_main_value("session_id")
+                )
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"), _scope)
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
@@ -2209,7 +2213,15 @@ class _BedrockCompletionsAdapter:
             model=model,
             messages=messages,
             tools=kwargs.get("tools"),
-            max_tokens=int(max_tokens) if max_tokens else 4096,
+            # Omitted/None caller cap → None: build_converse_kwargs then omits
+            # inferenceConfig.maxTokens so Bedrock uses the model's maximum
+            # allowed output, matching the no-cap-by-default policy every
+            # other aux wire already follows (#10809: vision descriptions
+            # stayed capped at the shim's old hardcoded 4096 on Bedrock).
+            # Truthiness (not `is None`) is deliberate — it matches the
+            # sibling Anthropic shim's reading of max_tokens above, so a
+            # nonsense explicit 0 is treated as "no cap" on both wires.
+            max_tokens=int(max_tokens) if max_tokens else None,
             temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"),
             stop_sequences=stop,
@@ -3377,11 +3389,17 @@ def set_runtime_main(
     api_mode: str = "",
     auth_mode: str = "",
     session_id: str = "",
+    cache_scope: str = "",
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
     Context-local state prevents concurrent gateway sessions from overwriting
     one another while retaining compatibility mirrors for legacy readers.
+
+    ``cache_scope`` is the rotation-stable logical cache scope (compression-
+    lineage root — agent/prompt_cache_scope.py) resolved once per turn by
+    turn_context; auxiliary Responses calls prefer it over ``session_id``
+    for prompt_cache_key derivation (#79017).
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
@@ -3399,6 +3417,7 @@ def set_runtime_main(
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
+        "cache_scope": (cache_scope or "").strip(),
     }
     # Publish authoritative context before updating locked compatibility
     # mirrors; concurrent sessions never read those mirrors at runtime.
@@ -6464,6 +6483,17 @@ def resolve_provider_client(
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)
+            # Auxiliary tasks resolve named custom providers here rather than
+            # through _resolve_named_custom_runtime, so key_cmd has to be
+            # honoured on both paths at matching precedence: otherwise the main
+            # agent turn works while every auxiliary call (title generation,
+            # compression, vision, embedding) 401s on the placeholder below.
+            custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
+            if custom_key_cmd:
+                from agent.command_token_source import build_command_token_provider
+                custom_key = build_command_token_provider(
+                    custom_key_cmd, custom_entry.get("name") or provider
+                ) or custom_key
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

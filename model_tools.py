@@ -664,7 +664,11 @@ def _resolve_active_context_length() -> int:
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         if not isinstance(model_cfg, dict):
             model_cfg = {}
-        model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
+        _raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
+        if isinstance(_raw_model_id, dict):
+            from hermes_cli.config import split_model_config_default
+            _raw_model_id, _ = split_model_config_default(_raw_model_id)
+        model_id = str(_raw_model_id).strip()
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
@@ -1366,22 +1370,22 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
 
-        # Check plugin hooks for a block/approve directive (unless caller
+        # Check plugin hooks for a block/approve/modify directive (unless caller
         # already checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
         #
         # Single-fire contract: pre_tool_call fires exactly once per tool
-        # execution. resolve_pre_tool_block() internally calls
-        # invoke_hook("pre_tool_call", ...) once and returns the block message
-        # for a `block` directive OR for an `approve` directive whose human
-        # gate denied/timed-out/errored (fail-closed). Observer plugins see
+        # execution. _dispatch_pre_tool_call_hooks() internally calls
+        # invoke_hook("pre_tool_call", ...) once and returns both the block
+        # message (for `block`/`approve` directives) and any modified args
+        # (for `modify` directives). Observer plugins see
         # the hook on that same pass. When skip=True, the caller already
         # fired it — do nothing here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import resolve_pre_tool_block
-                block_message = resolve_pre_tool_block(
+                from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+                block_message, modified_args = _dispatch_pre_tool_call_hooks(
                     function_name,
                     function_args,
                     task_id=task_id or "",
@@ -1391,6 +1395,8 @@ def handle_function_call(
                     api_request_id=api_request_id or "",
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                if modified_args is not None:
+                    function_args = modified_args
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 

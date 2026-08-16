@@ -1204,6 +1204,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "runtime": "agent",
+    # `session.terminal_continue` is the only schema-surfaced session field —
+    # fold it into general rather than spawning a one-field orphan category.
+    "session": "general",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -1886,6 +1889,21 @@ _MEDIA_CONTENT_TYPES = {
 _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
+_STREAMABLE_MEDIA_EXTENSIONS = frozenset(
+    {
+        ".avi",
+        ".flac",
+        ".m4a",
+        ".mkv",
+        ".mov",
+        ".mp3",
+        ".mp4",
+        ".ogg",
+        ".opus",
+        ".wav",
+        ".webm",
+    }
+)
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
 
 
@@ -2576,17 +2594,14 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
-@app.get("/api/files/download")
-async def download_managed_file(request: Request, path: str):
-    """Stream a managed file as an attachment download.
-
-    Remote clients (desktop app, browser dashboard) open agent-written files
-    that live on *this* gateway's disk, not theirs. Auth-gated like every other
-    managed-files route — ``auth_middleware`` additionally accepts the session
-    token as a ``?token=`` query param here so a shell/browser-opened download
-    (which can't set the session header) still authenticates. See ``/api/pty``
-    for the same query-token precedent.
-    """
+def _managed_file_response(
+    request: Request,
+    path: str,
+    *,
+    content_disposition_type: str,
+    media_only: bool = False,
+) -> FileResponse:
+    """Build a range-aware response after applying managed-file policy."""
     policy, target, _display_path = _resolve_managed_path(path, request)
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -2594,6 +2609,8 @@ async def download_managed_file(request: Request, path: str):
         raise HTTPException(status_code=400, detail="Path is not a file")
     if _is_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=415, detail="Unsupported media type")
 
     try:
         size = target.stat().st_size
@@ -2608,7 +2625,52 @@ async def download_managed_file(request: Request, path: str):
         path=str(target),
         media_type=mime_type,
         filename=target.name,
-        content_disposition_type="attachment",
+        content_disposition_type=content_disposition_type,
+        headers={"X-Content-Type-Options": "nosniff"} if media_only else None,
+    )
+
+
+@app.get("/api/files/download")
+async def download_managed_file(request: Request, path: str):
+    """Stream a managed file as an attachment download.
+
+    Remote clients (desktop app, browser dashboard) open agent-written files
+    that live on *this* gateway's disk, not theirs. Auth-gated like every other
+    managed-files route — ``auth_middleware`` additionally accepts the session
+    token as a ``?token=`` query param here so a shell/browser-opened download
+    (which can't set the session header) still authenticates. See ``/api/pty``
+    for the same query-token precedent. Chromium identifies ``<audio>`` and
+    ``<video>`` subresource requests through ``Sec-Fetch-Dest``; serve those
+    inline for compatibility with Desktop builds that still use this route as
+    their player source, while preserving attachment semantics for ordinary
+    link/document requests.
+    """
+    fetch_destination = request.headers.get("sec-fetch-dest", "").lower()
+    is_media_subresource = fetch_destination in {"audio", "video"}
+    return _managed_file_response(
+        request,
+        path,
+        content_disposition_type="inline" if is_media_subresource else "attachment",
+        media_only=is_media_subresource,
+    )
+
+
+@app.get("/api/files/stream")
+@app.head("/api/files/stream")
+async def stream_managed_file(request: Request, path: str):
+    """Stream managed audio/video inline with HTTP Range support.
+
+    Electron's Chromium media pipeline may reject an attachment response used
+    as an ``<audio>`` or ``<video>`` source. This route shares the download
+    endpoint's authentication, size cap, sensitive-file guard, MIME detection,
+    and Starlette ``FileResponse`` range handling, but explicitly marks the
+    response inline so metadata loading, playback, and seeking work remotely.
+    """
+    return _managed_file_response(
+        request,
+        path,
+        content_disposition_type="inline",
+        media_only=True,
     )
 
 
@@ -2866,6 +2928,19 @@ async def fs_read_data_url(path: str):
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
+
+
+@app.get("/api/fs/download")
+async def fs_download(path: str):
+    target, _st = _fs_regular_file(_fs_path(path))
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    return FileResponse(
+        path=str(target),
+        media_type=_fs_mime_type(target),
+        filename=target.name,
+        content_disposition_type="attachment",
+    )
 
 
 @app.get("/api/fs/git-root")
@@ -11997,10 +12072,23 @@ def _validate_dashboard_cron_context_from(
 
 
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
-    """Return dashboard profile records, falling back to a directory scan."""
+    """Return the minimal profile records needed by cron aggregation.
+
+    The two callers only consume ``name``.  ``list_profiles()`` also parses
+    config/distribution metadata, probes gateway processes, and counts skills
+    for every profile; polling cron jobs through that path creates avoidable
+    GIL pressure on large profile pools.
+    """
     from hermes_cli import profiles as profiles_mod
     try:
-        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+        return [
+            {
+                "name": name,
+                "path": str(home),
+                "is_default": name == "default",
+            }
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True)
+        ]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -15123,6 +15211,10 @@ else:
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+# Back-off delay between idle PTY reads so a quiet terminal does not spin
+# the event loop.  A positive sleep lets other coroutines run and keeps
+# dashboard idle CPU low (#42627).
+_PTY_IDLE_BACKOFF = 0.05
 
 # Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
 # bound to a process that survives disconnect/refresh and is reattachable.
@@ -15157,7 +15249,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
                 if chunk is None:  # EOF
                     return
                 if not chunk:  # no data this tick; yield control and retry
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(_PTY_IDLE_BACKOFF)
                     continue
                 try:
                     await ws.send_bytes(chunk)

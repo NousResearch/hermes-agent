@@ -1360,6 +1360,7 @@ def _normalize_custom_provider_entry(
         # configs don't warn on every load.
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
+        "key_cmd",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
@@ -2847,6 +2848,27 @@ def _strip_default_values(
     return result
 
 
+def split_model_config_default(raw_default: Any) -> tuple[str, str]:
+    """Canonicalize a config ``model.default``/``model.model`` value.
+
+    A dict-valued default (``model.default: {provider: ..., model: ...}``)
+    pairs the model string with the provider it must be routed through. The
+    dict is flattened here at the shared boundary so both halves stay
+    together through ``HermesCLI`` construction: the model becomes a plain
+    string and the provider is returned explicitly instead of being lost to
+    the outer merged ``model.provider`` default (often ``"auto"``, which
+    runtime resolution treats as authoritative and would otherwise route the
+    model through the wrong active provider).
+
+    Returns ``(model, provider)``; both are ``""`` when nothing is usable.
+    """
+    if isinstance(raw_default, dict):
+        provider = str(raw_default.get("provider") or "").strip()
+        model = raw_default.get("model") or raw_default.get("default")
+        return (str(model or "").strip(), provider)
+    return (str(raw_default or "").strip(), "")
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -2882,6 +2904,17 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     # alias, or a model dict whose id lives under a non-canonical key.
     model_in = config.get("model")
     model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    # A dict-valued ``default``/``model`` (``{provider: ..., model: ...}``)
+    # must be flattened into ``default`` (string) + ``provider`` here at the
+    # single load/save chokepoint, so every reader (doctor, status, fallback
+    # picker, prompt-size, context-switch guard, …) sees plain strings instead
+    # of a nested dict that crashes ``.strip()``/``.lower()`` or routes the
+    # model through the wrong provider.
+    _has_nested_default = isinstance(model_in, dict) and (
+        isinstance(model_in.get("default"), dict)
+        or isinstance(model_in.get("model"), dict)
+        or isinstance(model_in.get("name"), dict)
+    )
     # A model dict needs canonicalization if its id lives under a non-canonical
     # key (``model``/``name``) — either because ``default`` is empty (we must
     # promote the alias) or because ``default`` is set but a stale alias still
@@ -2892,7 +2925,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     has_root = any(
         config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
     )
-    if not has_root and not model_has_alias and not model_needs_canon:
+    if not has_root and not model_has_alias and not model_needs_canon and not _has_nested_default:
         return config
 
     config = dict(config)
@@ -2902,6 +2935,24 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         model = dict(model)
     config["model"] = model
+
+    # Flatten a dict-valued ``model.default``/``model.model``:
+    # ``{provider: <p>, model: <m>}`` -> ``default: "<m>"`` and, when no
+    # explicit ``model.provider`` is set, ``provider: "<p>"``. The nested
+    # provider must win over the merged default ``"auto"`` (which runtime
+    # resolution treats as authoritative and would otherwise route the model
+    # through the wrong active provider), but never over an explicitly
+    # configured outer provider.
+    for _key in ("default", "model", "name"):
+        _val = model.get(_key)
+        if isinstance(_val, dict):
+            _nested_model = _val.get("model") or _val.get("default")
+            _nested_provider = str(_val.get("provider") or "").strip()
+            model[_key] = str(_nested_model or "").strip()
+            if _nested_provider:
+                _outer_provider = str(model.get("provider") or "").strip()
+                if not _outer_provider or _outer_provider == "auto":
+                    model["provider"] = _nested_provider
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
@@ -3558,7 +3609,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
         managed_config = managed_scope.load_managed_config()
         if managed_config:
-            managed_expanded = _expand_env_vars(managed_config)
+            # Normalize the managed overlay through the same canonicalization as
+            # the user config BEFORE merging (parity with
+            # managed_scope.apply_managed_overlay): a dict-valued
+            # ``model.default`` (``{provider: ..., model: ...}``) or a bare
+            # ``model: <string>`` must be flattened to a string ``default``
+            # paired with ``provider`` so the merged result never exposes a
+            # nested dict to status/fallback/runtime readers.
+            managed_normalized = _normalize_root_model_keys(managed_config)
+            if isinstance(managed_normalized.get("model"), str):
+                managed_normalized = dict(managed_normalized)
+                managed_normalized["model"] = {"default": managed_normalized["model"]}
+            managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:

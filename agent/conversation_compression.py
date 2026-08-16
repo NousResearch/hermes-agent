@@ -2003,6 +2003,56 @@ def _strip_stale_todo_snapshot(content: Any) -> Any:
     return content
 
 
+# Retention-parity notice (#84718): compaction re-injects the todo list
+# verbatim while skill instructions are pruned to [SKILL_PRUNED: ...] markers,
+# so the imperative crosses the boundary without the policy that governed it.
+# When BOTH happen at the same boundary, couple them: the re-injected snapshot
+# carries an explicit instruction to reload the pruned skills BEFORE acting on
+# any preserved task. Deterministic (derived only from the compressed
+# transcript), bounded (marker cap shared with the summary re-injection), and
+# stripped together with the snapshot at the next boundary because it lives
+# after TODO_INJECTION_HEADER inside the same block.
+_PRUNED_SKILL_RELOAD_NOTICE_HEADER = (
+    "[Skills pruned during compression — reload before acting on these tasks]"
+)
+
+
+def _pruned_skill_reload_notice(compressed: list) -> str:
+    """Reload instruction for skills whose bodies were pruned, or ``""``.
+
+    Scans the post-compression transcript for the canonical
+    ``[SKILL_PRUNED: ...]`` markers (summary ``## Pruned Skills`` section,
+    pruned tool rows surviving in the protected tail) and renders one bounded
+    notice naming each skill with its exact ``skill_view`` reload call.
+    First-seen order, deduplicated, capped at ``_MAX_PRUNED_SKILL_MARKERS``.
+    """
+    from agent.context_compressor import (
+        _MAX_PRUNED_SKILL_MARKERS,
+        _extract_pruned_skill_names,
+    )
+
+    names: list = []
+    for message in compressed:
+        if not isinstance(message, dict):
+            continue
+        for name in _extract_pruned_skill_names(_message_text(message)):
+            if name not in names:
+                names.append(name)
+    del names[_MAX_PRUNED_SKILL_MARKERS:]
+    if not names:
+        return ""
+    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
+    return (
+        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
+        "The task list above crossed the compression boundary verbatim, but "
+        "the skill instructions that governed it were pruned. Before "
+        f"executing any preserved task that depends on these skills, reload "
+        f"them first: {calls}. After reloading, re-check that each pending "
+        "task is still justified — findings recorded before the boundary may "
+        "have invalidated it."
+    )
+
+
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
     """Fold the human anchor into an existing user-role scaffolding turn.
 
@@ -2089,10 +2139,15 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
                 _fresh_compaction_message_copy(message),
             )
             return
-    compressed.append({
-        "role": "user",
-        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
-    })
+    from agent.message_metadata import append_message
+
+    append_message(
+        compressed,
+        {
+            "role": "user",
+            "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+        },
+    )
 
 
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = (
@@ -2396,6 +2451,9 @@ def compress_context(
     _lock_db = getattr(agent, "_session_db", None)
     _lock_sid = agent.session_id or ""
     _lock_holder: Optional[str] = None
+    # Watermark captured at compression start (#75316); None = fall back to
+    # archive-everything (no concurrent-tail preservation this cycle).
+    _commit_watermark: Optional[int] = None
     # Probe whether the lock subsystem is actually available on this
     # SessionDB instance. A process running mismatched module versions can have
     # this call site while its long-lived SessionDB instance predates the lock
@@ -2500,6 +2558,27 @@ def compress_context(
                 _lock_acquired = _try_acquire_lock(
                     _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
                 )
+                if _lock_acquired:
+                    # Watermark (#75316): MAX(id) of active rows at compression
+                    # START. Appends are NOT blocked while the slow provider
+                    # summary runs — any row landing after this point is
+                    # concurrent tail, and archive_and_compact() re-sequences
+                    # it after the compacted set instead of archiving it.
+                    try:
+                        _commit_watermark = _lock_db.get_active_message_watermark(
+                            _lock_sid
+                        )
+                    except Exception as _wm_err:
+                        # Watermark capture is safety-additive: without it the
+                        # commit falls back to archive-everything (historical
+                        # behavior), so failure here must not abort compression.
+                        logger.warning(
+                            "compression watermark capture failed for "
+                            "session=%s (%s) — concurrent appends this cycle "
+                            "will be archived with the snapshot",
+                            _lock_sid, _wm_err,
+                        )
+                        _commit_watermark = None
             except Exception as _lock_err:
                 # The method exists and entered its implementation but failed.
                 # Do not mistake an internal AttributeError or TypeError for
@@ -3185,6 +3264,16 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
+            # Retention parity (#84718): the snapshot below re-injects the
+            # imperative verbatim. If this same boundary pruned skill bodies
+            # to [SKILL_PRUNED: ...] markers, the policy that governed those
+            # tasks is gone — couple a reload instruction to the snapshot so
+            # the imperative never crosses the boundary alone. Appended after
+            # TODO_INJECTION_HEADER, so the stale-snapshot strip removes both
+            # together at the next boundary.
+            _reload_notice = _pruned_skill_reload_notice(compressed)
+            if _reload_notice:
+                todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
             # Fold the snapshot into a trailing REAL user message so
             # compression never introduces a synthetic user/user pair. Any
             # snapshot merged at an earlier boundary is stripped first so
@@ -3357,6 +3446,8 @@ def compress_context(
                         model_config_patch={
                             PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None,
                         },
+                        watermark=_commit_watermark,
+                        lock_holder=_lock_holder,
                     )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
@@ -3392,6 +3483,23 @@ def compress_context(
                         and 0 <= current_idx <= len(messages)
                         else None
                     )
+                    # Foreign-tail ceiling (#75316): the flush below writes OUR
+                    # OWN input transcript to the parent — those rows are
+                    # already represented in the compacted handoff and must
+                    # not be cloned into the child. Everything at or below
+                    # this MAX(id) but above the start-watermark is a foreign
+                    # concurrent append; everything above it is our flush.
+                    try:
+                        _foreign_tail_ceiling = (
+                            agent._session_db.get_active_message_watermark(
+                                agent.session_id
+                            )
+                        )
+                    except Exception:
+                        # Without a trustworthy ceiling the clone could
+                        # duplicate the handoff — fall back to historical
+                        # behavior (no tail preservation this rotation).
+                        _foreign_tail_ceiling = None
                     try:
                         agent._flush_messages_to_session_db(
                             messages,
@@ -3433,6 +3541,12 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
+                        watermark=(
+                            _commit_watermark
+                            if _foreign_tail_ceiling is not None
+                            else None
+                        ),
+                        watermark_ceiling=_foreign_tail_ceiling,
                     )
                     agent.session_id = new_session_id
                     try:

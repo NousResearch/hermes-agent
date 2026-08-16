@@ -541,9 +541,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     setDeleting(true)
 
     try {
-      const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
-        deleteCronJob(pendingDelete.id)
-      )
+      const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () => deleteCronJob(pendingDelete.id))
 
       if (stale) {
         return
@@ -564,7 +562,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   async function handleEditorSave(values: EditorValues) {
     if (editor.mode === 'create') {
-      const { value: created, refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+      const {
+        value: created,
+        refreshError,
+        stale
+      } = await mutateAndRefreshCronJobs(profile, () =>
         createCronJob({
           prompt: values.prompt,
           schedule: values.schedule,
@@ -586,7 +588,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
 
-      const { value: updated, refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+      const {
+        value: updated,
+        refreshError,
+        stale
+      } = await mutateAndRefreshCronJobs(profile, () =>
         updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
       )
 
@@ -612,7 +618,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>) {
     const writableProfile = profileScope === ALL_PROFILES ? 'default' : profileScope
 
-    const { value: job, refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+    const {
+      value: job,
+      refreshError,
+      stale
+    } = await mutateAndRefreshCronJobs(profile, () =>
       instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, writableProfile)
     )
 

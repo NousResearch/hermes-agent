@@ -167,6 +167,10 @@ describe('FloatingPanes (live DOM)', () => {
 
     const before = card()!.style.left
     const toggle = card()!.querySelector('button')!
+    const chevron = () => toggle.querySelector('i')!
+
+    // Expanded: down chevron (fold). Collapsed: up chevron (restore).
+    expect(chevron().className).toContain('codicon-chevron-down')
 
     // The button is inside the drag handle — [data-floating-no-drag] must
     // stop it starting a drag.
@@ -182,6 +186,7 @@ describe('FloatingPanes (live DOM)', () => {
 
     expect(document.querySelector('[data-testid="hud-body"]')).toBeNull()
     expect(card()!.style.height).toBe('')
+    expect(chevron().className).toContain('codicon-chevron-up')
   })
 
   it('renders one card per floating contribution', () => {

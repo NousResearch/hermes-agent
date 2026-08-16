@@ -28,16 +28,39 @@ import { TodoPanel } from './todoPanel.js'
 // Collapse threshold for long system messages (system prompt etc.)
 const SYSTEM_COLLAPSE_CHARS = 400
 
+// `display.timestamps` label — same HH:MM shape the classic CLI's default
+// `display.timestamp_format` ("%H:%M") produces on its message labels, so
+// one config key reads identically across surfaces (#41531).
+export const fmtMsgTimestamp = (createdAt: number | undefined): null | string => {
+  if (typeof createdAt !== 'number' || !Number.isFinite(createdAt) || createdAt <= 0) {
+    return null
+  }
+
+  const date = new Date(createdAt * 1000)
+
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+
+  return `[${hh}:${mm}]`
+}
+
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
   detailsMode = 'collapsed',
   detailsModeCommandOverride = false,
   isStreaming = false,
+  liveDetails = false,
   msg,
   prev,
+  reasoningActive = false,
   sections,
   t,
+  timestamps = false,
   tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
@@ -81,7 +104,9 @@ export const MessageLine = memo(function MessageLine({
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
+          preferExpandedThinking={liveDetails}
           reasoning={thinking}
+          reasoningActive={reasoningActive}
           reasoningAlwaysVisible={msg.isMoaReference}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
@@ -234,6 +259,12 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
+  // `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
+  // assistant rows only — event/trail/system chrome stays unstamped, matching
+  // the classic CLI which stamps its user/assistant labels (#41531).
+  const stamp =
+    timestamps && (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
+
   return (
     <Box
       flexDirection="column"
@@ -245,7 +276,9 @@ export const MessageLine = memo(function MessageLine({
           <ToolTrail
             commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
+            preferExpandedThinking={liveDetails}
             reasoning={thinking}
+            reasoningActive={reasoningActive}
             reasoningTokens={msg.thinkingTokens}
             sections={sections}
             t={t}
@@ -262,6 +295,17 @@ export const MessageLine = memo(function MessageLine({
           </NoSelect>
           <Text color={t.color.muted} dim>
             Response
+          </Text>
+        </Box>
+      )}
+
+      {stamp && (
+        <Box>
+          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
+            <Text> </Text>
+          </NoSelect>
+          <Text color={t.color.muted} dim>
+            {stamp}
           </Text>
         </Box>
       )}
@@ -300,12 +344,16 @@ interface MessageLineProps {
   detailsMode?: DetailsMode
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
+  liveDetails?: boolean
   msg: Msg
   // The block rendered directly above this one. Drives the group-boundary
   // lead gap (see domain/blockLayout.ts::hasLeadGap). Undefined at the top of
   // the transcript or when spacing is irrelevant.
   prev?: Msg
+  reasoningActive?: boolean
   sections?: SectionVisibility
   t: Theme
+  /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
+  timestamps?: boolean
   tools?: ActiveTool[]
 }

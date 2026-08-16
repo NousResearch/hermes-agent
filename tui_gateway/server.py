@@ -2723,13 +2723,7 @@ def _display_session_cwd(session: dict | None) -> str:
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
         session["cwd"] = healed
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    db.update_session_cwd(session.get("session_key", ""), healed)
-        except Exception:
-            logger.debug("failed to persist healed session cwd", exc_info=True)
-        _persist_session_git_meta(session, healed)
+        _persist_session_cwd_and_schedule_git_meta(session, healed)
 
     return healed
 
@@ -2812,14 +2806,7 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     session["cwd_from_settle"] = True
     _register_session_cwd(session)
 
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist settled session cwd", exc_info=True)
-
-    _persist_session_git_meta(session, resolved)
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
     return True
 
 
@@ -2976,6 +2963,14 @@ def _ensure_session_db_row(session: dict) -> None:
             # means the launch/default profile (matches run_agent's convention).
             profile_name=Path(profile_home).name if profile_home else None,
         )
+        # A session can be born hidden (session.create hidden=true, or a
+        # session.set_hidden that arrived before the row existed): apply the
+        # deferred intent now that the row exists, mirroring pending_title.
+        if session.get("pending_hidden"):
+            try:
+                db.set_session_hidden(key, True)
+            except Exception:
+                logger.debug("failed to apply pending hidden flag", exc_info=True)
     except Exception as exc:
         # Disk-full is not a soft failure: if we swallow it here, prompt.submit
         # returns {"status":"streaming"} and the user's message vanishes with
@@ -3084,7 +3079,7 @@ def _session_db(session: dict):
                 db.close()
 
 
-def _persist_session_git_meta(session: dict, cwd: str) -> None:
+def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     """Resolve + persist a session's git branch / repo root WITHOUT blocking.
 
     Branch and root come from ``git`` subprocess probes; running them inline on
@@ -3098,7 +3093,13 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
     probe never delays gateway shutdown.
     """
     session_key = session.get("session_key", "")
-    if not session_key or not cwd:
+    if (
+        not session_key
+        or not cwd
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
         return
     # Snapshot the routing fields now; the live session dict may be gone by the
     # time the thread runs. `_session_db` reopens the profile-correct db inside.
@@ -3112,11 +3113,50 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
                 return
             with _session_db(db_session) as db:
                 if db is not None:
-                    db.update_session_cwd(session_key, cwd, branch, root)
+                    db.publish_session_git_metadata(
+                        session_key,
+                        cwd,
+                        generation,
+                        branch,
+                        root,
+                    )
         except Exception:
             logger.debug("failed to persist session git metadata", exc_info=True)
 
     threading.Thread(target=_run, name="git-meta", daemon=True).start()
+
+
+def _persist_session_cwd_and_schedule_git_meta(
+    session: dict,
+    cwd: str,
+    *,
+    db=None,
+) -> int | None:
+    """Claim a DB-backed probe generation, then start Git enrichment."""
+    try:
+        if db is not None:
+            generation = db.update_session_cwd(
+                session.get("session_key", ""), cwd
+            )
+        else:
+            with _session_db(session) as owner_db:
+                if owner_db is None:
+                    return None
+                generation = owner_db.update_session_cwd(
+                    session.get("session_key", ""), cwd
+                )
+    except Exception:
+        logger.debug("failed to persist session cwd", exc_info=True)
+        return None
+
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+    ):
+        return None
+    _persist_session_git_meta(session, cwd, generation)
+    return generation
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
@@ -3134,14 +3174,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # the terminal wandering must not move the workspace again.
     session["cwd_from_settle"] = False
     _register_session_cwd(session)
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist session cwd", exc_info=True)
-    # Branch/repo-root probes are git subprocesses — capture them off the hot path.
-    _persist_session_git_meta(session, resolved)
+    # The synchronous DB write claims ordering authority; Git subprocesses stay
+    # off the hot path and may publish only for that exact generation.
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -3554,7 +3589,7 @@ def _pet_sig() -> tuple:
     hatch flow rebuilds a sheet, or the scale changes."""
     display = _load_cfg().get("display") or {}
     pet_cfg = display.get("pet") if isinstance(display.get("pet"), dict) else {}
-    if not pet_cfg or not pet_cfg.get("enabled"):
+    if not pet_cfg or not is_truthy_value(pet_cfg.get("enabled"), default=False):
         return ("off",)
     try:
         enabled, pet, scale = _pet_active_selection()
@@ -5415,6 +5450,16 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = (session or {}).get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
+    # Epoch seconds the current turn started, or None when idle. Lets the
+    # desktop preserve the turn-elapsed timer across session switches (cold
+    # resume path) instead of resetting it to 0:00.
+    inflight = (session or {}).get("inflight_turn")
+    turn_started_at = (
+        float(inflight["started_at"])
+        if isinstance(inflight, dict) and inflight.get("started_at")
+        else None
+    )
+
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
         "provider": pending_provider
@@ -5432,6 +5477,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "terminal_backend": _effective_terminal_backend(),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
+        "turn_started_at": turn_started_at,
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "stored_session_id": session_key or "",
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -6129,14 +6175,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     session["cwd_from_settle"] = False
     _register_session_cwd(session)
 
-    with _session_db(session) as db:
-        if db is not None:
-            try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
-            except Exception:
-                logger.debug("failed to persist project workspace cwd", exc_info=True)
-
-    _persist_session_git_meta(session, resolved)
+    _persist_session_cwd_and_schedule_git_meta(session, resolved)
 
     try:
         agent = session.get("agent")
@@ -6941,9 +6980,9 @@ def _init_session(
                 try:
                     _cwd = _sessions[sid]["cwd"]
                     if hasattr(db, "update_session_cwd"):
-                        db.update_session_cwd(key, _cwd)
-                    # git branch/root probes run off the hot path (see _set_session_cwd).
-                    _persist_session_git_meta(_sessions[sid], _cwd)
+                        _persist_session_cwd_and_schedule_git_meta(
+                            _sessions[sid], _cwd, db=db
+                        )
                 except Exception:
                     logger.debug(
                         "failed to persist resumed session cwd", exc_info=True
@@ -7021,35 +7060,33 @@ def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
     )
 
 
-def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
-    """Pre-analyze attached images via vision and prepend descriptions to user text."""
-    import asyncio, json as _json
-    from tools.vision_tools import vision_analyze_tool
+def _build_image_ref_message(user_text: str, image_paths: list[str]) -> str:
+    """Reference attached images by path so the agent analyzes them in-loop.
 
-    prompt = (
-        "Describe everything visible in this image in thorough detail. "
-        "Include any text, code, data, objects, people, layout, colors, "
-        "and any other notable visual information."
-    )
+    This used to pre-analyze every image with the auxiliary vision model
+    *before* the turn was dispatched (``_enrich_with_attached_images``):
+    serial blocking calls on the submit path — 60-90s per large photo —
+    with failures silently swallowed and an interrupt during the window
+    killing the turn with zero API calls (#83291). It also prepended the
+    vision description to the first user message, poisoning session
+    auto-titles (#82339). The CLI never gates turn dispatch on vision
+    like this, which is why the same message was seconds there and
+    minutes on desktop.
 
+    Now the turn starts immediately. The agent examines each image itself
+    with ``vision_analyze`` — its own retries, visible tool progress —
+    exactly how the ``@folder:`` reference path already behaves, which
+    responds in seconds for the same images.
+    """
     parts: list[str] = []
     for path in image_paths:
         p = Path(path)
         if not p.exists():
             continue
-        hint = f"[You can examine it with vision_analyze using image_url: {p}]"
-        try:
-            r = _json.loads(
-                asyncio.run(vision_analyze_tool(image_url=str(p), user_prompt=prompt))
-            )
-            desc = r.get("analysis", "") if r.get("success") else None
-            parts.append(
-                f"[The user attached an image:\n{desc}]\n{hint}"
-                if desc
-                else f"[The user attached an image but analysis failed.]\n{hint}"
-            )
-        except Exception:
-            parts.append(f"[The user attached an image but analysis failed.]\n{hint}")
+        parts.append(
+            f"[The user attached an image: {p.name}]\n"
+            f"[Examine it with the vision_analyze tool using image_url: {p}]"
+        )
 
     text = user_text or ""
     prefix = "\n\n".join(parts)
@@ -7063,8 +7100,8 @@ def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str
     persisting to session history. Uses ``@image:<path>`` directives — the
     format the desktop client (directive-text.tsx / HERMES_DIRECTIVE_RE)
     actually parses and renders as an image — unlike
-    ``_enrich_with_attached_images``, which embeds a vision description and
-    an ``image_url:`` hint meant only for the model and must never be
+    ``_build_image_ref_message``, which embeds an
+    ``image_url:`` hint meant only for the model and must never be
     persisted as-is (it silently breaks image rendering after a full
     restart, and reorders image/text on live session-switch reconciliation).
 
@@ -7397,6 +7434,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        # Persisted authoring time (Unix seconds) for display.timestamps
+        # renderers (#41531). Display-only: never fed back into model context.
+        ts = m.get("timestamp")
+        if isinstance(ts, (int, float)) and ts > 0:
+            msg["timestamp"] = float(ts)
         # Durable row identity, stamped by _rows_to_conversation. The renderer's
         # own message ids are ephemeral (timestamp+index derived, and a
         # different shape for live vs rehydrated vs optimistic rows), so
@@ -8521,6 +8563,12 @@ def _live_session_payload(
         inflight = _inflight_snapshot(session)
         queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
+        inflight_turn = session.get("inflight_turn")
+        turn_started_at = (
+            float(inflight_turn["started_at"])
+            if isinstance(inflight_turn, dict) and inflight_turn.get("started_at")
+            else None
+        )
     # Prefer the persisted display lineage (candidate-inclusive) so this payload
     # matches the eager session.resume + REST transcript. Use the session's
     # profile-aware DB (not launch ``_get_db()``): app-global remote profile
@@ -8540,6 +8588,7 @@ def _live_session_payload(
         "messages": [] if omit_messages else _history_to_messages(history),
         "messages_omitted": omit_messages,
         "running": running,
+        "turn_started_at": turn_started_at,
         "session_id": sid,
         "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
@@ -8729,7 +8778,7 @@ def _pet_active_selection():
     except Exception:
         pet_cfg = {}
 
-    enabled = bool(pet_cfg.get("enabled"))
+    enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
     configured_slug = str(pet_cfg.get("slug", "") or "")
     pet = store.resolve_active_pet(configured_slug) if enabled else None
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
@@ -10274,6 +10323,25 @@ def _run_prompt_submit(
                 agent.clear_interrupt()
             except Exception:
                 pass
+    # Desktop/TUI observability (#86647): this is the ONE INFO record proving
+    # a Desktop/TUI prompt was accepted by THIS process, and it ties together
+    # every id a rotation-mute trace needs — the UI session id, the gateway
+    # session_key, and the agent's live session_id (which compression rotates
+    # independently of the other two). Before this line a Desktop request left
+    # no trace in agent.log at all ("0 platform=desktop" — see #86647), so a
+    # muted window was structurally indistinguishable from a request that
+    # never arrived. No prompt content is logged.
+    _turn_started_monotonic = time.monotonic()
+    logger.info(
+        "tui prompt accepted: ui_session=%s session_key=%s agent_session_id=%s "
+        "kind=%s chars=%s images=%d",
+        sid,
+        session.get("session_key") or "",
+        getattr(agent, "session_id", "") or "",
+        display_kind or "user",
+        len(text) if isinstance(text, str) else "-",
+        len(images),
+    )
     _emit("message.start", sid)
 
     def run():
@@ -10388,7 +10456,9 @@ def _run_prompt_submit(
             # Decide image routing per-turn based on active provider/model.
             # "native" → pass pixels to the main model as OpenAI-style content
             # parts (adapters translate for Anthropic/Gemini/Bedrock/etc.).
-            # "text"   → pre-analyze with vision_analyze and prepend the text.
+            # "text"   → reference the image paths in the message so the agent
+            #            analyzes them in-loop with vision_analyze (never
+            #            blocking the submit path on vision calls — #83291).
             # See agent/image_routing.py for the full decision table.
             run_message: Any = prompt
             if images:
@@ -10432,15 +10502,15 @@ def _run_prompt_submit(
                         if any(p.get("type") == "image_url" for p in _parts):
                             run_message = _parts
                         else:
-                            run_message = _enrich_with_attached_images(prompt, images)
+                            run_message = _build_image_ref_message(prompt, images)
                     except Exception as _img_exc:
                         print(
                             f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
                             file=sys.stderr,
                         )
-                        run_message = _enrich_with_attached_images(prompt, images)
+                        run_message = _build_image_ref_message(prompt, images)
                 else:
-                    run_message = _enrich_with_attached_images(prompt, images)
+                    run_message = _build_image_ref_message(prompt, images)
 
             # Streaming TTS: voice-mode replies are spoken sentence-by-sentence
             # as tokens arrive (CLI parity) instead of after the full turn.
@@ -11034,6 +11104,32 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
+            # Closing bookend of the "tui prompt accepted" record above —
+            # fires on every path (success, returned error, exception,
+            # interrupt), so one accepted prompt always produces exactly one
+            # finished record. agent.session_id is re-read here because
+            # compression may have rotated it mid-turn: an accepted/finished
+            # pair whose agent_session_id changed IS a rotation trace
+            # (#86647). A missing finished record means the turn thread died
+            # without reaching this finally.
+            logger.info(
+                "tui turn finished: ui_session=%s session_key=%s "
+                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs",
+                sid,
+                session.get("session_key") or "",
+                getattr(agent, "session_id", "") or "",
+                (
+                    result.get("interrupted")
+                    and "interrupted"
+                    or result.get("error")
+                    and "error"
+                    or "complete"
+                )
+                if isinstance(result, dict)
+                else ("error" if turn_error_retained else "complete"),
+                turn_error_retained,
+                time.monotonic() - _turn_started_monotonic,
+            )
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).
             _retire_turn_marker(session, marker_key)

@@ -51,5 +51,24 @@ class TestToOpenaiBaseUrl:
             == "https://open.bigmodel.cn/api/coding/paas/v4"
         )
 
+    def test_bigmodel_marker_in_path_does_not_false_positive(self):
+        """Host-anchored matching: 'bigmodel' in the path must not trigger rewrite."""
+        url = "https://gateway.example.com/proxy/bigmodel-fallback/anthropic"
+        assert _to_openai_base_url(url) == url
+
+    def test_zai_marker_in_path_does_not_false_positive(self):
+        url = "https://gateway.example.com/api.z.ai-mirror/anthropic"
+        assert _to_openai_base_url(url) == url
+
+    def test_kimi_coding_host_rewritten(self):
+        assert (
+            _to_openai_base_url("https://api.kimi.com/coding")
+            == "https://api.kimi.com/coding/v1"
+        )
+
+    def test_kimi_marker_in_path_does_not_false_positive(self):
+        url = "https://gateway.example.com/some/api.kimi.com-proxy/coding"
+        assert _to_openai_base_url(url) == url
+
     def test_none(self):
         assert _to_openai_base_url(None) == ""

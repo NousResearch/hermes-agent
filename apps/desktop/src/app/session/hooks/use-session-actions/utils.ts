@@ -139,9 +139,23 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim', 'reactions'] as const
+const COMPARED_FIELDS = [
+  'id',
+  'role',
+  'pending',
+  'error',
+  'hidden',
+  'branchGroupId',
+  'interim',
+  'reactions',
+  'timestamp',
+  'completedAt',
+  // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
+  // must re-render (set once at completion; stable afterwards).
+  'durationS'
+] as const
 
-const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts', 'rowId'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -179,6 +193,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
     return false
   }
 
+  if (aPart.timestamp !== bPart.timestamp || aPart.completedAt !== bPart.completedAt) {
+    return false
+  }
+
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
@@ -202,8 +220,8 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   // audio, data-*), fall back to shallow primitive-key comparison — conservative:
   // if we're not sure, claim not-equal (one extra setMessages is harmless, but
   // skipping an update would break the UI).
-  const aPrimitive = aPart as Record<string, unknown>
-  const bPrimitive = bPart as Record<string, unknown>
+  const aPrimitive = aPart as unknown as Record<string, unknown>
+  const bPrimitive = bPart as unknown as Record<string, unknown>
   const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
   const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
 
@@ -236,6 +254,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.error !== b.error ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
+    a.timestamp !== b.timestamp ||
+    a.completedAt !== b.completedAt ||
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||
@@ -1131,6 +1151,77 @@ export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
   messages
     .map(message => ({ content: chatMessageText(message), role: message.role, source: message }))
     .filter(({ content, role }) => content.trim() && (role === 'assistant' || role === 'user'))
+
+/**
+ * Choose the transcript used to seed an open-chat branch.
+ *
+ * The local renderer can hold a compacted model projection, while the REST
+ * transcript contains the complete display projection. Use the latter for a
+ * whole-chat branch. When branching from a clicked bubble, map that bubble by
+ * durable row id first and by same-role/text ordinal as a legacy fallback; if
+ * it cannot be mapped, keep the local prefix rather than silently choosing a
+ * different point in the conversation.
+ */
+export function selectBranchMessages(
+  localMessages: ChatMessage[],
+  authoritativeMessages: ChatMessage[] | null,
+  messageId?: string
+): BranchMessage[] {
+  const localIndex = messageId ? localMessages.findIndex(message => message.id === messageId) : -1
+
+  if (!authoritativeMessages?.length) {
+    return toBranchMessages(localMessages.slice(0, localIndex >= 0 ? localIndex + 1 : localMessages.length))
+  }
+
+  if (!messageId) {
+    return toBranchMessages(authoritativeMessages)
+  }
+
+  if (localIndex < 0) {
+    return toBranchMessages(localMessages)
+  }
+
+  const target = localMessages[localIndex]
+
+  let authoritativeIndex =
+    target.rowId === undefined
+      ? -1
+      : authoritativeMessages.findIndex(message => message.rowId !== undefined && message.rowId === target.rowId)
+
+  // Strip `@image:` directive lines the same way the persisted→ChatMessage
+  // conversion does (extractImageRefs lifts them into attachmentRefs), so a
+  // local optimistic bubble and its authoritative twin compare equal.
+  const comparableText = (message: ChatMessage) =>
+    textWithoutEmbeddedImages(chatMessageText(message))
+      .replace(/^@image:[^\n]*\n?/gm, '')
+      .trim()
+
+  if (authoritativeIndex < 0) {
+    const targetText = comparableText(target)
+
+    const targetOrdinal = localMessages
+      .slice(0, localIndex + 1)
+      .filter(message => message.role === target.role && comparableText(message) === targetText).length
+
+    let ordinal = 0
+
+    authoritativeIndex = authoritativeMessages.findIndex(message => {
+      if (message.role !== target.role || comparableText(message) !== targetText) {
+        return false
+      }
+
+      ordinal += 1
+
+      return ordinal === targetOrdinal
+    })
+  }
+
+  if (authoritativeIndex < 0) {
+    return toBranchMessages(localMessages.slice(0, localIndex + 1))
+  }
+
+  return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
+}
 
 export function upsertOptimisticSession(
   created: SessionCreateResponse,

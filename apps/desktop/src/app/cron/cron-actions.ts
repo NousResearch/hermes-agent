@@ -18,10 +18,7 @@ export interface CronMutationRefreshResult<T> extends CronTriggerRefreshResult {
   value: T | null
 }
 
-async function refreshForGeneration(
-  profile: string,
-  request: CronJobsRequest
-): Promise<CronTriggerRefreshResult> {
+async function refreshForGeneration(profile: string, request: CronJobsRequest): Promise<CronTriggerRefreshResult> {
   try {
     const jobs = await getCronJobs(profile)
 
@@ -90,9 +87,7 @@ export async function triggerAndRefreshCronJobs(
   jobId: string,
   profile: 'all' | string
 ): Promise<CronTriggerRefreshResult> {
-  const { value: _value, ...result } = await mutateAndRefreshCronJobs(profile, () =>
-    triggerCronJob(jobId)
-  )
+  const { value: _value, ...result } = await mutateAndRefreshCronJobs(profile, () => triggerCronJob(jobId))
 
   return result
 }

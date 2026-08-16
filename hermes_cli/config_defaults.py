@@ -33,6 +33,15 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    "session": {
+        # Per-terminal `hermes -c`: each CLI session drops a breadcrumb file
+        # under $HERMES_HOME/terminal-sessions/<terminal-id>, and a bare
+        # -c/--continue resumes THIS terminal's session (tmux pane, kitty
+        # window, wezterm pane, plain tty, ...) instead of the globally
+        # most-recent one. Set false to restore the old latest-session
+        # behavior everywhere.
+        "terminal_continue": True,
+    },
     "agent": {
         "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -650,6 +659,17 @@ DEFAULT_CONFIG = {
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "tail_mode": "legacy",        # tail retention policy (#87326):
+                                      #   "legacy" — 0.20×window verbatim tail (default)
+                                      #   "lean"   — clamped 2.5%-of-window tail
+                                      #              (10K floor / 25K cap) plus chunked
+                                      #              digests, a mechanical anchor index,
+                                      #              verbatim user messages, and
+                                      #              session_search recovery pointers in
+                                      #              the summary. ~3x fewer retained
+                                      #              tokens after compaction; costs a few
+                                      #              extra summarizer calls at the
+                                      #              compaction boundary.
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing
@@ -1173,6 +1193,13 @@ DEFAULT_CONFIG = {
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
+        # Classic CLI multiline fallbacks beyond Alt+Enter.
+        # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
+        # a newline, a trailing backslash followed by Enter continues the draft,
+        # and supported terminals are asked to report Shift+Enter distinctly.
+        # Set false to restore the legacy c-j submit fallback on unusual POSIX
+        # PTYs whose plain Enter arrives as LF instead of CR.
+        "cli_multiline_shortcuts": True,
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)
@@ -1215,7 +1242,7 @@ DEFAULT_CONFIG = {
         #   "off"     — no watcher messages at all
         "background_process_notifications": "concise",
         "streaming": False,
-        "timestamps": False,      # Show timestamp on user and assistant labels
+        "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
@@ -1813,7 +1840,7 @@ DEFAULT_CONFIG = {
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
                                  # "medium", "low", "minimal", "none" (empty = inherit)
-        "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
+        "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
@@ -2208,8 +2235,9 @@ DEFAULT_CONFIG = {
         # through tools.slash_confirm — native yes/no buttons on Telegram,
         # Discord, and Slack; text fallback elsewhere.  Users click "Always
         # Approve" to silence the prompt permanently; that flips this key to
-        # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
-        # opt out there).
+        # false.  TUI also honors this setting for its /clear, /new, and /reset
+        # modal; HERMES_TUI_NO_CONFIRM=1 force-skips that modal regardless of
+        # the configured value.
         "destructive_slash_confirm": True,
     },
 
@@ -3266,6 +3294,31 @@ DEFAULT_CONFIG = {
         #   True  = always disable the overlay
         #   False = always enable the overlay
         "no_overlay": None,
+        # cua-driver permission mode for this Hermes install.
+        #   standard (default) — cua-driver's own approval boundary. Protected
+        #     operations (e.g. attaching to an existing signed-in browser
+        #     profile) fail closed unless grant_existing_profile is enabled
+        #     below.
+        #   bounded — repeatable automation under a user-reviewed session
+        #     policy manifest (set capability_manifest below). No runtime
+        #     prompts; anything outside the manifest fails closed inside
+        #     cua-driver.
+        # `unrestricted` is intentionally NOT accepted here: it stays bound to
+        # the explicit per-session YOLO toggle so a config line can never
+        # silently bypass approvals.
+        "permission_mode": "standard",
+        # Absolute or ~ path to the reviewed cua-driver session-policy
+        # manifest YAML used when permission_mode is "bounded". See
+        # https://cua.ai/docs/reference/cua-driver/permission-modes
+        "capability_manifest": "",
+        # Pre-authorize existing-profile browser attachment in standard mode
+        # (cua-driver's trusted-launcher `--grant existing-profile`). When
+        # true, the agent can attach to your already-running, signed-in
+        # Chrome/Edge window — exposing that profile's live pages, cookies,
+        # and storage to the browser protocol — without a per-use prompt.
+        # Leave false to keep existing-profile attachment failing closed;
+        # isolated driver-owned profiles work either way.
+        "grant_existing_profile": False,
     },
 
     # =========================================================================
@@ -3402,7 +3455,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 36,
+    "_config_version": 37,
 }
 
 # Optional environment variables that enhance functionality

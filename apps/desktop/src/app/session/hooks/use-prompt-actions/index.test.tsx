@@ -106,6 +106,7 @@ function Harness({
   runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefProp,
   seedMessages,
   seedStreamId,
+  seedTurnStartedAt,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
@@ -130,6 +131,7 @@ function Harness({
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   seedMessages?: unknown[]
   seedStreamId?: null | string
+  seedTurnStartedAt?: null | number
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
@@ -163,6 +165,7 @@ function Harness({
     awaitingResponse: false,
     interrupted: true,
     streamId: seedStreamId ?? null,
+    turnStartedAt: seedTurnStartedAt ?? null,
     interimBoundaryPending: false
   } as never)
 
@@ -1720,6 +1723,59 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
+  it('arms turnStartedAt at submit time instead of waiting for message.start', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const before = Date.now()
+    await handle!.submitText('arm the clock now')
+
+    // The optimistic seed carries the clock — the progress box's timer must
+    // not be hostage to the submit→gateway-accept round trip (which can take
+    // seconds under load). message.start later keeps this value (?? guard).
+    expect(seeds.length).toBeGreaterThan(0)
+    const armed = seeds[0].turnStartedAt
+
+    expect(typeof armed).toBe('number')
+    expect(armed as number).toBeGreaterThanOrEqual(before)
+    expect(armed as number).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('keeps a live turn clock when a second seed races it (?? guard)', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const preArmed = Date.now() - 12_345
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedTurnStartedAt={preArmed}
+      />
+    )
+
+    // Submit into state that already carries a live clock (queued send racing
+    // a running turn): the seed must preserve it, not restart the visible
+    // elapsed time.
+    await handle!.submitText('send racing a live clock')
+
+    expect(seeds.length).toBeGreaterThan(0)
+    expect(seeds[0].turnStartedAt).toBe(preArmed)
+  })
+
   it('flags prompt.submit with interrupted:true after a voice-playback barge', async () => {
     const { markVoicePlaybackInterrupted } = await import('@/lib/voice-playback')
     const requestGateway = vi.fn(async () => ({}) as never)
@@ -2517,6 +2573,7 @@ describe('usePromptActions restoreToMessage', () => {
 describe('usePromptActions file attachment sync', () => {
   afterEach(() => {
     cleanup()
+    $composerAttachments.set([])
     $connection.set(null)
     $currentCwd.set('')
     vi.restoreAllMocks()
@@ -2673,6 +2730,202 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
+  })
+
+  it('merges image staging into the current occurrence without dropping its thumbnail', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.jpg'
+    const thumbnailUrl = 'data:image/jpeg;base64,dGh1bWJuYWls'
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+
+    $composerAttachments.set([
+      {
+        detail: hostPath,
+        id: 'image:photo.jpg',
+        kind: 'image',
+        label: 'photo.jpg',
+        occurrenceId: 'occurrence-photo',
+        path: hostPath,
+        thumbnailUrl
+      }
+    ])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/root/tmp/photo.jpg' } as never
+      }
+
+      if (method === 'prompt.submit') {
+        throw new Error('submit failed after staging')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('describe this')).toBe(false)
+    expect($composerAttachments.get()[0]).toMatchObject({
+      attachedSessionId: RUNTIME_SESSION_ID,
+      occurrenceId: 'occurrence-photo',
+      path: '/root/tmp/photo.jpg',
+      thumbnailUrl
+    })
+  })
+
+  it('preserves a same-path replacement added while a successful main submit is in flight', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.jpg'
+
+    const original: ComposerAttachment = {
+      detail: hostPath,
+      id: 'image:photo.jpg',
+      kind: 'image',
+      label: 'photo.jpg',
+      occurrenceId: 'occurrence-original',
+      path: hostPath
+    }
+
+    const replacement: ComposerAttachment = {
+      ...original,
+      occurrenceId: 'occurrence-replacement'
+    }
+
+    let resolveAttach!: (value: { attached: boolean; path: string }) => void
+
+    const attachResult = new Promise<{ attached: boolean; path: string }>(resolve => {
+      resolveAttach = resolve
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return (await attachResult) as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = handle!.submitTextRaw('describe this')
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    $composerAttachments.set([replacement])
+    resolveAttach({ attached: true, path: '/root/tmp/photo.jpg' })
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect($composerAttachments.get()).toEqual([replacement])
+  })
+
+  it('preserves a newer same-id URL added while a successful main submit is in flight', async () => {
+    const original: ComposerAttachment = {
+      id: 'url:https://example.com',
+      kind: 'url',
+      label: 'old',
+      refText: '@url:https://example.com'
+    }
+
+    const replacement: ComposerAttachment = {
+      ...original,
+      label: 'new'
+    }
+
+    let resolveSubmit!: (value: Record<string, never>) => void
+
+    const submitResult = new Promise<Record<string, never>>(resolve => {
+      resolveSubmit = resolve
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        return (await submitResult) as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = handle!.submitTextRaw('read this')
+    })
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    )
+    $composerAttachments.set([replacement])
+    resolveSubmit({})
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect($composerAttachments.get()).toEqual([replacement])
+  })
+
+  it('removes a successfully staged legacy file from the main composer', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const original = fileAttachment()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await expect(handle!.submitTextRaw('read this')).resolves.toBe(true)
+    expect($composerAttachments.get()).toEqual([])
   })
 
   it('uploads file bytes when the terminal backend is a container (docker)', async () => {

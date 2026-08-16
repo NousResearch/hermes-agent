@@ -1359,7 +1359,7 @@ class AIAgent:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return base_url_host_matches(url, "openai.azure.com")
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
@@ -1514,8 +1514,8 @@ class AIAgent:
     def _is_copilot_url(self) -> bool:
         """Return True when the base URL targets GitHub Copilot or GitHub Models."""
         return (
-            "api.githubcopilot.com" in self._base_url_lower
-            or "models.github.ai" in self._base_url_lower
+            base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_host_matches(self._base_url_lower, "models.github.ai")
         )
 
     def _is_copilot_provider(self) -> bool:
@@ -1819,6 +1819,16 @@ class AIAgent:
         appended to the review prompt — e.g. "save the deploy workflow as a
         skill". The automatic post-turn triggers never set it.
         """
+        # A delegation subagent (``_delegate_depth > 0``) must not run the
+        # automatic post-turn review. Subagents are ephemeral workers already
+        # barred from writing shared MEMORY.md (``DELEGATE_BLOCKED_TOOLS``) and
+        # are spawned with ``skip_memory=True``, so a review here has little to
+        # persist — yet it inherits the subagent's (often premium) delegation
+        # model and replays the whole conversation at premium rates, silently
+        # inflating token cost (#85859). An explicit ``/refine`` (``focus`` set)
+        # is a deliberate user request and still runs.
+        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+            return
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
@@ -3568,12 +3578,21 @@ class AIAgent:
         ``HERMES_FILE_MUTATION_VERIFIER`` env var overrides config.  Exposed
         as a method so tests can patch a single seam without reaching into
         the private ``_turn_failed_file_mutations`` state dict.
+
+        The config lookup is read once per agent and cached (mirroring
+        ``_credits_notices_enabled``) — the footer gate runs at the end of
+        every turn, and a config flip applying on the next session is fine.
+        The env-var override stays authoritative on every call and is never
+        cached, so tests and operators can still flip it at runtime.
         """
         try:
             import os as _os
             env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
             if env is not None:
                 return env.strip().lower() not in {"0", "false", "no", "off"}
+            cached = getattr(self, "_file_mutation_verifier_enabled_cache", None)
+            if cached is not None:
+                return cached
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
@@ -3583,7 +3602,11 @@ class AIAgent:
                 _cfg = {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
-                return bool(_display.get("file_mutation_verifier"))
+                enabled = bool(_display.get("file_mutation_verifier"))
+            else:
+                enabled = True  # safe default: verifier on
+            self._file_mutation_verifier_enabled_cache = enabled
+            return enabled
         except Exception:
             pass
         return True  # safe default: verifier on
@@ -3665,12 +3688,21 @@ class AIAgent:
         True).  ``HERMES_TURN_COMPLETION_EXPLAINER`` env var overrides
         config.  Exposed as a method so tests can patch a single seam,
         mirroring ``_file_mutation_verifier_enabled``.
+
+        The config lookup is read once per agent and cached (mirroring
+        ``_credits_notices_enabled``) — the gate runs at the end of every
+        turn, and a config flip applying on the next session is fine.
+        The env-var override stays authoritative on every call and is never
+        cached, so tests and operators can still flip it at runtime.
         """
         try:
             import os as _os
             env = _os.environ.get("HERMES_TURN_COMPLETION_EXPLAINER")
             if env is not None:
                 return env.strip().lower() not in {"0", "false", "no", "off"}
+            cached = getattr(self, "_turn_completion_explainer_enabled_cache", None)
+            if cached is not None:
+                return cached
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
@@ -3680,7 +3712,11 @@ class AIAgent:
                 _cfg = {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "turn_completion_explainer" in _display:
-                return bool(_display.get("turn_completion_explainer"))
+                enabled = bool(_display.get("turn_completion_explainer"))
+            else:
+                enabled = True  # safe default: explainer on
+            self._turn_completion_explainer_enabled_cache = enabled
+            return enabled
         except Exception:
             pass
         return True  # safe default: explainer on
@@ -4385,6 +4421,10 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="cache_evict")
         except Exception:
             pass
+        try:
+            self._close_cached_request_anthropic_client(reason="cache_evict")
+        except Exception:
+            pass
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -4470,6 +4510,10 @@ class AIAgent:
         # sequential LLM calls; see _create_request_openai_client).
         try:
             self._close_cached_request_openai_client(reason="agent_close")
+        except Exception:
+            pass
+        try:
+            self._close_cached_request_anthropic_client(reason="agent_close")
         except Exception:
             pass
 
@@ -5386,8 +5430,31 @@ class AIAgent:
                 exc,
             )
 
+    def _request_anthropic_client_cache_ref(self) -> dict:
+        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
+        cache = getattr(self, "_request_anthropic_client_cache", None)
+        if cache is None:
+            cache = {"client": None, "key": None, "poisoned": False, "in_use": False}
+            self._request_anthropic_client_cache = cache
+        return cache
+
+    def _request_anthropic_client_key(self) -> tuple:
+        """Cache key covering everything that forces a fresh client: credential
+        rotation, base URL / region changes, timeout changes (model switch),
+        and the 1M-context beta flag."""
+        if getattr(self, "provider", None) == "bedrock":
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            return ("bedrock", region)
+        return (
+            "direct",
+            self._anthropic_api_key,
+            getattr(self, "_anthropic_base_url", None),
+            get_provider_request_timeout(self.provider, self.model),
+            bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+        )
+
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
-        """Build a request-local Anthropic client for one in-flight call.
+        """Build (or reuse) a request-local Anthropic client for one in-flight call.
 
         The shared ``_anthropic_client`` stays the long-lived primary, but the
         stale/interrupt watchdog runs on the poll thread and must never call
@@ -5399,24 +5466,56 @@ class AIAgent:
         worker performs the SDK-level close from its own context — the same
         ownership contract the OpenAI-wire path already uses.
 
+        Also mirrors the OpenAI-wire path's single-slot cache
+        (``_create_request_openai_client``): building ``anthropic.Anthropic``
+        means a fresh httpx pool and TCP+TLS handshake per call, so the client
+        is kept warm across sequential calls whose cache key (credentials,
+        base URL/region, timeout, 1M-beta flag) hasn't changed. ``in_use``
+        keeps a second concurrent call from sharing one pool's close/abort
+        lifecycle — it gets a fresh untracked client instead.
+
         Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh client instead of swapping the shared
-        one.
+        1M-beta drop) but returns a fresh/cached client instead of swapping
+        the shared one.
         """
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
+        key = self._request_anthropic_client_key()
+
+        stale = None
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            cached = cache["client"]
+            if cached is not None and not cache["in_use"]:
+                if (
+                    not cache["poisoned"]
+                    and cache["key"] == key
+                    and not self._is_openai_client_closed(cached)
+                ):
+                    cache["in_use"] = True
+                    return cached
+                # Key changed (credential rotation, base URL/region, timeout,
+                # 1M-beta flip), poisoned by a cross-thread abort, or
+                # externally closed — never reuse; discard and rebuild below.
+                stale = cached
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+        if stale is not None:
+            # Safe to close from this thread: in_use was False, so no worker
+            # thread owns the pool's FDs (same #29507 reasoning as OpenAI).
+            self._close_request_anthropic_client(stale, reason=f"reuse_evict:{reason}")
+
+        if key[0] == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            client = build_anthropic_bedrock_client(region)
+            client = build_anthropic_bedrock_client(key[1])
         else:
             from agent.anthropic_adapter import build_anthropic_client
             client = build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=_drop_1m,
+                drop_context_1m_beta=key[4],
             )
         logger.debug(
             "Anthropic request client created (%s, shared=False) provider=%s model=%s",
@@ -5424,17 +5523,41 @@ class AIAgent:
             getattr(self, "provider", None),
             getattr(self, "model", None),
         )
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is None:
+                cache["client"] = client
+                cache["key"] = key
+                cache["poisoned"] = False
+                cache["in_use"] = True
+            # else: a concurrent call holds the slot — hand this client out
+            # untracked; _close_request_anthropic_client fully closes
+            # untracked clients, preserving the per-request lifecycle.
         return client
 
     def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Owner-thread full close of a request-local Anthropic client.
+        """Owner-thread close of a request-local Anthropic client.
 
-        Force-closes the pool's TCP sockets first (CLOSE-WAIT hygiene, parity
-        with ``_close_openai_client``), then does the graceful SDK close. Safe
+        On a clean finish (``reason`` in ``_REQUEST_CLIENT_REUSE_REASONS``)
+        the pool is kept warm in the cache slot for the next sequential call,
+        mirroring ``_close_request_openai_client``. Any other outcome
+        (error / kill / abort / stale-slot eviction) force-closes the pool's
+        TCP sockets first (CLOSE-WAIT hygiene, parity with
+        ``_close_openai_client``), then does the graceful SDK close. Safe
         because the caller owns the connection.
         """
         if client is None:
             return
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is client:
+                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
+                    cache["in_use"] = False
+                    return
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
         try:
             self._force_close_tcp_sockets(client)
             client.close()
@@ -5453,6 +5576,30 @@ class AIAgent:
                 exc,
             )
 
+    def _close_cached_request_anthropic_client(self, *, reason: str) -> None:
+        """Teardown hook: really close the cached per-request Anthropic client."""
+        with self._openai_client_lock():
+            cache = getattr(self, "_request_anthropic_client_cache", None)
+            client = cache["client"] if cache else None
+            in_use = bool(cache["in_use"]) if cache else False
+            if cache is not None:
+                cache["client"] = None
+                cache["key"] = None
+                cache["poisoned"] = False
+                cache["in_use"] = False
+        if client is None:
+            return
+        if in_use:
+            # A worker thread has this client checked out for an in-flight
+            # request — same #29507 reasoning as the OpenAI teardown hook.
+            self._abort_request_anthropic_client(client, reason=f"{reason}_in_flight")
+            return
+        try:
+            self._force_close_tcp_sockets(client)
+            client.close()
+        except Exception:
+            pass
+
     def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
         """Cross-thread abort for request-local Anthropic clients.
 
@@ -5464,6 +5611,13 @@ class AIAgent:
         """
         if client is None:
             return
+        # A pool whose sockets were shut down from a stranger thread must
+        # never be reused: poison the cache slot so the owner-thread close
+        # discards it and the next create builds a fresh client.
+        with self._openai_client_lock():
+            cache = self._request_anthropic_client_cache_ref()
+            if cache["client"] is client:
+                cache["poisoned"] = True
         try:
             shutdown_count = self._force_close_tcp_sockets(client)
             # Same visibility contract as the OpenAI abort path (#72975):
@@ -6003,7 +6157,7 @@ class AIAgent:
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
         _base = getattr(self, "_anthropic_base_url", "") or ""
-        if "azure.com" in _base:
+        if base_url_host_matches(_base, "azure.com"):
             return False
 
         try:
@@ -7260,19 +7414,20 @@ class AIAgent:
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
+        host = base_url_hostname(base)
         return (
-            "dashscope" in base
-            or "aliyuncs" in base
-            or "minimax" in base
-            or "opencode.ai/zen/" in base
-            or "bigmodel.cn" in base
-            or "xiaomimimo.com" in base
+            "dashscope" in host
+            or base_url_host_matches(base, "aliyuncs.com")
+            or "minimax" in host
+            or (base_url_host_matches(base, "opencode.ai") and "/zen/" in base)
+            or base_url_host_matches(base, "bigmodel.cn")
+            or base_url_host_matches(base, "xiaomimimo.com")
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
             # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
-            or "aiplatform.googleapis.com" in base
+            or base_url_host_matches(base, "aiplatform.googleapis.com")
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
-            or "bedrock-runtime." in base
+            or host.startswith("bedrock-runtime.")
         )
 
     def _is_qwen_portal(self) -> bool:
@@ -7376,9 +7531,9 @@ class AIAgent:
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
-        if "openrouter" not in self._base_url_lower:
+        if not self._is_openrouter_url():
             return False
-        if "api.mistral.ai" in self._base_url_lower:
+        if base_url_host_matches(self._base_url_lower, "api.mistral.ai"):
             return False
 
         model = (self.model or "").lower()
@@ -8384,6 +8539,7 @@ class AIAgent:
                     conversation_history = _turn_db.get_messages_as_conversation(
                         self.session_id,
                         repair_alternation=True,
+                        include_row_ids=True,
                     )
 
                 # Long model/tool/compression turns outlive a fixed TTL. Refresh

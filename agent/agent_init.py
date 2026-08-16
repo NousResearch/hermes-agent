@@ -1987,6 +1987,11 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    # Tail retention mode (compression.tail_mode). "legacy" (default) keeps
+    # the 0.20*window verbatim tail; "lean" switches to the clamped
+    # 2.5%/10K-25K tail with recovery-pointer machinery (#87326). Unknown
+    # values fall back to legacy inside the compressor.
+    compression_tail_mode = str(_compression_cfg.get("tail_mode", "legacy")).strip().lower()
     # Minimum REAL (actionable) user messages guaranteed to survive in the
     # uncompressed tail (compression.min_tail_user_messages).  Default 1
     # preserves current behavior exactly — the existing single-user tail
@@ -2272,7 +2277,11 @@ def init_agent(
     # overrides consistent with them and let provider metadata resolve the
     # active model's window instead.
     if _config_context_length is not None and isinstance(_model_cfg, dict):
-        _configured_default_model = str(_model_cfg.get("default") or "").strip()
+        _default = _model_cfg.get("default")
+        if isinstance(_default, dict):
+            from hermes_cli.config import split_model_config_default
+            _default, _ = split_model_config_default(_default)
+        _configured_default_model = str(_default or "").strip()
         _configured_default_runtime_model = _configured_default_model
         _active_runtime_model = agent.model
         if _configured_default_model:
@@ -2613,6 +2622,7 @@ def init_agent(
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
+            tail_mode=compression_tail_mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

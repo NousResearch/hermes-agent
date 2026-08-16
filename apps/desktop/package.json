@@ -59,6 +59,7 @@
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run --project ui",
     "test:desktop:platforms": "vitest run --project electron",
+    "test:find-in-page-native": "electron electron/find-in-page-native-fixture",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
     "check:test:desktop:platforms": "npm run test:desktop:platforms",

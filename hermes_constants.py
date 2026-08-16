@@ -170,6 +170,16 @@ def get_process_hermes_home() -> Path:
     return _hermes_home_from_env()
 
 
+# Process-level memo for get_default_hermes_root(). The function resolves
+# HERMES_HOME against the native home on every call (~80us of path
+# resolution), and it is called at 31+ sites — every _load_global_auth_store()
+# (per provider row in the /model picker), kanban, backup, gateway, update.
+# Its result depends only on (HERMES_HOME, platform native home), which are
+# compared for free on each call, so the memo is freshness-correct even if a
+# test or plugin mutates HERMES_HOME mid-process.
+_default_hermes_root_memo: "tuple[str, str, Path] | None" = None
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
@@ -187,27 +197,34 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
+    global _default_hermes_root_memo
     native_home = _get_platform_default_hermes_home()
     env_home = os.environ.get("HERMES_HOME", "")
+    if _default_hermes_root_memo is not None:
+        memo_native, memo_env, memo_result = _default_hermes_root_memo
+        if memo_native == str(native_home) and memo_env == env_home:
+            return memo_result
+
     if not env_home:
-        return native_home
-    env_path = Path(env_home)
-    try:
-        env_path.resolve().relative_to(native_home.resolve())
-        # HERMES_HOME is under ~/.hermes (normal or profile mode)
-        return native_home
-    except ValueError:
-        pass
-
-    # Docker / custom deployment.
-    # Check if this is a profile path: <root>/profiles/<name>
-    # If the immediate parent dir is named "profiles", the root is
-    # the grandparent — this covers Docker profiles correctly.
-    if env_path.parent.name == "profiles":
-        return env_path.parent.parent
-
-    # Not a profile path — HERMES_HOME itself is the root
-    return env_path
+        result = native_home
+    else:
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_home.resolve())
+            # HERMES_HOME is under ~/.hermes (normal or profile mode)
+            result = native_home
+        except ValueError:
+            # Docker / custom deployment.
+            # Check if this is a profile path: <root>/profiles/<name>
+            # If the immediate parent dir is named "profiles", the root is
+            # the grandparent — this covers Docker profiles correctly.
+            if env_path.parent.name == "profiles":
+                result = env_path.parent.parent
+            else:
+                # Not a profile path — HERMES_HOME itself is the root
+                result = env_path
+    _default_hermes_root_memo = (str(native_home), env_home, result)
+    return result
 
 
 def get_optional_skills_dir(default: Path | None = None) -> Path:

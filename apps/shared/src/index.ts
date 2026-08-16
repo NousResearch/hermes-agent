@@ -1,4 +1,9 @@
 export {
+  backendScopeKey,
+  backendScopePrefix,
+  LOCAL_CONNECTION_ID
+} from './backend-scope'
+export {
   BILLING_REFUSAL_POLICY,
   type BillingRecovery,
   type BillingRefusalPolicy,

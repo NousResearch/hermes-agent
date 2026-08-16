@@ -827,6 +827,12 @@ export const en: Translations = {
       "Mark this task as blocked? The worker's claim is released.",
     confirmScheduled:
       "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
     completionSummaryRequired:
@@ -864,5 +870,9 @@ export const en: Translations = {
       "Comments reach the worker on its next run or kanban_show() — no need to block the task first.",
     commentHintTitle:
       "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input.",
+    trash: {
+      confirmTitle: "Delete task?",
+      confirmManyTitle: "Delete {n} tasks?",
+    },
   },
 };

@@ -12,7 +12,11 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { approvalReplaySessionId, resolveGatewayEventSessionId, UNSCOPED_STREAM_EVENT_TYPES } from '@/lib/gateway-events'
+import {
+  approvalReplaySessionId,
+  resolveGatewayEventSessionId,
+  UNSCOPED_STREAM_EVENT_TYPES
+} from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -215,19 +219,26 @@ interface GatewayEventDeps {
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
-  appendAssistantDelta: (sessionId: string, delta: string) => void
-  appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
+  appendAssistantDelta: (sessionId: string, delta: string, occurredAt?: number) => void
+  appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean, occurredAt?: number) => void
   completeAssistantMessage: (
     sessionId: string,
     text: string,
     responsePreviewed?: boolean,
-    failure?: { error: string; partial: boolean }
+    failure?: { error: string; partial: boolean },
+    occurredAt?: number
   ) => void
-  failAssistantMessage: (sessionId: string, errorMessage: string) => void
+  failAssistantMessage: (sessionId: string, errorMessage: string, occurredAt?: number) => void
   flushQueuedDeltas: (sessionId?: string) => void
-  finalizeInterimAssistantMessage: (sessionId: string, text: string) => void
+  finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
+  hydrateFromStoredSession: (
+    attempts?: number,
+    storedSessionId?: string | null,
+    runtimeSessionId?: string | null
+  ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
+  scheduleSessionsRefresh: () => void
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
@@ -239,7 +250,8 @@ interface GatewayEventDeps {
     sessionId: string,
     payload: GatewayEventPayload | undefined,
     phase: 'running' | 'complete',
-    sourceEventType?: string
+    sourceEventType?: string,
+    occurredAt?: number
   ) => void
 }
 
@@ -257,8 +269,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     failAssistantMessage,
     flushQueuedDeltas,
     finalizeInterimAssistantMessage,
+    hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,
+    scheduleSessionsRefresh,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,
@@ -305,6 +319,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   return useCallback(
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
+
+      const occurredAt =
+        typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
+          ? payload.timestamp
+          : Date.now() / 1000
+
       const explicitSid = event.session_id || ''
 
       const route = resolveGatewayEventSessionId({
@@ -554,7 +574,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // mutates the per-runtime cache entry, and syncSessionStateToView
         // guards the view publish to the active session, so this is safe.
         if (runningChanged && sessionId) {
-          updateSessionState(
+          // Set when THIS event released a turn that ended without ever
+          // producing an assistant payload, so the catch-up side effects below
+          // run on that edge only. The updater is invoked exactly once,
+          // synchronously, by updateSessionState.
+          let recoveredWithoutPayload = false
+
+          const nextState = updateSessionState(
             sessionId,
             state => {
               const busy = Boolean(payload!.running)
@@ -573,16 +599,49 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                   return state
                 }
 
+                // Prefer the gateway-reported turn_started_at so the timer
+                // survives session switches and session.info heartbeats.
+                const gatewayTurnStartedAt =
+                  typeof payload!.turn_started_at === 'number' && payload!.turn_started_at > 0
+                    ? payload!.turn_started_at * 1000
+                    : null
+
                 return {
                   ...state,
                   busy,
-                  turnStartedAt: state.turnStartedAt ?? Date.now()
+                  // running=true from the backend is turn-live proof, same as
+                  // message.start (e.g. resuming an already-running session
+                  // that never replays its start event).
+                  turnLive: true,
+                  turnStartedAt: state.turnStartedAt ?? gatewayTurnStartedAt ?? Date.now()
                 }
               }
 
-              if (state.awaitingResponse && !state.sawAssistantPayload) {
+              // The turn has not started backend-side yet. submit arms
+              // busy/awaitingResponse optimistically, so a running=false
+              // heartbeat that lands in the gap before the turn spins up is a
+              // pre-start report, not a finished turn — settling on it would
+              // drop the spinner and re-open the send guard mid-flight.
+              // turnLive is stamped only once the backend reports the turn
+              // live (message.start, the running=true edge, or a resumed
+              // in-flight turn) and is cleared by every settle, so false
+              // here is exactly "no turn has been reported running yet".
+              // (turnStartedAt can't discriminate — it is optimistically
+              // seeded at submit so the visible timer starts at Enter.)
+              if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive) {
                 return state
               }
+
+              // Past that gate the turn DID start and the backend now reports it
+              // finished. When no assistant payload ever arrived (gateway crash
+              // mid-stream, provider error before the first delta, agent-build
+              // failure) message.complete never fires, so this is the only event
+              // that can release the session. Bailing here instead left
+              // awaitingResponse/busy latched until app restart (#46517): the
+              // per-session busy flag is authoritative for isTargetSessionBusy,
+              // so submitPrompt and the slash dispatcher silently returned false
+              // and the session accepted no further input.
+              recoveredWithoutPayload = state.awaitingResponse && !state.sawAssistantPayload
 
               return {
                 ...state,
@@ -597,14 +656,34 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 // finalizeInterruptedMessages un-pends kept text and drops
                 // empty placeholders; on the normal path message.complete
                 // already settled everything and this is a no-op.
-                messages: finalizeInterruptedMessages(state.messages, state.streamId),
+                messages: finalizeInterruptedMessages(state.messages, state.streamId, occurredAt),
                 pendingBranchGroup: null,
                 streamId: null,
-                turnStartedAt: null
+                turnStartedAt: null,
+                turnLive: false
               }
             },
             payload?.stored_session_id || undefined
           )
+
+          if (recoveredWithoutPayload) {
+            // Stays unscoped, like the settle above: a background session's
+            // sidebar row has to drop its working dot without the user opening
+            // it. This fires on the recovery edge only — once awaitingResponse
+            // is false the `state.busy === busy` guard above short-circuits
+            // every later heartbeat — so it costs one coalesced refresh per
+            // broken turn, not one per tick.
+            scheduleSessionsRefresh()
+
+            // The transcript catch-up IS scoped. The stream died, but the turn
+            // itself may have completed and been persisted, so refetch stored
+            // history for the session actually on screen; a background session
+            // reads its history when the user opens it, and hydrating every one
+            // of them here would fan a REST call out per idle session.
+            if (isActiveEvent) {
+              void hydrateFromStoredSession(3, nextState.storedSessionId, sessionId)
+            }
+          }
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
@@ -662,6 +741,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           triggerHaptic('streamStart')
         }
 
+        // Submit→accept latency: seedOptimistic armed the clock at Enter; this
+        // event is the backend accepting the turn. Debug-only visibility into
+        // how long the arm actually took (the "no progress box for seconds"
+        // complaint) — reads the pre-update cache, costs nothing when clean.
+        const seededAt = sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt
+
+        if (typeof seededAt === 'number') {
+          console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
+        }
+
         updateSessionState(sessionId, state => {
           // If the user clicked Stop (cancelRun set interrupted=true), don't
           // let a stale message.start from a chained turn (goal follow-up,
@@ -681,16 +770,28 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             sawAssistantPayload: false,
             interrupted: false,
             interimBoundaryPending: false,
-            turnStartedAt: Date.now()
+            // Backend accepted the turn — the no-payload settle gate below may
+            // now treat a running=false heartbeat as a real turn end.
+            turnLive: true,
+            // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
+            // here would hide the submit→accept round trip from the timer.
+            // Backend-originated turns (queue drain elsewhere, goal follow-up)
+            // have no seed and arm here.
+            turnStartedAt: state.turnStartedAt ?? Date.now()
           }
         })
 
         if (isActiveEvent) {
-          setTurnStartedAt(Date.now())
+          // Belt-and-suspenders mirror of the ACTIVE session's per-session
+          // clock (the load-bearing mirror is the view-sync flush in
+          // use-session-state-cache). Mirror the seeded value, not Date.now():
+          // resetting to accept-time here would visibly snap the timer back
+          // after the submit-time seed above already started it.
+          setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
-          appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+          appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
         }
       } else if (event.type === 'message.interim') {
         // The agent emitted interim assistant commentary (text alongside tool
@@ -702,7 +803,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           const text = coerceGatewayText(payload?.text)
 
           if (text) {
-            finalizeInterimAssistantMessage(sessionId, text)
+            finalizeInterimAssistantMessage(sessionId, text, occurredAt)
           }
         }
       } else if (event.type === 'thinking.delta') {
@@ -718,7 +819,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
-          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
+          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), false, occurredAt)
         }
 
         if (isActiveEvent) {
@@ -726,7 +827,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
-          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true)
+          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true, occurredAt)
         }
 
         if (isActiveEvent) {
@@ -748,7 +849,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           if (idx === undefined || idx <= 1) {
             // First reference: clear any stale reasoning left over from
             // before this turn's references start, same as before.
-            appendReasoningDelta(sessionId, text, true)
+            appendReasoningDelta(sessionId, text, true, occurredAt)
           } else {
             // Later references must accumulate, not replace — otherwise
             // each new reference wipes out the ones already shown (#64658).
@@ -760,7 +861,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             // already-complete text, with no concurrent token stream for the
             // reference-gathering phase, so there is no in-flight delta to
             // collide with in the shared queue bucket.
-            appendReasoningDelta(sessionId, text, false)
+            appendReasoningDelta(sessionId, text, false, occurredAt)
             flushQueuedDeltas(sessionId)
           }
         }
@@ -787,7 +888,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ? `◇ MoA refs ${payload.refs_done}/${payload.refs_total} — ${label}\n`
             : `◇ MoA refs ${payload.refs_done}/${payload.refs_total}\n`
 
-          appendReasoningDelta(sessionId, line, payload.refs_done <= 1)
+          appendReasoningDelta(sessionId, line, payload.refs_done <= 1, occurredAt)
           flushQueuedDeltas(sessionId)
         }
 
@@ -799,7 +900,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // aggregator acting). Append a one-line marker; the first
         // moa.reference that follows replaces the whole block.
         if (sessionId && payload?.phase === 'aggregator') {
-          appendReasoningDelta(sessionId, '◇ MoA aggregating…\n', false)
+          appendReasoningDelta(sessionId, '◇ MoA aggregating…\n', false, occurredAt)
           flushQueuedDeltas(sessionId)
         }
 
@@ -841,7 +942,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
             : undefined
 
-        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure)
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
 
         // Structured billing wall forwarded by the gateway (out of credits /
         // payment required) — cache it + raise a billing-specific toast.
@@ -913,7 +1014,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
         if (isActiveEvent) {
           setPetActivity({ reasoning: false, toolRunning: true })
@@ -921,10 +1022,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
           if (isActiveEvent) {
             setPetActivity({ toolRunning: false })
+
+            // A tool can fail without ending the turn when the agent recovers
+            // and continues. Surface that failure as a short pet beat too;
+            // otherwise only turn-level errors ever reach the failed state.
+            if (payload?.error) {
+              flashPetActivity({ error: true })
+            }
           }
 
           // A pending clarify blocks the turn, so the first tool.complete after
@@ -1030,7 +1138,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 name: 'clarify',
                 tool_id: requestId
               },
-              'running'
+              'running',
+              event.type,
+              occurredAt
             )
 
             // The transcript only renders the active session, so a background
@@ -1320,8 +1430,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               {
                 id: `review-summary-${Date.now()}`,
                 role: 'system',
-                parts: [textPart(`review:${text}`)],
-                timestamp: Math.floor(Date.now() / 1000)
+                parts: [textPart(`review:${text}`, occurredAt)],
+                timestamp: occurredAt
               }
             ]
           }))
@@ -1403,7 +1513,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          failAssistantMessage(sessionId, errorMessage, occurredAt)
         }
 
         if (isActiveEvent) {
@@ -1421,10 +1531,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       failAssistantMessage,
       finalizeInterimAssistantMessage,
       flushQueuedDeltas,
+      hydrateFromStoredSession,
       lastCwdInfoSessionRef,
       nativeSubagentSessionsRef,
       queryClient,
       scheduleConfigRefresh,
+      scheduleSessionsRefresh,
       sessionInterrupted,
       sessionStateByRuntimeIdRef,
       updateSessionState,

@@ -4,6 +4,17 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+const setUnreadRemote = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+  Promise.resolve({ ok: true })
+)
+
+vi.mock('@/hermes', () => ({
+  // Opening a session now PATCHes its persisted unread flag (clearUnreadOnOpen
+  // -> markSessionUnread); keep the REST mutation minimal for the suite.
+  setApiRequestProfile: () => {},
+  setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => setUnreadRemote(id, unread, profile)
+}))
+
 import {
   $activeSessionId,
   $connection,
@@ -551,12 +562,15 @@ describe('unread finished sessions', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    setUnreadRemote.mockClear()
   })
 
   afterEach(() => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $sessions.set([])
   })
 
   it('marks a session unread when its turn finishes in the background', () => {
@@ -605,6 +619,114 @@ describe('unread finished sessions', () => {
 
     setSelectedStoredSessionId('s1')
     expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('clears the whole conversation family when any row is opened', () => {
+    $sessions.set([
+      session({ id: 'parent', _lineage_root_id: null }),
+      session({ id: 'child', _lineage_root_id: 'parent' }),
+      session({ id: 'root', _lineage_root_id: null })
+    ])
+    $selectedStoredSessionId.set('other')
+
+    // Parent and child both finish in the background.
+    for (const storedId of ['parent', 'child']) {
+      const working = makeState({ busy: true, storedSessionId: storedId })
+      publishSessionState(`rt-${storedId}`, working)
+      publishSessionState(`rt-${storedId}`, { ...working, busy: false })
+    }
+
+    expect($unreadFinishedSessionIds.get().sort()).toEqual(['child', 'parent'])
+
+    // Opening the CHILD clears the PARENT's dot too (same family).
+    setSelectedStoredSessionId('child')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    $sessions.set([])
+  })
+
+  it('does NOT re-light a completion that settled before the user read it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    // User reads the session at t=2s, then the same completion re-asserts at
+    // t=3s — the re-assert is the same settled state, so it must not re-light.
+    vi.setSystemTime(2_000_000)
+    setSelectedStoredSessionId('s1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    vi.setSystemTime(3_000_000)
+    publishSessionState('rt1', { ...working, busy: false })
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    vi.useRealTimers()
+  })
+
+  it('re-lights when a NEW turn settles after the read baseline', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    // User reads s1 at t=2s, then moves on to another session.
+    vi.setSystemTime(2_000_000)
+    setSelectedStoredSessionId('s1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    setSelectedStoredSessionId('other')
+
+    // A NEW turn starts (busy again) and finishes at t=4s — genuinely new
+    // completion after the read baseline, so it re-lights.
+    vi.setSystemTime(3_000_000)
+    publishSessionState('rt1', { ...working, busy: true })
+
+    vi.setSystemTime(4_000_000)
+    publishSessionState('rt1', { ...working, busy: false })
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    vi.useRealTimers()
+  })
+
+  it('openSession marks read before any focus short-circuit', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    $selectedStoredSessionId.set('s1')
+    $unreadFinishedSessionIds.set(['s1'])
+
+    // A no-op navigate — openSession with 'in-place' against the already
+    // selected session hits focusOpenSession and returns without loading.
+    const { openSession } = await import('@/app/open-session')
+    openSession('s1', () => {}, 'in-place')
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    vi.useRealTimers()
+  })
+
+  it('clears a persisted unread row when the session is opened', async () => {
+    $sessions.set([session({ id: 's1', unread: true })])
+
+    setSelectedStoredSessionId('s1')
+
+    // The optimistic flip is synchronous; the PATCH is fire-and-forget.
+    expect($sessions.get().find(s => s.id === 's1')?.unread).toBe(false)
+
+    await Promise.resolve()
+    expect(setUnreadRemote).toHaveBeenCalledWith('s1', false, undefined)
+  })
+
+  it('does not PATCH a read row when it is opened', async () => {
+    $sessions.set([session({ id: 's1', unread: false })])
+
+    setSelectedStoredSessionId('s1')
+
+    await Promise.resolve()
+    expect(setUnreadRemote).not.toHaveBeenCalled()
   })
 })
 

@@ -319,6 +319,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
+        # Self-heal abandoned git lock files before fetching. A stale
+        # .git/shallow.lock from a crashed fetch makes the fetch fail, the
+        # exception below is swallowed, and stale refs get compared against
+        # HEAD — silently degrading the passive check until a human removes
+        # the lock (git never self-heals these).
+        from hermes_cli.gitlock import clear_stale_git_locks
+
+        clear_stale_git_locks(repo_dir)
+
         # Scope the fetch to the one branch the behind-count compares against.
         # An unscoped ``git fetch origin`` transfers every remote head (~1,400
         # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full

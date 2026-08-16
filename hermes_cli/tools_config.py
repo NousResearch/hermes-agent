@@ -3303,6 +3303,46 @@ def _module_installed(module_name: str) -> bool:
         return False
 
 
+# Python dependencies installed explicitly through ``hermes tools`` are not
+# part of the managed runtime's locked ``all`` sync. A runtime replacement
+# therefore needs a small, static allowlist that can be snapshotted before the
+# old site-packages disappears and restored afterward. Keep these install
+# arguments in sync with the corresponding ``_run_post_setup`` branches.
+_RESTORABLE_PYTHON_TOOL_DEPENDENCIES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "faster_whisper": ("faster_whisper", ("-U", "faster-whisper")),
+    "kittentts": (
+        "kittentts",
+        (
+            "-U",
+            "https://github.com/KittenML/KittenTTS/releases/download/"
+            "0.8.1/kittentts-0.8.1-py3-none-any.whl",
+            "soundfile",
+        ),
+    ),
+    "piper": ("piper", ("-U", "piper-tts")),
+    "ddgs": ("ddgs", ("-U", "ddgs")),
+    "langfuse": ("langfuse", ("langfuse",)),
+}
+
+
+def active_restorable_python_tool_dependencies() -> list[str]:
+    """Return ``hermes tools`` Python dependencies present in this runtime."""
+    return [
+        name
+        for name, (module_name, _install_args) in (
+            _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.items()
+        )
+        if _module_installed(module_name)
+    ]
+
+
+def restorable_python_tool_dependency(
+    name: str,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return the import probe and pip arguments for an allowlisted tool."""
+    return _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.get(name)
+
+
 def _agent_browser_installed() -> bool:
     """True when everything ``_run_post_setup("agent_browser")`` installs is
     present: the agent-browser CLI *and* the Chromium build it drives (or the
@@ -3631,9 +3671,17 @@ def _is_provider_active(
 ) -> bool:
     """Check if a provider entry matches the currently active config."""
     plugin_name = provider.get("image_gen_plugin_name")
-    if plugin_name:
+    if plugin_name and not provider.get("managed_nous_feature"):
+        # Managed (Nous-subscription) entries fall through to the
+        # managed_feature branch below, which also checks use_gateway —
+        # otherwise a managed FAL pick and a direct-key FAL pick would both
+        # report active for the same provider name (video already guards).
         image_cfg = config.get("image_gen", {})
-        return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+        if not (isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name):
+            return False
+        # A direct-key entry is only active when the managed route is OFF —
+        # mirror of the managed branch's use_gateway check.
+        return not is_truthy_value(image_cfg.get("use_gateway"), default=False)
 
     video_plugin_name = provider.get("video_gen_plugin_name")
     if video_plugin_name and not provider.get("managed_nous_feature"):
@@ -3986,14 +4034,22 @@ def _configure_xai_imagine_storage(section_name: str, config: dict) -> None:
         _print_success("  xAI stored public URLs enabled without automatic expiry")
 
 
-def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
-    """Persist a plugin-backed image generation provider selection."""
+def _select_plugin_image_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
+    """Persist a plugin-backed image generation provider selection.
+
+    ``use_gateway`` mirrors :func:`_select_plugin_video_gen_provider`: a
+    provider picked through the Nous-managed flow must keep routing through
+    the gateway. Hardcoding ``False`` here silently flipped Nous-managed FAL
+    picks onto the user's personal FAL_KEY — _write_provider_config sets
+    ``image_gen.use_gateway = True`` for a managed pick, and this function
+    runs AFTER it, so the hardcoded value clobbered the managed flag.
+    """
     img_cfg = config.setdefault("image_gen", {})
     if not isinstance(img_cfg, dict):
         img_cfg = {}
         config["image_gen"] = img_cfg
     img_cfg["provider"] = plugin_name
-    img_cfg["use_gateway"] = False
+    img_cfg["use_gateway"] = use_gateway
     _print_success(f"  image_gen.provider set to: {plugin_name}")
     _configure_imagegen_model_for_plugin(plugin_name, config)
     if plugin_name == "xai":
@@ -4346,7 +4402,7 @@ def _configure_provider(
         # and route model selection to the plugin's own catalog.
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
+            _select_plugin_image_gen_provider(plugin_name, config, use_gateway=bool(managed_feature))
             return
         # Plugin-registered video_gen provider — same flow, different
         # registry.
@@ -4431,7 +4487,7 @@ def _configure_provider(
         _print_success(f"  {provider['name']} configured!")
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
+            _select_plugin_image_gen_provider(plugin_name, config, use_gateway=bool(managed_feature))
             return
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
@@ -4877,7 +4933,7 @@ def _reconfigure_provider(
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
+            _select_plugin_image_gen_provider(plugin_name, config, use_gateway=bool(managed_feature))
             return
         # Plugin-registered video_gen provider — same flow, different registry.
         video_plugin = provider.get("video_gen_plugin_name")
@@ -4919,7 +4975,7 @@ def _reconfigure_provider(
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
-        _select_plugin_image_gen_provider(plugin_name, config)
+        _select_plugin_image_gen_provider(plugin_name, config, use_gateway=bool(managed_feature))
         return
 
     # Plugin-registered video_gen provider — same flow, different registry.

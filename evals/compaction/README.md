@@ -29,6 +29,39 @@ Transcripts are NOT committed (they contain real session data). Point
 `--transcript` at a local file. See `fixtures.py` for the expected shape and
 a synthetic-transcript generator used by CI smoke tests.
 
+## Building transcripts from real sessions (`scripts/`)
+
+Compaction rotations mean a single active session rarely exceeds ~300K
+tokens, but the *lineage* (parent→children chain) carries the full
+uncompacted history. The scripts reconstruct those into eval transcripts:
+
+```bash
+# 1. ALWAYS copy the DB first — never point at the live state.db
+cp ~/.hermes/state.db /tmp/state_copy.db
+
+# 2. Find big lineages (sessions with parent_session_id form chains), then:
+python evals/compaction/scripts/reconstruct_lineage.py \
+    /tmp/state_copy.db <root_session_id> /tmp/lineage.json
+
+# 3. (optional) Replay a 500K prefix through one checkout's compressor and
+#    dump before/after for the HTML viewer:
+python evals/compaction/scripts/replay_lineage.py <checkout> /tmp/lineage.json out.json 500000
+python evals/compaction/scripts/build_html_report.py <runs_dir> report.html
+```
+
+`reconstruct_lineage.py` walks the whole descendant tree chronologically,
+dedupes rotation-copied rows by content hash, strips synthetic compaction
+artifacts (summaries, todo snapshots), and resolves the system prompt through
+the `system_prompts` dedup table (sessions only carry a hash). The HTML
+report renders before/after transcripts side by side with compaction
+artifacts color-coded.
+
+## Region-scoping tripwire
+
+`test_region_scoping.py` plants sentinels in head/middle/tail and asserts the
+summarizer's serialized-turns input carries ONLY the middle (compacted)
+region in both legacy and lean modes. Run it directly or via pytest.
+
 ## Policies
 
 Defined in `policies.py`. Each policy maps to `ContextCompressor` constructor

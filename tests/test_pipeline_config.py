@@ -104,9 +104,10 @@ class TestGetPipelineConfig:
         result = get_pipeline_config()
         # research should be overridden
         assert result["stage_owners"]["research"] == "custom-research-profile"
-        # Other defaults should still be present (2026-08-13, Option A:
-        # stage owners are LEAD profiles — leads execute and re-delegate)
-        assert result["stage_owners"]["prd"] == "kensei"
+        # Other defaults should still be present (prd maps to the spawnable
+        # kensei-review sub-profile, NOT the nonspawnable root 'kensei' —
+        # a nonspawnable owner silently starves the PRD stage)
+        assert result["stage_owners"]["prd"] == "kensei-review"
         assert result["stage_owners"]["spec"] == "octacon"
 
 
@@ -114,9 +115,15 @@ class TestPipelineValidation:
     """Test pipeline config validation in validate_config.py."""
 
     def test_valid_config_passes(self):
-        """Valid pipeline config should produce no warnings."""
+        """Valid pipeline config should produce no warnings.
+
+        The spawnability gate (added 2026-08-15) flags stage_owners values
+        that have no profile dir under HERMES_HOME. Create a 'remii' profile
+        dir so the owner is legitimately spawnable in this temp home.
+        """
         from hermes_cli.validate_config import run_validate_config
         with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "profiles" / "remii").mkdir(parents=True)
             config_path = Path(tmpdir) / "config.yaml"
             config_path.write_text(yaml.dump({
                 "pipeline": {
@@ -128,6 +135,35 @@ class TestPipelineValidation:
             with patch.dict(os.environ, {"HERMES_HOME": tmpdir}):
                 result = run_validate_config(None)
                 assert result == 0
+
+    def test_nonspawnable_stage_owner_errors(self):
+        """A stage_owners value in nonspawnable_profiles must error."""
+        from hermes_cli.validate_config import run_validate_config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(yaml.dump({
+                "kanban": {"nonspawnable_profiles": ["kensei"]},
+                "pipeline": {
+                    "stage_owners": {"prd": "kensei"},
+                }
+            }))
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}):
+                result = run_validate_config(None)
+                assert result == 1
+
+    def test_missing_profile_dir_stage_owner_errors(self):
+        """A stage_owners value with no profile dir must error."""
+        from hermes_cli.validate_config import run_validate_config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.yaml"
+            config_path.write_text(yaml.dump({
+                "pipeline": {
+                    "stage_owners": {"prd": "ghost-profile"},
+                }
+            }))
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}):
+                result = run_validate_config(None)
+                assert result == 1
 
     def test_invalid_max_revise_loops_warns(self):
         """Non-positive max_revise_loops should produce warning."""

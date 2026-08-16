@@ -118,7 +118,7 @@ DEFAULT_CONFIG = {
         # protocol into the worker prompt (see _default_spawn).
         "stage_owners": {
             "research": "remii",
-            "prd": "kensei",
+            "prd": "kensei-review",
             "spec": "octacon",
             "tech_review": "octacon",
             "pr+qa": "quan",

@@ -68,6 +68,35 @@ def run_validate_config(args) -> int:
                 f"  WARNING: pipeline.stage_owners must be a dict, "
                 f"got {type(stage_owners).__name__}."
             )
+        # Validate stage_owners values are spawnable profiles. A nonspawnable
+        # owner (e.g. 'kensei', 'orchestrator') silently starves every task at
+        # that pipeline stage — the dispatcher forces reassignment to the
+        # configured owner each tick, then skips it as nonspawnable with no
+        # alert. This gate makes that failure class impossible to ship.
+        if isinstance(stage_owners, dict):
+            nonspawnable = user_config.get("kanban", {}).get(
+                "nonspawnable_profiles", []
+            )
+            import os
+            from pathlib import Path
+
+            _hm = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+            for _stage, _owner in stage_owners.items():
+                if _owner in nonspawnable:
+                    warnings.append(
+                        f"  ERROR: pipeline.stage_owners['{_stage}'] = "
+                        f"'{_owner}' is in kanban.nonspawnable_profiles and "
+                        f"will block all tasks at that stage. Use a spawnable "
+                        f"sub-profile (e.g. kensei-review)."
+                    )
+                    continue
+                _pdir = Path(_hm) / "profiles" / _owner
+                if not _pdir.is_dir():
+                    warnings.append(
+                        f"  ERROR: pipeline.stage_owners['{_stage}'] = "
+                        f"'{_owner}' has no profile directory at {_pdir}; "
+                        f"tasks at that stage cannot spawn."
+                    )
 
     # Validate council config — panel diversity (D4) + types.
     user_council = user_config.get("council", {})

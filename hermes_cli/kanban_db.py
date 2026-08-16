@@ -13708,6 +13708,15 @@ def _dispatch_once_locked(
                 assignee = _stage_owner
             if not _is_profile_spawnable(assignee):
                 # Stage owner is also nonspawnable — this is a config error.
+                # Surface loudly: a misconfigured stage_owners value silently
+                # starves every task at this pipeline stage (no alert before).
+                _log.error(
+                    "PIPELINE DISPATCH BLOCKED: task %s stage '%s' owner "
+                    "'%s' is not spawnable (in kanban.nonspawnable_profiles "
+                    "or no profile dir). Fix pipeline.stage_owners in "
+                    "config.yaml. Task will not progress until corrected.",
+                    row["id"], stage, assignee,
+                )
                 result.skipped_nonspawnable.append(row["id"])
                 continue
             # Per-tick spawn budget: skip this pipeline spawn (not the whole

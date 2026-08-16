@@ -7,6 +7,8 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -75,6 +77,43 @@ def test_execution_ledger_isolated_across_sequential_profile_contexts(tmp_path):
         assert [row["job_id"] for row in executions.list_executions()] == ["job-a"]
     with use_cron_store(profile_b):
         assert [row["job_id"] for row in executions.list_executions()] == ["job-b"]
+
+    assert (profile_a / "cron" / "executions.db").is_file()
+    assert (profile_b / "cron" / "executions.db").is_file()
+
+
+def test_execution_ledger_isolated_across_interleaved_profile_threads(tmp_path):
+    """Overlapping profile contexts must not redirect another thread's ledger."""
+    import cron.executions as executions
+    from cron.jobs import use_cron_store
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    both_scoped = threading.Barrier(2)
+    a_created = threading.Event()
+    b_created = threading.Event()
+
+    def profile_a_work():
+        with use_cron_store(profile_a):
+            both_scoped.wait(timeout=5)
+            executions.create_execution("job-a", source="builtin")
+            a_created.set()
+            assert b_created.wait(timeout=5)
+            return [row["job_id"] for row in executions.list_executions()]
+
+    def profile_b_work():
+        with use_cron_store(profile_b):
+            both_scoped.wait(timeout=5)
+            assert a_created.wait(timeout=5)
+            executions.create_execution("job-b", source="builtin")
+            b_created.set()
+            return [row["job_id"] for row in executions.list_executions()]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a_result = pool.submit(profile_a_work)
+        b_result = pool.submit(profile_b_work)
+        assert a_result.result(timeout=10) == ["job-a"]
+        assert b_result.result(timeout=10) == ["job-b"]
 
     assert (profile_a / "cron" / "executions.db").is_file()
     assert (profile_b / "cron" / "executions.db").is_file()

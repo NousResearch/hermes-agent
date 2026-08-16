@@ -7,6 +7,8 @@ HERMES_HOME so the real suggestions.json is never touched.
 
 import importlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -158,6 +160,43 @@ def test_suggestions_isolated_across_sequential_profile_contexts(tmp_path):
         assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["a"]
     with use_cron_store(profile_b):
         assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["b"]
+
+    assert (profile_a / "cron" / "suggestions.json").is_file()
+    assert (profile_b / "cron" / "suggestions.json").is_file()
+
+
+def test_suggestions_isolated_across_interleaved_profile_threads(tmp_path):
+    """Overlapping profile contexts must not redirect another thread's suggestions."""
+    import cron.suggestions as suggestions
+    from cron.jobs import use_cron_store
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    both_scoped = threading.Barrier(2)
+    a_added = threading.Event()
+    b_added = threading.Event()
+
+    def profile_a_work():
+        with use_cron_store(profile_a):
+            both_scoped.wait(timeout=5)
+            assert _add(suggestions, key="a", title="Profile A") is not None
+            a_added.set()
+            assert b_added.wait(timeout=5)
+            return [item["dedup_key"] for item in suggestions.load_suggestions()]
+
+    def profile_b_work():
+        with use_cron_store(profile_b):
+            both_scoped.wait(timeout=5)
+            assert a_added.wait(timeout=5)
+            assert _add(suggestions, key="b", title="Profile B") is not None
+            b_added.set()
+            return [item["dedup_key"] for item in suggestions.load_suggestions()]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a_result = pool.submit(profile_a_work)
+        b_result = pool.submit(profile_b_work)
+        assert a_result.result(timeout=10) == ["a"]
+        assert b_result.result(timeout=10) == ["b"]
 
     assert (profile_a / "cron" / "suggestions.json").is_file()
     assert (profile_b / "cron" / "suggestions.json").is_file()

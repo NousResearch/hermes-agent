@@ -2189,8 +2189,8 @@ def _ensure_tui_workspace(tui_dir: Path) -> None:
     sys.exit(1)
 
 
-def _npm_install_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Build a clean environment for installing the pinned UI toolchain."""
+def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a clean environment for the pinned UI toolchain lifecycle."""
     run_env = {**os.environ, **(env or {}), "CI": "1"}
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
@@ -2328,7 +2328,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env=_npm_install_env(with_hermes_node_path()),
+                env=_npm_lifecycle_env(with_hermes_node_path()),
             )
 
         result = _run_tui_install()
@@ -2369,6 +2369,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_npm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -2399,6 +2400,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_npm_lifecycle_env(),
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -5951,7 +5953,7 @@ def _run_npm_install_deterministic(
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
     # install path and nix/lib.nix npm ci hooks.
-    run_env = _npm_install_env(env)
+    run_env = _npm_lifecycle_env(env)
 
     def _run(cmd: list[str]) -> subprocess.CompletedProcess:
         return _run_npm_watching_for_engine_failure(
@@ -6142,7 +6144,7 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("Web UI frontend not built and npm is not available.")
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
-    build_env = with_hermes_node_path()
+    build_env = _npm_lifecycle_env(with_hermes_node_path())
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:
@@ -7729,6 +7731,7 @@ def cmd_gui(args: argparse.Namespace):
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
+            npm_build_env = _npm_lifecycle_env(env)
             if not source_mode:
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
@@ -7738,7 +7741,9 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_result = subprocess.run(
+                [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+            )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -7765,7 +7770,9 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run(
+                        [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                    )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -7776,7 +7783,7 @@ def cmd_gui(args: argparse.Namespace):
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
                 mirror = _ELECTRON_FALLBACK_MIRROR
-                mirror_env = dict(env)
+                mirror_env = dict(npm_build_env)
                 mirror_env["ELECTRON_MIRROR"] = mirror
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)

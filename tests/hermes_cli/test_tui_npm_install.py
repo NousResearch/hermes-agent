@@ -180,3 +180,5 @@ def test_make_tui_argv_omits_workspace_and_scrubs_esbuild_override(
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
     assert "ESBUILD_BINARY_PATH" not in calls[0][1]["env"]
+    assert calls[1][0][0][1:] == ["run", "build"]
+    assert "ESBUILD_BINARY_PATH" not in calls[1][1]["env"]

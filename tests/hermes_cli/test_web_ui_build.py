@@ -147,7 +147,7 @@ class TestBuildWebUISkipsWhenFresh:
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
-             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_build:
             result = _build_web_ui(web_dir)
 
         assert result is True
@@ -157,6 +157,7 @@ class TestBuildWebUISkipsWhenFresh:
         assert args[0][1:] == ["ci", "--include=dev", "--silent", "--prefer-offline"]
         assert kwargs["cwd"] == web_dir
         assert "ESBUILD_BINARY_PATH" not in kwargs["env"]
+        assert "ESBUILD_BINARY_PATH" not in mock_build.call_args.kwargs["env"]
 
     def test_workspace_root_install_names_update_closure(self, tmp_path, monkeypatch):
         """From the workspace root, _build_web_ui must install the SAME

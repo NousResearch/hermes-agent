@@ -74,8 +74,16 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
-def _acp_supported(command: str, args: list[str]) -> bool:
-    """Return True iff ``command`` accepts the ACP args we'd pass.
+# Probe verdicts cached per binary path so repeated prompts against a
+# CLI that supports --acp pay the ~50ms --help cost exactly once per
+# process. Only definitive verdicts (True/False) are cached; an
+# inconclusive probe (binary missing, --help crashed or timed out) is
+# not cached so a CLI installed mid-session is picked up.
+_ACP_PROBE_CACHE: dict[str, bool] = {}
+
+
+def _acp_supported(command: str, args: list[str]) -> bool | None:
+    """Tri-state probe: does ``command`` accept the ACP args we'd pass?
 
     Different CLI versions support different transports. The GitHub
     Copilot CLI (`@github/copilot`, late 2025+) ships with ``--acp``;
@@ -86,21 +94,38 @@ def _acp_supported(command: str, args: list[str]) -> bool:
     ``child_timeout_seconds`` (default 600s) waiting for stdout
     that never arrives.
 
-    This probe fires once per ACP prompt, runs in ~50ms, and
-    short-circuits to a clear error before any spawn happens.
+    Returns:
+      - ``True``  — help text advertises ``--acp``; safe to spawn.
+      - ``False`` — help ran cleanly but ``--acp`` is absent; spawning
+        would hang, so the caller should fast-fail with a clear error.
+      - ``None``  — inconclusive (binary missing, --help failed or
+        timed out). The caller must fall through to the normal spawn
+        path, which surfaces the existing "Could not start Copilot ACP
+        command" error with full context.
+
+    Only probes when ``--acp`` is actually among ``args``: a custom
+    HERMES_COPILOT_ACP_ARGS transport is the operator's business.
     """
+    if "--acp" not in args:
+        return True
+    cached = _ACP_PROBE_CACHE.get(command)
+    if cached is not None:
+        return cached
     try:
         probe = subprocess.run(
             [command, "--help"],
             capture_output=True, text=True, timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
+        return None
     if probe.returncode != 0:
-        return False
+        # --help itself failed; can't tell anything about --acp.
+        return None
     # Match ``--acp`` as a flag in the help text; tolerate spacing and
     # variants like ``[--acp]``.
-    return bool(re.search(r"(?:^|\s)--acp(?:\s|=|\]|\b)", probe.stdout))
+    verdict = bool(re.search(r"(?:^|[\s\[])--acp(?:[\s=\],]|$)", probe.stdout, re.MULTILINE))
+    _ACP_PROBE_CACHE[command] = verdict
+    return verdict
 
 
 def _resolve_home_dir() -> str:
@@ -537,7 +562,10 @@ class CopilotACPClient:
         # ACP loop waits the full ``child_timeout_seconds`` (default 600s)
         # for stdout that never arrives. The probe costs ~50ms and turns
         # a 600s silent hang into a 280ms clear error.
-        if not _acp_supported(self._acp_command, self._acp_args):
+        # ``None`` (inconclusive probe — e.g. binary missing) falls
+        # through to the spawn below, which raises the established
+        # "Could not start Copilot ACP command" error.
+        if _acp_supported(self._acp_command, self._acp_args) is False:
             preview = " ".join(self._acp_args[:3]) if self._acp_args else "(none)"
             raise RuntimeError(
                 f"ACP transport not supported by '{self._acp_command}': "

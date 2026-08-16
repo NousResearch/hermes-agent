@@ -118,6 +118,23 @@ def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
 _SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
 
+def _unreadable_reason(db_path: Path) -> str:
+    """Explain why a database file could not be read, without opening it.
+
+    ``read_header_bytes_preopen`` collapses every ``OSError`` into ``None``,
+    but doctor's job is to say *which* problem it hit. ``stat()`` and
+    ``access()`` answer that from directory metadata alone — neither takes a
+    file descriptor, so neither can cancel the file's POSIX advisory locks.
+    """
+    try:
+        db_path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not os.access(db_path, os.R_OK):
+        return f"permission denied: {db_path}"
+    return "file could not be read"
+
+
 def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     """Return (journal mode, error) from the file header without opening the database.
 
@@ -142,7 +159,7 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     if header is None:
         if has_live_connection(db_path):
             return None, "database is open in this process"
-        return None, "file could not be read"
+        return None, _unreadable_reason(db_path)
     if len(header) == 0:
         return None, "file is empty"
     if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):

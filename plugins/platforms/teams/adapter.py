@@ -6,7 +6,8 @@ Runs an aiohttp webhook server to receive messages from Teams.
 Proactive messaging (send, typing) uses the SDK's App.send() method.
 
 Requires:
-    pip install microsoft-teams-apps aiohttp
+    the ``teams`` extra (auto-installed by the gateway on first start, or
+    manually: ``<hermes-venv>/bin/pip install microsoft-teams-apps aiohttp``)
     TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID env vars
 
 Configuration in config.yaml:
@@ -27,6 +28,7 @@ import html
 import json
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import quote
@@ -417,7 +419,12 @@ class _AiohttpBridgeAdapter:
 
 
 def check_requirements() -> bool:
-    """Return True when all Teams dependencies and credentials are present."""
+    """PASSIVE probe: are the Teams SDK and aiohttp importable right now?
+
+    Never installs anything — credentials are gated separately via
+    ``is_connected``/``validate_config``.  The ACTIVE lazy-installer is
+    ``check_teams_requirements`` (registered as ``ensure_deps_fn``).
+    """
     return TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE
 
 
@@ -642,11 +649,12 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
-# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
-# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
-# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
-# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+# NOTE: ``check_requirements`` is the PASSIVE probe (registry ``check_fn``,
+# status / unit tests) — it must never trigger a pip install.
+# ``check_teams_requirements`` is the ACTIVE lazy-installer, registered as
+# ``ensure_deps_fn``: the registry's ``create_adapter()`` runs it when the
+# passive probe fails, right before the gateway connects Teams (#79812).
+# ``connect()`` re-checks defensively.
 @contextmanager
 def _suppress_third_party_dotenv() -> Iterator[None]:
     """No-op ``dotenv.load_dotenv`` while importing the Teams SDK (#62935).
@@ -768,13 +776,15 @@ class TeamsAdapter(BasePlatformAdapter):
         self._conv_refs: Dict[str, Any] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
-        # then re-check the module globals it rebinds.
+        # Defensive re-check: create_adapter() already ran the installer
+        # (ensure_deps_fn) if deps were missing, but connect() can also be
+        # reached via reconnect paths — re-run to bind SDK globals.
         check_teams_requirements()
         if not TEAMS_SDK_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
+                "microsoft-teams-apps could not be installed. "
+                f"Run: {sys.executable} -m pip install microsoft-teams-apps",
                 retryable=False,
             )
             return False
@@ -782,7 +792,7 @@ class TeamsAdapter(BasePlatformAdapter):
         if not AIOHTTP_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "aiohttp not installed. Run: pip install aiohttp",
+                f"aiohttp not installed. Run: {sys.executable} -m pip install aiohttp",
                 retryable=False,
             )
             return False
@@ -1461,17 +1471,41 @@ def interactive_setup() -> None:
 
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
+def _install_hint() -> str:
+    """Build the Teams install hint from the canonical LAZY_DEPS pins.
+
+    Derived (not hardcoded) so a pin bump in ``tools/lazy_deps.py`` — aiohttp
+    is CVE-pinned, so bumps happen — never leaves this string stale.
+    ``feature_install_command(venv_pip=True)`` targets the actual Hermes
+    venv in every layout and sidesteps Ubuntu 24.04's PEP 668 failure that
+    a bare ``pip install`` hint invites.
+    """
+    try:
+        from tools.lazy_deps import feature_install_command
+        cmd = feature_install_command("platform.teams", venv_pip=True)
+    except Exception:  # pragma: no cover — defensive
+        cmd = None
+    if not cmd:
+        cmd = f"{sys.executable} -m pip install microsoft-teams-apps aiohttp"
+    return f"Teams SDK missing — restart the gateway to auto-install, or run: {cmd}"
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
         name="teams",
         label="Microsoft Teams",
         adapter_factory=lambda cfg: TeamsAdapter(cfg),
+        # PASSIVE probe — deps importable right now?  Never installs, so
+        # status displays / config loading can call it freely.
         check_fn=check_requirements,
+        # ACTIVE lazy-installer — create_adapter() calls this when check_fn
+        # is False, right before the gateway connects Teams (#79812).
+        ensure_deps_fn=check_teams_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
-        install_hint="pip install microsoft-teams-apps aiohttp",
+        install_hint=_install_hint(),
         setup_fn=interactive_setup,
         # Env-driven auto-configuration — seeds PlatformConfig.extra with
         # client_id/secret/tenant + port + home_channel so env-only setups

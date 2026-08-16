@@ -37,6 +37,7 @@ from typing import Mapping, Sequence
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "split_command_line",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -48,6 +49,39 @@ __all__ = [
 
 
 IS_WINDOWS = sys.platform == "win32"
+
+
+def split_command_line(line: str) -> list[str]:
+    """Split a user-supplied command line into tokens, Windows-safely.
+
+    ``shlex.split(line)`` (posix=True) treats every backslash as an escape
+    character, so Windows paths are silently mangled: ``C:\\Users\\me\\out.txt``
+    becomes ``C:Usersmeout.txt`` — no error, just a wrong path that then
+    "succeeds" against a mangled relative filename (#83934) or makes a valid
+    hook script report "not executable" (#78293).
+
+    On Windows this uses ``posix=False``, which preserves backslashes while
+    still honoring double-quoted tokens ("path with spaces"). The trade-off
+    is that posix=False keeps surrounding quotes on quoted tokens, so we
+    strip one layer of matching double quotes per token — that matches how
+    Windows command lines are conventionally parsed. On POSIX the behavior
+    is exactly ``shlex.split``.
+
+    Raises ValueError for unbalanced quotes, same as ``shlex.split``.
+    """
+    if not IS_WINDOWS:
+        import shlex
+
+        return shlex.split(line)
+    import shlex
+
+    tokens = shlex.split(line, posix=False)
+    out: list[str] = []
+    for tok in tokens:
+        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+            tok = tok[1:-1]
+        out.append(tok)
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -349,14 +383,24 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
-def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
-    """Best-effort terminate *proc* and, on Windows, its descendants.
+def kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Best-effort terminate *proc* and its descendants on both platforms.
 
-    ``proc.kill()`` alone only terminates the PATH-resolved ``git`` launcher; a
-    suspended descendant ``git.exe`` can survive holding duplicates of the
+    ``proc.kill()`` alone only terminates the direct child. On Windows a
+    suspended descendant (e.g. ``git.exe``) can survive holding duplicates of the
     captured pipe handles, which keeps the pipes from reaching EOF and leaks two
-    reader threads + the process per fired timeout. ``taskkill /T /F`` takes the
+    reader threads + the process per fired timeout — ``taskkill /T /F`` takes the
     whole tree down so the bounded drain that follows can actually reach EOF.
+    On POSIX the same class exists: killing the launcher leaves descendants
+    (credential helpers, ``git-remote-https``, hook children) running and
+    holding the pipe write ends. Callers spawn the child in its own process
+    group (``process_group=0``, Python ≥3.11), so when — and only
+    when — the child leads its own group (``pgid == pid``), the entire group is
+    signalled with ``os.killpg``. The ownership check means a fallback spawn
+    that shares our group can never cause us to kill unrelated processes.
+    Ported from openai/codex#36793 ("Terminate timed-out Git process trees");
+    generalized for the shell-hook runner via openai/codex#37527
+    ("Terminate timed-out hook process trees").
 
     All failures are swallowed — this is cleanup on an already-failing path, and
     the caller's contract is to fail open. ``kill()`` can raise (access denied,
@@ -365,6 +409,17 @@ def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
     re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
     own timeout cleanup has no reader threads to join.
     """
+    if not IS_WINDOWS:
+        # Group-kill first: verify the child actually leads its own process
+        # group before signalling it, so we never blast a shared group.
+        try:
+            import signal as _signal
+
+            pgid = os.getpgid(proc.pid)
+            if pgid == proc.pid:
+                os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok — inside `if not IS_WINDOWS` gate
+        except Exception:
+            pass
     try:
         proc.kill()
     except OSError:
@@ -408,9 +463,15 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
 
     The normal-path spawn contract mirrors the previous ``run`` call byte-for-byte:
     PIPE/PIPE/DEVNULL, ``text`` with UTF-8 ``errors="replace"`` decoding, and the
-    hidden-window ``creationflags`` on Windows only.
+    hidden-window ``creationflags`` on Windows only. On POSIX the probe is
+    additionally placed in its own process group (``process_group=0``,
+    Python ≥3.11) so timeout cleanup can take down descendants — credential
+    helpers, ``git-remote-https``, hook children — with the launcher instead of
+    orphaning them (see :func:`_kill_git_process_tree`; port of
+    openai/codex#36793). ``process_group`` only changes which group the child
+    belongs to; it does not detach the terminal or alter the fast path.
     """
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     try:
         proc = subprocess.Popen(
             list(argv),
@@ -430,10 +491,14 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
         # Timeout OR any other communicate() failure (torn-down pipe, decode
         # error): terminate the child + descendants and drain bounded. Leaving
         # it running would leak the same suspended-descendant class this guards.
-        _kill_git_process_tree(proc)
+        kill_process_tree(proc)
         try:
             proc.communicate(timeout=1)
         except Exception:
             pass
         return ""
     return stdout.strip() if proc.returncode == 0 else ""
+
+
+# Backward-compat alias — existing call sites/tests import the historical name.
+_kill_git_process_tree = kill_process_tree

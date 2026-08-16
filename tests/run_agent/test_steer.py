@@ -217,10 +217,10 @@ class TestActiveTurnRedirectCheckpoint:
         """The checkpoint machinery is for the MODEL, not the transcript.
 
         Persisting ``[This response was interrupted by a user correction.]``
-        into ``content`` painted raw scaffolding as an assistant bubble on
-        every reload. It must ride in ``api_content`` (replayed to the
-        provider) while ``content`` stays clean, or be marked
-        ``display_kind="hidden"`` when there is no clean form at all.
+        into an assistant row's ``content`` or ``api_content`` painted raw
+        scaffolding as the model's own prior reply (#81841). Scaffold bytes
+        ride only in the *user correction's* ``api_content``; assistant
+        placeholders stay clean (or ``display_kind="hidden"`` when empty).
         """
         from agent.conversation_loop import _apply_active_turn_redirect
 
@@ -248,6 +248,20 @@ class TestActiveTurnRedirectCheckpoint:
                 _apply_active_turn_redirect(agent, messages, "New direction.")
 
                 for msg in messages:
+                    if msg.get("role") == "assistant":
+                        # Scaffold must never live on an assistant row at all
+                        # — content OR api_content (API replay substitutes the
+                        # sidecar back into content).
+                        blob = (
+                            str(msg.get("content") or "")
+                            + str(msg.get("api_content") or "")
+                        )
+                        for marker in scaffolding:
+                            assert marker not in blob, (
+                                f"scaffolding leaked into assistant row "
+                                f"(tail={tail_role}, streamed={bool(streamed)}): "
+                                f"{blob!r}"
+                            )
                     if msg.get("display_kind") == "hidden":
                         continue  # dropped by every transcript surface
                     content = str(msg.get("content", ""))
@@ -259,10 +273,9 @@ class TestActiveTurnRedirectCheckpoint:
 
                 # The user's correction is always shown verbatim.
                 assert messages[-1]["content"] == "New direction."
-                # ...and the model still receives the interrupted context.
-                replayed = "".join(
-                    str(m.get("api_content") or m.get("content", "")) for m in messages
-                )
+                # ...and the model still receives the interrupted context,
+                # but only via the user correction's api_content sidecar.
+                replayed = messages[-1].get("api_content") or ""
                 assert "[This response was interrupted by a user correction.]" in replayed
                 if streamed:
                     assert streamed in replayed
@@ -307,15 +320,46 @@ class TestActiveTurnRedirectCheckpoint:
 
         _apply_active_turn_redirect(agent, messages, "New direction.")
 
-        checkpoint_row = messages[-2]
-        # Nothing was on screen, so the row exists only for the model: hidden
-        # from every transcript surface, scaffolding replayed via the sidecar.
-        assert checkpoint_row["display_kind"] == "hidden"
+        placeholder = messages[-2]
+        correction = messages[-1]
+        # Nothing was on screen: empty hidden placeholder for alternation;
+        # scaffold rides only on the user correction's api_content.
+        assert placeholder["role"] == "assistant"
+        assert placeholder["display_kind"] == "hidden"
+        assert placeholder.get("content") == ""
+        assert not placeholder.get("api_content")
+        assert correction["content"] == "New direction."
         assert (
-            checkpoint_row["api_content"]
-            == "[This response was interrupted by a user correction.]"
+            "[This response was interrupted by a user correction.]"
+            in correction["api_content"]
         )
-        assert messages[-1]["content"] == "New direction."
+
+    def test_tool_tail_scaffold_never_on_assistant_api_content(self):
+        """#81841: mid-tool steer must not put the interrupt scaffold on the
+        placeholder assistant row (that is what the model echoed)."""
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "out", "tool_call_id": "a"},
+        ]
+
+        _apply_active_turn_redirect(agent, messages, "Stop and do X instead.")
+
+        placeholder = messages[-2]
+        correction = messages[-1]
+        assert placeholder["role"] == "assistant"
+        assert placeholder.get("display_kind") == "hidden"
+        assert placeholder.get("content") == ""
+        assert not placeholder.get("api_content")
+        assert correction["role"] == "user"
+        assert correction["content"] == "Stop and do X instead."
+        assert correction["api_content"].startswith(
+            "[Context from the interrupted assistant response]\n"
+            "[This response was interrupted by a user correction.]"
+        )
 
 
 class TestSteerInjection:
@@ -492,6 +536,24 @@ class TestSteerMarkerContract:
         emitted = format_steer_marker("hi")
         assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
         assert STEER_MARKER_OPEN in STEER_CHANNEL_NOTE and STEER_MARKER_CLOSE in STEER_CHANNEL_NOTE
+
+    def test_system_prompt_scopes_freshness_to_unanswered_marker(self):
+        """A delivered marker remains in immutable history on later API calls.
+
+        The prompt contract must distinguish the unanswered tail occurrence
+        from one followed by an assistant response, or a model can interpret a
+        historical steer as newly delivered and repeat non-idempotent work.
+        """
+        from agent.prompt_builder import STEER_CHANNEL_NOTE
+
+        assert "latest tool-result batch" in STEER_CHANNEL_NOTE
+        assert "no later assistant message follows it" in STEER_CHANNEL_NOTE
+        assert "do not treat it as a new message" in STEER_CHANNEL_NOTE
+        assert "repeat completed work" in STEER_CHANNEL_NOTE
+
+        emitted = format_steer_marker("deploy once")
+        assert "delivered once at this position" in emitted
+        assert "not a new delivery when replayed" in emitted
 
     def test_marker_no_longer_uses_the_distrusted_label(self):
         """Regression: the bare 'User guidance:' line read as tool content and

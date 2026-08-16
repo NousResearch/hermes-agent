@@ -211,6 +211,10 @@ _DEFAULT_PAYLOADS = {
         "usage": {"input_tokens": 2048, "output_tokens": 512},
         "assistant_content_chars": 1200,
         "assistant_tool_call_count": 0,
+        # Per-advisor metrics on a MoA turn, None otherwise. MoA returns only
+        # the aggregator's response, so without this an observer cannot see the
+        # fan-out or price it at each advisor's own model.
+        "moa_references": None,
     },
     "subagent_stop": {
         "parent_session_id": "parent-sess",

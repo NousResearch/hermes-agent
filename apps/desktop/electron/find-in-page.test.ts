@@ -7,9 +7,17 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
+import type { BrowserWindow } from 'electron'
 import { describe, test } from 'vitest'
 
-import { formatFoundInPage, installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
+import {
+  formatFoundInPage,
+  installFindShortcut,
+  installFoundInPageForwarder,
+  performFind,
+  performFindAfterIndexingStarted,
+  stopFind
+} from './find-in-page'
 
 // Minimal webContents stub. The Electron.WebContents type is huge, so we
 // model just the slice the helpers touch (`isDestroyed`, `findInPage`,
@@ -23,10 +31,11 @@ interface FakeWebContents {
   }
   isDestroyed: () => boolean
   destroy: () => void
-  findInPage: (query: string, options: { forward: boolean; findNext: boolean }) => void
+  findInPage: (query: string, options: { forward: boolean; findNext: boolean }) => number
   stopFindInPage: (action: 'clearSelection' | 'keepSelection' | 'activateSelection') => void
   send: (channel: string, payload: unknown) => void
   on: typeof EventEmitter.prototype.on
+  once: typeof EventEmitter.prototype.once
   off: typeof EventEmitter.prototype.off
   emit: (event: string | symbol, ...args: unknown[]) => boolean
 }
@@ -51,6 +60,8 @@ function makeFakeWebContents(): FakeWebContents {
     },
     findInPage(query: string, options: { forward: boolean; findNext: boolean }) {
       calls.find.push({ query, options })
+
+      return 17
     },
     stopFindInPage(action: 'clearSelection' | 'keepSelection' | 'activateSelection') {
       calls.stop.push(action)
@@ -59,6 +70,7 @@ function makeFakeWebContents(): FakeWebContents {
       calls.send.push({ channel, payload })
     },
     on: emitter.on.bind(emitter),
+    once: emitter.once.bind(emitter),
     off: emitter.off.bind(emitter),
     emit: emitter.emit.bind(emitter)
   }
@@ -133,6 +145,39 @@ describe('performFind', () => {
     wc.destroy()
     performFind(asWC(wc), 'q', null)
     assert.equal(wc.calls.find.length, 0)
+  })
+})
+
+describe('performFindAfterIndexingStarted', () => {
+  test('resolves only after the matching request emits its first result', async () => {
+    const wc = makeFakeWebContents()
+    let resolved = false
+
+    const pending = performFindAfterIndexingStarted(asWC(wc), 'needle', {
+      forward: true,
+      findNext: false
+    }).then(() => {
+      resolved = true
+    })
+
+    await Promise.resolve()
+    assert.equal(resolved, false)
+
+    wc.emit('found-in-page', {}, { requestId: 9, matches: 1 })
+    await Promise.resolve()
+    assert.equal(resolved, false)
+
+    wc.emit('found-in-page', {}, { requestId: 17, matches: 1 })
+    await pending
+    assert.equal(resolved, true)
+  })
+
+  test('resolves safely if the webContents is destroyed before a result', async () => {
+    const wc = makeFakeWebContents()
+    const pending = performFindAfterIndexingStarted(asWC(wc), 'needle', null)
+
+    wc.destroy()
+    await pending
   })
 })
 
@@ -218,5 +263,212 @@ describe('installFoundInPageForwarder', () => {
       { channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 1, count: 1 } }
     ])
     assert.equal(wcB.calls.send.length, 0, 'wcB must not receive wcA results')
+  })
+})
+
+describe('installFindShortcut', () => {
+  // Minimal BrowserWindow stub: only `webContents` is touched.
+  function makeFakeWindow(wc: FakeWebContents) {
+    return { webContents: asWC(wc) } as unknown as BrowserWindow
+  }
+
+  test('sends hermes:open-find-bar on Ctrl+F (Linux/Windows) and prevents default', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win)
+
+    // Ctrl+F on Linux/Windows (no meta, no alt, no shift).
+    const result = wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
+
+    // The listener calls preventDefault on the event; the fake's emit returns
+    // truthy because the event fired — what matters is the side effects.
+    void result
+
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
+
+    uninstall()
+  })
+
+  // macOS branch: inject `isMac: () => true` so we exercise the REAL
+  // `meta` (Cmd) path — previously untested, because `process.platform` is
+  // baked at import time and the old "Cmd+F" case actually sent Ctrl.
+  test('sends hermes:open-find-bar on Cmd+F (meta) on macOS and prevents default', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win, () => true)
+
+    // Cmd+F on macOS: meta held, no control/alt/shift.
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: false,
+        meta: true,
+        alt: false,
+        shift: false
+      }
+    )
+
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
+
+    uninstall()
+  })
+
+  // The design intentionally accepts literal Ctrl on macOS too (dual-channel)
+  // so a non-macOS layout still works. Pin that behavior so the width of the
+  // chord doesn't silently drift.
+  test('accepts literal Ctrl+F on macOS (dual-channel with Cmd)', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win, () => true)
+
+    // Ctrl+F with no meta on macOS still opens the FindBar.
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'F',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
+
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
+
+    uninstall()
+  })
+
+  // Cross-check: a bare Ctrl+F WITHOUT meta must NOT open on Linux/Windows,
+  // where only `control` counts (the macOS `meta || control` widening must not
+  // leak across the platform boundary).
+  test('does NOT fire for Ctrl+F with meta only on Linux/Windows', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win, () => false)
+
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: false,
+        meta: true,
+        alt: false,
+        shift: false
+      }
+    )
+
+    assert.equal(wc.calls.send.length, 0, 'meta (Cmd) is not a valid chord on non-macOS')
+
+    uninstall()
+  })
+
+  test('does NOT fire for plain F without Ctrl/Cmd', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win)
+
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: false,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
+
+    assert.equal(wc.calls.send.length, 0, 'plain F must not open the FindBar')
+
+    uninstall()
+  })
+
+  test('does NOT fire for Ctrl+Shift+F (different chord)', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win)
+
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: true
+      }
+    )
+
+    assert.equal(wc.calls.send.length, 0, 'Ctrl+Shift+F is reserved (session.focusSearch)')
+
+    uninstall()
+  })
+
+  test('does NOT fire for Ctrl+F with Alt held (combo change)', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win)
+
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: true,
+        shift: false
+      }
+    )
+
+    assert.equal(wc.calls.send.length, 0)
+
+    uninstall()
+  })
+
+  test('uninstall detaches the listener', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win)
+    uninstall()
+
+    wc.emit(
+      'before-input-event',
+      {},
+      {
+        key: 'f',
+        control: true,
+        meta: false,
+        alt: false,
+        shift: false
+      }
+    )
+
+    assert.equal(wc.calls.send.length, 0, 'listener must be detached after uninstall()')
+  })
+
+  test('is a no-op on a destroyed webContents', () => {
+    const wc = makeFakeWebContents()
+    wc.destroy()
+    const win = makeFakeWindow(wc)
+    // Should not throw — uninstall is the no-op fn returned in this branch.
+    const uninstall = installFindShortcut(win)
+    assert.doesNotThrow(() => uninstall())
   })
 })

@@ -114,7 +114,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             is_provider_enabled,
             load_config,
         )
-        from hermes_cli.models import fetch_api_models
+        from hermes_cli.models import cached_fetch_api_models
         from hermes_cli.providers import custom_provider_slug
     except ImportError:
         return []
@@ -176,7 +176,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             discover = discover.lower() not in {"false", "no", "0"}
         if discover and api_key:
             try:
-                live = fetch_api_models(
+                live = cached_fetch_api_models(
                     api_key, base_url, api_mode=entry.get("api_mode")
                 )
             except Exception:
@@ -1904,6 +1904,17 @@ class HermesACPAgent(acp.Agent):
             # never leaks one session's id into the next session's tools.
             previous_session_id = os.environ.get("HERMES_SESSION_ID")
             os.environ["HERMES_SESSION_ID"] = session_id
+            # Auto-titling fires inside the turn prologue now; give the agent
+            # this session's notifier so a new title reaches the client as a
+            # session-info update instead of waiting for the next one.
+            def _notify_title_update(_title: str, _source: str) -> None:
+                if conn:
+                    loop.call_soon_threadsafe(
+                        asyncio.create_task,
+                        self._send_session_info_update(session_id),
+                    )
+
+            agent._on_session_title = _notify_title_update
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -2001,43 +2012,6 @@ class HermesACPAgent(acp.Agent):
         suppress_interrupt_response = interrupted and final_response.startswith(
             INTERRUPT_WAITING_FOR_MODEL_PREFIX
         )
-        if final_response and not suppress_interrupt_response:
-            try:
-                from agent.title_generator import maybe_auto_title
-
-                def _notify_title_update(_title: str) -> None:
-                    if conn:
-                        loop.call_soon_threadsafe(
-                            asyncio.create_task,
-                            self._send_session_info_update(session_id),
-                        )
-
-                # Snapshot the runtime identity; the validator lets the
-                # background titler skip its LLM call if the session's model
-                # changed before it fires (#19027).
-                _title_model = getattr(state.agent, "model", None)
-                _title_provider = getattr(state.agent, "provider", None)
-                maybe_auto_title(
-                    self.session_manager._get_db(),
-                    session_id,
-                    user_text,
-                    final_response,
-                    state.history,
-                    main_runtime={
-                        "model": getattr(state.agent, "model", None),
-                        "provider": getattr(state.agent, "provider", None),
-                        "base_url": getattr(state.agent, "base_url", None),
-                        "api_key": getattr(state.agent, "api_key", None),
-                        "api_mode": getattr(state.agent, "api_mode", None),
-                    },
-                    runtime_validator=lambda: (
-                        getattr(state.agent, "model", None) == _title_model
-                        and getattr(state.agent, "provider", None) == _title_provider
-                    ),
-                    title_callback=_notify_title_update,
-                )
-            except Exception:
-                logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
         if (
             final_response
             and conn

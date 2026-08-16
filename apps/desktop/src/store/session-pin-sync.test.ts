@@ -7,13 +7,16 @@ const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string) => Pr
 )
 
 vi.mock('@/hermes', () => ({
+  // The layout store reaches the profile store, which sets the request profile
+  // at import time; this suite only cares about the pin call.
+  setApiRequestProfile: () => {},
   setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string) => patch(id, pinned, profile)
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $sessions } from '@/store/session'
 
-import { watchSessionPins } from './session-pin-sync'
+import { resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -30,6 +33,10 @@ beforeAll(() => {
 beforeEach(() => {
   $sessions.set([])
   $pinnedSessionIds.set([])
+  // The mirror/pending/unconfirmed maps are module-global, so one test's
+  // bookkeeping would otherwise suppress the next test's PATCH (or fence out
+  // its page). Same reset the gateway switch uses.
+  resetSessionPinMirror()
   patch.mockClear()
 })
 
@@ -198,14 +205,89 @@ describe('watchSessionPins remote pull', () => {
 
     expect($pinnedSessionIds.get()).toContain('race')
 
-    // Once the write is acked, later server truth is honoured again.
     settle({ ok: true })
     await flush()
     await flush()
 
-    $sessions.set([row('race', { pinned: false }), row('other')])
+    expect($pinnedSessionIds.get()).toContain('race')
+  })
+
+  it('still ignores a pre-write page that lands AFTER the ack (#76919)', async () => {
+    // The ack is not proof: a list request issued before the PATCH is slower
+    // than the PATCH itself, so it can arrive afterwards still carrying the
+    // old value. Reverting on it un-pins the session AND pushes the wrong
+    // value back to the server, making the mistake durable.
+    $sessions.set([row('acked')])
+    $pinnedSessionIds.set(['acked'])
+    await flush()
+    await flush()
+    expect(patch).toHaveBeenCalledWith('acked', true, undefined)
+    patch.mockClear()
+
+    // Post-ack, but this page predates the write.
+    $sessions.set([row('acked', { pinned: false })])
     await flush()
 
-    expect($pinnedSessionIds.get()).not.toContain('race')
+    expect($pinnedSessionIds.get()).toContain('acked')
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('releases the guard once a page confirms the written value', async () => {
+    $sessions.set([row('confirmed')])
+    $pinnedSessionIds.set(['confirmed'])
+    await flush()
+    await flush()
+
+    // The server catches up and echoes our value back.
+    $sessions.set([row('confirmed', { pinned: true })])
+    await flush()
+    patch.mockClear()
+
+    // With the write confirmed, a genuine remote unpin is authoritative again.
+    $sessions.set([row('confirmed', { pinned: false })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('confirmed')
+  })
+
+  it('stops fencing once the guard cooldown expires', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $sessions.set([row('stale')])
+      $pinnedSessionIds.set(['stale'])
+      await flush()
+      await flush()
+
+      // No page ever confirms the write. The guard must not fence forever —
+      // after the cooldown the server's answer wins again.
+      vi.advanceTimersByTime(11_000)
+
+      $sessions.set([row('stale', { pinned: false })])
+      await flush()
+
+      expect($pinnedSessionIds.get()).not.toContain('stale')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the pin and retries when the write itself fails', async () => {
+    patch.mockImplementationOnce(() => Promise.reject(new Error('offline')))
+
+    $sessions.set([row('failed')])
+    $pinnedSessionIds.set(['failed'])
+    await flush()
+    await flush()
+    patch.mockClear()
+
+    // The PATCH never landed, so the server legitimately still says unpinned —
+    // but that's OUR undelivered intent, not a remote decision. The pin stays
+    // and the next reconcile retries it rather than silently dropping it.
+    $sessions.set([row('failed', { pinned: false })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('failed')
+    expect(patch).toHaveBeenCalledWith('failed', true, undefined)
   })
 })

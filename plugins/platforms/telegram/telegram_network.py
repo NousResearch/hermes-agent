@@ -71,6 +71,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._primary_lock = asyncio.Lock()
+        self._primary_closed = False
         # Built on demand and discarded on failure — see _reset_fallback.
         self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
         self._fallback_lock = asyncio.Lock()
@@ -84,6 +86,18 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
                 self._fallbacks[ip] = transport
             return transport
+
+    async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
+        # Retryable primary failures can leave half-closed sockets in the pool;
+        # replace and close the failed generation before trying fallback.
+        async with self._primary_lock:
+            if self._primary_closed or transport is not self._primary:
+                return
+            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+        try:
+            await transport.aclose()
+        except Exception as exc:
+            logger.debug("[Telegram] Error closing primary transport: %s", exc)
 
     async def _reset_fallback(self, ip: str) -> None:
         """Discard a failed fallback pool so its dead sockets are released.
@@ -142,6 +156,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                                 ip,
                             )
                 if ip is None:
+                    await self._reset_primary(transport)
                     logger.warning(
                         "[Telegram] Primary api.telegram.org connection failed (%s); trying fallback IPs %s",
                         exc,
@@ -157,7 +172,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         raise last_error
 
     async def aclose(self) -> None:
-        await self._primary.aclose()
+        async with self._primary_lock:
+            self._primary_closed = True
+            primary = self._primary
+        await primary.aclose()
         async with self._fallback_lock:
             transports = list(self._fallbacks.values())
             self._fallbacks.clear()

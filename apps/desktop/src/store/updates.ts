@@ -8,6 +8,7 @@ import { atom } from 'nanostores'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
+  DesktopUpdateBlocker,
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
@@ -29,6 +30,8 @@ export interface UpdateApplyState {
   /** When the stage is 'manual': the exact command the user should run
    *  (CLI install with no staged updater). */
   command: string | null
+  /** Structured update blockers used by the safe close-and-update confirmation. */
+  blockers?: readonly DesktopUpdateBlocker[] | null
   log: readonly { stage: DesktopUpdateStage; message: string; at: number }[]
 }
 
@@ -94,7 +97,9 @@ function isUpdateToastSnoozed(): boolean {
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
-const REQUIRED_BACKEND_CONTRACT = 5
+// v6: requires key-addressed plugins.manage rows (keyless rows render
+//     read-only in Settings → Plugins).
+const REQUIRED_BACKEND_CONTRACT = 6
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
@@ -204,7 +209,11 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     return
   }
 
-  if ((status.behind ?? 0) <= 0) {
+  const behind = typeof status.behind === 'number' ? status.behind : null
+
+  // behind === null means "update available, exact count unknown" (shallow
+  // clone). That still deserves the toast — just with count-free copy.
+  if ((behind ?? 0) <= 0 && !status.updateAvailable) {
     return
   }
 
@@ -215,8 +224,6 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   if ($updateApply.get().applying) {
     return
   }
-
-  const behind = status.behind ?? 0
 
   notify({
     action: {
@@ -230,7 +237,10 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     icon: 'gift',
     id: UPDATE_TOAST_ID,
     kind: 'info',
-    message: translateNow('notifications.updateReadyMessage', behind),
+    message:
+      behind !== null && behind > 0
+        ? translateNow('notifications.updateReadyMessage', behind)
+        : translateNow('notifications.updateReadyMessageUnknown'),
     onDismiss: () => snoozeUpdateToast(),
     title: translateNow('notifications.updateReadyTitle')
   })
@@ -473,7 +483,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
           applying: false,
           stage: 'error',
           error: result?.error ?? 'apply-failed',
-          message: result?.message ?? translateNow('updates.errorBody')
+          message: result?.message ?? translateNow('updates.errorBody'),
+          blockers: result?.blockers ?? null
         })
       }
     }
@@ -487,24 +498,9 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 }
 
-const BACKEND_RETURN_POLL_MS = 1500
-const BACKEND_RETURN_MAX_ATTEMPTS = 40
-
-async function waitForBackendReturn(): Promise<boolean> {
-  for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
-    await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
-
-    try {
-      await checkHermesUpdate()
-
-      return true
-    } catch {
-      continue
-    }
-  }
-
-  return false
-}
+const BACKEND_ACTION_POLL_MS = 1500
+const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
+const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
 function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   if (returned) {
@@ -547,7 +543,32 @@ function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionSt
   })
 }
 
-export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+function completedAfterRestart(
+  status: Awaited<ReturnType<typeof getActionStatus>>,
+  actionId: string | undefined
+): boolean {
+  return !!actionId && status.lines.some(line => line === `=== hermes-update completed ${actionId} ===`)
+}
+
+function legacyBackendReachedTarget(
+  status: BackendUpdateCheckResponse,
+  targetSha: string | undefined,
+  previousVersion: string | undefined
+): boolean {
+  if (status.behind === 0) {
+    return true
+  }
+
+  if (previousVersion && status.current_version !== previousVersion) {
+    return true
+  }
+
+  return !!targetSha && !!status.commits?.length && !status.commits.some(commit => commit.sha === targetSha)
+}
+
+let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
+
+async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
@@ -557,6 +578,13 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   })
 
   try {
+    const previousStatus = $backendUpdateStatus.get()
+    const requestedTargetSha = previousStatus?.commits?.at(0)?.sha
+
+    const previousVersion = previousStatus?.targetSha?.startsWith('backend:')
+      ? previousStatus.targetSha.slice('backend:'.length)
+      : undefined
+
     const started = await updateHermes()
 
     if (!started.ok) {
@@ -575,41 +603,67 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     })
 
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
+    // Backups, dependency repair, and builds can legitimately take several
+    // minutes. Keep the generous cap only as a guard against a stuck action.
+    const actionDeadline = Date.now() + BACKEND_ACTION_MAX_MS
+    let deadline = actionDeadline
+    let reconnecting = false
 
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
+    while (Date.now() < deadline) {
+      await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_ACTION_POLL_MS))
 
       try {
-        last = await getActionStatus(started.name, 200)
+        last = await getActionStatus(started.name, 2000)
         ingestBackendActionStatus(last)
       } catch {
-        // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
-        $backendUpdateApply.set({
-          ...$backendUpdateApply.get(),
-          applying: true,
-          stage: 'restart',
-          message: translateNow('updates.applyStatus.restarting')
-        })
+        if (!reconnecting) {
+          reconnecting = true
+          deadline = Date.now() + BACKEND_RETURN_MAX_MS
+          $backendUpdateApply.set({
+            ...$backendUpdateApply.get(),
+            applying: true,
+            stage: 'restart',
+            message: translateNow('updates.applyStatus.restarting')
+          })
+        }
 
-        return finishBackendApply(await waitForBackendReturn())
+        continue
       }
 
-      if (last && !last.running) {
+      if (last.running) {
+        if (reconnecting) {
+          reconnecting = false
+          deadline = actionDeadline
+          $backendUpdateApply.set({
+            ...$backendUpdateApply.get(),
+            applying: true,
+            stage: 'pull',
+            message: translateNow('updates.applyStatus.pulling')
+          })
+        }
+
+        continue
+      }
+
+      if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
+        return finishBackendApply(true)
+      }
+
+      if (!started.action_id && last.exit_code === null) {
+        try {
+          const status = await checkHermesUpdate(true)
+
+          if (legacyBackendReachedTarget(status, requestedTargetSha, previousVersion)) {
+            return finishBackendApply(true)
+          }
+        } catch {
+          continue
+        }
+      }
+
+      if (last.exit_code !== null) {
         break
       }
-    }
-
-    const ok = !!last && (last.exit_code ?? 1) === 0
-
-    if (ok) {
-      $backendUpdateApply.set({
-        ...$backendUpdateApply.get(),
-        applying: true,
-        stage: 'restart',
-        message: translateNow('updates.applyStatus.restarting')
-      })
-
-      return finishBackendApply(await waitForBackendReturn())
     }
 
     $backendUpdateApply.set({
@@ -633,6 +687,18 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     return { ok: false, error: 'apply-failed', message }
   }
+}
+
+export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+  if (backendUpdateInFlight) {
+    return backendUpdateInFlight
+  }
+
+  backendUpdateInFlight = runBackendUpdate().finally(() => {
+    backendUpdateInFlight = null
+  })
+
+  return backendUpdateInFlight
 }
 
 function ingestProgress(payload: DesktopUpdateProgress): void {

@@ -116,14 +116,12 @@ def build_exporter(config: Dict[str, Any]):
 
 
 def _resource_attributes(config: Dict[str, Any]) -> Dict[str, str]:
-    from agent.monitoring.gateway_health import _safe_instance_id
-    from agent.monitoring.policy import ensure_install_id
+    # Lazy import: gateway_health_export imports this module back (for
+    # start_streaming), so the dependency must resolve at call time, not
+    # at module load, to avoid a circular import.
+    from agent.monitoring.gateway_health_export import _runtime_resource_attributes
 
-    return {
-        "service.name": "hermes-gateway",
-        "service.instance.id": _safe_instance_id(ensure_install_id(config)),
-        "telemetry.scope": "gateway_monitoring",
-    }
+    return _runtime_resource_attributes(config, telemetry_scope="gateway_monitoring")
 
 
 def _make_provider(config: Dict[str, Any]):

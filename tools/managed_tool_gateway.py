@@ -38,7 +38,7 @@ def _read_nous_provider_state() -> Optional[dict]:
         path = auth_json_path()
         if not path.is_file():
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         providers = data.get("providers", {})
         if not isinstance(providers, dict):
             return None

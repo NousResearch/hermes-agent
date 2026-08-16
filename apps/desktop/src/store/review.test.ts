@@ -44,8 +44,10 @@ import { $currentCwd } from './session'
 const requestOneShot = vi.fn(async (_args: unknown) => 'generated message')
 vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneShot(args) }))
 // refreshRepoStatus is a fire-and-forget side effect of mutations; stub it so it
-// doesn't try to hit the (absent) probe and log.
-vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn() }))
+// doesn't try to hit the (absent) probe and log. repoStatusForCwd is read when a
+// new PR binds its session to the branch it came from — no probe here, so no
+// branch either.
+vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn(), repoStatusForCwd: () => ({ get: () => null }) }))
 
 function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
   return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile

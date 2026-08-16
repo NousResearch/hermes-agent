@@ -148,6 +148,24 @@ class PersistentState:
     # Monotonic run-generation counter (#28686).  NEVER reset: clearing it
     # would break stale-run detection.
     run_generation: int = 0
+    # Consecutive session-hygiene compression failures for this session
+    # (#79624).  The in-agent compressor escalates repeat timeouts via
+    # ContextCompressor._consecutive_timeout_failures, but hygiene builds a
+    # FRESH AIAgent per run and bind_session_state() zeroes that counter, so
+    # the in-agent ladder is structurally unreachable from the gateway.
+    # Tracking the streak here — outside the per-run agent — lets hygiene
+    # escalate its cooldown instead of retrying on a flat interval forever.
+    # Reset on a successful compression, not by turn/boundary resets.
+    #
+    # PROCESS-LOCAL, deliberately: `PersistentState` means "survives turn and
+    # boundary resets", NOT "survives a restart" — this field has no disk flush
+    # (unlike `pending_command_text` above, #72680), so a gateway restart drops
+    # escalation back to rung 1 while the DB-backed deadline itself survives
+    # (#74136). Keying on `session_key` rather than `session_id` is what buys
+    # correctness across compaction ROTATION (the sid changes, the chat does
+    # not). gateway.run mirrors this value to the DB keyed by session_key so
+    # the same semantics also survive gateway restarts.
+    hygiene_failure_streak: int = 0
 
 
 @dataclass

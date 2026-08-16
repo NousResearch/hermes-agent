@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
+import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from gateway.config import Platform, PlatformConfig
@@ -38,6 +41,13 @@ logger = logging.getLogger(__name__)
 # reader, and ws.close (~3s), the full drain path stays inside 5s.
 _RELAY_GO_IDLE_ON_DISCONNECT_TIMEOUT_S = 2.0
 _RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S = 1.0
+
+# How many already-answered prompt ids to remember, so a duplicate answer for
+# one of them (a double tap, or a connector redelivery of the same forward) is
+# recognized as a repeat rather than mistaken for a stale prompt. One short
+# string per entry; sized well above the number of prompts a single gateway can
+# have in flight, and far below anything that matters for memory.
+_RESOLVED_PROMPT_MEMORY = 256
 
 
 def _utf16_len(text: str) -> int:
@@ -85,6 +95,10 @@ class RelayAdapter(BasePlatformAdapter):
         # feedback off SendResult — see send()). Consumed by the gateway's
         # semantic thread-rename lane; bounded like the sibling caches.
         self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
+        # chat_id -> event fired when the entry above lands, so a consumer that
+        # arrives before the send can wait for it instead of polling. See
+        # wait_for_auto_thread_info.
+        self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # chat_id -> chat_type (e.g. "dm", "channel", "group") learned from the
         # inbound event. Used to reproduce native Slack's synthetic-DM-thread
         # suppression on the relay lane: a DM streaming reply carries
@@ -128,8 +142,29 @@ class RelayAdapter(BasePlatformAdapter):
         # waiting primitive (approval / slash-confirm / clarify) so the click
         # resolves EXACTLY like the native adapters' button callbacks.
         # Entries expire lazily (see _pop_prompt) so an unanswered prompt
-        # never leaks. Keyed by our own minted 8-hex ids.
+        # never leaks. Keyed by our own minted ids (see _prompt_owner_nonce).
         self._pending_prompts: Dict[str, Dict[str, Any]] = {}
+        # Per-process marker prefixed onto every prompt id this adapter mints,
+        # so an answer can be recognized as OURS before it is acted on.
+        #
+        # WHY: a button press arrives on the passthrough plane, which the
+        # connector fans out to EVERY live gateway session of the tenant
+        # (relayServer.routeBusMessage delivers `passthrough` via
+        # sessionsByTenant, unlike `message`, which narrows to the admitted
+        # instance set). The prompt itself went out from exactly one instance,
+        # and _pending_prompts is process-local — so every OTHER instance sees
+        # an answer for a prompt it never minted. Without this marker those
+        # instances cannot tell "a sibling owns this" from "my own prompt
+        # expired", and the id-shaped text ("/c1") falls through to chat
+        # dispatch, where run.py answers "Unknown command `/c1`" — one copy per
+        # sibling gateway. Siblings are the common case in a DM: the connector
+        # resolves the invoker's bindings to DISTINCT TENANTS, so several
+        # instances of one tenant all receive the forward.
+        self._prompt_owner_nonce: str = secrets.token_hex(3)
+        # Prompt ids this process has already resolved, newest last. A repeat
+        # answer for the same id (double tap, or a connector redelivery) is
+        # then consumed silently instead of being treated as a stale prompt.
+        self._resolved_prompts: "OrderedDict[str, float]" = OrderedDict()
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -483,6 +518,24 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - media localization must never break inbound
             logger.debug("relay inbound media localization failed", exc_info=True)
 
+    def prime_routing_cache(self, event) -> None:
+        """Warm the per-chat egress routing caches from a SYNTHETIC event.
+
+        The caches (_scope_by_chat/_dm_user_by_chat/...) are normally warmed
+        only by the inbound path (_on_inbound -> _capture_scope). A synthetic
+        completion turn injected right after a restart (durable
+        async-delegation replay) reaches handle_message with the caches COLD,
+        so every reply it produces egresses without metadata.scope_id /
+        metadata.user_id and is declined by the connector's fail-closed
+        tenant guard ("target not routed to an onboarded tenant" — staging
+        2026-08-09, defect #4). The synthetic event's session-store origin
+        already carries the discriminators; feed it through the same capture
+        used for real inbound. Never raises.
+        """
+        if event is None or getattr(event, "source", None) is None:
+            return
+        self._capture_scope(event)
+
     def _capture_scope(self, event) -> None:
         """Remember a chat_id's egress discriminator from an inbound event so our
         outbound (the agent's reply) can re-assert it for the connector's egress
@@ -727,9 +780,31 @@ class RelayAdapter(BasePlatformAdapter):
         channel_id = str(payload.get("channel_id") or "")
         guild_id = payload.get("guild_id")  # real Discord interaction wire field
         source = SessionSource(
-            platform=Platform.RELAY,
+            # The LOGICAL platform, not Platform.RELAY. This lane parses a
+            # Discord interaction wire payload, so the underlying platform is
+            # known statically — and it must be stamped for three consumers:
+            #   1. Session keys: the connector binds the interaction's
+            #      follow-up capability under buildSessionKey with
+            #      platform="discord" (interactionSessionSource); the relay
+            #      TEXT lane (ws_transport._event_from_wire) also maps to the
+            #      logical platform. RELAY here forked interaction sessions
+            #      away from both.
+            #   2. /sethome: with platform=RELAY the handler filed the home
+            #      channel under platforms.relay.home_channel (invisible to
+            #      cron delivery, which looks up the logical platform) and
+            #      mirrored it into the dead RELAY_HOME_CHANNEL env var.
+            #   3. Egress: _capture_scope records _platform_by_chat from this
+            #      value and deliberately skips the generic "relay".
+            platform=Platform.DISCORD,
             chat_id=channel_id,
-            chat_type="channel" if guild_id else "dm",
+            # "group", not "channel": the session key embeds chat_type, and
+            # BOTH the connector's capability binding (interactionSessionSource
+            # → buildSessionKey, chat_type "group") and the native Discord
+            # adapter's channel events key guild channels as "group". A
+            # "channel" slot here forked the interaction session from the
+            # chat's message session AND from the vault key the connector
+            # bound the follow-up capability under.
+            chat_type="group" if guild_id else "dm",
             user_id=str(user.get("id"))
             if isinstance(user, dict) and user.get("id")
             else None,
@@ -740,6 +815,15 @@ class RelayAdapter(BasePlatformAdapter):
             if guild_id
             else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
+            # Same upstream-trust marker the relay text lane stamps
+            # (ws_transport._event_from_wire): this interaction arrived over
+            # the per-instance-authenticated relay WS after the connector
+            # verified Discord's edge signature and resolved the tenant.
+            # Without it, authz treated the event as unauthenticated relay
+            # traffic — and /sethome's via_relay guard never engaged, which is
+            # how platform=RELAY home channels slipped through in the first
+            # place. Set locally, never read off the wire.
+            delivered_via_upstream_relay=True,
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:
@@ -819,6 +903,17 @@ class RelayAdapter(BasePlatformAdapter):
         return parts
 
     async def disconnect(self) -> None:
+        # Budget accounting: the runner wraps this whole call in
+        # asyncio.wait_for(_adapter_disconnect_timeout_secs()). Everything we
+        # spend on monitor teardown and go_idle below eats into what the
+        # transport can spend on its outbound drain, so measure from the top
+        # and thread the REMAINDER down — otherwise worst-case
+        # monitor(1s) + go_idle(2s) + drain + 3×teardown(1s) can blow the 5s
+        # budget, cancelling teardown mid-drain and skipping the transport's
+        # fail-pending loop (callers then block on _OUTBOUND_TIMEOUT_S).
+        from gateway.relay.ws_transport import _env_disconnect_budget_s
+        _started = time.monotonic()
+        _budget = _env_disconnect_budget_s()
         # Phase 7 Unit 7d-B: stop the revocation monitor first so it can't fire a
         # spurious fatal during/after a deliberate teardown.
         if self._revocation_monitor is not None:
@@ -862,7 +957,16 @@ class RelayAdapter(BasePlatformAdapter):
                         )
             finally:
                 try:
-                    await asyncio.shield(self._transport.disconnect())
+                    _remaining = max(0.0, _budget - (time.monotonic() - _started))
+                    try:
+                        _td = cast(Any, self._transport).disconnect(
+                            budget_s=_remaining
+                        )
+                    except TypeError:
+                        # Transports without the budget_s keyword (stubs,
+                        # older implementations) keep the legacy signature.
+                        _td = self._transport.disconnect()
+                    await asyncio.shield(_td)
                 except Exception:  # noqa: BLE001 - teardown must not block outer cancel propagation
                     logger.debug(
                         "relay transport disconnect failed during drain",
@@ -993,6 +1097,13 @@ class RelayAdapter(BasePlatformAdapter):
                     )
         except Exception:  # noqa: BLE001 - feedback capture must never break send
             pass
+        # Wake the rename lane on EVERY send into this chat, not only the ones
+        # that auto-threaded. It is waiting to learn where this turn's reply
+        # landed, and "nowhere new" is an answer — one it should get now rather
+        # than by outlasting a timeout.
+        waiter = self._auto_thread_waiters.get(str(chat_id))
+        if waiter is not None:
+            waiter.set()
         return SendResult(
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
@@ -1006,6 +1117,42 @@ class RelayAdapter(BasePlatformAdapter):
         for the most recent send into *chat_id*, if any. Consumed by the
         gateway's semantic thread-rename lane (auto session title)."""
         return self._auto_thread_by_chat.get(str(chat_id))
+
+    async def wait_for_auto_thread_info(
+        self, chat_id: str, timeout: float
+    ) -> Optional[Tuple[str, str]]:
+        """``auto_thread_info_for_chat``, but willing to wait for the send.
+
+        The rename lane asks where the reply landed as soon as the session is
+        titled, and the session is titled from the user's opening message —
+        before the model has answered, let alone before we've sent anything. So
+        the question arrives a whole turn early, and a turn is a one-liner or
+        twenty minutes of tool calls.
+
+        Waits for the next send into this chat and then answers, so a reply the
+        connector didn't auto-thread reports its miss as soon as it's sent
+        instead of holding until *timeout* — which is only a backstop for a turn
+        that never sends at all.
+        """
+        info = self.auto_thread_info_for_chat(chat_id)
+        if info is not None:
+            return info
+        key = str(chat_id)
+        waiter = self._auto_thread_waiters.get(key)
+        if waiter is None:
+            waiter = asyncio.Event()
+            self._auto_thread_waiters[key] = waiter
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            # Only the waiter we may have installed, and only if no later call
+            # replaced it; a fired event must not be left behind to make the
+            # next turn's wait return instantly on stale feedback.
+            if self._auto_thread_waiters.get(key) is waiter:
+                self._auto_thread_waiters.pop(key, None)
+        return self.auto_thread_info_for_chat(chat_id)
 
     def _resolve_reply_to_for_send(
         self,
@@ -1595,17 +1742,22 @@ class RelayAdapter(BasePlatformAdapter):
     def _mint_prompt(
         self, kind: str, state: Dict[str, Any], timeout_s: float = 3600.0
     ) -> str:
-        """Register a pending prompt and return its 8-hex id.
+        """Register a pending prompt and return its id.
 
         ``state`` carries what the resolver needs when the answer comes back
         (session_key, resolver kind, per-kind extras). Expiry is enforced
         gateway-side on consumption (_pop_prompt) — the wire's timeout_s is
         advisory only.
+
+        The id is ``<owner nonce>.<8 hex>``: the nonce marks the minting
+        process so a sibling gateway that receives the same fanned-out answer
+        can tell it is not the owner and stay quiet (see
+        ``_prompt_owner_nonce``). Both segments use the callback alphabet the
+        connector's prompt codec accepts ([A-Za-z0-9_.-], <=32 chars).
         """
-        import secrets
         import time
 
-        prompt_id = secrets.token_hex(4)
+        prompt_id = f"{self._prompt_owner_nonce}.{secrets.token_hex(4)}"
         self._pending_prompts[prompt_id] = {
             **state,
             "kind": kind,
@@ -1620,6 +1772,16 @@ class RelayAdapter(BasePlatformAdapter):
             self._pending_prompts.pop(stale, None)
         return prompt_id
 
+    def _minted_here(self, prompt_id: str) -> bool:
+        """True when this process minted ``prompt_id``.
+
+        Ids minted before the owner nonce existed (a prompt still pending
+        across an in-place upgrade) carry no ``.`` segment; treat them as ours
+        so an in-flight prompt from the previous build still resolves.
+        """
+        head, sep, _ = str(prompt_id).partition(".")
+        return head == self._prompt_owner_nonce if sep else True
+
     def _pop_prompt(self, prompt_id: str) -> Optional[Dict[str, Any]]:
         """Consume a pending prompt: one answer wins, expired entries miss."""
         import time
@@ -1630,6 +1792,17 @@ class RelayAdapter(BasePlatformAdapter):
         if state.get("expires_at", 0) < time.time():
             return None
         return state
+
+    def _note_prompt_resolved(self, prompt_id: str) -> None:
+        """Remember that this process already answered ``prompt_id``.
+
+        Bounded FIFO: a repeat answer is only interesting for as long as a
+        redelivery or a double tap can plausibly arrive, so old ids are
+        dropped rather than retained for the process lifetime.
+        """
+        self._resolved_prompts[str(prompt_id)] = time.time()
+        while len(self._resolved_prompts) > _RESOLVED_PROMPT_MEMORY:
+            self._resolved_prompts.popitem(last=False)
 
     async def _send_prompt(
         self,
@@ -1858,11 +2031,25 @@ class RelayAdapter(BasePlatformAdapter):
         """Route an inbound prompt_response to its waiting primitive.
 
         Returns True when the event was a prompt answer (consumed — do NOT
-        dispatch it as a chat message), False otherwise. Unknown/expired
-        prompt ids fall through to normal dispatch: the command-shaped text
-        ("/once", "/deny", …) then behaves like a typed reply, which the
-        approval/confirm text lanes already understand — the same stale-tap
-        degradation the native adapters implement with an "expired" edit.
+        dispatch it as a chat message), False otherwise.
+
+        A prompt answer is ALWAYS consumed, whoever it belongs to. The three
+        non-resolving cases each stay silent rather than falling through to
+        chat dispatch:
+
+        * **A sibling's prompt** (``_minted_here`` false). The connector fans a
+          passthrough forward out to every live session of the tenant, so one
+          button press reaches every gateway of that tenant while only the
+          minting one can resolve it. Falling through here is what produced a
+          wall of ``Unknown command `/c1``` — one per sibling — under the
+          single ``✅`` from the real owner.
+        * **A repeat answer** for an id this process already resolved (a double
+          tap, or a redelivered forward). The first answer won; a second must
+          not re-run the resolver or re-ack.
+        * **Our own expired/unknown prompt.** Answer with a short expiry notice
+          instead of a command-not-found error: the option ids a prompt renders
+          ("c1", "once", "other") are not commands, so the text lane cannot do
+          anything useful with them.
         """
         pr = getattr(event, "prompt_response", None)
         if not isinstance(pr, dict):
@@ -1871,15 +2058,35 @@ class RelayAdapter(BasePlatformAdapter):
         option_id = str(pr.get("option_id") or "")
         if not prompt_id or not option_id:
             return False
-        state = self._pop_prompt(prompt_id)
-        if state is None:
-            logger.info(
-                "relay prompt_response for unknown/expired prompt %s (option=%s) — "
-                "falling through to text dispatch",
+        if not self._minted_here(prompt_id):
+            # A sibling gateway of this tenant owns this prompt and is
+            # resolving it right now. Consume silently — two gateways must
+            # never both answer one press.
+            logger.debug(
+                "relay prompt_response %s (option=%s) belongs to another "
+                "gateway instance — ignoring",
                 prompt_id,
                 option_id,
             )
-            return False
+            return True
+        if prompt_id in self._resolved_prompts:
+            logger.debug(
+                "relay prompt_response %s (option=%s) already resolved — ignoring "
+                "repeat",
+                prompt_id,
+                option_id,
+            )
+            return True
+        state = self._pop_prompt(prompt_id)
+        if state is None:
+            logger.info(
+                "relay prompt_response for unknown/expired prompt %s (option=%s)",
+                prompt_id,
+                option_id,
+            )
+            await self._notify_prompt_expired(event)
+            return True
+        self._note_prompt_resolved(prompt_id)
 
         kind = state.get("kind")
         chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
@@ -1969,6 +2176,26 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - a resolver failure must not kill the reader
             logger.warning("relay prompt_response resolution failed", exc_info=True)
         return True
+
+    async def _notify_prompt_expired(self, event) -> None:
+        """Tell the presser their prompt is no longer waiting.
+
+        Only the OWNING gateway reaches this (siblings return earlier), so the
+        user sees exactly one notice. Best-effort: a send failure here must
+        not break the reader.
+        """
+        chat_id = str(getattr(event.source, "chat_id", "") or "")
+        if not chat_id:
+            return
+        try:
+            await self.send(
+                chat_id,
+                "⌛ That prompt is no longer waiting for an answer. "
+                "Send your reply as a normal message.",
+                metadata=self._prompt_reply_metadata(event),
+            )
+        except Exception:  # noqa: BLE001 - notification is best-effort
+            logger.debug("relay expired-prompt notice failed", exc_info=True)
 
     def _prompt_reply_metadata(self, event) -> Dict[str, Any]:
         """Thread/topic metadata so prompt acks land where the prompt lives."""

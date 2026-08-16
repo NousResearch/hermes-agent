@@ -1,8 +1,8 @@
 import { type CSSProperties, type ReactNode, useEffect } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { translateNow } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
@@ -113,7 +113,7 @@ export function OverlayView({
             size="icon-titlebar"
             variant="ghost"
           >
-            <Codicon name="close" size="1rem" />
+            <TitlebarIcon name="close" />
           </Button>
         </div>
 

@@ -1,5 +1,5 @@
 ---
-name: lambda-labs-gpu-cloud
+name: lambda-labs
 description: On-demand GPU cloud instances for ML training.
 version: 1.0.0
 author: Orchestra Research
@@ -14,7 +14,7 @@ metadata:
 
 # Lambda Labs GPU Cloud
 
-Comprehensive guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.
+Guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.
 
 ## When to use Lambda Labs
 
@@ -286,7 +286,7 @@ Filesystems must be attached at instance launch time:
   └── outputs/
 
 # Local SSD (faster, ephemeral)
-/home/ubuntu/
+~/ (instance home)
   └── working/  # Temporary files
 ```
 

@@ -289,6 +289,16 @@ def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# Stands in for a model turn that never arrived (stream failure / interrupt /
+# quota fallback) when history leaves a human user text turn directly after a
+# tool-result turn. Interposed between the two user contents so the request
+# stays alternation-valid while the user's message remains a turn of its own.
+# Mirrors gemini-cli's INTERRUPTED_RESPONSE_PLACEHOLDER (gemini-cli#28700).
+_INTERRUPTED_RESPONSE_PLACEHOLDER = (
+    "[The previous response was interrupted before it completed.]"
+)
+
+
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
@@ -392,17 +402,49 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
-    # Gemini's generateContent requires strict user/model alternation;
-    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
-    # that multiturn requests alternate between user and model". The loop above
-    # emits one content per source message, so parallel tool calls (N tool
-    # results become N user functionResponse contents), back-to-back user turns,
-    # or merged assistant turns would each violate that. Merge adjacent
-    # same-role contents by concatenating their parts. For parallel calls this
-    # also produces the grouped multi-functionResponse turn Gemini expects.
+    # Compatibility contract for native Gemini generateContent:
+    # 1) Same-role adjacent contents still merge in general (strict user/model
+    #    alternation for ordinary text turns and parallel tool-result grouping;
+    #    consecutive same-role contents are rejected with HTTP 400 "Please
+    #    ensure that multiturn requests alternate between user and model").
+    # 2) Exception: do NOT fuse a human user text turn into a preceding user
+    #    content that only carries functionResponse parts (or vice versa).
+    #    Gemini 3 accepts that fold with HTTP 200 but then reads the trailing
+    #    text as a continuation of the tool result — it returns an empty
+    #    candidate or "finishes the user's sentence" instead of answering
+    #    (same defect gemini-cli fixed in google-gemini/gemini-cli#28700).
+    # 3) Because rule 1's HTTP 400 makes two consecutive user contents unsafe
+    #    to emit (#55125 — the reason this merge exists), the split pair is
+    #    kept API-valid by interposing a placeholder model turn between the
+    #    functionResponse content and the human text content, mirroring
+    #    gemini-cli's INTERRUPTED_RESPONSE_PLACEHOLDER repair.
+    # 4) Parallel tool results (functionResponse + functionResponse) still
+    #    merge into one user content — only mixed functionResponse/text is
+    #    kept apart.
     merged_contents: List[Dict[str, Any]] = []
     for content in contents:
-        if merged_contents and merged_contents[-1]["role"] == content["role"]:
+        same_role = bool(
+            merged_contents and merged_contents[-1]["role"] == content["role"]
+        )
+        if same_role and content["role"] == "user":
+            previous_has_function_response = any(
+                isinstance(part, dict) and "functionResponse" in part
+                for part in merged_contents[-1].get("parts", [])
+            )
+            current_has_function_response = any(
+                isinstance(part, dict) and "functionResponse" in part
+                for part in content.get("parts", [])
+            )
+            if previous_has_function_response != current_has_function_response:
+                same_role = False
+                merged_contents.append(
+                    {
+                        "role": "model",
+                        "parts": [{"text": _INTERRUPTED_RESPONSE_PLACEHOLDER}],
+                    }
+                )
+
+        if same_role:
             merged_contents[-1]["parts"].extend(content["parts"])
         else:
             merged_contents.append(content)
@@ -473,6 +515,49 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
     return normalized or None
 
 
+def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
+    """Return True when Gemini will spend output tokens on thinking.
+
+    Gemini bills thought tokens against ``maxOutputTokens``. A global
+    Hermes ``max_tokens`` of 4096/16384 is enough for visible text, but
+    Ultra/high thinking can consume the entire budget and leave
+    ``finishReason=MAX_TOKENS`` with no complete answer. Continuations
+    then abort after 4 retries.
+    """
+    normalized = _normalize_thinking_config(thinking_config)
+    if not normalized:
+        return False
+    if normalized.get("includeThoughts") is False:
+        return "thinkingLevel" in normalized or bool(normalized.get("thinkingBudget"))
+    budget = normalized.get("thinkingBudget")
+    if isinstance(budget, int) and budget <= 0 and "thinkingLevel" not in normalized:
+        return False
+    return True
+
+
+def _effective_gemini_max_output_tokens(
+    max_tokens: Optional[int], thinking_config: Any
+) -> int:
+    """Resolve native ``maxOutputTokens``.
+
+    Gemini's generateContent API does not treat an omitted cap as
+    unlimited — it applies a low internal default and truncates. When
+    thinking is enabled, also raise a too-small explicit cap to the
+    published 65,535 ceiling so thought tokens do not starve the answer.
+    """
+    if max_tokens is None:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if requested <= 0:
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    if _thinking_requests_output_headroom(thinking_config):
+        return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
+    return requested
+
+
 def build_gemini_request(
     *,
     messages: List[Dict[str, Any]],
@@ -500,20 +585,9 @@ def build_gemini_request(
     generation_config: Dict[str, Any] = {}
     if temperature is not None:
         generation_config["temperature"] = temperature
-    if max_tokens is not None:
-        generation_config["maxOutputTokens"] = max_tokens
-    else:
-        # Gemini's native generateContent does NOT treat an omitted
-        # maxOutputTokens as "use the model's full output budget" — it applies
-        # a low internal default and the model stops early with
-        # finishReason=MAX_TOKENS, truncating tool calls mid-stream (Hermes
-        # then retries 3× and refuses the incomplete call). Every current
-        # Gemini text model (2.5 + 3.x, flash / flash-lite / pro) caps at
-        # 65,535 output tokens, so default to that ceiling when the caller
-        # passes None ("unlimited"). See the OpenAI-compat path where omitting
-        # the field genuinely means full budget — that assumption does not
-        # hold on the native API.
-        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    generation_config["maxOutputTokens"] = _effective_gemini_max_output_tokens(
+        max_tokens, thinking_config
+    )
     if top_p is not None:
         generation_config["topP"] = top_p
     if stop:

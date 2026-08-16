@@ -85,6 +85,18 @@ def test_explicit_config_key_overrides_matching_env_value(monkeypatch):
     assert config["docker_image"] == "config/image:1"
 
 
+def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):
+    """SSH ``~`` belongs to the remote user, not the Hermes host/container."""
+    _write_config("terminal:\n  backend: ssh\n  cwd: '~'\n")
+    monkeypatch.setenv("HOME", "/opt/data/home")
+    monkeypatch.setenv("USERPROFILE", r"C:\opt\data\home")
+
+    config = terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_CWD"] == "~"
+    assert config["cwd"] == "~"
+
+
 def test_env_is_preserved_when_config_has_no_terminal_section(monkeypatch):
     _write_config("agent:\n  max_turns: 100\n")
     monkeypatch.setenv("TERMINAL_ENV", "ssh")

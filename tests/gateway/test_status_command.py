@@ -1,4 +1,4 @@
-from hermes_state import AsyncSessionDB
+from hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
@@ -139,6 +139,54 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
+    """Persisted status must not combine a model and provider from different calls."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="z-ai/glm-5.2")
+        db.update_token_counts(
+            "sess-1",
+            model="z-ai/glm-5.2",
+            billing_provider="nvidia",
+            billing_base_url="https://integrate.api.nvidia.com/v1/",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        db.update_token_counts(
+            "sess-1",
+            model="upstage/solar-pro4:free",
+            billing_provider="nous",
+            billing_base_url="https://inference-api.nousresearch.com/v1/",
+            input_tokens=60,
+            api_call_count=6,
+        )
+        # Reproduce the inconsistent legacy summary observed in #87227.
+        db.update_session_model("sess-1", "z-ai/glm-5.2")
+        db.update_session_billing_route(
+            "sess-1",
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1/",
+        )
+
+        result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `z-ai/glm-5.2` (nvidia)" in result
+        assert "**Model:** `z-ai/glm-5.2` (nous)" not in result
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio

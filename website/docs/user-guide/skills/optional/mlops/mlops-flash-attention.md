@@ -1,12 +1,12 @@
 ---
-title: "Optimizing Attention Flash — Speed up long-sequence transformer training and inference"
-sidebar_label: "Optimizing Attention Flash"
+title: "Flash Attention — Speed up long-sequence transformer training and inference"
+sidebar_label: "Flash Attention"
 description: "Speed up long-sequence transformer training and inference"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Optimizing Attention Flash
+# Flash Attention
 
 Speed up long-sequence transformer training and inference.
 

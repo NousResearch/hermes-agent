@@ -75,6 +75,39 @@ class TestMultiplexConfigFlag:
         cfg = GatewayConfig.from_dict({"multiplex_profiles": True})
         assert cfg.multiplex_profiles is True
 
+    def test_profile_allowlist_defaults_to_serve_all(self):
+        assert GatewayConfig().multiplex_profile_allowlist is None
+
+    def test_profile_allowlist_normalizes_and_round_trips(self):
+        cfg = GatewayConfig.from_dict(
+            {
+                "gateway": {
+                    "multiplex_profiles": True,
+                    "multiplex_profile_allowlist": [
+                        " Worker ",
+                        "worker",
+                        "Guest",
+                        "default",
+                        "bad/name",
+                        7,
+                    ],
+                }
+            }
+        )
+
+        assert cfg.multiplex_profile_allowlist == ["worker", "guest"]
+        restored = GatewayConfig.from_dict(cfg.to_dict())
+        assert restored.multiplex_profile_allowlist == ["worker", "guest"]
+
+    def test_invalid_profile_allowlist_fails_safe_to_default_only(self, caplog):
+        with caplog.at_level("WARNING", logger="gateway.config"):
+            cfg = GatewayConfig.from_dict(
+                {"gateway": {"multiplex_profile_allowlist": "worker"}}
+            )
+
+        assert cfg.multiplex_profile_allowlist == []
+        assert "serving only the default profile" in caplog.text
+
 
 class TestSessionStoreProfileResolution:
     """SessionStore._generate_session_key honors the flag: legacy namespace

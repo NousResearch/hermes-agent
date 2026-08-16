@@ -66,6 +66,7 @@ mcp_servers:
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
+| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |
 
 ## Environment variable references
 
@@ -81,6 +82,28 @@ mcp_servers:
 ```
 
 Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
+
+### Context variables
+
+Beyond env vars, the Cursor-style context variables are interpolated too (names are case-sensitive):
+
+| Variable | Resolves to |
+|---|---|
+| `${userHome}` | The current user's home directory |
+| `${workspaceFolder}` | The session workspace root (the session's terminal cwd when known, else the process cwd) |
+| `${workspaceFolderBasename}` | The basename of `${workspaceFolder}` |
+| `${pathSeparator}` / `${/}` | The OS path separator (`os.sep`) |
+
+```yaml
+mcp_servers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"]
+    env:
+      CACHE_DIR: "${userHome}${/}.cache${/}mcp"
+```
+
+Any other `${...}` reference falls through to the env-var lookup above.
 
 ## `tools` policy keys
 
@@ -312,3 +335,24 @@ Behavior:
 - Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+
+## Add to Hermes link
+
+MCP vendors and docs can offer a one-click **"Add to Hermes"** button that opens the Hermes desktop app with a pre-filled server config, mirroring Cursor's `cursor://anysphere.cursor-deeplink/mcp/install` scheme:
+
+```text
+hermes://mcp/install?name=NAME&config=BASE64
+```
+
+- `name` — the server name. Must match `^[A-Za-z0-9._-]{1,64}$`.
+- `config` — the server config object as **base64url-encoded JSON** (standard base64 is also accepted). The decoded JSON must be an object with either a string `url` field (`http://`/`https://` only) or a string `command` field, and may carry any of the server keys documented above. Payloads over 32KB are rejected.
+
+Example (JavaScript):
+
+```js
+const config = { url: 'https://mcp.example.com/mcp' }
+const link = `hermes://mcp/install?name=example&config=${btoa(JSON.stringify(config))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
+```
+
+Opening the link never installs anything by itself: the desktop app shows a confirmation dialog with the server name and the full pretty-printed config (with an extra caution for `command`-based servers, which run a local process), and the user must explicitly confirm. Existing server names are never overwritten — the user is asked to rename or cancel.

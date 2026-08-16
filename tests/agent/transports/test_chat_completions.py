@@ -252,6 +252,40 @@ class TestChatCompletionsBuildKwargs:
             "thinking_level": "high",
         }
 
+    def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+            reasoning_config={"enabled": True, "effort": "ultra"},
+        )
+        assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
+    def test_gemini_without_thinking_keeps_explicit_max_tokens(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            max_tokens=4096,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 4096
+
+
 
 
 
@@ -725,9 +759,54 @@ class TestPromptCacheKeyCapability:
                 supports_prompt_cache_key=True,
             )["prompt_cache_key"]
 
-        first = key("cron_job_2026-07-15T10:00:00Z")
-        second = key("cron_job_2026-07-15T10:05:00Z")
+        first = key("cron_job_20260715_100000")
+        second = key("cron_job_20260715_100500")
 
         assert first == second
-        assert first != key("cron_job_2026-07-15T10:05:00Z", instructions="You are different.")
-        assert first != key("cron_job_2026-07-15T10:05:00Z", tool_name="search")
+        assert first != key("cron_job_20260715_100500", instructions="You are different.")
+        assert first != key("cron_job_20260715_100500", tool_name="search")
+
+    def test_unrelated_sessions_get_distinct_keys(self, transport):
+        """#78941: identical static prefix across unrelated (non-cron) sessions
+        must not collapse onto one shared prompt_cache_key."""
+        kw1 = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages("You are stable."),
+            tools=self._tools("lookup"),
+            session_id="session_alice_1",
+            supports_prompt_cache_key=True,
+        )
+        kw2 = transport.build_kwargs(
+            model="cache-model",
+            messages=self._messages("You are stable."),
+            tools=self._tools("lookup"),
+            session_id="session_bob_1",
+            supports_prompt_cache_key=True,
+        )
+        assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
+
+    def test_stale_profile_without_supports_prompt_cache_key_does_not_crash(self, transport):
+        """A ProviderProfile from a stale sys.modules cache (pre-#f4fb23f3d)
+        won't have the ``supports_prompt_cache_key`` field. Accessing it via
+        ``profile.supports_prompt_cache_key`` raises AttributeError and crashes
+        every API call. Use getattr with a False default so it degrades to
+        "no prompt cache key" instead of crashing.
+
+        Regression: 'NousProfile' object has no attribute
+        'supports_prompt_cache_key' (Aug 2026, after partial update).
+        """
+        from providers.base import ProviderProfile
+
+        # Simulate a stale class that predates supports_prompt_cache_key
+        # by creating a profile and deleting the attribute.
+        profile = ProviderProfile(name="stale-provider")
+        del profile.supports_prompt_cache_key
+
+        # Must not raise AttributeError — should fall back to False.
+        kwargs = transport.build_kwargs(
+            model="stale-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            provider_profile=profile,
+        )
+        assert "prompt_cache_key" not in kwargs

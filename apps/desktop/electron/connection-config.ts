@@ -44,7 +44,21 @@ const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session
 // sign-in / discovery liveness must look for the Privy cookie, NOT the gateway
 // cookies above. `privy-token` is the access token (the required signal);
 // variants cover the secured-prefix forms and the older `privy-session` name.
-const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
+const PRIVY_SESSION_COOKIE_VARIANTS = [
+  '__Host-privy-token',
+  '__Secure-privy-token',
+  'privy-token',
+  'privy-session',
+  'privy-refresh-token'
+]
+
+// The short-lived Privy ACCESS token only — the credential `/api/agents`
+// actually validates. `privy-session` / `privy-refresh-token` are long-lived
+// renewal material: their presence means the session is RENEWABLE (signed in,
+// no interactive login needed), but discovery still 401s until a fresh
+// `privy-token` is minted. Distinguishing the two is what lets a cold start
+// silently renew instead of demanding a re-login (#73495).
+const PRIVY_ACCESS_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token']
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
 // is the built-in root alias; these names cannot be created as profiles.
 const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
@@ -557,6 +571,22 @@ function cookiesHavePrivySession(cookies) {
   return cookies.some(c => c && c.value && PRIVY_SESSION_COOKIE_VARIANTS.includes(c.name))
 }
 
+/**
+ * True only when the short-lived Privy ACCESS token (`privy-token`) is present
+ * — the exact cookie `/api/agents` validates. A jar can satisfy
+ * `cookiesHavePrivySession` (renewable session: `privy-session` /
+ * `privy-refresh-token`) while failing this check; that gap is the cold-start
+ * "Signed in" + "No agents found" contradiction, and the signal that a silent
+ * renewal (not an interactive re-login) is the right recovery (#73495).
+ */
+function cookiesHavePrivyAccessToken(cookies) {
+  if (!Array.isArray(cookies)) {
+    return false
+  }
+
+  return cookies.some(c => c && c.value && PRIVY_ACCESS_COOKIE_VARIANTS.includes(c.name))
+}
+
 export {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
@@ -564,6 +594,7 @@ export {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
@@ -576,6 +607,7 @@ export {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  PRIVY_ACCESS_COOKIE_VARIANTS,
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,

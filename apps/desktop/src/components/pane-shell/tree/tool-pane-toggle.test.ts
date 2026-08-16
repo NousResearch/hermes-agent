@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { registry } from '@/contrib/registry'
 
 import { allPaneIds, group, split } from './model'
@@ -8,9 +9,11 @@ import {
   $dismissedPanes,
   $hiddenTreePanes,
   $layoutTree,
+  activateTreePane,
   bindToolPaneCollapse,
   closeToolPane,
   isPaneVisible,
+  revealTreePane,
   setTreeGroupHeaderHidden,
   togglePaneVisible
 } from './store'
@@ -44,6 +47,8 @@ beforeEach(() => {
 
   for (const [id, data] of [
     ['workspace', { placement: 'main', uncloseable: true }],
+    ['files', { placement: 'right' }],
+    ['review', { placement: 'right' }],
     ['terminal', { placement: 'bottom' }],
     ['logs', { placement: 'bottom' }]
   ] as const) {
@@ -167,6 +172,192 @@ describe('toggling the terminal while it is stacked with logs', () => {
 
     expect(allPaneIds($layoutTree.get()!)).toContain('terminal')
     expect(isPaneVisible('terminal')).toBe(true)
+  })
+})
+
+describe('collapsing the active terminal in a shared group with the workspace', () => {
+  // The terminal is a TAB in the workspace's own group under the Focus preset:
+  // [workspace, files, review, terminal]. Collapsing it used to hand the slot
+  // to `panes[at - 1]` — 'review' — so ⌃` / the rail / the statusbar toggle
+  // dropped the user on a diff pane they never opened, and with the overlay
+  // still painting it read as "the terminal came back". The slot belongs to
+  // the uncloseable workspace, the one member guaranteed to be a real
+  // destination.
+
+  function focusGroup() {
+    $layoutTree.set(group(['workspace', 'files', 'review', 'terminal'], { active: 'terminal', id: 'g-focus' }))
+  }
+
+  const focusActive = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : undefined
+  }
+
+  it('⌃` / the rail toggle lands on workspace, not review', () => {
+    focusGroup()
+
+    // Production wiring (controller.tsx): the takeover atom IS the terminal's
+    // toggle store; the closer/opener write it back.
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+
+    // User had the terminal open and active.
+    setTerminalTakeover(true)
+    expect($terminalTakeover.get()).toBe(true)
+    expect(focusActive()).toBe('terminal')
+    expect(isPaneVisible('terminal')).toBe(true)
+
+    // The user presses ⌃` (or clicks the rail / statusbar toggle) to put the
+    // terminal away. bindToolPaneCollapse routes a false store through
+    // setPaneCollapsed.
+    setTerminalTakeover(false)
+
+    expect($terminalTakeover.get()).toBe(false)
+    expect(isPaneVisible('terminal')).toBe(false)
+    // THE regression: used to be 'review' (group.panes[at - 1]).
+    expect(focusActive()).toBe('workspace')
+    expect(isPaneVisible('workspace')).toBe(true)
+  })
+
+  it('openNewSessionTile (+ / ⌘T): the new session tab fronts and the terminal tab goes hidden', () => {
+    const stored = 'stored-1'
+    const tilePaneId = `session-tile:${stored}`
+
+    const dispose = registry.register({
+      area: 'panes',
+      data: { placement: 'main' },
+      id: tilePaneId,
+      render: () => null,
+      title: 'new session'
+    })
+
+    disposers.push(dispose)
+
+    // The tile lands in the same shared zone as the workspace + terminal
+    // (Focus preset: docked 'center' into the focused chat zone).
+    $layoutTree.set(
+      group(['workspace', 'files', 'review', 'terminal', tilePaneId], { active: 'terminal', id: 'g-focus' })
+    )
+
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+
+    setTerminalTakeover(true)
+    expect(focusActive()).toBe('terminal')
+    expect(isPaneVisible('terminal')).toBe(true)
+
+    // Exactly what openNewSessionTile does after openSessionTile + patch:
+    // `revealTreePane(`session-tile:${stored}`)` (use-session-actions:521).
+    revealTreePane(tilePaneId)
+
+    expect(focusActive()).toBe(tilePaneId)
+    expect(isPaneVisible('terminal')).toBe(false)
+    // The terminal layer gets data-pane-hidden (tree-group spreads
+    // hiddenPaneProps(!isActive)), which the PersistentTerminal overlay now
+    // measures — so the terminal surface stops covering the new session tab.
+    expect(isPaneVisible(tilePaneId)).toBe(true)
+    expect($terminalTakeover.get()).toBe(true) // toggle store stays truthful
+  })
+
+  it('startFreshSessionDraft (⌘N): fronts the workspace and leaves the terminal open behind its tab', () => {
+    focusGroup()
+
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+
+    setTerminalTakeover(true)
+    expect(focusActive()).toBe('terminal')
+
+    // What startFreshSessionDraft does: reveal, and nothing else. It must NOT
+    // clear the takeover atom — that is the terminal's open/closed state, not
+    // a fronting flag.
+    revealTreePane('workspace')
+
+    expect(focusActive()).toBe('workspace')
+    expect(isPaneVisible('workspace')).toBe(true)
+    // Hidden behind the workspace tab, so the overlay stops painting (the
+    // actual cause of the chat being covered) …
+    expect(isPaneVisible('terminal')).toBe(false)
+    // … while the terminal stays OPEN: its PTYs live and clicking the tab
+    // brings back a mounted workspace.
+    expect($terminalTakeover.get()).toBe(true)
+  })
+})
+
+describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', () => {
+  // Only the Focus preset stacks the terminal with the workspace. Everywhere
+  // else it sits in a group of its own, beside the chat rather than over it —
+  // so a fresh chat has no reason to touch it.
+  it('stays open and visible when a fresh chat fronts the workspace', () => {
+    $layoutTree.set(
+      split('row', [group(['workspace'], { id: 'grp-main' }), group(['terminal'], { id: 'grp-terminal' })], [3, 1])
+    )
+
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+
+    setTerminalTakeover(true)
+    expect(isPaneVisible('terminal')).toBe(true)
+
+    revealTreePane('workspace')
+
+    expect(isPaneVisible('workspace')).toBe(true)
+    // Regression: clearing takeover inside startFreshSessionDraft minimized
+    // this zone, folding a terminal that was never obscuring anything.
+    expect(isPaneVisible('terminal')).toBe(true)
+    expect($terminalTakeover.get()).toBe(true)
+  })
+
+  it('survives a restart with a clickable, mountable terminal tab', () => {
+    $layoutTree.set(group(['workspace', 'files', 'review', 'terminal'], { active: 'terminal', id: 'g-focus' }))
+
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+
+    setTerminalTakeover(true)
+    revealTreePane('workspace')
+
+    // ── restart: the tree and the takeover atom are both persisted ──
+    const persistedTakeover = $terminalTakeover.get()
+
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+
+    // Regression: a persisted `false` left the tab in the strip and
+    // un-minimized, but PersistentTerminal mounts its workspace only while
+    // takeover is true — so clicking the tab (a bare activateTreePane) fronted
+    // an empty pane.
+    expect(persistedTakeover).toBe(true)
+
+    activateTreePane('g-focus', 'terminal')
+
+    expect(isPaneVisible('terminal')).toBe(true)
+    expect($terminalTakeover.get()).toBe(true)
   })
 })
 

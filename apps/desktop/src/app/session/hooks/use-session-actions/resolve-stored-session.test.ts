@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
-import { $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { resolveSessionProfile, resolveStoredSession } from './utils'
@@ -21,6 +21,8 @@ const profiles = (...names: string[]) => names.map(name => ({ name }) as never)
 
 describe('resolveStoredSession profile ownership', () => {
   beforeEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
     $sessions.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
@@ -28,6 +30,8 @@ describe('resolveStoredSession profile ownership', () => {
   })
 
   afterEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
     $sessions.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
@@ -40,6 +44,19 @@ describe('resolveStoredSession profile ownership', () => {
 
     expect(resolved?.profile).toBe('default')
     expect(mockGetSession).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['cron', $cronSessions],
+    ['messaging', $messagingSessions]
+  ])('resolves a %s sidebar row without duplicating it into regular sessions', async (_source, store) => {
+    store.set([session({ id: 's1', profile: 'default' })])
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.profile).toBe('default')
+    expect(mockGetSession).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual([])
   })
 
   it('treats a profile-less cache hit as unresolved when multiple profiles exist', async () => {

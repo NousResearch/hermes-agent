@@ -403,8 +403,8 @@ class TestAliasCollision:
 
 
 
-    def test_windows_checks_bat_extension(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "win32")
+    @pytest.mark.windows_only
+    def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
         bat_path = wrapper_dir / "mybot.bat"
@@ -433,7 +433,6 @@ class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
@@ -444,8 +443,8 @@ class TestWrapperScript:
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    def test_remove_finds_bat_on_windows(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "win32")
+    @pytest.mark.windows_only
+    def test_remove_finds_bat_on_windows(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
@@ -492,16 +491,14 @@ class TestWrapperScriptSecurity:
 class TestFindAliasForProfile:
     """Tests for find_alias_for_profile() and alias display in list/show."""
 
-    def test_profile_named_alias(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
+    def test_profile_named_alias(self, profile_env):
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
         create_wrapper_script("steve")
         assert find_alias_for_profile("steve") == "steve"
 
 
-    def test_ignores_unrelated_files(self, profile_env, monkeypatch):
+    def test_ignores_unrelated_files(self, profile_env):
         # ~/.local/bin commonly holds unrelated binaries; they must not match.
-        monkeypatch.setattr("sys.platform", "darwin")
         from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
         wrapper_dir = _get_wrapper_dir()
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -509,8 +506,7 @@ class TestFindAliasForProfile:
         assert find_alias_for_profile("steve") is None
 
 
-    def test_list_profiles_surfaces_custom_alias(self, profile_env, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
+    def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
             create_profile,
             create_wrapper_script,
@@ -711,6 +707,110 @@ class TestInternalHelpers:
 
 
 # ===================================================================
+# TestWriteProfileMetaDurability
+# ===================================================================
+
+class TestWriteProfileMetaDurability:
+    """``profile.yaml`` must survive an interrupted ``write_profile_meta``.
+
+    ``write_profile_meta`` is a read-modify-write whose docstring promises
+    "unspecified fields preserve existing values".  Its read half swallows
+    any parse error and falls back to ``{}``, so a truncated profile.yaml is
+    not transient corruption — the *next* call reads ``{}`` and silently and
+    permanently drops every field the caller did not explicitly pass.
+    """
+
+    @staticmethod
+    def _seed(tmp_path):
+        profile_dir = tmp_path / "coder"
+        profile_dir.mkdir()
+        profiles.write_profile_meta(
+            profile_dir, description="Curated by hand", description_auto=False
+        )
+        return profile_dir
+
+    @staticmethod
+    def _interrupted_write(profile_dir):
+        """Run a ``write_profile_meta`` whose serialization fails mid-call.
+
+        The pre-fix code called ``yaml.safe_dump``; ``utils.atomic_yaml_write``
+        calls ``yaml.dump``.  Breaking both keeps this serializer-agnostic, so
+        it measures durability rather than the choice of entry point.  A
+        scoped ``MonkeyPatch.context`` is used instead of the fixture so the
+        patch is reverted immediately, without touching the session-wide env
+        isolation that shares the function-scoped ``monkeypatch`` instance.
+        """
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated interruption mid-write")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(yaml, "safe_dump", _boom)
+            mp.setattr(yaml, "dump", _boom)
+            with pytest.raises(RuntimeError):
+                profiles.write_profile_meta(profile_dir, description_auto=True)
+
+    def test_failed_write_leaves_existing_file_intact(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+        path = profile_dir / "profile.yaml"
+        before = path.read_text(encoding="utf-8")
+        assert "Curated by hand" in before
+
+        self._interrupted_write(profile_dir)
+
+        # A truncating open() destroys the file before the dump ever runs.
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_failed_write_does_not_silently_drop_unspecified_fields(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+
+        self._interrupted_write(profile_dir)
+
+        # The user retries; this call does not pass a description, so the
+        # documented merge contract requires the existing one to survive.
+        profiles.write_profile_meta(profile_dir, description_auto=True)
+        meta = profiles.read_profile_meta(profile_dir)
+        assert meta["description"] == "Curated by hand"
+        assert meta["description_auto"] is True
+
+    def test_emoji_description_is_written_as_real_utf8(self, tmp_path):
+        """Astral-plane chars must not become ``\\UXXXXXXXX`` escapes (#51356).
+
+        Supersedes #51808, which fixed this symptom alone by adding
+        ``allow_unicode=True``; ``atomic_yaml_write`` sets it internally.
+        """
+        profile_dir = tmp_path / "wizard"
+        profile_dir.mkdir()
+        profiles.write_profile_meta(profile_dir, description="Code wizard 🧙 ✨")
+
+        raw = (profile_dir / "profile.yaml").read_text(encoding="utf-8")
+        assert "\\U" not in raw
+        assert "🧙" in raw
+        assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
+
+    def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
+        """Guard on the conversion, not a behavior change.
+
+        Dotfile managers (chezmoi/stow) symlink profile.yaml into a tracked
+        repo.  ``open(path, "w")`` wrote through the link; a naive
+        ``os.replace`` would detach it.  ``atomic_replace`` resolves the link
+        first (GitHub #16743), so the link must still be intact afterwards.
+        """
+        profile_dir = tmp_path / "linked"
+        profile_dir.mkdir()
+        real_dir = tmp_path / "dotfiles"
+        real_dir.mkdir()
+        real = real_dir / "profile.yaml"
+        real.write_text("description: from dotfiles\n", encoding="utf-8")
+        (profile_dir / "profile.yaml").symlink_to(real)
+
+        profiles.write_profile_meta(profile_dir, description="updated")
+
+        assert (profile_dir / "profile.yaml").is_symlink()
+        assert "updated" in real.read_text(encoding="utf-8")
+        assert [p.name for p in profile_dir.iterdir() if p.name.endswith(".tmp")] == []
+
+
+# ===================================================================
 # Edge cases and additional coverage
 # ===================================================================
 
@@ -814,6 +914,27 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
+
+    def test_empty_allowlist_serves_only_default(self, profile_env):
+        create_profile("worker", no_alias=True)
+
+        serve = dict(profiles_to_serve(multiplex=True, profile_allowlist=[]))
+
+        assert serve == {"default": _get_default_hermes_home()}
+
+    def test_allowlist_normalizes_deduplicates_and_keeps_default(self, profile_env):
+        create_profile("worker", no_alias=True)
+        create_profile("guest", no_alias=True)
+
+        serve = dict(
+            profiles_to_serve(
+                multiplex=True,
+                profile_allowlist=[" Worker ", "worker", "default", "missing"],
+            )
+        )
+
+        assert set(serve) == {"default", "worker"}
+        assert serve["worker"] == get_profile_dir("worker")
 
 
 

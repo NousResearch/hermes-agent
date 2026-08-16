@@ -16,6 +16,7 @@ import socket as _socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import weakref
@@ -25,6 +26,23 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
+    """Done-callback retrieving a detached fatal-error handler's exception.
+
+    Prevents "Task exception was never retrieved" warnings for handler tasks
+    we deliberately let finish in the background after their awaiting
+    (carrier) task was cancelled — see ``_notify_fatal_error``.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Detached fatal-error handler task failed: %s", exc, exc_info=exc
+        )
+
 
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Keep Telegram's narrower attachment/voice sets below separate: formats such
@@ -45,6 +63,17 @@ _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+# Delivery-time history is best-effort dedup metadata, not canonical state.
+# Keep this comfortably below the Discord heartbeat watchdog window and fail
+# open rather than withholding a legitimate attachment.
+_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
+# Timed-out reads cannot be cancelled while SQLite/Python code is already
+# running. Isolate and cap them so wedged best-effort dedup work cannot consume
+# the shared asyncio executor or create an unbounded number of worker threads.
+_HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
+_HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
+    _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
+)
 
 
 def _platform_name(platform) -> str:
@@ -1448,6 +1477,210 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
+    """Parse configured Docker volume mounts into ``(host_path, container_path)``.
+
+    Source of truth is ``TERMINAL_DOCKER_VOLUMES`` (JSON list of
+    ``host:container[:mode]`` specs), matching terminal/docker runtime config.
+    Named volumes and non-absolute hosts are skipped because they cannot be
+    resolved on the gateway host for media delivery.
+    """
+    raw = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    if not raw:
+        return []
+    try:
+        import json as _json
+
+        parsed = _json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    mounts: List[Tuple[Path, Path]] = []
+    for entry in parsed:
+        if not isinstance(entry, str):
+            continue
+        spec = entry.strip()
+        if not spec:
+            continue
+        # Prefer the first ':/' so absolute container paths are unambiguous.
+        sep = spec.find(":/")
+        if sep <= 0:
+            continue
+        host_raw = spec[:sep]
+        container_and_mode = spec[sep + 1 :]  # starts with /
+        container_raw = container_and_mode.split(":", 1)[0]
+        if not container_raw.startswith("/"):
+            continue
+        # Skip named volumes (no absolute/drive host path).
+        host_expanded = os.path.expanduser(host_raw)
+        if not (
+            host_expanded.startswith("/")
+            or (len(host_expanded) > 1 and host_expanded[1] == ":")
+        ):
+            continue
+        try:
+            host_path = Path(host_expanded).resolve(strict=False)
+            container_path = Path(container_raw)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not container_path.is_absolute():
+            continue
+        mounts.append((host_path, container_path))
+    return mounts
+
+
+def _default_docker_workspace_host_root() -> Optional[Path]:
+    """Host path for Docker's default persistent ``/workspace`` mount."""
+    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+        return None
+    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return None
+    # Explicit cwd mount takes over /workspace when enabled.
+    if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        try:
+            host = Path(os.path.expanduser(cwd)).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return host if host.is_dir() else None
+    try:
+        from tools.environments.base import get_sandbox_dir
+
+        root = (get_sandbox_dir() / "docker" / "default" / "workspace").resolve(strict=False)
+    except Exception:
+        return None
+    return root if root.is_dir() else None
+
+
+def _docker_persistent_home_host_root() -> Optional[Path]:
+    """Host path for Docker's default persistent ``/root`` home mount.
+
+    Persistent containers bind ``<sandbox>/docker/<task>/home`` to ``/root``
+    (tools/environments/docker.py), so an agent that writes ``/root/out.png``
+    produced a real host file the gateway couldn't find. Same collapse rule as
+    the workspace mount: the gateway's container sharing resolves to the
+    ``default`` task sandbox.
+    """
+    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+        return None
+    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return None
+    try:
+        from tools.environments.base import get_sandbox_dir
+
+        root = (get_sandbox_dir() / "docker" / "default" / "home").resolve(strict=False)
+    except Exception:
+        return None
+    return root if root.is_dir() else None
+
+
+def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
+    """(host, container) pairs for the auto-mounted Hermes cache dirs.
+
+    The agent legitimately sees generated artifacts at ``/root/.hermes/...``
+    (``agent_visible_image`` from image_generate, cache-dir reads) and will
+    naturally emit those container paths in MEDIA tags. These mounts are
+    longer prefixes than the ``/root`` home mount, so longest-prefix matching
+    picks the cache translation over the home translation for them.
+    """
+    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
+        return []
+    try:
+        from tools.credential_files import get_cache_directory_mounts
+
+        return [
+            (Path(m["host_path"]), Path(m["container_path"]))
+            for m in get_cache_directory_mounts()
+        ]
+    except Exception:
+        return []
+
+
+def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
+    """Translate a container-absolute path to its host path when possible.
+
+    Uses longest-prefix match across configured ``docker_volumes``, the
+    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the default
+    persistent Docker ``/workspace`` host root, and the persistent ``/root``
+    home mount.
+    """
+    if not candidate.is_absolute():
+        return None
+
+    # In-process gateways (Desktop backend, `hermes serve`) may not have
+    # bridged terminal.* config into TERMINAL_* env vars — run the idempotent
+    # bridge so the mount parsing below sees the active backend and volumes
+    # (same guard _binary_reference_block applies for inbound attachments).
+    try:
+        from tools.terminal_tool import _ensure_terminal_env_bridged
+
+        _ensure_terminal_env_bridged()
+    except Exception:
+        pass
+
+    mounts = list(_parse_docker_volume_mounts())
+    mounts.extend(_cache_dir_container_mounts())
+    # Synthetic /workspace mount for default persistent sandbox / cwd bind.
+    default_ws = _default_docker_workspace_host_root()
+    if default_ws is not None and not any(c.as_posix() == "/workspace" for _, c in mounts):
+        mounts.append((default_ws, Path("/workspace")))
+    # Synthetic /root mount for the persistent home bind. Cache mounts above
+    # are longer prefixes, so /root/.hermes/... still translates to the host
+    # cache — this only catches stray home writes like /root/out.png.
+    default_home = _docker_persistent_home_host_root()
+    if default_home is not None and not any(c.as_posix() == "/root" for _, c in mounts):
+        # /root/.hermes/* that did NOT match a cache mount is the container's
+        # credential/secret surface (.env, auth.json, ... are individually
+        # bind-mounted from the real host stores). Translating those through
+        # the home mount would resolve to sandbox-home copies OUTSIDE the
+        # host-side credential denylist prefixes — refuse instead so the
+        # normal "container path doesn't exist on host" rejection applies.
+        if not candidate.as_posix().startswith("/root/.hermes"):
+            mounts.append((default_home, Path("/root")))
+
+    if not mounts:
+        return None
+
+    # Longest container-prefix match.
+    best: Optional[Tuple[Path, Path, int]] = None
+    candidate_posix = candidate.as_posix()
+    for host_root, container_root in mounts:
+        container_posix = container_root.as_posix().rstrip("/") or "/"
+        if candidate_posix == container_posix or candidate_posix.startswith(container_posix + "/"):
+            score = len(container_posix)
+            if best is None or score > best[2]:
+                best = (host_root, container_root, score)
+    if best is None:
+        return None
+
+    host_root, container_root, _ = best
+    try:
+        relative = candidate.relative_to(container_root)
+        translated = (host_root / relative).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if translated != host_root and not _path_is_within(translated, host_root):
+        return None
+    return translated
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -1486,10 +1719,17 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not expanded.is_absolute():
         return None
 
-    try:
-        resolved = expanded.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        return None
+    # Docker agents emit MEDIA:/workspace/... (or other configured container
+    # mount paths). Resolve those to host paths before the normal host-side
+    # existence / denylist checks.
+    translated = _translate_docker_container_media_path(expanded)
+    if translated is not None:
+        resolved = translated
+    else:
+        try:
+            resolved = expanded.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     if not resolved.is_file():
         return None
@@ -2060,7 +2300,16 @@ class MessageEvent:
     # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
-    
+
+    # Author of this inbound message.  Carried on the event itself (not
+    # only on ``source``) so prompt builders that build per-message text
+    # can resolve "who said this" without having to dig into ``source``.
+    # ``source`` still carries the same values for callers that already
+    # read from there.  Adapters that produce events from non-IM sources
+    # (cron, webhook, autonomous) may leave these as ``None``.
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+
     # Source information
     source: SessionSource = None
     
@@ -2126,10 +2375,16 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    # Whether this event may resolve gateway commands or pending control
+    # prompts. Kept last to preserve positional construction compatibility.
+    # Proactive plugin events set this to False so untrusted payload text
+    # remains conversational input.
+    allow_gateway_control: bool = True
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return (self.text or "").lstrip().startswith("/")
+        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
@@ -2756,6 +3011,12 @@ class BasePlatformAdapter(ABC):
         self._reaction_handler: Optional[
             Callable[[Dict[str, Any]], Awaitable[None]]
         ] = None
+        # Normalized platform events cross this runner-owned boundary before
+        # plugin dispatch so authorization/profile state never lives in an SDK
+        # adapter. The second argument is an internal SessionSource.
+        self._platform_event_handler: Optional[
+            Callable[[Dict[str, Any], Any], Awaitable[None]]
+        ] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2765,6 +3026,11 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        # Strong references to shielded fatal-error handler tasks that outlive
+        # their carrier task (asyncio only keeps weak refs). Without this set,
+        # the event loop can GC the detached handler before it finishes — the
+        # exact "handler killed mid-flight" class we are fixing (#81335).
+        self._detached_fatal_tasks: set = set()
         # Cross-HERMES_HOME token takeover is armed by GatewayRunner only for
         # an adapter's initial connect during an explicit ``gateway run
         # --replace`` startup.  Ordinary starts and every reconnect fail safe
@@ -3212,7 +3478,37 @@ class BasePlatformAdapter(ABC):
             return
         result = handler(self)
         if asyncio.iscoroutine(result):
-            await result
+            # Run the handler as a detached, shielded task. The notification
+            # is frequently awaited from inside an adapter-owned task (e.g.
+            # the Telegram ``_polling_error_task``), and the gateway's fatal
+            # handler tears the adapter down via ``disconnect()`` — which
+            # cancels that very task. Without the shield the cancellation
+            # killed the handler mid-flight: the adapter was already popped
+            # from the gateway's adapter map but never queued for background
+            # reconnection, leaving a zombie gateway with no platforms and no
+            # pending retries (#81335).
+            task = asyncio.ensure_future(result)
+            # Keep a strong reference so the event loop's weak-ref task
+            # table doesn't GC the handler before it finishes (asyncio docs:
+            # "Save a reference to tasks ... to avoid a task disappearing
+            # mid-execution"). Matches the gateway-level pattern in
+            # GatewayRunner._handle_adapter_fatal_error.
+            _tasks = getattr(self, "_detached_fatal_tasks", None)
+            if _tasks is None:
+                _tasks = self._detached_fatal_tasks = set()
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # The carrier task was cancelled (typically by our own
+                # teardown running inside the handler). Let the handler
+                # finish detached so reconnect queueing / the shutdown
+                # decision completes, and consume its eventual exception to
+                # avoid "Task exception was never retrieved" noise.
+                if not task.done():
+                    task.add_done_callback(_consume_detached_handler_exception)
+                raise
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success.
@@ -3298,7 +3594,7 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
-    
+
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
         Set the handler for incoming messages.
@@ -3307,6 +3603,19 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_platform_event_handler(
+        self,
+        handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]],
+    ) -> None:
+        """Install the gateway-owned normalized platform-event boundary.
+
+        Adapters normalize SDK updates and pass only stable dictionaries plus an
+        internal ``SessionSource`` to this callback. The runner owns the final
+        authorization decision and plugin dispatch; an adapter with no callback
+        therefore fails closed instead of exposing pre-auth events.
+        """
+        self._platform_event_handler = handler
 
     def set_topic_recovery_fn(
         self,
@@ -3466,6 +3775,96 @@ class BasePlatformAdapter(ABC):
         # Avoid circular import: gateway.run already imports this module.
         from gateway.run import _collect_history_media_paths
         return _collect_history_media_paths(history)
+
+    async def _bounded_history_media_paths_for_session(
+        self, session_key: str
+    ) -> Optional[set]:
+        """Run best-effort history lookup in a bounded isolated daemon thread."""
+        admission = _HISTORY_MEDIA_LOOKUP_ADMISSION
+        if not admission.acquire(blocking=False):
+            logger.warning(
+                "[%s] Media-delivery history lookup capacity exhausted for %s; "
+                "delivering bare local file path(s) without history dedup",
+                self.name,
+                session_key,
+            )
+            return None
+
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+
+        def _publish_result(result=None, error=None):
+            if result_future.done():
+                return
+            if error is not None:
+                result_future.set_exception(error)
+            else:
+                result_future.set_result(result)
+
+        def _worker():
+            try:
+                result = self._history_media_paths_for_session(session_key)
+            except BaseException as exc:
+                try:
+                    loop.call_soon_threadsafe(_publish_result, None, exc)
+                except RuntimeError:
+                    pass  # Event loop already closed during gateway shutdown.
+            else:
+                try:
+                    loop.call_soon_threadsafe(_publish_result, result, None)
+                except RuntimeError:
+                    pass  # Event loop already closed during gateway shutdown.
+            finally:
+                admission.release()
+
+        try:
+            threading.Thread(
+                target=_worker,
+                name="media-history-lookup",
+                daemon=True,
+            ).start()
+        except Exception:
+            # Thread could not be started (e.g. thread exhaustion — start()
+            # raises RuntimeError). The worker never ran, so its
+            # finally-release never fires — release the admission permit here
+            # to avoid leaking it permanently, and fail open like every other
+            # path in this helper. (Unlike _worker's BaseException forwarding,
+            # swallowing here must not eat KeyboardInterrupt/SystemExit.)
+            admission.release()
+            logger.warning(
+                "[%s] Could not start media-delivery history lookup worker "
+                "for %s; delivering bare local file path(s) without history "
+                "dedup",
+                self.name,
+                session_key,
+                exc_info=True,
+            )
+            return None
+        try:
+            return await asyncio.wait_for(
+                result_future,
+                timeout=_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Timed out loading media-delivery history for %s; "
+                "delivering bare local file path(s) without history dedup",
+                self.name,
+                session_key,
+            )
+            return None
+        except Exception:
+            # The worker publishes its own failure via set_exception; this
+            # helper is documented as best-effort/fail-open, so swallow the
+            # error here instead of letting it kill media delivery.
+            logger.warning(
+                "[%s] Media-delivery history lookup failed for %s; "
+                "delivering bare local file path(s) without history dedup",
+                self.name,
+                session_key,
+                exc_info=True,
+            )
+            return None
 
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -4091,19 +4490,22 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare a spoken script for TTS.
 
-        Auto-TTS should not feed raw chat Markdown, ``<think>`` reasoning
+        Auto-TTS should not feed raw chat Markdown, ``⋗`` reasoning
         blocks, or compact symbols to the speech provider.  It should receive
         a transcript-like script: reasoning blocks removed, headings and
         bullets flattened into sentence pauses, and units like ``°C``
         expanded to words such as ``degrees Celsius``.
+
+        Provider-safe chunking and platform delivery limits are enforced
+        by the TTS tool.
         """
         try:
             from tools.tts_text_normalize import prepare_spoken_text
-            return prepare_spoken_text(text, max_chars=4000)
+            return prepare_spoken_text(text, max_chars=None)
         except Exception:
             # Keep auto-TTS best-effort if the normalizer ever fails.
             text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
-            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+            return re.sub(r'[*_`#\[\]()]', '', text).strip()
 
     async def play_tts(
         self,
@@ -5562,7 +5964,8 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
-        coerce_plaintext_gateway_command(event)
+        if event.allow_gateway_control:
+            coerce_plaintext_gateway_command(event)
 
         # Telegram topic recovery only applies to private DM topic lanes. Do
         # not submit a no-op check for group/forum/channel traffic to the
@@ -5575,11 +5978,23 @@ class BasePlatformAdapter(ABC):
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
 
+        _sk_store = getattr(self, "_session_store", None)
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=_sk_store._resolve_profile_for_key(event.source) if _sk_store else None,
         )
+        expected_session_key = str(
+            (event.metadata or {}).get("gateway_session_key") or ""
+        ).strip()
+        if expected_session_key and session_key != expected_session_key:
+            logger.warning(
+                "Dropping internally routed event: expected session=%s derived=%s",
+                expected_session_key,
+                session_key,
+            )
+            return
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -5665,7 +6080,7 @@ class BasePlatformAdapter(ABC):
             # Same shape as the /approve deadlock fix (PR #4926) — both
             # cases are "agent thread blocked on Event.wait, message must
             # reach the resolver before being treated as a new turn."
-            if not cmd:
+            if not cmd and event.allow_gateway_control:
                 try:
                     from tools import clarify_gateway as _clarify_mod
                     _has_text_clarify = (
@@ -5883,16 +6298,6 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
-                # Do NOT deduplicate MEDIA tags against prior turns here.
-                # The auto-append path in GatewayRunner._run_agent_inner already
-                # deduplicates auto-appended tags via _collect_auto_append_media_tags
-                # with history_media_paths, so this filter would only catch explicit
-                # MEDIA tags the model deliberately included in its response — which
-                # must be preserved (user asked to resend an image, the model echoed
-                # a path intentionally, etc.).  Bare-file-path dedup still applies
-                # to local_files below via the same _history_media_paths set.
-                _history_media_paths = self._history_media_paths_for_session(session_key)
-
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561).
@@ -5911,6 +6316,20 @@ class BasePlatformAdapter(ABC):
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
                     local_files = self.filter_local_delivery_paths(local_files)
+                    # Do NOT load the full SQLite transcript for ordinary text or
+                    # explicit MEDIA tags.  History is needed only for bare local
+                    # paths auto-detected above.  Run that synchronous DB/decode
+                    # work off the platform event loop so a slow state.db read
+                    # cannot block Discord heartbeats and trigger the liveness
+                    # watchdog.  On lookup failure the helper returns None and we
+                    # fail open by delivering the candidate file.
+                    _history_media_paths = None
+                    if local_files:
+                        _history_media_paths = (
+                            await self._bounded_history_media_paths_for_session(
+                                session_key
+                            )
+                        )
                     if _history_media_paths:
                         _suppressed = [p for p in local_files if p in _history_media_paths]
                         if _suppressed:
@@ -5956,6 +6375,7 @@ class BasePlatformAdapter(ABC):
                 # Skip when streaming TTS already delivered audio for this turn
                 # (#60671) — the gateway streaming-TTS consumer sets the flag.
                 _tts_path = None
+                _tts_paths: List[str] = []
                 _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
@@ -5989,14 +6409,21 @@ class BasePlatformAdapter(ABC):
                             )
                             tts_data = _json.loads(tts_result_str)
                             if tts_data.get("success", True):
-                                _tts_path = tts_data.get("file_path") or _tts_requested_path
+                                raw_tts_paths = tts_data.get("file_paths") or [
+                                    tts_data.get("file_path")
+                                ]
+                                _tts_paths = [
+                                    str(path) for path in raw_tts_paths
+                                    if path and Path(path).exists()
+                                ]
+                                _tts_path = _tts_paths[0] if _tts_paths else None
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
-                _tts_cleanup_paths = {_tts_requested_path, _tts_path} - {None}
-                if _tts_path and Path(_tts_path).exists():
+                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
+                for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         # Caption eligibility and payload stay on the ORIGINAL
                         # reply text. The spoken script is for synthesis only:
@@ -6004,9 +6431,11 @@ class BasePlatformAdapter(ABC):
                         # 1024-char caption limit, and captioning that spoken
                         # form would suppress the full formatted reply the
                         # user is meant to receive as a separate message.
+                        # Caption only on the first file.
                         telegram_tts_caption = None
                         if (
-                            self.platform == Platform.TELEGRAM
+                            _tts_index == 0
+                            and self.platform == Platform.TELEGRAM
                             and text_content
                             and text_content[:1024] == text_content
                         ):
@@ -6017,16 +6446,20 @@ class BasePlatformAdapter(ABC):
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
                         )
+                        _record_delivery(tts_result)
                         _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
+                            _tts_caption_delivered
+                            or (
+                                telegram_tts_caption
+                                and getattr(tts_result, "success", False)
+                            )
                         )
                     finally:
-                        for _cleanup_path in _tts_cleanup_paths:
-                            try:
-                                os.remove(_cleanup_path)
-                            except OSError:
-                                pass
-                elif _tts_cleanup_paths:
+                        try:
+                            os.remove(_tts_path)
+                        except OSError:
+                            pass
+                if not _tts_paths and _tts_cleanup_paths:
                     for _cleanup_path in _tts_cleanup_paths:
                         try:
                             os.remove(_cleanup_path)
@@ -6349,7 +6782,7 @@ class BasePlatformAdapter(ABC):
                 outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
-        except Exception as e:
+        except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
@@ -6371,6 +6804,14 @@ class BasePlatformAdapter(ABC):
                     "[%s] Failed to send error notification to user: %s",
                     self.name, notify_err, exc_info=True,
                 )  # Last resort — don't let error reporting crash the handler
+            # Preserve shutdown semantics: SystemExit/KeyboardInterrupt must
+            # still propagate after the user-facing failure notification, so
+            # the loop's own signal handling can shut down cleanly. Other
+            # BaseExceptions (e.g. GeneratorExit) are contained like ordinary
+            # failures — this handler is fire-and-forget, so swallowing them
+            # here prevents "Task exception was never retrieved" radio silence.
+            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                raise
         finally:
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not
@@ -6612,8 +7053,11 @@ class BasePlatformAdapter(ABC):
 
         # Resolve profile from configured routes (None when no match / no routes)
         profile = None
+        profile_route_rejected = False
         runner = getattr(self, "gateway_runner", None)
         if runner is not None:
+            from gateway.profile_routing import ProfileRouteRejected
+
             try:
                 profile = runner._profile_name_for_source(
                     SessionSource(
@@ -6634,6 +7078,8 @@ class BasePlatformAdapter(ABC):
                         message_id=str(message_id) if message_id else None,
                     )
                 )
+            except ProfileRouteRejected:
+                profile_route_rejected = True
             except Exception:
                 logger.warning(
                     "Profile resolution failed for %s/%s, defaulting to active profile",
@@ -6665,6 +7111,11 @@ class BasePlatformAdapter(ABC):
         # SessionSource.to_dict(). The live receiving adapter is authoritative
         # for this turn even when profile_routes selects a different runtime.
         source._transport_adapter_ref = weakref.ref(self)
+        # Keep this transport-only fail-closed signal out of SessionSource
+        # serialization/session identity. The shared gateway handler consumes it
+        # before auth, hooks, or session setup, so every adapter drops matched
+        # routes to unserved profiles consistently without surfacing HTTP 500s.
+        source.profile_route_rejected = profile_route_rejected
         return source
     
     @abstractmethod
@@ -6677,6 +7128,26 @@ class BasePlatformAdapter(ABC):
         - type: "dm", "group", "channel"
         """
         pass
+
+    def toolsets_for_source(self, source: "SessionSource") -> Optional[List[str]]:
+        """Per-source toolset override for agent runs triggered by this adapter.
+
+        Return a list of configurable toolset keys (e.g. ``["terminal",
+        "file", "web"]``) to REPLACE the platform-level toolset resolution
+        for this specific source, or ``None`` to use the normal
+        ``platform_toolsets.<platform>`` resolution (the default).
+
+        The gateway validates the returned list through the same
+        ``_get_platform_tools`` path as platform-level config, so unknown or
+        platform-restricted toolset names are dropped rather than trusted.
+
+        Currently used by the webhook adapter so individual routes can pin
+        their own toolsets (a trusted local monitoring route can get
+        ``terminal`` without widening every webhook route's default-safe
+        toolset). See ``platforms.webhook.extra.routes.<name>.toolsets`` and
+        the ``toolsets`` key in ``webhook_subscriptions.json``.
+        """
+        return None
     
     def format_message(self, content: str) -> str:
         """

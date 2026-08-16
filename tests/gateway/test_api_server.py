@@ -209,7 +209,7 @@ class TestAdapterInit:
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
-            staticmethod(lambda: {"enabled": True, "effort": "xhigh"}),
+            staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
@@ -2033,9 +2033,15 @@ class TestToolCallsInOutput:
             assert output[0]["name"] == "calculator"
             assert output[0]["arguments"] == '{"expression": "6*7"}'
             assert output[0]["call_id"] == "call_abc123"
+            # Replayed server-executed calls must be marked completed so
+            # OpenAI clients don't treat them as pending calls to execute.
+            assert output[0]["status"] == "completed"
+            assert output[0]["id"].startswith("fc_")
             assert output[1]["type"] == "function_call_output"
             assert output[1]["call_id"] == "call_abc123"
             assert output[1]["output"] == "42"
+            assert output[1]["status"] == "completed"
+            assert output[1]["id"].startswith("fco_")
             assert output[2]["type"] == "message"
             assert output[2]["content"][0]["text"] == "The result is 42."
 

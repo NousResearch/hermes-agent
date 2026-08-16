@@ -86,11 +86,14 @@ compression:
   #   "glm-5.2": 0.40        # longest key wins). See "Per-model threshold
   #   "claude-sonnet": 0.35  # overrides" below.
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
+  tail_mode: legacy          # Tail retention policy: legacy | lean (default: legacy)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   min_tail_user_messages: 1  # Real user messages guaranteed in the tail (default: 1)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
+  codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
+  codex_responses_compact_threshold: 200000  # Server-side compaction trigger (input tokens)
   in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -107,7 +110,8 @@ auxiliary:
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
 | `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins). The small-context floor still applies on top (see below) |
-| `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
+| `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
+| `tail_mode` | `legacy` | `legacy`, `lean` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: chunked identifier-preserving digests of the compacted region, a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Costs a few extra summarizer calls at the compaction boundary. Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
@@ -115,6 +119,8 @@ auxiliary:
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
+| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
+| `codex_responses_compact_threshold` | `200000` | ≥1 tokens | Server-side compaction trigger in input tokens. Clamped below the local compression threshold at request time so the server compacts first |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 
 ### In-place compaction (single stable session id)
@@ -207,6 +213,35 @@ mechanism instead:
 Hermes' local transcript is never rewritten on this runtime — state.db records
 the compaction boundary while the visible transcript stays intact. All other
 routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
+
+### Native Responses compaction (gpt-5.6 on direct OpenAI / Codex subscription)
+
+OpenAI's Responses API supports server-side compaction: when a request includes
+`context_management: [{type: "compaction", compact_threshold: N}]` and the
+rendered input crosses N tokens, the server prunes older context into an opaque
+encrypted `compaction` output item. Hermes captures that item into the
+assistant message's existing replay sidecar and sends it back on subsequent
+turns, standing in for the pruned history — long-horizon recall without a
+client-side summary pass, and ZDR-friendly (`store: false`, no
+`previous_response_id`).
+
+Opt in with `compression.codex_responses_native: true`. The gate is deliberately
+narrow, re-checked on every request:
+
+- **Models:** the gpt-5.6 family only. Other models fail server-side when the
+  field is present (gpt-5.1/5.2 return HTTP 500 or stall the stream — there is
+  no structured rejection to downgrade on, verified live Aug 2026).
+- **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
+  (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
+  local servers never see the field.
+
+Everything else about compression is unchanged: the local compressor stays
+armed as the fallback owner (the native threshold is clamped ~8K tokens below
+the local trigger so the server compacts first), and a structured provider
+rejection of the field disables native compaction for the session and retries
+the request without it. Switching the session to a non-eligible model or route
+simply stops the field from being sent — captured checkpoints are dropped from
+replay by the existing cross-issuer guard when the endpoint changes.
 
 ### Computed Values (for a 200K context model at defaults)
 

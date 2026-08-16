@@ -3,12 +3,29 @@
 from typing import Any
 
 from agent.portal_tags import get_conversation_context, nous_portal_tags
+from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
 
 
 class NousProfile(ProviderProfile):
     """Nous Portal — product tags, reasoning with Nous-specific omission."""
+
+    def resolve_aux_model(self, *, vision: bool = False) -> str:
+        """Ask the Portal which cheap model it currently recommends.
+
+        ``/api/nous/recommended-models`` is the authoritative, tier-aware
+        source (free vs paid), so the auxiliary fast tier tracks the live
+        catalog instead of a hardcoded id that 404s the day Nous retires it.
+        The underlying fetch is memory- and disk-cached with a last-known-good
+        fallback, so this is cheap to call and safe offline.
+        """
+        try:
+            from hermes_cli.models import get_nous_recommended_aux_model
+
+            return get_nous_recommended_aux_model(vision=vision) or ""
+        except Exception:
+            return ""
 
     def build_extra_body(
         self, *, session_id: str | None = None, **context
@@ -40,7 +57,7 @@ class NousProfile(ProviderProfile):
         # session id; the ambient root additionally keeps the key stable for
         # installs that opt back into rotating compaction, and across
         # delegate-subagent trees.
-        sticky_key = get_conversation_context() or session_id
+        sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
         if sticky_key:
             body["session_id"] = sticky_key
         provider_preferences = context.get("provider_preferences")

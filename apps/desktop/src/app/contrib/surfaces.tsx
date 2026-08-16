@@ -11,8 +11,9 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router'
 
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 
@@ -102,10 +103,9 @@ export const StatusbarSurface = memo(function StatusbarSurface({
 })
 
 /** The workspace pane: the real route table (chat + full-page views + plugin
- *  routes). Subscribes to `$gatewayState` and ROUTES_AREA itself; the gateway
- *  instance + voice cap arrive as props so a reconnect/config load re-renders
- *  only this surface. ChatView subscribes to its own session atoms, so
- *  streaming never round-trips through the controller. */
+ *  routes). Subscribes to the gateway instance/state and ROUTES_AREA itself;
+ *  the voice cap arrives as a prop. ChatView subscribes to its own session
+ *  atoms, so streaming never round-trips through the controller. */
 export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   actions,
   maxVoiceRecordingSeconds
@@ -114,18 +114,10 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   maxVoiceRecordingSeconds?: number
 }) {
   const activeGatewayProfile = useStore($activeGatewayProfile)
+  const gateway = useStore($gateway)
   const gatewayState = useStore($gatewayState)
   useContributions(ROUTES_AREA)
   const routeContributions = contributedRoutes()
-
-  // Recapture the live gateway instance whenever the connection state flips.
-  // getGateway reads a controller ref, so gatewayState is the intentional
-  // re-eval trigger (not a value the computation itself reads).
-  const gateway = useMemo(
-    () => actions.getGateway(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [actions, gatewayState]
-  )
 
   const modelMenuContent = useMemo(
     () =>
@@ -179,7 +171,11 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
           as every other contribution mount. */}
       {routeContributions.map(route => (
         <Route
-          element={page(<ContribBoundary id={route.key}>{route.render()}</ContribBoundary>)}
+          element={page(
+            <ContribBoundary id={route.key}>
+              <ContribRender render={route.render} />
+            </ContribBoundary>
+          )}
           key={route.key}
           path={route.path.slice(1)}
         />

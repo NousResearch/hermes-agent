@@ -26,6 +26,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 from agent.secret_scope import get_secret as _get_secret
 
+try:
+    import hermes_cli as _hermes_cli
+
+    _HERMES_VERSION = str(_hermes_cli.__version__)
+except Exception:
+    _HERMES_VERSION = "0.0.0"
+
 
 def _getenv(name: str, default: str = "") -> str:
     """Profile-scoped replacement for os.getenv on credential reads.
@@ -467,6 +474,11 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_opencode_endpoint(base_url: str | None) -> bool:
+    """Return True for OpenCode's Zen/Go relay (opencode.ai)."""
+    return base_url_host_matches(base_url or "", "opencode.ai")
+
+
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
 # - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
@@ -857,12 +869,18 @@ def build_anthropic_client(
     )
 
     if _is_kimi_coding_endpoint(base_url):
-        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
-        # to be recognized as a valid Coding Agent. Without it, returns 403.
-        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        # Kimi's /coding endpoint requires a non-empty User-Agent to be
+        # recognized as a valid Coding Agent. Originally we sent
+        # ``claude-code/0.1.0`` (the minimum that avoided a 403), but the Kimi
+        # team asked us to identify ourselves properly so they can attribute
+        # traffic correctly. Send the same attribution header set we send to
+        # OpenRouter, Vercel AI Gateway, and Fireworks:
+        # HTTP-Referer + X-Title + HermesAgent User-Agent.
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
-            "User-Agent": "claude-code/0.1.0",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+            "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
     elif _requires_bearer_auth(normalized_base_url):
@@ -899,6 +917,18 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if _is_opencode_endpoint(base_url):
+        # OpenCode identifies clients by request headers, like OpenRouter does.
+        # The OpenAI-wire paths pick these up from profile.default_headers
+        # (plugins/model-providers/opencode-zen), but the Anthropic Messages
+        # route builds its client right here and never sees the profile. Merge
+        # the same set on top of whatever auth branch ran above.
+        headers = dict(kwargs.get("default_headers") or {})
+        headers.setdefault("HTTP-Referer", "https://hermes-agent.nousresearch.com")
+        headers.setdefault("X-Title", "Hermes Agent")
+        headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
+        kwargs["default_headers"] = headers
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
@@ -1867,7 +1897,16 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
 
     if hasattr(value, "model_dump"):
         _path.add(obj_id)
-        result = _to_plain_data(value.model_dump(), _depth=_depth + 1, _path=_path)
+        try:
+            # warnings=False: content blocks from the streaming accumulator
+            # (ParsedTextBlock et al.) trip pydantic's serializer-mismatch
+            # UserWarning against the generic Message union; the dump itself
+            # is correct, and the warning leaks to the user's terminal.
+            dumped = value.model_dump(warnings=False)
+        except TypeError:
+            # Duck-typed model_dump without pydantic's signature.
+            dumped = value.model_dump()
+        result = _to_plain_data(dumped, _depth=_depth + 1, _path=_path)
         _path.discard(obj_id)
         return result
     if isinstance(value, dict):
@@ -2775,7 +2814,26 @@ def convert_messages_to_anthropic(
                     p.get("cache_control") for p in content if isinstance(p, dict)
                 )
                 if has_cache:
-                    system = [p for p in content if isinstance(p, dict)]
+                    # Copy blocks before coercing so the caller's message
+                    # dicts are never mutated, then replace blank/whitespace
+                    # text with the shared non-whitespace placeholder —
+                    # Anthropic rejects a blank system text block with the
+                    # same HTTP 400 as message blocks ("text content blocks
+                    # must contain non-whitespace text"), and a blank block
+                    # carrying a cache_control breakpoint cannot simply be
+                    # dropped (#70909).
+                    system = []
+                    for p in content:
+                        if not isinstance(p, dict):
+                            continue
+                        if (
+                            p.get("type") == "text"
+                            and isinstance(p.get("text"), str)
+                            and not p["text"].strip()
+                        ):
+                            p = dict(p)
+                            p["text"] = _EMPTY_TEXT_PLACEHOLDER
+                        system.append(p)
                 else:
                     system = "\n".join(
                         p["text"] for p in content if p.get("type") == "text"

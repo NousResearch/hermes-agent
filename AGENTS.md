@@ -210,6 +210,45 @@ backends, providers, notifiers), don't merge them one at a time — design an
 ABC + orchestrator, wrap the existing built-in as the first provider, and turn
 the competing PRs into plugins against that interface.
 
+### Surface capability is a property of the SESSION, never of the process env
+
+A tool that only works because of *who is on the other end of the connection* —
+the desktop app's panes, the in-app browser, message reactions, Projects — must
+resolve its availability from the **session's own source**, not from an env var
+on the backend process.
+
+The client and the backend are separate machines on separate clocks. The
+desktop app can be driving a backend Electron spawned locally, one over SSH,
+one behind a plain URL + token, or Hermes Cloud. Only the first two are spawned
+by us and carry `HERMES_DESKTOP=1`. Every env-keyed GUI gate is therefore a
+silent no-op on the other half of the topologies, and the failure is invisible:
+the tool is stripped from the schema before the model ever sees it, on the same
+backend whose platform hint is telling the model it's *"chatting inside the
+Hermes desktop app."*
+
+The pattern that works:
+
+- **The toolset is the surface gate.** Keep the tools off `_HERMES_CORE_TOOLS`
+  (nobody else should pay their schema) and put them in a named toolset —
+  `desktop_ui`, `project`. The GUI gateway's `_load_enabled_toolsets(platform)`
+  folds that toolset in when the session's platform says GUI. One resolver,
+  every topology.
+- **`check_fn` answers reachability or user opt-in, not surface.** "Is the
+  renderer bridge wired?", "did the user enable reactions?" — fine. "Was I
+  spawned by Electron?" — not fine. `check_fn` results are also TTL-cached
+  process-wide (`tools/registry.py`), so a per-session answer does not belong
+  there at all: one process serves many sessions.
+- **Ask which identity you actually mean.** `HERMES_DESKTOP=1` legitimately
+  marks *"this backend process was spawned by the app"* — it gates the cron
+  ticker and web-dist handling correctly. It does NOT mean "a GUI is watching",
+  and the embedded terminal pane (`hermes --tui` against that same backend) is
+  the standing counterexample.
+
+Same test both ways: if the capability would still make sense with the client
+on another machine, it is session-scoped. Cover it with a test that asserts the
+GUI session gets the tool **with the env var absent** — that's the assertion
+the original gate could never have passed.
+
 ## Development Environment
 
 ```bash
@@ -758,11 +797,44 @@ as a side effect of importing `model_tools.py`. Code paths that read plugin
 state without importing `model_tools.py` first must call `discover_plugins()`
 explicitly (it's idempotent).
 
+#### Native plugin compatibility policy
+
+The canonical contract and deprecation policy live in
+`website/docs/developer-guide/plugins/index.md#native-plugin-compatibility-contract`.
+Compatibility is enforced as a behavior contract, not through a monolithic
+`PLUGIN_API_VERSION`, a manifest-wide native `api:` match, or version literals
+on unrelated payloads. Keep documented plugin surfaces additive:
+
+- add hook payload data as keyword fields; signature-inspect callbacks so old
+  narrow signatures receive only fields they declare, while `**kwargs`
+  callbacks receive the complete payload;
+- do not remove or rename `PluginContext` methods; make new parameters optional
+  with defaults and keyword-only where possible;
+- ignore unknown native manifest fields;
+- give new provider methods default implementations, and signature-inspect
+  optional callback kwargs rather than forwarding them unconditionally;
+- use a local schema version only for a capability with a wire or persisted
+  contract, and preserve old state/config/session replay or ship a migration.
+
+Deprecations require a once-per-process warning, a documented replacement and
+migration note, and at least two subsequent minor releases before removal.
+Compatibility tests must load frozen plugins through the real discovery path
+and assert outcomes. Do not replace these with exact registry/catalog counts,
+source-reading tests, or assertions that a global version literal changed.
+
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in
 providers include **honcho, mem0, supermemory, byterover, hindsight,
 holographic, openviking, retaindb**.
+
+Discovery covers the same four sources as the general `PluginManager` —
+bundled, `$HERMES_HOME/plugins/`, `./.hermes/plugins/` (opt-in via
+`HERMES_ENABLE_PROJECT_PLUGINS`), and `hermes_agent.memory_providers` entry
+points — but with **bundled-first** precedence, the reverse of the general
+system's later-wins order: a memory provider is activated by name, so a
+dropped-in directory must not be able to shadow a shipped one. Discovery
+enumerates without importing; nothing runs until `memory.provider` names it.
 
 Each provider implements the `MemoryProvider` ABC (see `agent/memory_provider.py`)
 and is orchestrated by `agent/memory_manager.py`. Lifecycle hooks include
@@ -1096,15 +1168,16 @@ kanban task.
 - **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
   `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
-  `block`, `unblock`, `archive`, `tail`, plus less-commonly-used `watch`,
-  `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-*`,
-  `dispatch`, `daemon`, `gc`.
+  `request-review`, `request-changes`, `reopen-review`, `block`, `unblock`, `archive`,
+  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
+  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
-  `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
-  `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_attach`,
-  `kanban_attach_url`, `kanban_attachments`; profiles that explicitly
-  enable the `kanban` toolset outside a dispatcher-spawned task also get
-  `kanban_list` and `kanban_unblock` for board routing.
+  `kanban_show`, `kanban_complete`, `kanban_request_review`,
+  `kanban_request_changes`, `kanban_block`,
+  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`,
+  `kanban_attach`, `kanban_attach_url`, `kanban_attachments`; profiles that
+  explicitly enable the `kanban` toolset outside a dispatcher-spawned
+  task also get `kanban_list` and `kanban_unblock` for board routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via
@@ -1151,9 +1224,10 @@ detects process completion and triggers a new agent turn. Control verbosity of b
 messages with `display.background_process_notifications`
 in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 
-- `all` — running-output updates + final message (default)
-- `result` — only the final completion message
-- `error` — only the final message when exit code != 0
+- `concise` — one-line status message on completion; failures append a short output tail (default)
+- `all` — running-output updates + final raw-output message
+- `result` — only the final raw-output completion message
+- `error` — only the final raw-output message when exit code != 0
 - `off` — no watcher messages at all
 
 ---
@@ -1221,12 +1295,8 @@ Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_her
 for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
 has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
 
-### DO NOT introduce new `simple_term_menu` usage
-Existing call sites in `hermes_cli/main.py` remain for legacy fallback only;
-the preferred UI is curses (stdlib) because `simple_term_menu` has
-ghost-duplication rendering bugs in tmux/iTerm2 with arrow keys. New
-interactive menus must use `hermes_cli/curses_ui.py` — see
-`hermes_cli/tools_config.py` for the canonical pattern.
+### All CLI menu-pickers MUST use curses.
+Interactive menus must use `hermes_cli/curses_ui.py`. See `hermes_cli/tools_config.py` for an example.
 
 ### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
@@ -1329,6 +1399,44 @@ classifier fails open and runs everything).
 Any test that reads or asserts about `package.json`,
 `package-lock.json`, `tsconfig.json`, `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`
 source files configuration belongs in the JS (vitest) test suite, not in `tests/*.py`.
+
+### Don't fake the host OS
+
+Hermes supports Linux, macOS and native Windows, and plenty of its behaviour
+genuinely differs per host. Those differences are tested by running on the
+host, not by patching `sys.platform`.
+
+```python
+@pytest.mark.linux_only
+@pytest.mark.macos_only
+@pytest.mark.windows_only
+```
+
+Things that are host-independent can stay unmarked:
+
+- **Pure functions that take a platform as data** —
+  `hidden_windows_child_options(opts, is_windows=True)` is input→output, not a
+  fake host. (Contrast: setting a module-level `IS_WINDOWS` flag and then
+  calling `windows_detach_flags()` *is* a fake.)
+- **Declaration/packaging invariants** — "pyproject declares `tzdata` with a
+  `sys_platform == 'win32'` marker" asserts about a file, not about runtime.
+
+The line: **if the test needs the interpreter to believe it is on another OS
+in order to pass, it belongs on that OS.**
+When one test body walks several platforms in sequence, split it.
+Keep the host-native arm on the Linux lane and move the other arm into its own marked test.
+
+**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
+decides which files the macOS/Windows lanes import by grepping for the marker
+*name*, and the lane then filters with `-m <marker>`. A test gated with
+`@pytest.mark.skipif(sys.platform != "win32")` therefore skips on Linux AND is
+never imported on the Windows lane — it runs on no host at all, silently. The
+same trap catches a file-local alias (`windows_only = pytest.mark.skipif(...)`):
+the grep matches the name, so the file *is* listed, but `-m windows_only`
+deselects every test in it and the lane reports green over zero coverage.
+Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
+platforms — split it into one marked test per OS, or only the host's row ever
+executes.
 
 ### Don't write change-detector tests
 

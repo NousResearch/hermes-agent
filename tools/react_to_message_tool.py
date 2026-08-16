@@ -4,9 +4,9 @@
 The conversational counterpart to the user's tapback: the same reaction store,
 the same one-per-author semantics, just written with ``author="agent"``.
 
-Gated on ``HERMES_DESKTOP`` (like the other GUI affordances) so it costs nothing
-on every other surface — the platform adapters already expose reactions through
-``send_message(action="react")``, and this is the desktop's equivalent.
+Lives in the ``desktop_ui`` toolset (like the other GUI affordances) so it costs
+nothing on every other surface — the platform adapters already expose reactions
+through ``send_message(action="react")``, and this is the desktop's equivalent.
 
 Defaults to the message that triggered this turn (the photon precedent: the
 model shouldn't have to thread row ids through tool calls), and emits
@@ -31,19 +31,17 @@ def _open_session_db():
         return None
 
 
-def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+def _react_to_message_with_db(
+    emoji: str,
+    message_row_id=None,
+    messages_back=None,
+    *,
+    db,
+    session_key: str,
+) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
-    emoji = (emoji or "").strip()
-    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
-        "HERMES_SESSION_ID", ""
-    )
-
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
-
-    db = _open_session_db()
-    if db is None:
-        return tool_error("Session storage is unavailable.")
 
     row_id = message_row_id
     target_role = "user"
@@ -89,15 +87,43 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
     )
 
 
-def check_react_requirements() -> bool:
-    """Desktop GUI only, and opt-in.
+def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+    """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
+    emoji = (emoji or "").strip()
+    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
+        "HERMES_SESSION_ID", ""
+    )
 
-    HERMES_DESKTOP is set on the gateway the app spawns; the feature itself is
-    off by default and enabled from Settings → Appearance (the desktop mirrors
-    the toggle into ``display.message_reactions``).
+    if not session_key:
+        return tool_error("No active session — reactions need a persisted conversation.")
+
+    db = _open_session_db()
+    if db is None:
+        return tool_error("Session storage is unavailable.")
+
+    try:
+        return _react_to_message_with_db(
+            emoji,
+            message_row_id,
+            messages_back,
+            db=db,
+            session_key=session_key,
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def check_react_requirements() -> bool:
+    """Opt-in feature flag — surface eligibility is the toolset's job.
+
+    ``desktop_ui`` already restricts this to GUI sessions. What's left is the
+    user's own toggle (Settings → Appearance), which the desktop mirrors into
+    ``display.message_reactions`` on the CONNECTED gateway's config — so this
+    reads the right config whether that gateway is local, SSH, URL, or cloud.
     """
-    if not env_var_enabled("HERMES_DESKTOP"):
-        return False
     try:
         from hermes_cli.config import load_config_readonly
 
@@ -155,7 +181,7 @@ REACT_TO_MESSAGE_SCHEMA = {
 
 registry.register(
     name="react_to_message",
-    toolset="terminal",
+    toolset="desktop_ui",
     schema=REACT_TO_MESSAGE_SCHEMA,
     handler=lambda args, **kw: react_to_message_tool(
         emoji=args.get("emoji", ""),

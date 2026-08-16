@@ -971,7 +971,36 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
     _add_description_prompt_preview(result, content)
+    _attach_lint_findings(result, skill_md)
     return result
+
+
+def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
+    """Run the advisory SKILL.md linter and attach any findings to *result*.
+
+    The linter enforces the CONTRIBUTING "Skill authoring standards (HARDLINE)"
+    conventions that the hard validator does not (shell-utility references,
+    missing metadata, dangling reference links, POSIX gating, forbidden files).
+    Findings are ADVISORY — surfaced as guidance so the author can fix them,
+    never a hard block. The hard rejects already ran in _validate_frontmatter.
+    """
+    try:
+        from tools.skill_linter import lint_skill  # local import: optional path
+
+        findings = lint_skill(skill_md)
+    except Exception:
+        return
+    if not findings:
+        return
+    result["lint_warnings"] = [
+        {"severity": f.severity, "rule": f.rule, "message": f.message}
+        for f in findings
+    ]
+    result["lint_hint"] = (
+        "The skill was created. These are advisory authoring-convention "
+        "findings (not blockers) — fix them with skill_manage(action='patch') "
+        "to match Hermes skill standards."
+    )
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
@@ -1521,6 +1550,8 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    task_id: str = None,
+    session_id: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1592,13 +1623,22 @@ def skill_manage(
         # user-directed, and those skills belong to the user (the curator must
         # not touch them). Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_usage import bump_patch, forget, record_created
             from tools.skill_provenance import is_background_review
             if action == "create":
-                if is_background_review():
-                    mark_agent_created(name)
+                record_created(
+                    name,
+                    agent_created=is_background_review(),
+                    task_id=task_id,
+                    session_id=session_id,
+                )
             elif action in {"patch", "edit", "write_file", "remove_file"}:
-                bump_patch(name)
+                bump_patch(
+                    name,
+                    action=action,
+                    task_id=task_id,
+                    session_id=session_id,
+                )
             elif action == "delete":
                 # A recoverable curator archive (routed through archive_skill)
                 # keeps its usage record as STATE_ARCHIVED so `hermes curator
@@ -1697,8 +1737,8 @@ SKILL_MANAGE_SCHEMA = {
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
-                    "to delete the matched text."
+                    "Replacement text (required for 'patch'); must differ from "
+                    "old_string. Can be empty string to delete the matched text."
                 )
             },
             "replace_all": {
@@ -1763,6 +1803,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        task_id=kw.get("task_id"),
+        session_id=kw.get("session_id")),
     emoji="📝",
 )

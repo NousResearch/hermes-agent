@@ -644,9 +644,179 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 33 → 34: one-time personality reset (post-#81946 unification) ──
+    # Personality persistence used to be split per surface: the TUI/desktop
+    # wrote the NAME to display.personality while the CLI/gateway wrote the
+    # rendered TEXT into agent.system_prompt (and their "/personality none"
+    # only blanked the text, leaving the name behind). When #81946 made
+    # display.personality authoritative everywhere, stale names written years
+    # ago resurrected personalities users had already turned off ("kawaii
+    # defaults on after updating"). There is no way to know which of the two
+    # divergent fields reflects the user's intent, so reset the selection to
+    # none once and tell the user how to re-enable it. Two scrubs:
+    #
+    # 1. display.personality → "" (announce the old name).
+    # 2. agent.system_prompt → "" ONLY when it verbatim-equals the rendered
+    #    text of a known personality — that shape was written by the old
+    #    CLI/gateway /personality, never typed by hand. Any other text is a
+    #    user-owned manual prompt and is never touched.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    from hermes_cli.personality import (
+        available_personalities,
+        normalize_personality_name,
+        prompt_text,
+        render_personality_prompt,
+    )
+
+    config = read_raw_config()
+    touched = False
+
+    raw_display = config.get("display")
+    old_name = ""
+    if isinstance(raw_display, dict):
+        old_name = normalize_personality_name(raw_display.get("personality", ""))
+        if old_name:
+            raw_display["personality"] = ""
+            config["display"] = raw_display
+            touched = True
+
+    raw_agent = config.get("agent")
+    scrubbed_text = False
+    if isinstance(raw_agent, dict):
+        manual = prompt_text(raw_agent.get("system_prompt", ""))
+        if manual:
+            rendered = {
+                render_personality_prompt(defn)
+                for defn in available_personalities(config).values()
+            }
+            if manual in rendered:
+                raw_agent["system_prompt"] = ""
+                config["agent"] = raw_agent
+                touched = True
+                scrubbed_text = True
+
+    if touched:
+        _persist_migration(config)
+        results["config_added"].append("display.personality=none (one-time reset)")
+        if not quiet:
+            if old_name:
+                print(
+                    f"  ✓ Personality reset to none (was '{old_name}'). Personality "
+                    "state was previously saved inconsistently across surfaces and "
+                    "could re-enable a personality you had turned off. "
+                    f"Run /personality {old_name} to turn it back on."
+                )
+            if scrubbed_text:
+                print(
+                    "  ✓ Removed personality text from agent.system_prompt (written "
+                    "by an older /personality). That field is now reserved for "
+                    "manual system prompts; personalities live in display.personality."
+                )
+
+
+def _migrate_to_35(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 34 → 35: background process notifications → concise ──
+    # The old default mode 'all' pushed the raw output tail of every finished
+    # background process into the chat ("[Background process proc_x finished
+    # with exit code 0~ Here's the final output: ...]" walls). The new
+    # 'concise' mode renders a one-line status message instead (with a short
+    # output tail on failures) and is the new default. Move users still on
+    # 'all' — the old implicit default, almost never chosen on purpose — to
+    # 'concise'. Explicit non-default choices (result / error / off) are the
+    # user's own and are preserved. Users with the key unset inherit the new
+    # default automatically at read time (no write needed).
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_display = config.get("display")
+    if isinstance(raw_display, dict):
+        raw_val = raw_display.get("background_process_notifications")
+        if isinstance(raw_val, str) and raw_val.strip().lower() == "all":
+            raw_display["background_process_notifications"] = "concise"
+            config["display"] = raw_display
+            _persist_migration(config)
+            results["config_added"].append(
+                "display.background_process_notifications=concise (was: all)"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Background process notifications switched from 'all' to "
+                    "'concise' — completions now show a one-line status message "
+                    "instead of the raw output dump. Set "
+                    "display.background_process_notifications: all to restore "
+                    "the old behavior."
+                )
+
+
+def _migrate_to_36(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 35 → 36: raise the subagent iteration cap default 50 → 250 ──
+    # delegation.max_iterations is the per-subagent tool-call budget. The old
+    # default of 50 truncated substantial delegated work (leaf agents spend
+    # ~15-20 turns on recon before producing output, then ran out mid-task).
+    # The shipped default is now 250. Configs still pinned at exactly the old
+    # default 50 — almost always the inherited default rather than a deliberate
+    # choice — are lifted to 250 so existing installs get the same headroom on
+    # update. Any OTHER explicit value (a deliberate override, high or low) is
+    # the user's own and is preserved; unset inherits 250 at read time.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_deleg = config.get("delegation")
+    if isinstance(raw_deleg, dict) and raw_deleg.get("max_iterations") == 50:
+        raw_deleg["max_iterations"] = 250
+        config["delegation"] = raw_deleg
+        _persist_migration(config)
+        results["config_added"].append("delegation.max_iterations=250 (was: 50)")
+        if not quiet:
+            print(
+                "  ✓ Raised delegation.max_iterations from 50 to 250 — subagents "
+                "now get a larger per-child tool-call budget so delegated work "
+                "finishes instead of truncating. Set delegation.max_iterations "
+                "back to 50 to restore the old cap."
+            )
+
+
+def _migrate_to_37(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 36 → 37: raise the delegation concurrency default 3 → 10 ──
+    # delegation.max_concurrent_children caps how many children run in parallel
+    # per batch (and concurrent background delegation units). The old default of
+    # 3 needlessly serialized independent fan-outs (e.g. reviewing N PRs at
+    # once). The shipped default is now 10, which stays at/below the high-cost
+    # warning threshold. Configs still pinned at exactly the old default 3 —
+    # almost always the inherited default rather than a deliberate choice — are
+    # lifted to 10 so existing installs get the wider fan-out on update. Any
+    # OTHER explicit value (a deliberate override) is preserved; unset inherits
+    # 10 at read time.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_deleg = config.get("delegation")
+    if isinstance(raw_deleg, dict) and raw_deleg.get("max_concurrent_children") == 3:
+        raw_deleg["max_concurrent_children"] = 10
+        config["delegation"] = raw_deleg
+        _persist_migration(config)
+        results["config_added"].append("delegation.max_concurrent_children=10 (was: 3)")
+        if not quiet:
+            print(
+                "  ✓ Raised delegation.max_concurrent_children from 3 to 10 — "
+                "independent delegated children now fan out wider in parallel. "
+                "Each child consumes API tokens independently; set "
+                "delegation.max_concurrent_children back to 3 to restore the old cap."
+            )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
-#: version captured before the ladder started. Order matters: later steps may
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     # v12 is the support floor: configs already AT v12 (or newer) still get
@@ -665,6 +835,10 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (31, _migrate_to_31),
     (32, _migrate_to_32),
     (33, _migrate_to_33),
+    (34, _migrate_to_34),
+    (35, _migrate_to_35),
+    (36, _migrate_to_36),
+    (37, _migrate_to_37),
 )
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import signal
@@ -483,7 +484,10 @@ class ComputeHost:
             except Exception:
                 pass
             text = frame.get("text") if "text" in frame else frame.get("prompt", "")
-            server._run_prompt_submit(request_id, sid, session, text)
+            submit_kwargs = {}
+            if frame.get("client_submitted_at") is not None:
+                submit_kwargs["client_submitted_at"] = frame["client_submitted_at"]
+            server._run_prompt_submit(request_id, sid, session, text, **submit_kwargs)
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 run_thread.join()
@@ -540,6 +544,7 @@ class ComputeHost:
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
         profile_home = str(frame.get("profile_home") or "")
         session_db = None
+        owns_db = False
         home_token = None
         secret_token = None
         try:
@@ -550,7 +555,13 @@ class ComputeHost:
 
                 home_token = set_hermes_home_override(profile_home)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # DEDICATED handle — ours only until _make_agent succeeds. Every
+                # path after that keeps the agent registered in
+                # server._sessions[sid] (via _init_session, or the fallback dict
+                # in the except below), so the agent is the right owner; a
+                # _make_agent that RAISES is the one path where nothing takes it.
                 session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+                owns_db = True
             agent = server._make_agent(
                 sid,
                 key,
@@ -561,7 +572,12 @@ class ComputeHost:
                 platform_override=frame.get("source"),
                 session_db=session_db,
             )
+            if server._transfer_db_to_agent(agent, session_db):
+                owns_db = False
         finally:
+            if owns_db and session_db is not None:
+                with contextlib.suppress(Exception):
+                    session_db.close()
             if home_token is not None:
                 try:
                     from hermes_constants import reset_hermes_home_override

@@ -2,6 +2,8 @@
 name: agentmail
 description: "Give the agent its own inbox: send and receive email."
 version: 1.0.0
+author: teyrebaz33, Hermes Agent
+license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:

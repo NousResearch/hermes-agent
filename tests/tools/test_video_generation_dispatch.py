@@ -94,3 +94,20 @@ class TestUnifiedDispatch:
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "operation" not in props
         assert "video_url" not in props
+
+
+    def test_upscale_in_schema_and_forwarded(self):
+        """`upscale` is an agent-facing param, forwarded to providers when
+        set and omitted (not None) when unset."""
+        from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
+        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        assert props["upscale"]["type"] == "boolean"
+
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a dog", "upscale": True}, configured="fake")
+        assert result["success"] is True
+        assert provider.last_kwargs["upscale"] is True
+
+        self._run({"prompt": "a dog"}, configured="fake")
+        assert "upscale" not in provider.last_kwargs

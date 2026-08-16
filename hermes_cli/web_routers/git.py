@@ -16,6 +16,7 @@ from hermes_cli.web_models import (
     GitPathBody,
     GitFileBody,
     GitCommitBody,
+    GitPrListBody,
     GitWorktreeAddBody,
     GitWorktreeRemoveBody,
     GitBranchSwitchBody,
@@ -32,6 +33,58 @@ _git_path = late("_git_path")
 @router.get("/api/git/status")
 async def git_status_route(path: str):
     return await _git_op(_web_git.repo_status, _git_path(path))
+
+
+# ─── gh CLI auth probe ───────────────────────────────────────────────────────
+# Cached `gh auth status` result. Consumed by the desktop composer's GitHub
+# suggestion pill: GitHub deliberately has NO MCP catalog entry (its hosted
+# MCP requires a per-host OAuth app — generic DCR 404s — and the bundled
+# github/* skills via gh CLI are the more capable integration), so the pill
+# offers the `/github-auth` skill instead, and only to users who aren't
+# already authenticated. The probe is read-only and never prompts.
+
+_GH_AUTH_TTL_S = 300.0
+_gh_auth_cache: Optional[tuple] = None  # (monotonic_ts, payload)
+
+
+@router.get("/api/git/gh-auth")
+async def gh_auth_status_route(refresh: bool = False):
+    """Report whether the `gh` CLI is present and authenticated.
+
+    Returns ``{"available": bool, "authenticated": bool}``. Cached for five
+    minutes (`refresh=true` bypasses — the pill uses it after a completed
+    login so the suggestion withdraws immediately).
+    """
+    global _gh_auth_cache
+    import asyncio
+    import time
+
+    if not refresh and _gh_auth_cache and time.monotonic() - _gh_auth_cache[0] < _GH_AUTH_TTL_S:
+        return _gh_auth_cache[1]
+
+    def _probe() -> dict:
+        import shutil
+        import subprocess
+
+        gh = shutil.which("gh")
+        if not gh:
+            return {"available": False, "authenticated": False}
+        try:
+            # `gh auth status` exits 0 when at least one host is logged in.
+            # Never interactive; DEVNULL stdin guards against any prompt.
+            proc = subprocess.run(
+                [gh, "auth", "status"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=10,
+            )
+            return {"available": True, "authenticated": proc.returncode == 0}
+        except Exception:
+            return {"available": True, "authenticated": False}
+
+    payload = await asyncio.to_thread(_probe)
+    _gh_auth_cache = (time.monotonic(), payload)
+    return payload
 
 
 @router.get("/api/git/worktrees")
@@ -79,6 +132,11 @@ async def git_rev_parse_route(path: str, ref: Optional[str] = None):
 @router.get("/api/git/review/ship-info")
 async def git_ship_info_route(path: str):
     return await _git_op(_web_git.review_ship_info, _git_path(path))
+
+
+@router.post("/api/git/review/pr-list")
+async def git_pr_list_route(body: GitPrListBody):
+    return await _git_op(_web_git.review_pr_list, _git_path(body.path), body.branches, body.numbers)
 
 
 @router.post("/api/git/review/stage")

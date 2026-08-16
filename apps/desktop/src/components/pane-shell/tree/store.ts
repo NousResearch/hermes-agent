@@ -20,6 +20,7 @@ import {
   type DropPosition,
   findGroup,
   findGroupOfPane,
+  findParentSplit,
   groupLeafIds,
   type GroupNode,
   insertAtGroup,
@@ -28,9 +29,10 @@ import {
   mergeZonesWithPane as mergeZonesWithPaneOp,
   mirrorTreeHorizontal,
   movePane as movePaneOp,
+  movePanes as movePanesOp,
   normalize,
   removePane,
-  reorderPaneInGroup as reorderPaneInGroupOp,
+  reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
   setGroupHeaderHidden as setGroupHeaderHiddenOp,
   setGroupMinimized,
@@ -170,9 +172,11 @@ function frontPaneInGroup(paneId: string) {
  *  - a registered closer (core panes whose visibility an app store owns:
  *    review/terminal/preview/sessions) closes through that store, so the
  *    titlebar/statusbar toggles stay truthful;
- *  - everything else (plugin panes, unbound core panes) is DISMISSED: removed
- *    from the tree and remembered so adoption doesn't re-add it. Reveal
- *    intent (a preview target, ⌘G) or a layout reset un-dismisses.
+ *  - unbound core panes and panes from multi-pane plugins are DISMISSED:
+ *    removed from the tree and remembered so adoption doesn't re-add them.
+ *    Reveal intent (a preview target, ⌘G) or a layout reset un-dismisses;
+ *  - closing the sole pane from a plugin disables that plugin, preserving the
+ *    discoverable Settings → Plugins recovery path for single-pane plugins.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
 
@@ -193,6 +197,55 @@ function setDismissed(paneId: string, dismissed: boolean) {
   if (next) {
     saveDismissed(next)
   }
+}
+
+// SPLIT-SHARE MEMORY — a tile pane that leaves the tree (the browser closed,
+// a page tile closed) records the share it held against its seam neighbor, so
+// re-opening it docks at the size the user left it. Without this every
+// re-open split the anchor zone [1, 1] again: each agent-triggered browser
+// open re-took half the chat, whatever the user had resized it to.
+const PANE_SHARE_KEY = 'hermes.desktop.paneShare.v1'
+
+const paneShares: Record<string, number> = readJson<Record<string, number>>(PANE_SHARE_KEY) ?? {}
+
+const validShare = (share: unknown): share is number =>
+  typeof share === 'number' && Number.isFinite(share) && share > 0 && share < 1
+
+function rememberPaneShare(tree: LayoutNode, paneId: string) {
+  const zone = findGroupOfPane(tree, paneId)
+
+  // Only a pane ALONE in its zone owns the zone's track — a stacked tab's
+  // removal doesn't change geometry, so there's no share to remember.
+  if (!zone || zone.panes.length !== 1) {
+    return
+  }
+
+  const parent = findParentSplit(tree, zone.id)
+
+  if (!parent) {
+    return
+  }
+
+  // The previous sibling is the seam partner a re-dock will split again (a
+  // trailing dock lands the tile right of / below its anchor); the pane at
+  // index 0 pairs with the sibling after it instead.
+  const at = parent.children.findIndex(child => child.id === zone.id)
+  const partner = at > 0 ? at - 1 : at + 1
+  const pair = (parent.weights[at] ?? 1) + (parent.weights[partner] ?? 1)
+  const share = pair > 0 ? (parent.weights[at] ?? 1) / pair : null
+
+  if (validShare(share)) {
+    paneShares[paneId] = share
+    writeJson(PANE_SHARE_KEY, paneShares)
+  }
+}
+
+/** The [target, added] weight pair a re-inserted pane's edge split should get,
+ *  or undefined for the even default. Persisted state is untrusted. */
+function recalledEdgeWeights(paneId: string): [number, number] | undefined {
+  const share = paneShares[paneId]
+
+  return validShare(share) ? [1 - share, share] : undefined
 }
 
 const paneClosers: Record<string, () => void> = {}
@@ -261,6 +314,16 @@ export function registerLayoutResetHandler(fn: () => void): () => void {
  *  target when nothing is DOM-focused (activeElement is often `body` after a
  *  click lands on a non-focusable surface). Tracked by trackActiveTreeGroup. */
 export const $activeTreeGroup = atom<null | string>(null)
+
+/** Bumped whenever a pane's contributed STRIP TOOLS change shape (a toggle
+ *  flipped, a handle registered). The strip reads `stripTools()` during render,
+ *  so it needs one signal to re-read — generic on purpose: the tree knows
+ *  nothing about what any pane's tools mean. */
+export const $stripToolsRevision = atom(0)
+
+export function invalidateStripTools() {
+  $stripToolsRevision.set($stripToolsRevision.get() + 1)
+}
 
 /** Record the interacted zone (pointerdown / focusin). Idempotent. */
 export function noteActiveTreeGroup(groupId: null | string) {
@@ -356,16 +419,27 @@ const isUncloseablePane = (paneId: string): boolean =>
     (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
   )
 
-/** A pane that belongs to a CHAT tab strip — the workspace or a session tile. */
+/** A pane that belongs to a CHAT tab strip — the workspace or a session tile.
+ *  Chat surfaces only: this gates where a session may DOCK (drops, ⌘T's "+"),
+ *  not which zones the generic tab verbs serve — that's `isMainStripPane`. */
 export const isSessionStripPane = (paneId: string): boolean =>
   paneId === 'workspace' || paneId.startsWith('session-tile:')
 
-/** The zone the session-tab verbs (⌘W / ⌘T / ⌘⇧T / the strip's "+") act on:
- *  the first of hovered / focused / workspace that hosts a chat strip. Same
- *  ladder ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree
- *  about which strip is "the" strip. A target parked in the sidebar / terminal
- *  / files must NOT retarget them — those zones fall through to main rather
- *  than letting ⌘W close the file tree. */
+/** Any MAIN-placement tile's pane — a session, a page, a preview. The zones
+ *  these stack into are real tab strips, so the generic tab verbs (⌘W, ⌃Tab)
+ *  must serve them all; keying on the session prefix left ⌘W and ⌃Tab dead
+ *  over a Browser/page zone while ⌘1…⌘9 worked. Standing side chrome (files /
+ *  sessions / terminal) isn't 'main', so those zones still fall through. */
+export const isMainStripPane = (paneId: string): boolean =>
+  (registry.getArea('panes').find(c => c.id === paneId)?.data as { placement?: string } | undefined)?.placement ===
+  'main'
+
+/** The zone the session-tab verbs (⌘T / ⌘⇧T / the strip's "+") act on: the
+ *  first of hovered / focused / workspace that hosts a chat strip. Same ladder
+ *  ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree about
+ *  which strip is "the" strip. A target parked in the sidebar / terminal /
+ *  files must NOT retarget them — those zones fall through to main rather
+ *  than letting ⌘T dock a session into the file tree. */
 function focusedSessionGroup(): GroupNode | null {
   return tabTargetGroup(group => group.panes.some(isSessionStripPane))
 }
@@ -385,11 +459,15 @@ export function focusedSessionTabAnchor(): null | string {
   return active && isSessionStripPane(active) ? active : (group.panes.find(isSessionStripPane) ?? null)
 }
 
-/** ⌘W: close the FOCUSED chat zone's active tab, unless it's the uncloseable
- *  workspace itself. Returns false when there's nothing to close, so ⌘W stays a
- *  no-op — it never closes the window. */
+/** ⌘W: close the FOCUSED tile zone's active tab, unless it's the uncloseable
+ *  workspace itself. Any main-strip zone qualifies — a session stack, a lone
+ *  Browser/page tile — while side chrome (files / terminal) in a zone of its
+ *  own falls through to its own rung. Keying eligibility on the chat strip
+ *  made ⌘W over a lone preview zone fall all the way through and empty the
+ *  MAIN chat instead. Returns false when there's nothing to close, so ⌘W
+ *  stays a no-op — it never closes the window. */
 export function closeFocusedSessionTab(): boolean {
-  const active = focusedSessionGroup()?.active
+  const active = tabTargetGroup(group => group.panes.some(isMainStripPane))?.active
 
   if (!active || isUncloseablePane(active)) {
     return false
@@ -549,34 +627,38 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
 /** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
  *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
  *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
- *  instead of dead-ending. Returns false so the caller falls back to its
+ *  instead of dead-ending. Returns the activated pane id — the caller needs to
+ *  know when the slot landed on the workspace tab (a full page covering it
+ *  must also route back to the chat) — or null so it falls back to its
  *  default (profile switch) when no zone qualifies. */
-export function activateTreeTabSlot(slot: number): boolean {
+export function activateTreeTabSlot(slot: number): null | string {
   const group = tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
   const panes = group ? shownPanesInGroup(group) : []
 
   if (!group || slot < 1 || slot > panes.length) {
-    return false
+    return null
   }
 
   activateTreePane(group.id, panes[slot - 1])
 
-  return true
+  return panes[slot - 1]
 }
 
 /** ⌃Tab / ⌃⇧Tab: cycle the target zone's *visible* tabs (wrapping) — the first
- *  of hovered / focused / workspace that is a chat strip with ≥2 shown tabs.
- *  Returns false so the caller falls back to the recent-session switcher when
- *  no zone qualifies. */
-export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
+ *  of hovered / focused / workspace that is a tile strip with ≥2 shown tabs
+ *  (any main-placement tenant: sessions, pages, previews). Returns the
+ *  activated pane id (see `activateTreeTabSlot` — landing on the workspace
+ *  under a full page must route back to the chat), or null so the caller
+ *  falls back to the recent-session switcher when no zone qualifies. */
+export function cycleTreeTabInFocusedZone(direction: 1 | -1): null | string {
   const group = tabTargetGroup(candidate => {
     const shown = shownPanesInGroup(candidate)
 
-    return shown.length >= 2 && shown.some(isSessionStripPane)
+    return shown.length >= 2 && shown.some(isMainStripPane)
   })
 
   if (!group) {
-    return false
+    return null
   }
 
   const panes = shownPanesInGroup(group)
@@ -591,11 +673,11 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   // Cycling onto a session/main tab must surface the name card — a zone that
   // was double-tap-hidden stays headerless otherwise ("the one that cycles
   // never gets it").
-  if (isSessionStripPane(nextId)) {
+  if (isMainStripPane(nextId)) {
     setTreeGroupHeaderHidden(group.id, false)
   }
 
-  return true
+  return nextId
 }
 
 /** Remove a pane from the tree WITHOUT a dismissal record — for surfaces
@@ -605,6 +687,7 @@ export function removeTreePane(paneId: string) {
   const tree = $layoutTree.get()
 
   if (tree) {
+    rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
 }
@@ -667,6 +750,7 @@ export function dismissTreePane(paneId: string) {
 
   if (tree) {
     setDismissed(paneId, true)
+    rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
 }
@@ -680,14 +764,24 @@ export function closeTreePane(paneId: string) {
     return
   }
 
-  // A plugin's pane: Close = DISABLE the plugin — the same switch as
-  // Settings → Plugins, so recovery is discoverable and symmetric. The
-  // contribution unregisters but the pane id STAYS in the tree, so
-  // re-enabling restores it exactly where it was. (Dismissal + removal
-  // would strand the pane with no way back short of a layout reset.)
-  const source = registry.getArea('panes').find(c => c.id === paneId)?.source
+  const panes = registry.getArea('panes')
+  const source = panes.find(c => c.id === paneId)?.source
 
   if (source?.startsWith('plugin:')) {
+    // A plugin may own several independent panes. Closing one of them must not
+    // unload every contribution from that plugin (for example, closing Bot
+    // Mode's Cronjobs pane must leave its Bots roster and composer middleware
+    // alive). Dismiss just that pane; Layout reset remains the explicit way to
+    // restore dismissed contributed panes.
+    if (panes.filter(c => c.source === source).length > 1) {
+      dismissTreePane(paneId)
+
+      return
+    }
+
+    // A single-pane plugin keeps the existing symmetric behavior: Close uses
+    // the same switch as Settings → Plugins. Its contribution unregisters but
+    // the pane id stays in the tree, so re-enabling restores its exact place.
     const pluginId = source.slice('plugin:'.length)
     void setPluginEnabled(pluginId, false)
     notify({
@@ -1029,15 +1123,6 @@ function adoptContributedPanes(): void {
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
 
-  // Plugin panes are never dismissed anymore (Close disables the plugin
-  // instead) — drop stale entries so panes stranded by the old behavior
-  // re-adopt on their own.
-  for (const pane of panes) {
-    if (pane.source?.startsWith('plugin:') && $dismissedPanes.get().has(pane.id)) {
-      setDismissed(pane.id, false)
-    }
-  }
-
   const dismissed = $dismissedPanes.get()
 
   // `placement: 'floating'` opts OUT of the tree entirely — those panes render
@@ -1072,8 +1157,18 @@ function adoptContributedPanes(): void {
       // drag but wrong for adoption into a zone whose bar the user hid.
       const hostHeaderHidden = findGroup(next, target)?.headerHidden === true
 
-      // Silent adoption: don't front over the zone's active tab — a reveal does.
-      next = insertAtGroup(next, target, pane.id, dock?.pos ?? 'center', dock?.before, false) ?? next
+      // Silent adoption: don't front over the zone's active tab — a reveal
+      // does. An edge dock re-takes the share the pane held when it closed.
+      next =
+        insertAtGroup(
+          next,
+          target,
+          pane.id,
+          dock?.pos ?? 'center',
+          dock?.before,
+          false,
+          recalledEdgeWeights(pane.id)
+        ) ?? next
 
       // An adopted pane ARRIVES with its chip showing — a surprise zone with
       // zero chrome has no obvious handle to drag or close. (Explicit reveal;
@@ -1184,7 +1279,7 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(tree, anchor.id, paneId, pos)
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
 
   if (next && next !== tree) {
     commit(next)
@@ -1244,25 +1339,57 @@ export function applyTree(tree: LayoutNode, presetId: string) {
 }
 
 /**
- * Shift-drag span: merge the highlighted zones into one holding `paneId`. Falls
- * back to a single-zone move at `fallbackGroupId` when the set can't merge
- * (non-rectangular selection).
+ * Move a multi-tab SELECTION in one commit (drag any selected tab): the lead
+ * pane takes the drop geometry, the rest stack in behind it in strip order,
+ * and `activeId` (the pressed tab) fronts in the landing group.
  */
-export function mergeTreeZones(groupIds: string[], paneId: string, fallbackGroupId: string | null) {
+export function moveTreePanes(
+  paneIds: readonly string[],
+  target: { groupId: string; pos: DropPosition; before?: null | string },
+  activeId?: string
+) {
   const tree = $layoutTree.get()
 
   if (!tree) {
     return
   }
 
+  const next = movePanesOp(tree, paneIds, target, activeId)
+
+  if (next !== tree) {
+    commit(next)
+    markActivePreset('custom')
+
+    for (const paneId of paneIds) {
+      markPaneUserPlaced(paneId)
+    }
+  }
+}
+
+/**
+ * Shift-drag span: merge the highlighted zones into one holding `paneId`. Falls
+ * back to a single-zone move at `fallbackGroupId` when the set can't merge
+ * (non-rectangular selection).
+ */
+export function mergeTreeZones(groupIds: string[], paneId: string | readonly string[], fallbackGroupId: null | string) {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return
+  }
+
+  const paneIds = typeof paneId === 'string' ? [paneId] : paneId
   const merged = mergeZonesWithPaneOp(tree, groupIds, paneId)
 
   if (merged) {
     commit(merged)
     markActivePreset('custom')
-    markPaneUserPlaced(paneId)
+
+    for (const id of paneIds) {
+      markPaneUserPlaced(id)
+    }
   } else if (fallbackGroupId) {
-    moveTreePane(paneId, { groupId: fallbackGroupId, pos: 'center' })
+    moveTreePanes(paneIds, { groupId: fallbackGroupId, pos: 'center' })
   }
 }
 
@@ -1274,11 +1401,13 @@ export function activateTreePane(groupId: string, paneId: string) {
   }
 }
 
-export function reorderTreePane(groupId: string, paneId: string, toIndex: number) {
+/** Reorder a tab block (multi-tab selection, or a single tab) within its
+ *  group's strip — the block keeps its own order. */
+export function reorderTreePanes(groupId: string, paneIds: readonly string[], toIndex: number) {
   const tree = $layoutTree.get()
 
   if (tree) {
-    commit(reorderPaneInGroupOp(tree, groupId, paneId, toIndex))
+    commit(reorderPanesInGroupOp(tree, groupId, paneIds, toIndex))
     markActivePreset('custom')
   }
 }
@@ -1316,11 +1445,22 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   if (group.panes.length > 1) {
     if (collapsed && group.active === paneId) {
       if (group.panes.some(isUncloseablePane)) {
-        // Workspace can't minimize (strands the app) → tab-switch to a sibling
-        // (guaranteed to exist by length > 1).
+        // Workspace can't minimize (strands the app) → hand the active slot to
+        // the uncloseable (workspace) pane rather than an arbitrary adjacent
+        // sibling. [workspace, files, review, terminal] with the terminal
+        // active must land on workspace (New Session semantics), not on review
+        // via `panes[at - 1]` — which left the user stranded on a tool pane
+        // and (before the overlay fix) the terminal visually foreground.
+        const anchor = group.panes.find(isUncloseablePane)
         const at = group.panes.indexOf(paneId)
 
-        activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
+        if (anchor && anchor !== paneId) {
+          activateTreePane(group.id, anchor)
+        } else {
+          // Defensive: collapsing the uncloseable pane itself (never bound to
+          // a tool toggle store) — fall back to the sibling.
+          activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
+        }
       } else {
         setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }

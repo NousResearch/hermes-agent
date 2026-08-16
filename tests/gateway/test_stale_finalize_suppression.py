@@ -20,6 +20,7 @@ with a live ``GatewayStreamConsumer``), per the review guidance on #71643:
 Plus unit coverage for ``GatewayStreamConsumer.delivered_final_matches``.
 """
 
+import asyncio
 import importlib
 import sys
 import types
@@ -257,6 +258,99 @@ async def test_equal_text_control_still_suppresses_duplicate_send(
     assert len(full_sends) <= 1, f"duplicate final delivery: {full_sends!r}"
 
 
+class _PayloadLessSplitConsumer(GatewayStreamConsumer):
+    """Force the #78541 shape after a normal stream drain.
+
+    Claims final delivery via the multi-message split path but leaves no
+    recorded payload — the pre-fix gateway treated matcher ``None`` as
+    legacy trust and swallowed the complete ``final_response``.
+    """
+
+    async def run(self):
+        await super().run()
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        self._turn_split_delivery = True
+        self._delivered_final_text = None
+        self._stream_ledger = ""
+
+
+@pytest.mark.asyncio
+async def test_payload_less_split_does_not_suppress_complete_response(
+    monkeypatch, tmp_path
+):
+    """#78541 — payload-less split-delivery flags must not swallow the reply."""
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "streaming": {
+                    "enabled": True,
+                    "edit_interval": 0.01,
+                    "buffer_threshold": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StalePrefixAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+    # run.py imports GatewayStreamConsumer locally inside _run_agent — patch
+    # the defining module so the local import picks up the sabotage subclass.
+    monkeypatch.setattr(
+        stream_consumer_mod, "GatewayStreamConsumer", _PayloadLessSplitConsumer
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    adapter = FinalizeCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1004492624436",
+        chat_type="group",
+        thread_id="1",
+    )
+    result = await runner._run_agent(
+        message="describe this photo",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-78541-payload-less-split",
+        session_key="agent:main:telegram:group:-1004492624436:1",
+    )
+
+    assert result["final_response"] == FULL_RESPONSE
+    all_payloads = [c["content"] for c in adapter.sent] + [
+        e["content"] for e in adapter.edits
+    ]
+    # The contract is "the complete reply is not swallowed", which has two
+    # legitimate shapes: _run_agent puts the full text on the wire itself
+    # (reconcile edit), or it declines to claim delivery so the caller's normal
+    # final send delivers it. A multi-message split takes the second shape --
+    # the reconcile edit is deliberately skipped there because it would repeat
+    # every sealed head chunk inside the tail message (#78541). Asserting only
+    # the first shape would pin the recovery route rather than the guarantee.
+    delivered_here = any(FULL_RESPONSE in payload for payload in all_payloads)
+    assert delivered_here or not result.get("already_sent"), (
+        "complete response was neither delivered nor left to the normal final "
+        f"send; already_sent={result.get('already_sent')!r} payloads={all_payloads!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Consumer unit coverage: delivered_final_matches tri-state
 # ---------------------------------------------------------------------------
@@ -284,11 +378,27 @@ class TestDeliveredFinalMatches:
         consumer._record_turn_final_payload(STREAMED_PREFIX)
         assert consumer.delivered_final_matches(FULL_RESPONSE) is False
 
-    def test_split_delivery_returns_none(self):
+    def test_payload_less_split_delivery_returns_false(self):
+        """#78541 — payload-less split must not inherit legacy trust."""
         consumer = _consumer()
         consumer._turn_split_delivery = True
+        consumer._delivered_final_text = None
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is False
+
+    def test_split_delivery_with_matching_ledger_returns_true(self):
+        """Complete overflow split that recorded its ledger still suppresses."""
+        consumer = _consumer()
+        consumer._turn_split_delivery = True
+        consumer._stream_ledger = FULL_RESPONSE
+        consumer._record_turn_final_payload(STREAMED_PREFIX)  # tail only; ledger wins
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is True
+
+    def test_split_delivery_with_stale_ledger_returns_false(self):
+        consumer = _consumer()
+        consumer._turn_split_delivery = True
+        consumer._stream_ledger = STREAMED_PREFIX
         consumer._record_turn_final_payload(STREAMED_PREFIX)
-        assert consumer.delivered_final_matches(FULL_RESPONSE) is None
+        assert consumer.delivered_final_matches(FULL_RESPONSE) is False
 
     def test_empty_final_text_returns_none(self):
         consumer = _consumer()
@@ -308,3 +418,192 @@ class TestDeliveredFinalMatches:
         consumer._reset_segment_state()
         assert consumer._delivered_final_text is None
         assert consumer._turn_split_delivery is False
+        assert consumer._stream_ledger == ""
+
+
+# ---------------------------------------------------------------------------
+# End-to-end split delivery: drive the real overflow-split loop (no hand-set
+# private flags) and assert the no-duplicate / no-swallow contract on both
+# sides.  These are the shapes that #78541's boundary fix has to not regress:
+# a genuine complete split must still suppress, and an incomplete one must not.
+# ---------------------------------------------------------------------------
+
+
+class _SplittingAdapter(FinalizeCaptureAdapter):
+    """Small message cap so real prose trips the consumer's overflow split.
+
+    Also records deletions and can be told to fail edits, so the fresh-final
+    and flood-control paths can be driven without patching internals.
+    """
+
+    MAX_MESSAGE_LENGTH = 220
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform)
+        self.deleted = []
+        self.fail_edits = False
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
+    ) -> SendResult:
+        if self.fail_edits:
+            return SendResult(
+                success=False, error="Flood control exceeded. Retry in 12 seconds"
+            )
+        return await super().edit_message(
+            chat_id, message_id, content, finalize=finalize, metadata=metadata
+        )
+
+    async def delete_message(self, chat_id, message_id) -> bool:
+        self.deleted.append(message_id)
+        return True
+
+    def truncate_message(self, text, limit, len_fn=len):
+        chunks, rest = [], text
+        while len_fn(rest) > limit:
+            cut = rest.rfind("\n", 0, limit)
+            if cut < limit // 2:
+                cut = limit
+            chunks.append(rest[:cut])
+            rest = rest[cut:].lstrip("\n")
+        chunks.append(rest)
+        return chunks
+
+
+def _split_consumer():
+    adapter = _SplittingAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-split",
+        StreamConsumerConfig(
+            edit_interval=0.0, buffer_threshold=1, cursor="",
+            fresh_final_after_seconds=0.0,
+        ),
+    )
+    return adapter, consumer
+
+
+async def _drain_split_turn(consumer, lines):
+    task = asyncio.create_task(consumer.run())
+    for line in lines:
+        consumer.on_delta(line + "\n")
+        await asyncio.sleep(0.005)
+    consumer.finish()
+    await asyncio.wait_for(task, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_complete_overflow_split_still_suppresses_duplicate():
+    """A fully delivered multi-message reply must NOT be re-sent (#45517)."""
+    adapter, consumer = _split_consumer()
+    lines = [f"line {i} " + "x" * 60 for i in range(12)]
+    await _drain_split_turn(consumer, lines)
+
+    complete = "\n".join(lines)
+    assert consumer._turn_split_delivery is True, "overflow split never triggered"
+    # The user received the whole answer across several messages, so the
+    # gateway must keep suppressing its own final send.
+    assert consumer.delivered_final_matches(complete) is True
+
+
+@pytest.mark.asyncio
+async def test_split_delivery_missing_tail_does_not_suppress():
+    """#78541 — when the completed response exceeds what the split delivered,
+    the matcher must report a mismatch so the gateway still sends it."""
+    adapter, consumer = _split_consumer()
+    lines = [f"line {i} " + "x" * 60 for i in range(12)]
+    await _drain_split_turn(consumer, lines)
+
+    never_streamed = "\n".join(lines) + "\n\n" + "tail the user never saw " * 8
+    assert consumer._turn_split_delivery is True
+    assert consumer.delivered_final_matches(never_streamed) is False
+
+
+@pytest.mark.asyncio
+async def test_split_delivery_keeps_sealed_heads_on_fresh_final():
+    """The fresh-final route must not delete sealed head messages.
+
+    ``_try_fresh_final`` replaces every tracked preview with one fresh message,
+    which only holds the whole answer on a single-message turn.  After a split
+    the sealed heads carry text that the fresh message does not, so deleting
+    them would drop delivered content (#78541).
+    """
+    adapter, consumer = _split_consumer()
+    head_id = await consumer._send_new_chunk("HEAD text. " * 12, None, final=False)
+    consumer._turn_split_delivery = True
+
+    assert head_id in consumer._preview_message_ids
+    assert await consumer._try_fresh_final("TAIL text. " * 12) is False
+    assert head_id not in adapter.deleted, "sealed head chunk was deleted"
+
+
+@pytest.mark.asyncio
+async def test_failed_final_edit_after_split_records_visible_payload():
+    """A flood-controlled cosmetic final edit must not cause a duplicate.
+
+    The complete answer is already on screen; only the cursor-strip edit
+    failed.  Recording the visible payload keeps the gateway suppressing its
+    own send instead of posting the whole answer twice (#36965 / #25349).
+    """
+    adapter = _SplittingAdapter()
+    cursor = " \u2589"
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-split",
+        StreamConsumerConfig(
+            edit_interval=0.0, buffer_threshold=1, cursor=cursor,
+            fresh_final_after_seconds=0.0,
+        ),
+    )
+    full = "The complete answer. " * 8
+    # Streaming already put the whole answer on screen, cursor and all.
+    await consumer._send_or_edit(full + cursor)
+    assert consumer._last_sent_text.endswith(cursor)
+    consumer._turn_split_delivery = True
+    consumer._stream_ledger = full
+    adapter.fail_edits = True
+
+    # The cosmetic cursor-strip edit is rate-limited and fails.
+    assert await consumer._send_or_edit(full, finalize=True) is False
+    assert consumer._final_content_delivered is True
+    assert consumer.delivered_final_matches(full) is True
+
+
+@pytest.mark.asyncio
+async def test_empty_fallback_final_after_split_records_only_what_survives():
+    """A recovery that DELETES the sealed heads must not claim them as delivered.
+
+    ``_send_empty_fallback_final`` replaces the active segment: it sends the
+    completed text as a fresh message and deletes every tracked segment
+    preview -- including the sealed head chunks of an overflow split.  Only the
+    new message is left on screen, so the recorded payload must be that message
+    verbatim, NOT the stream ledger.  Recording the ledger would claim delivery
+    for text this path just removed, and the gateway would suppress its own
+    send and leave the user with a fraction of the answer (#78541).
+    """
+    adapter = _SplittingAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-split",
+        StreamConsumerConfig(
+            edit_interval=0.0, buffer_threshold=1, cursor="",
+            fresh_final_after_seconds=0.0,
+        ),
+    )
+    head = "HEAD text. " * 40
+    tail = "TAIL text. " * 6
+    complete = head + tail
+
+    # Sealed head chunk is on screen and tracked as a segment preview.
+    head_id = await consumer._send_new_chunk(head, None, final=False)
+    consumer._turn_split_delivery = True
+    consumer._stream_ledger = complete
+    assert head_id in consumer._segment_preview_message_ids
+
+    # The recovery commits only ``tail`` and deletes the sealed head.
+    assert await consumer._send_empty_fallback_final(tail) == "delivered"
+    assert head_id in adapter.deleted, "expected the recovery to delete the head"
+
+    # The head is gone from the chat, so the complete answer was NOT delivered:
+    # the gateway must be told this is a mismatch and send it.
+    assert consumer.delivered_final_matches(complete) is False

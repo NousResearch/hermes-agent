@@ -28,6 +28,56 @@ class DummyResponse:
 
 
 
+def test_followup_user_turn_is_not_merged_into_function_response_turn():
+    """Human follow-up after tool results must stay its own user content.
+
+    The split pair is kept alternation-valid by interposing a placeholder
+    model turn between the functionResponse content and the human text
+    content (mirrors gemini-cli#28700's INTERRUPTED_RESPONSE_PLACEHOLDER).
+
+    Scope: only the functionResponse↔human-text boundary. Ordinary same-role
+    merges (parallel tool results, back-to-back plain user texts) remain
+    required for Gemini alternation and are covered by sibling tests.
+    """
+    from agent.gemini_native_adapter import (
+        _INTERRUPTED_RESPONSE_PLACEHOLDER,
+        _build_gemini_contents,
+    )
+
+    messages = [
+        {"role": "user", "content": "Load the skill"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": '{"name":"hermes-agent"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "loaded"},
+        {"role": "user", "content": "Continue"},
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+
+    assert [content["role"] for content in contents] == [
+        "user",
+        "model",
+        "user",
+        "model",
+        "user",
+    ]
+    assert "functionResponse" in contents[2]["parts"][0]
+    assert contents[3]["parts"] == [{"text": _INTERRUPTED_RESPONSE_PLACEHOLDER}]
+    assert contents[-1]["parts"] == [{"text": "Continue"}]
+
+
 def test_parallel_tool_results_merge_into_one_user_content():
     """Gemini requires strict user/model alternation; two consecutive `user`
     contents are rejected with HTTP 400. Parallel tool calls produce two tool
@@ -238,6 +288,47 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
     assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
     assert first[-1].choices[0].finish_reason == "tool_calls"
+
+
+def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert "thinkingConfig" not in request["generationConfig"]
+
+
+def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
+    from agent.gemini_native_adapter import (
+        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+        build_gemini_request,
+    )
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": True, "thinkingLevel": "high"},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    assert request["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "high"
+
+
+def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": False},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert request["generationConfig"]["thinkingConfig"]["includeThoughts"] is False
 
 
 

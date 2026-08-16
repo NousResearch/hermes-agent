@@ -7,6 +7,7 @@ handler is injected by ``main.py`` so this module never imports ``main``
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -74,4 +75,41 @@ def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
         help="Path to an alternate session database (default: ~/.hermes/state.db)",
     )
     suggest_parser.set_defaults(func=cmd_approvals)
+
+    test_parser = approvals_subparsers.add_parser(
+        "test",
+        help="Dry-run the approval verdict for a command (never executes it)",
+        description=(
+            "Evaluate a command against the REAL runtime approval guards — "
+            "hardline blocklist, user approvals.deny rules, dangerous-pattern "
+            "detection, allowlist, yolo/off bypass — and print the verdict, "
+            "the matching rule, and the normalized-command trace, without "
+            "executing the command, prompting anyone, or persisting anything. "
+            "Exit codes: 0 allow, 2 ask-approval, 3 deny (hardline or user "
+            "deny rule). Tip: use `--` before the command so its own flags "
+            "aren't parsed: hermes approvals test -- rm -rf /tmp/x"
+        ),
+    )
+    test_parser.add_argument(
+        "--env-type",
+        dest="env_type",
+        default="local",
+        help="Terminal backend type to evaluate against (default: local; "
+        "isolated container backends like docker skip the guards)",
+    )
+    test_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of human-readable text",
+    )
+    test_parser.add_argument(
+        "command_words",
+        nargs=argparse.REMAINDER,
+        metavar="command",
+        # NOTE: dest must NOT be "command" — main.py's startup path reads
+        # args.command as the top-level subcommand name ("approvals").
+        help="The command to evaluate (prefix with -- to protect its flags)",
+    )
+    test_parser.set_defaults(func=cmd_approvals)
+
     approvals_parser.set_defaults(func=cmd_approvals)

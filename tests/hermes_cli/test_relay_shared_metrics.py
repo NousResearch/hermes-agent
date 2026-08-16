@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing as mp
 import os
+import shutil
 import sqlite3
 import stat
 import threading
@@ -12,39 +13,69 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from agent import relay_runtime
 from hermes_cli.observability import shared_metrics as shared_metrics_module
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
+    CLIENT_ACTIVE_METRIC,
+    CLIENT_ARCHITECTURES,
+    CLIENT_INSTALL_METHODS,
+    CLIENT_OS_FAMILIES,
     COUNT_BUCKETS,
     DURATION_BUCKETS,
     EXECUTION_SURFACES,
-    MODEL_FAMILIES,
-    MODEL_LOCALITIES,
-    MODEL_OUTCOMES,
-    PRIMARY_MODEL_CALL_ROLE,
-    PROVIDER_FAMILIES,
+    LEGACY_MODEL_CALL_METRIC,
+    MODEL_CALL_PROFILE_MODEL,
+    MODEL_IDENTIFIER_MAX_LENGTH,
+    MODEL_ROUTE_METRIC,
+    PROVIDER_IDENTIFIER_MAX_LENGTH,
+    SCHEMA_KEY,
+    SCHEMA_VERSION,
+    SKILL_LIFECYCLE_ACTIONS,
+    SKILL_POST_PATCH_STATES,
+    SKILL_PROVENANCES,
+    SKILL_REUSE_STATES,
     TASK_END_REASONS,
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
     TASK_TERMINATIONS,
+    TOOL_APPROVAL_ATTRIBUTIONS,
+    TOOL_APPROVAL_OUTCOMES,
+    TOOL_CATEGORIES,
+    TOOL_LATENCY_BUCKETS,
+    TOOL_OUTCOMES,
+    TOOL_RETRY_BUCKETS,
+    client_active_counter,
+    client_architecture,
+    client_install_method,
+    client_os_family,
+    client_resource,
     count_bucket,
     duration_bucket,
     execution_surface,
-    model_call_outcome,
     model_call_dimensions,
-    model_family,
-    model_locality,
-    provider_family,
+    model_call_fields,
+    skill_counter,
+    skill_lifecycle_fields,
+    skill_load_fields,
     task_counter,
     task_start_fields,
     task_terminal_fields,
     task_terminal_state,
+    tool_approval_counter,
+    tool_approval_outcome,
+    tool_call_dimensions,
+    tool_category,
+    tool_latency_bucket,
+    tool_outcome,
+    tool_retry_bucket,
+    tool_terminal_fields,
 )
 
 
@@ -53,13 +84,14 @@ SCHEMA_PATH = (
     / "hermes_cli"
     / "observability"
     / "schemas"
-    / "hermes.shared_metrics.v1.schema.json"
+    / "hermes.shared_metrics.v2.schema.json"
 )
+LEGACY_SCHEMA_PATH = SCHEMA_PATH.with_name("hermes.shared_metrics.v1.schema.json")
 
 
-def _schema_validator():
+def _schema_validator(path: Path = SCHEMA_PATH):
     jsonschema = pytest.importorskip("jsonschema")
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema = json.loads(path.read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator.check_schema(schema)
     return jsonschema.Draft202012Validator(
         schema,
@@ -69,7 +101,7 @@ def _schema_validator():
 
 def _package_dimension_schema() -> dict[str, object]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    return schema["$defs"]["model_call_counter"]["properties"]["dimensions"]
+    return schema["$defs"]["model_route_counter"]["properties"]["dimensions"]
 
 
 def _task_dimension_schema(kind: str) -> dict[str, object]:
@@ -77,9 +109,35 @@ def _task_dimension_schema(kind: str) -> dict[str, object]:
     return schema["$defs"][kind]["properties"]["dimensions"]
 
 
+def _tool_dimension_schema(kind: str) -> dict[str, object]:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    return schema["$defs"][kind]["properties"]["dimensions"]
+
+
 def _dimensions() -> dict[str, str]:
     return {
-        "call_role": PRIMARY_MODEL_CALL_ROLE,
+        "model": "anthropic/claude-sonnet-4.6",
+        "provider": "openrouter",
+    }
+
+
+def _resource(
+    hermes_version: str = "test-version",
+    *,
+    os_family: str = "linux",
+    architecture: str = "x86_64",
+    install_method: str = "git",
+) -> dict[str, str]:
+    return {
+        "architecture": architecture,
+        "hermes_version": hermes_version,
+        "install_method": install_method,
+        "os_family": os_family,
+    }
+
+def _legacy_dimensions() -> dict[str, str]:
+    return {
+        "call_role": "primary",
         "locality": "remote",
         "model_family": "claude",
         "outcome": "success",
@@ -97,15 +155,25 @@ def _record_model_calls_in_process(
         start_barrier.wait()
     store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
     for _ in range(count):
-        store.record_model_call(_dimensions(), "test-version")
+        store.record_model_call(_dimensions(), _resource())
+
+
+def _record_client_active_in_process(
+    database_path: str,
+    outbox_directory: str,
+    start_barrier: Any,
+) -> None:
+    store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
+    start_barrier.wait()
+    store.record_client_active(_resource())
 
 
 def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
+    store.record_model_call(_dimensions(), _resource())
 
     first_paths = store.create_and_export_package()
 
@@ -114,11 +182,11 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     _schema_validator().validate(first_package)
     uuid.UUID(first_package["package_id"])
     uuid.UUID(first_package["install_id"])
-    assert first_package["schema_version"] == "hermes.shared_metrics.v1"
-    assert first_package["resource"] == {"hermes_version": "test-version"}
+    assert first_package["schema_version"] == "hermes.shared_metrics.v2"
+    assert first_package["resource"] == _resource()
     assert first_package["metrics"] == [
         {
-            "name": "hermes.model_call.count",
+            "name": MODEL_ROUTE_METRIC,
             "type": "counter",
             "dimensions": _dimensions(),
             "value": 2,
@@ -131,7 +199,7 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     assert restarted.create_and_export_package() == []
     assert len(list(outbox_directory.glob("*.json"))) == 1
 
-    restarted.record_model_call(_dimensions(), "test-version")
+    restarted.record_model_call(_dimensions(), _resource())
     second_paths = restarted.create_and_export_package()
 
     assert len(second_paths) == 1
@@ -143,6 +211,134 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     assert restarted.counter_snapshot()[0]["packaged_value"] == 3
 
 
+def test_v2_package_preserves_pending_v1_model_counters(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    period_start = shared_metrics_module._utc_now().date().isoformat()
+    legacy_dimensions_json = json.dumps(
+        _legacy_dimensions(),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO counter_aggregates(
+                period_start,
+                metric_name,
+                hermes_version,
+                os_family,
+                architecture,
+                install_method,
+                dimensions_json,
+                value,
+                packaged_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 3, 0)
+            """,
+            (
+                period_start,
+                LEGACY_MODEL_CALL_METRIC,
+                "test-version",
+                "unknown",
+                "unknown",
+                "unknown",
+                legacy_dimensions_json,
+            ),
+        )
+    store.record_model_call(
+        _dimensions(),
+        _resource(
+            "test-version",
+            os_family="unknown",
+            architecture="unknown",
+            install_method="unknown",
+        ),
+    )
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+
+    assert package["schema_version"] == "hermes.shared_metrics.v2"
+    assert package["metrics"] == [
+        {
+            "name": LEGACY_MODEL_CALL_METRIC,
+            "type": "counter",
+            "dimensions": _legacy_dimensions(),
+            "value": 3,
+        },
+        {
+            "name": MODEL_ROUTE_METRIC,
+            "type": "counter",
+            "dimensions": _dimensions(),
+            "value": 1,
+        },
+    ]
+    assert all(
+        row["value"] == row["packaged_value"] for row in store.counter_snapshot()
+    )
+
+
+def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    package_id = str(uuid.uuid4())
+    payload = {
+        "schema_version": "hermes.shared_metrics.v1",
+        "package_id": package_id,
+        "install_id": str(uuid.uuid4()),
+        "period_start": "2026-07-28T00:00:00Z",
+        "period_end": "2026-07-29T00:00:00Z",
+        "generated_at": "2026-07-29T01:00:00Z",
+        "resource": {"hermes_version": "legacy-version"},
+        "metrics": [
+            {
+                "name": LEGACY_MODEL_CALL_METRIC,
+                "type": "counter",
+                "dimensions": _legacy_dimensions(),
+                "value": 2,
+            }
+        ],
+    }
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    _schema_validator(LEGACY_SCHEMA_PATH).validate(payload)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO package_outbox(
+                package_id,
+                period_start,
+                period_end,
+                payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                package_id,
+                payload["period_start"],
+                payload["period_end"],
+                payload_json,
+                payload["generated_at"],
+            ),
+        )
+
+    assert store.create_and_export_package() == [
+        outbox_directory / f"{package_id}.json"
+    ]
+    exported = json.loads(
+        (outbox_directory / f"{package_id}.json").read_text(encoding="utf-8")
+    )
+    assert exported == payload
+    with sqlite3.connect(database_path) as connection:
+        [persisted_payload_json] = connection.execute(
+            "SELECT payload_json FROM package_outbox WHERE package_id = ?",
+            (package_id,),
+        ).fetchone()
+    assert persisted_payload_json == payload_json
+
+
 def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     tmp_path, monkeypatch
 ):
@@ -150,48 +346,854 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: current_time)
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
 
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
     assert len(store.create_and_export_package_if_due()) == 1
 
     current_time = datetime(2026, 7, 28, 18, tzinfo=timezone.utc)
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
     assert store.create_and_export_package_if_due() == []
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 1
     assert store.counter_snapshot()[0] == {
         "period_start": "2026-07-28",
-        "metric_name": "hermes.model_call.count",
-        "hermes_version": "test-version",
+        "metric_name": MODEL_ROUTE_METRIC,
+        "resource": _resource(),
         "dimensions": _dimensions(),
         "value": 2,
         "packaged_value": 1,
     }
 
     current_time = datetime(2026, 7, 29, 9, tzinfo=timezone.utc)
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
     assert len(store.create_and_export_package_if_due()) == 2
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
     assert all(
         row["value"] == row["packaged_value"] for row in store.counter_snapshot()
     )
 
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
     assert store.create_and_export_package_if_due() == []
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
 
 
+def test_client_active_uses_a_transactional_rolling_24_hour_latch(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+    assert not store.record_client_active(_resource())
+
+    now += timedelta(hours=23, minutes=59, seconds=59)
+    assert not store.record_client_active(_resource())
+
+    now += timedelta(seconds=1)
+    assert store.record_client_active(_resource())
+
+    active = [
+        counter
+        for counter in store.counter_snapshot()
+        if counter["metric_name"] == CLIENT_ACTIVE_METRIC
+    ]
+    assert [counter["dimensions"] for counter in active] == [{}, {}]
+    assert [counter["period_start"] for counter in active] == [
+        "2026-07-22",
+        "2026-07-23",
+    ]
+    assert [counter["value"] for counter in active] == [1, 1]
+
+
+def test_client_active_recovers_from_an_invalid_latch_and_creates_identity(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO telemetry_state(key, value) VALUES (?, ?)",
+            ("client_active_recorded_at", "invalid-timestamp"),
+        )
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+
+    with sqlite3.connect(database_path) as connection:
+        state = dict(
+            connection.execute(
+                "SELECT key, value FROM telemetry_state WHERE key != 'schema_version'"
+            ).fetchall()
+        )
+    uuid.UUID(state["install_id"])
+    assert state["client_active_recorded_at"] == "2026-07-22T10:00:00Z"
+
+
+def test_client_active_rebases_a_future_latch_without_double_counting(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE telemetry_state SET value = ? WHERE key = ?",
+            ("2026-07-24T10:00:00Z", "client_active_recorded_at"),
+        )
+
+    assert not store.record_client_active(_resource())
+    with sqlite3.connect(database_path) as connection:
+        latch = connection.execute(
+            "SELECT value FROM telemetry_state WHERE key = ?",
+            ("client_active_recorded_at",),
+        ).fetchone()[0]
+
+    assert latch == "2026-07-22T10:00:00Z"
+    [counter] = store.counter_snapshot()
+    assert counter["metric_name"] == CLIENT_ACTIVE_METRIC
+    assert counter["value"] == 1
+
+
+def test_client_active_package_uses_empty_dimensions_and_stable_install_id(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    assert store.record_client_active(_resource())
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+
+    _schema_validator().validate(package)
+    uuid.UUID(package["install_id"])
+    assert package["metrics"] == [
+        {
+            "name": CLIENT_ACTIVE_METRIC,
+            "type": "counter",
+            "dimensions": {},
+            "value": 1,
+        }
+    ]
+
+
+def test_deleting_local_metrics_state_resets_install_identity(tmp_path):
+    root = tmp_path / "shared-metrics"
+    database_path = root / "metrics.sqlite3"
+    outbox_directory = root / "outbox"
+    first = SharedMetricsStore(database_path, outbox_directory)
+    assert first.record_client_active(_resource())
+    [first_package_path] = first.create_and_export_package()
+    first_package = json.loads(first_package_path.read_text(encoding="utf-8"))
+
+    shutil.rmtree(root)
+
+    reset = SharedMetricsStore(database_path, outbox_directory)
+    assert reset.record_client_active(_resource())
+    [reset_package_path] = reset.create_and_export_package()
+    reset_package = json.loads(reset_package_path.read_text(encoding="utf-8"))
+
+    assert reset_package["install_id"] != first_package["install_id"]
+    assert reset_package["metrics"][0]["name"] == CLIENT_ACTIVE_METRIC
+
+
 def test_package_schema_matches_the_model_call_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     properties = _package_dimension_schema()["properties"]
 
-    assert properties["call_role"] == {"const": PRIMARY_MODEL_CALL_ROLE}
-    assert set(properties["locality"]["enum"]) == MODEL_LOCALITIES
-    assert set(properties["model_family"]["enum"]) == MODEL_FAMILIES
-    assert set(properties["outcome"]["enum"]) == MODEL_OUTCOMES
-    assert set(properties["provider_family"]["enum"]) == PROVIDER_FAMILIES
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v2"
+    assert set(properties) == {"model", "provider"}
+    assert properties["model"]["maxLength"] == MODEL_IDENTIFIER_MAX_LENGTH
+    assert properties["provider"]["maxLength"] == PROVIDER_IDENTIFIER_MAX_LENGTH
+    assert "enum" not in properties["model"]
+    assert "enum" not in properties["provider"]
 
 
+def test_client_resource_classification_is_bounded():
+    assert client_os_family("Darwin") == "macos"
+    assert client_os_family("Windows") == "windows"
+    assert client_architecture("AMD64") == "x86_64"
+    assert client_architecture("aarch64") == "arm64"
+    assert client_architecture("armv7l") == "arm"
+    assert client_install_method("Homebrew") == "homebrew"
+    assert client_install_method("nix") == "nixos"
+
+    assert client_resource(
+        "",
+        os_name="privacy-os-canary",
+        architecture="privacy-arch-canary",
+        install_method="privacy-install-canary",
+    ) == _resource(
+        "unknown",
+        os_family="unknown",
+        architecture="unknown",
+        install_method="unknown",
+    )
+
+def test_package_schema_matches_the_client_resource_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    resource = schema["properties"]["resource"]
+
+    # Every v2 package records the complete bounded client resource.
+    assert set(resource["required"]) == {
+        "architecture",
+        "hermes_version",
+        "install_method",
+        "os_family",
+    }
+    assert set(resource["properties"]) == {
+        "architecture",
+        "hermes_version",
+        "install_method",
+        "os_family",
+    }
+    assert set(resource["properties"]["os_family"]["enum"]) == CLIENT_OS_FAMILIES
+    assert set(resource["properties"]["architecture"]["enum"]) == (CLIENT_ARCHITECTURES)
+    assert set(resource["properties"]["install_method"]["enum"]) == (
+        CLIENT_INSTALL_METHODS
+    )
 
 
+def test_client_active_mark_accepts_only_an_empty_allowlisted_payload():
+    event = SimpleNamespace(
+        kind="mark",
+        category=None,
+        category_profile=None,
+        name="hermes.client.active",
+        scope_category=None,
+        metadata={
+            "hermes.metrics.schema_version": "hermes.metrics.event.v2",
+        },
+        data={},
+    )
+
+    assert client_active_counter(event) == (CLIENT_ACTIVE_METRIC, {})
+
+    with_payload = deepcopy(event)
+    with_payload.data = {"session_id": "privacy-canary"}
+    assert client_active_counter(with_payload) is None
+
+    wrong_schema = deepcopy(event)
+    wrong_schema.metadata["hermes.metrics.schema_version"] = "unknown"
+    assert client_active_counter(wrong_schema) is None
+
+
+def test_package_schema_matches_the_task_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    start = _task_dimension_schema("task_started_counter")["properties"]
+    terminal = _task_dimension_schema("task_finished_counter")["properties"]
+
+    assert set(schema["$defs"]["execution_surface"]["enum"]) == EXECUTION_SURFACES
+    assert set(schema["$defs"]["task_entrypoint"]["enum"]) == TASK_ENTRYPOINTS
+    assert set(schema["$defs"]["duration_bucket"]["enum"]) == DURATION_BUCKETS
+    assert set(schema["$defs"]["count_bucket"]["enum"]) == COUNT_BUCKETS
+    assert start["entrypoint"] == {"$ref": "#/$defs/task_entrypoint"}
+    assert set(terminal["end_reason"]["enum"]) == TASK_END_REASONS
+    assert set(terminal["outcome"]["enum"]) == TASK_OUTCOMES
+    assert set(terminal["termination"]["enum"]) == TASK_TERMINATIONS
+
+def test_v1_package_schema_retains_the_legacy_model_contract():
+    schema = json.loads(LEGACY_SCHEMA_PATH.read_text(encoding="utf-8"))
+    model_counter = schema["$defs"]["model_call_counter"]
+
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v1"
+    assert model_counter["properties"]["name"]["const"] == LEGACY_MODEL_CALL_METRIC
+    assert set(model_counter["properties"]["dimensions"]["properties"]) == {
+        "call_role",
+        "locality",
+        "model_family",
+        "outcome",
+        "provider_family",
+    }
+
+
+def test_package_schema_matches_the_tool_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    tool = _tool_dimension_schema("tool_call_counter")["properties"]
+    approval = _tool_dimension_schema("tool_approval_counter")["properties"]
+
+    assert set(tool["tool_category"]["enum"]) == TOOL_CATEGORIES
+    assert set(tool["outcome"]["enum"]) == TOOL_OUTCOMES
+    assert set(tool["approval_outcome"]["enum"]) == TOOL_APPROVAL_OUTCOMES
+    assert tool["latency_bucket"] == {"$ref": "#/$defs/tool_latency_bucket"}
+    assert tool["retry_count_bucket"] == {"$ref": "#/$defs/tool_retry_bucket"}
+    assert set(schema["$defs"]["tool_latency_bucket"]["enum"]) == (
+        TOOL_LATENCY_BUCKETS
+    )
+    assert set(schema["$defs"]["tool_retry_bucket"]["enum"]) == TOOL_RETRY_BUCKETS
+    assert set(approval["attribution"]["enum"]) == TOOL_APPROVAL_ATTRIBUTIONS
+    assert set(approval["outcome"]["enum"]) == (
+        TOOL_APPROVAL_OUTCOMES - {"not_required"}
+    )
+
+
+def test_package_schema_matches_the_skill_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    lifecycle = _tool_dimension_schema("skill_lifecycle_counter")["properties"]
+    load = _tool_dimension_schema("skill_load_counter")["properties"]
+
+    assert set(lifecycle["action"]["enum"]) == SKILL_LIFECYCLE_ACTIONS
+    assert set(schema["$defs"]["skill_provenance"]["enum"]) == SKILL_PROVENANCES
+    assert set(load["reuse_state"]["enum"]) == SKILL_REUSE_STATES
+    assert set(load["post_patch_state"]["enum"]) == SKILL_POST_PATCH_STATES
+    assert load["use_count_bucket"] == {"$ref": "#/$defs/count_bucket"}
+
+
+@pytest.mark.parametrize(
+    ("toolset", "expected"),
+    [
+        ("", "unknown"),
+        ("file", "file"),
+        ("terminal", "terminal"),
+        ("code_execution", "code_execution"),
+        ("delegation", "delegation"),
+        ("skills", "skill"),
+        ("browser-cdp", "browser"),
+        ("image_gen", "media"),
+        ("homeassistant", "home_automation"),
+        ("kanban", "planning"),
+        ("project", "project"),
+        ("discord", "communication"),
+        ("feishu_doc", "communication"),
+        ("mcp-github", "mcp"),
+        ("private_plugin", "other"),
+    ],
+)
+def test_tool_category_uses_bounded_runtime_toolsets(toolset, expected):
+    assert tool_category({"toolset": toolset}) == expected
+
+
+def test_tool_category_does_not_classify_raw_tool_names():
+    assert tool_category({"tool_name": "read_file"}) == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("ok", "success"),
+        ("error", "failed"),
+        ("blocked", "blocked"),
+        ("cancelled", "cancelled"),
+        ("timeout", "timed_out"),
+        ("private", "unknown"),
+        (None, "unknown"),
+    ],
+)
+def test_tool_outcome_is_bounded(status, expected):
+    assert tool_outcome({"status": status}) == expected
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        ("once", "approved"),
+        ("session", "approved"),
+        ("always", "approved"),
+        ("smart_approve", "approved"),
+        ("deny", "denied"),
+        ("smart_deny", "denied"),
+        ("timeout", "timed_out"),
+        (None, "unknown"),
+    ],
+)
+def test_tool_approval_outcome_is_bounded(choice, expected):
+    assert tool_approval_outcome({"choice": choice}) == expected
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "expected"),
+    [
+        (0, "lt_100ms"),
+        (100, "100ms_to_250ms"),
+        (250, "250ms_to_500ms"),
+        (500, "500ms_to_1s"),
+        (1_000, "1s_to_2s"),
+        (2_000, "2s_to_5s"),
+        (5_000, "5s_to_10s"),
+        (10_000, "10s_to_30s"),
+        (30_000, "gte_30s"),
+        (-1, "unknown"),
+        (True, "unknown"),
+        ("100", "unknown"),
+    ],
+)
+def test_tool_latency_bucket_is_bounded(duration_ms, expected):
+    assert tool_latency_bucket(duration_ms) == expected
+
+
+@pytest.mark.parametrize(
+    ("retry_count", "expected"),
+    [
+        (0, "0"),
+        (1, "1"),
+        (2, "2"),
+        (3, "3_to_5"),
+        (6, "6_to_10"),
+        (11, "gte_11"),
+        (None, "unknown"),
+        (-1, "unknown"),
+        (True, "unknown"),
+    ],
+)
+def test_tool_retry_bucket_requires_an_explicit_non_negative_count(
+    retry_count,
+    expected,
+):
+    assert tool_retry_bucket(retry_count) == expected
+
+
+def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog():
+    assert model_call_fields({
+        "model": "fallback/model",
+        "response_model": "NVIDIA/Nemotron-3-Ultra",
+        "provider": "OpenRouter",
+        "base_url": "https://private-endpoint.example/v1",
+    }) == {
+        "model": "nvidia/nemotron-3-ultra",
+        "provider": "openrouter",
+    }
+    assert model_call_fields({
+        "model": "ZAI/GLM-5.2",
+        "provider": "Brev",
+    }) == {
+        "model": "zai/glm-5.2",
+        "provider": "brev",
+    }
+
+
+def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
+    event = SimpleNamespace(
+        kind="scope",
+        category="function",
+        name=relay_runtime.LOGICAL_LLM_SCOPE,
+        scope_category="end",
+        category_profile=None,
+        data={
+            "model": "Accepted/Model",
+            "outcome": "success",
+            "provider": "OpenRouter",
+        },
+        metadata={
+            relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+            relay_runtime.RUNTIME_INSTANCE_KEY: "runtime-1",
+            "hermes.call_role": "auxiliary:compression",
+        },
+    )
+
+    assert model_call_dimensions(event) == {
+        "model": "accepted/model",
+        "provider": "openrouter",
+    }
+
+    event.data.update({
+        "model": "configured/model",
+        "response_model": "malformed response model",
+    })
+    assert model_call_dimensions(event) == {
+        "model": "configured/model",
+        "provider": "openrouter",
+    }
+
+    event.metadata["hermes.call_role"] = "primary"
+    assert model_call_dimensions(event) is None
+
+
+@pytest.mark.parametrize(
+    "response_model",
+    [
+        "contains a space",
+        "x" * (MODEL_IDENTIFIER_MAX_LENGTH + 1),
+    ],
+)
+def test_model_call_fields_fall_back_when_response_model_is_invalid(response_model):
+    assert model_call_fields({
+        "model": "nvidia/nemotron-3-ultra",
+        "response_model": response_model,
+        "provider": "openrouter",
+    }) == {
+        "model": "nvidia/nemotron-3-ultra",
+        "provider": "openrouter",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model", ""),
+        ("model", "contains a space"),
+        ("model", "contains\ncontrol"),
+        ("model", "_" + "private"),
+        ("model", "x" * (MODEL_IDENTIFIER_MAX_LENGTH + 1)),
+        ("model", object()),
+        ("provider", ""),
+        ("provider", "private provider"),
+        ("provider", "x" * (PROVIDER_IDENTIFIER_MAX_LENGTH + 1)),
+        ("provider", object()),
+    ],
+)
+def test_model_call_fields_collapse_malformed_identifiers(field, value):
+    event = {"model": "nvidia/nemotron-3-ultra", "provider": "openrouter"}
+    event[field] = value
+
+    assert model_call_fields(event)[field] == "unknown"
+
+
+def test_tool_subscriber_contract_accepts_only_bounded_events():
+    terminal = SimpleNamespace(
+        kind="scope",
+        category="tool",
+        category_profile={},
+        name="hermes.tool_call",
+        scope_category="end",
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
+        data={
+            "approval_outcome": "approved",
+            "latency_bucket": "250ms_to_500ms",
+            "outcome": "success",
+            "retry_count_bucket": "0",
+            "tool_category": "terminal",
+        },
+    )
+    assert tool_call_dimensions(terminal) == terminal.data
+
+    terminal.data["result"] = "must-not-pass"
+    assert tool_call_dimensions(terminal) is None
+    terminal.data.pop("result")
+    terminal.data["tool_category"] = "private-tool-name"
+    assert tool_call_dimensions(terminal) is None
+    terminal.data["tool_category"] = "terminal"
+    terminal.category_profile["tool_name"] = "must-not-pass"
+    assert tool_call_dimensions(terminal) is None
+
+    approval = SimpleNamespace(
+        kind="mark",
+        category=None,
+        category_profile=None,
+        name="hermes.tool_approval",
+        scope_category=None,
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v2"},
+        data={"attribution": "unattributed", "outcome": "denied"},
+    )
+    assert tool_approval_counter(approval) == (
+        "hermes.tool_approval.count",
+        approval.data,
+    )
+    approval.data["command"] = "must-not-pass"
+    assert tool_approval_counter(approval) is None
+
+
+def test_skill_subscriber_contract_accepts_only_bounded_marks():
+    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v2"}
+    lifecycle = SimpleNamespace(
+        kind="mark",
+        category=None,
+        category_profile=None,
+        name="hermes.skill.lifecycle",
+        scope_category=None,
+        metadata=metadata,
+        data={"action": "patched", "provenance": "agent_created"},
+    )
+    assert skill_counter(lifecycle) == (
+        "hermes.skill.lifecycle.count",
+        lifecycle.data,
+    )
+
+    load = SimpleNamespace(**{
+        **lifecycle.__dict__,
+        "name": "hermes.skill.load",
+        "data": {
+            "post_patch_state": "reused_after_patch",
+            "provenance": "agent_created",
+            "reuse_state": "reused",
+            "use_count_bucket": "3_to_5",
+        },
+    })
+    assert skill_counter(load) == ("hermes.skill.load.count", load.data)
+
+    load.data["skill_name"] = "privacy-canary"
+    assert skill_counter(load) is None
+    load.data.pop("skill_name")
+    load.data["provenance"] = "private-repository"
+    assert skill_counter(load) is None
+    lifecycle.metadata["skill_name"] = "privacy-canary"
+    assert skill_counter(lifecycle) is None
+
+def test_skill_event_fields_are_bounded_and_reject_malformed_usage():
+    assert skill_lifecycle_fields({
+        "action": "patched",
+        "provenance": "agent_created",
+        "skill_name": "privacy-canary",
+    }) == {"action": "patched", "provenance": "agent_created"}
+    assert skill_lifecycle_fields({"action": "deleted"}) is None
+    assert skill_load_fields({
+        "provenance": "private-repository",
+        "use_count": 2,
+        "reused": True,
+        "reuse_after_patch": False,
+        "skill_name": "privacy-canary",
+    }) == {
+        "post_patch_state": "no_new_patch",
+        "provenance": "unknown",
+        "reuse_state": "reused",
+        "use_count_bucket": "2",
+    }
+    assert skill_load_fields({
+        "use_count": 1,
+        "reused": False,
+        "reuse_after_patch": False,
+    }) == {
+        "post_patch_state": "not_applicable",
+        "provenance": "unknown",
+        "reuse_state": "first_use",
+        "use_count_bucket": "1",
+    }
+    assert (
+        skill_load_fields({
+            "use_count": 1,
+            "reused": False,
+            "reuse_after_patch": True,
+        })
+        is None
+    )
+
+def test_store_rejects_an_unsupported_schema_version(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE telemetry_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO telemetry_state(key, value) VALUES ('schema_version', '999')"
+        )
+
+    with pytest.raises(RuntimeError, match="Unsupported shared-metrics store schema"):
+        SharedMetricsStore(database_path, tmp_path / "outbox")
+
+    with sqlite3.connect(database_path) as connection:
+        [schema_version] = connection.execute(
+            "SELECT value FROM telemetry_state WHERE key = 'schema_version'"
+        ).fetchone()
+    assert schema_version == "999"
+
+def test_store_migrates_v1_counters_with_unknown_client_dimensions(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    install_id = str(uuid.uuid4())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE telemetry_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO telemetry_state(key, value) VALUES (?, ?)",
+            [("schema_version", "1"), ("install_id", install_id)],
+        )
+        connection.execute(
+            """
+            CREATE TABLE counter_aggregates (
+                period_start TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                hermes_version TEXT NOT NULL,
+                dimensions_json TEXT NOT NULL,
+                value INTEGER NOT NULL,
+                packaged_value INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    period_start,
+                    metric_name,
+                    hermes_version,
+                    dimensions_json
+                )
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO counter_aggregates(
+                period_start,
+                metric_name,
+                hermes_version,
+                dimensions_json,
+                value,
+                packaged_value
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-07-21",
+                LEGACY_MODEL_CALL_METRIC,
+                "old-version",
+                json.dumps(
+                    _legacy_dimensions(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                3,
+                1,
+            ),
+        )
+
+    store = SharedMetricsStore(database_path, outbox_directory)
+
+    [counter] = store.counter_snapshot()
+    assert counter["resource"] == _resource(
+        "old-version",
+        os_family="unknown",
+        architecture="unknown",
+        install_method="unknown",
+    )
+    assert counter["value"] == 3
+    assert counter["packaged_value"] == 1
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+    assert package["install_id"] == install_id
+    assert package["metrics"][0]["value"] == 2
+
+def test_pending_metrics_keep_the_client_resource_recorded_at_event_time(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    resource_a = _resource("version-a", architecture="arm64", install_method="pip")
+    resource_b = _resource("version-a", os_family="macos")
+    store.record_model_call(_dimensions(), resource_a)
+    store.record_model_call(_dimensions(), resource_b)
+
+    packages = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in store.create_and_export_package()
+    ]
+
+    assert {tuple(sorted(package["resource"].items())) for package in packages} == {
+        tuple(sorted(resource_a.items())),
+        tuple(sorted(resource_b.items())),
+    }
+    assert all(package["metrics"][0]["value"] == 1 for package in packages)
+
+def test_store_exports_task_started_and_terminal_counters(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_counter(
+        "hermes.task_run.started",
+        {"entrypoint": "interactive", "execution_surface": "cli"},
+        _resource(),
+    )
+    terminal = task_terminal_fields(
+        {
+            "platform": "cli",
+            "completed": True,
+            "turn_exit_reason": "text_response(stop)",
+        },
+        duration_ms=2_000,
+        model_call_count=1,
+        tool_call_count=2,
+        retry_count=0,
+    )
+    store.record_counter("hermes.task_run.finished", terminal, _resource())
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+
+    assert {metric["name"] for metric in package["metrics"]} == {
+        "hermes.task_run.finished",
+        "hermes.task_run.started",
+    }
+
+def test_package_schema_rejects_unknown_fields(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_model_call(_dimensions(), _resource())
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    invalid_package = deepcopy(package)
+    invalid_package["prompt"] = "must-not-be-accepted"
+
+    jsonschema = pytest.importorskip("jsonschema")
+    with pytest.raises(jsonschema.ValidationError):
+        _schema_validator().validate(invalid_package)
+
+def test_store_does_not_record_the_retired_model_metric(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with pytest.raises(ValueError, match="Unsupported shared metric"):
+        store.record_counter(
+            LEGACY_MODEL_CALL_METRIC,
+            _legacy_dimensions(),
+            _resource(),
+        )
+
+    assert store.counter_snapshot() == []
+
+
+def test_store_rejects_dimensions_outside_the_metric_contract(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.record_counter(
+            MODEL_ROUTE_METRIC,
+            {"prompt": "must-not-be-persisted"},
+            _resource(),
+        )
+
+    assert store.counter_snapshot() == []
+
+def test_store_rejects_client_resources_outside_the_contract(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with pytest.raises(ValueError, match="Unsupported shared-metrics client resource"):
+        store.record_model_call(
+            _dimensions(),
+            {
+                **_resource(),
+                "architecture": "privacy-architecture-canary",
+            },
+        )
+
+    assert store.counter_snapshot() == []
+
+def test_package_builder_rejects_tampered_dimensions(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET dimensions_json = ?",
+            (json.dumps({"prompt": "must-not-be-exported"}),),
+        )
+
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.create_and_export_package()
+
+    assert list(outbox_directory.glob("*.json")) == []
+
+
+def test_package_builder_rejects_tampered_client_resources(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET os_family = ?",
+            ("privacy-os-canary",),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="Unsupported shared-metrics client resource",
+    ):
+        store.create_and_export_package()
+
+    assert list(outbox_directory.glob("*.json")) == []
+
+
+def test_pending_package_retry_reuses_the_same_package_and_file(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    [package_path] = store.create_and_export_package()
+    original_payload = package_path.read_bytes()
 
 
 
@@ -225,11 +1227,11 @@ def test_retention_prunes_only_expired_exported_history(tmp_path):
     outbox_directory = tmp_path / "outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
 
-    store.record_model_call(_dimensions(), "expired-version")
+    store.record_model_call(_dimensions(), _resource("expired-version"))
     [expired_path] = store.create_and_export_package()
-    store.record_model_call(_dimensions(), "current-version")
+    store.record_model_call(_dimensions(), _resource("current-version"))
     [current_path] = store.create_and_export_package()
-    store.record_model_call(_dimensions(), "pending-version")
+    store.record_model_call(_dimensions(), _resource("pending-version"))
     pending_package = store._create_package()
     assert pending_package is not None
 
@@ -279,17 +1281,94 @@ def test_retention_prunes_only_expired_exported_history(tmp_path):
     assert aggregate_versions == {"current-version", "pending-version"}
 
 
+def test_retention_failure_does_not_fail_a_committed_export(tmp_path, monkeypatch):
+    store = SharedMetricsStore(
+        tmp_path / "metrics.sqlite3",
+        tmp_path / "outbox",
+    )
+    store.record_model_call(_dimensions(), _resource())
+
+    def fail_pruning():
+        raise OSError("retention unavailable")
+
+    monkeypatch.setattr(store, "_prune_expired_history", fail_pruning)
+
+    [package_path] = store.create_and_export_package()
+
+    assert package_path.exists()
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
+def test_file_export_failure_retries_committed_outbox_without_duplicate_delta(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("simulated atomic export failure")
+
+    module_globals = SharedMetricsStore._export_pending_packages.__globals__
+    original_write = module_globals["atomic_json_write"]
+    monkeypatch.setitem(module_globals, "atomic_json_write", fail_write)
+    with pytest.raises(OSError, match="simulated atomic export failure"):
+        store.create_and_export_package()
+
+    with sqlite3.connect(database_path) as connection:
+        package_id, exported_at = connection.execute(
+            "SELECT package_id, exported_at FROM package_outbox"
+        ).fetchone()
+    assert exported_at is None
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
+    assert list(outbox_directory.glob("*.json")) == []
+
+    monkeypatch.setitem(module_globals, "atomic_json_write", original_write)
+    assert store.create_and_export_package() == [
+        outbox_directory / f"{package_id}.json"
+    ]
+    assert len(list(outbox_directory.glob("*.json"))) == 1
+    assert store.create_and_export_package() == []
 
 
+def test_package_export_does_not_chase_concurrent_updates(tmp_path, monkeypatch):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    original_create = store._create_package
+    create_calls = 0
+
+    def create_and_record_another():
+        nonlocal create_calls
+        create_calls += 1
+        package = original_create()
+        if create_calls == 1:
+            store.record_model_call(_dimensions(), _resource())
+        return package
+
+    monkeypatch.setattr(store, "_create_package", create_and_record_another)
+    first_paths = store.create_and_export_package()
+
+    assert create_calls == 1
+    assert len(first_paths) == 1
+    [counter] = store.counter_snapshot()
+    assert counter["metric_name"] == MODEL_ROUTE_METRIC
+    assert counter["dimensions"] == _dimensions()
+    assert counter["value"] == 2
+    assert counter["packaged_value"] == 1
+
+    second_paths = store.create_and_export_package()
+    assert len(second_paths) == 1
+    assert store.counter_snapshot()[0]["packaged_value"] == 2
 
 
 def test_concurrent_package_builders_commit_one_delta(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
     ready = threading.Barrier(2)
 
     def export() -> list[Path]:
@@ -314,8 +1393,49 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
     assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
+def test_concurrent_due_exports_create_one_daily_package(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    ready = threading.Barrier(8)
+
+    def export() -> None:
+        worker_store = SharedMetricsStore(database_path, outbox_directory)
+        ready.wait(timeout=5)
+        worker_store.create_and_export_package_if_due()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(export) for _ in range(8)]
+        for future in futures:
+            future.result()
+
+    with sqlite3.connect(database_path) as connection:
+        [outbox_count] = connection.execute(
+            "SELECT COUNT(*) FROM package_outbox"
+        ).fetchone()
+    assert outbox_count == 1
+    assert len(list(outbox_directory.glob("*.json"))) == 1
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
+def test_concurrent_model_call_updates_are_transactional(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    SharedMetricsStore(database_path, outbox_directory)
+
+    def record_calls(count: int) -> None:
+        store = SharedMetricsStore(database_path, outbox_directory)
+        for _ in range(count):
+            store.record_model_call(_dimensions(), _resource())
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(record_calls, 10) for _ in range(2)]
+        for future in futures:
+            future.result()
+
+    restarted = SharedMetricsStore(database_path, outbox_directory)
+    assert restarted.counter_snapshot()[0]["value"] == 20
 
 
 def test_cross_process_model_call_updates_are_transactional(tmp_path):
@@ -342,6 +1462,55 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 
+def test_cross_process_client_active_attempts_record_one_install(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    context = mp.get_context("spawn")
+    start_barrier = context.Barrier(2)
+    processes = [
+        context.Process(
+            target=_record_client_active_in_process,
+            args=(str(database_path), str(outbox_directory), start_barrier),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=15)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+
+    store = SharedMetricsStore(database_path, outbox_directory)
+    [active] = store.counter_snapshot()
+    assert active["metric_name"] == CLIENT_ACTIVE_METRIC
+    assert active["dimensions"] == {}
+    assert active["value"] == 1
+
+
+def test_schema_initialization_waits_for_an_existing_writer(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    database_path.touch()
+    blocker = sqlite3.connect(database_path)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            SharedMetricsStore,
+            database_path,
+            outbox_directory,
+        )
+        try:
+            time.sleep(0.4)
+            assert not future.done()
+        finally:
+            blocker.rollback()
+            blocker.close()
+        store = future.result(timeout=2)
+
+    assert store.counter_snapshot() == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes are unavailable")
@@ -349,7 +1518,7 @@ def test_store_and_export_are_owner_only(tmp_path):
     database_path = tmp_path / "private-store" / "metrics.sqlite3"
     outbox_directory = tmp_path / "private-outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
+    store.record_model_call(_dimensions(), _resource())
     [package_path] = store.create_and_export_package()
 
     assert stat.S_IMODE(database_path.parent.stat().st_mode) == 0o700

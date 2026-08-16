@@ -1,6 +1,8 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -64,6 +66,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["run_steer"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
@@ -73,6 +76,44 @@ async def test_capabilities_advertises_session_control_surface(adapter):
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
     }
+    assert data["endpoints"]["run_steer"] == {
+        "method": "POST",
+        "path": "/v1/runs/{run_id}/steer",
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
+    session_id = session_db.create_session("bounded-messages", "api_server")
+    session_db.replace_messages(
+        session_id,
+        [{"role": "user", "content": f"msg {i}"} for i in range(501)],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200
+        payload = await resp.json()
+
+        explicit_resp = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=2&offset=1"
+        )
+        assert explicit_resp.status == 200
+        explicit = await explicit_resp.json()
+
+    assert payload["pagination"] == {
+        "limit": 500,
+        "offset": 0,
+        "order": "latest",
+        "returned": 500,
+    }
+    assert payload["data"][0]["content"] == "msg 1"
+    assert payload["data"][-1]["content"] == "msg 500"
+    assert [message["content"] for message in explicit["data"]] == [
+        "msg 1",
+        "msg 2",
+    ]
 
 
 @pytest.mark.asyncio
@@ -124,6 +165,137 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_session_key": "request-key",
         "child_session_id": "request-session",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypatch):
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+
+        def steer(self, text: str) -> bool:
+            observed["steer_text"] = text
+            return True
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed["registered"] = adapter._active_run_agents.get("run_steer_test") is self
+            observed["task_id"] = task_id
+            return {"final_response": "ok"}
+
+    def fake_create_agent(**kwargs):
+        return FakeAgent(kwargs["session_id"])
+
+    monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+
+    result, usage = await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="request-session",
+        active_run_id="run_steer_test",
+    )
+
+    assert result["session_id"] == "request-session"
+    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert observed == {"registered": True, "task_id": "request-session"}
+    assert "run_steer_test" not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
+    adapter, session_db
+):
+    """Disconnects must interrupt the live run without dropping its control refs early."""
+    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    run_started = threading.Event()
+    interrupt_called = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    with patch.object(
+        adapter,
+        "_get_existing_session_or_404",
+        return_value=({"id": session_id}, None),
+    ), patch.object(
+        adapter,
+        "_read_json_body",
+        return_value=({"message": "stream please"}, None),
+    ), patch.object(
+        adapter,
+        "_create_agent",
+        side_effect=_create_agent,
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        for _ in range(40):
+            if interrupt_called.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert interrupt_called.is_set()
+        assert run_id in adapter._active_run_agents
+        # Not in _active_run_tasks: session-stream turns are counted via
+        # _inflight_agent_runs; a task entry would double-count them in the
+        # shutdown drain (active_agent_work_count).
+        assert run_id not in adapter._active_run_tasks
+        assert not handler_task.done()
+
+        allow_finish.set()
+        await handler_task
+
+    assert run_id not in adapter._active_run_agents
 
 
 @pytest.mark.asyncio
@@ -608,3 +780,56 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
     mock_run.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
+    """PATCH must accept the durable pin/archive flags and round-trip them.
+
+    These were rejected as unsupported fields, so every pin the desktop made
+    400'd silently (the client swallows the error) and the pin only ever lived
+    in that one app's localStorage. The auto-archive sweep reads
+    `sessions.pinned` server-side, so an unpersisted pin does not protect the
+    chat it was supposed to keep.
+    """
+    session_id = session_db.create_session("pin-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": True})
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["session"]["pinned"] is True
+
+        # The flag is durable, not just echoed back from the request body.
+        assert bool(session_db.get_session(session_id)["pinned"]) is True
+
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert (await resp.json())["session"]["pinned"] is True
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": False})
+        assert (await resp.json())["session"]["pinned"] is False
+        assert bool(session_db.get_session(session_id)["pinned"]) is False
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"archived": True})
+        assert (await resp.json())["session"]["archived"] is True
+        assert bool(session_db.get_session(session_id)["archived"]) is True
+
+
+@pytest.mark.asyncio
+async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
+    session_id = session_db.create_session("pin-type-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": "yes"})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "invalid_session_field"
+
+
+@pytest.mark.asyncio
+async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
+    session_id = session_db.create_session("unknown-field-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "unsupported_session_field"

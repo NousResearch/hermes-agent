@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -232,18 +233,52 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
+        """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
+        plist rewrite by `hermes gateway start` cannot strip the FD floor and
+        reintroduce EMFILE crashes (launchd default soft limit is 256)."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist
+
+    def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
+        """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
+        plist must then not contain a SoftResourceLimits block at all."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: None
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "SoftResourceLimits" not in plist
+
 
 
 class TestGatewayStopCleanup:
+    @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
-        the global kill_gateway_processes()."""
+        the global kill_gateway_processes().
+
+        Linux-gated: the routing under test is the systemd arm, and it is only
+        reached when the host really isn't macOS/Windows (the old
+        ``is_macos → False`` stub is gone).
+        """
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
         service_calls = []
@@ -264,6 +299,25 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_wait_for_pid_exit_returns_when_process_gone(self, monkeypatch):
+        alive = [True, True, False]
+        monkeypatch.setattr(
+            "gateway.status._pid_exists", lambda pid: alive.pop(0) if alive else False
+        )
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda s: None)
+
+        assert gateway_cli._wait_for_pid_exit(4242, timeout=30) is True
+        assert not alive  # polled until the PID disappeared
+
+    def test_wait_for_pid_exit_times_out_on_wedged_process(self, monkeypatch):
+        """A wedged gateway must not block the reload forever."""
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+
+        assert gateway_cli._wait_for_pid_exit(4242, timeout=0) is False
+
+    def test_wait_for_pid_exit_ignores_nonpositive_pid(self):
+        assert gateway_cli._wait_for_pid_exit(0, timeout=30) is True
+
 
 
     def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
@@ -333,6 +387,177 @@ class TestLaunchdServiceRecovery:
         # otherwise every reload leaks a dead label in launchd.
         submit_label = cmd[cmd.index("-l") + 1]
         assert f"launchctl remove {submit_label}" in script
+
+    def test_refresh_defers_reload_even_when_not_a_posix_descendant(self, tmp_path, monkeypatch):
+        """The detached helper is used even when the gateway is NOT an ancestor.
+
+        POSIX ancestry does not decide who ``bootout`` kills — the launchd job's
+        process *coalition* does, and coalition membership is inherited at spawn
+        and survives reparenting. A gateway-spawned process whose intermediate
+        parent has exited is reparented to PID 1 (gateway no longer an ancestor)
+        yet still dies with the coalition. Trusting ancestry stranded the job on
+        2026-08-05: the in-process retry loop was killed mid-bootstrap and
+        nothing re-registered the label. So always prefer the detached helper.
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        # Gateway running, but we are NOT inside its tree.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            run_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        popen_calls = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "Popen",
+            lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
+        )
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        # Reload was delegated, NOT run in-process where bootout could kill it.
+        assert len(popen_calls) == 1
+        assert popen_calls[0][:2] == ["launchctl", "submit"]
+        assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
+
+
+    def test_deferred_reload_waits_for_old_gateway_pid_before_bootstrap(
+        self, tmp_path, monkeypatch
+    ):
+        """The helper must wait for the old gateway to exit before bootstrapping.
+
+        ``bootout`` only sends SIGTERM; the gateway then drains in-flight agent
+        runs (agent.restart_drain_timeout, default 180s). Every ``bootstrap``
+        issued while it drains fails EIO ("already loaded"), which is how the
+        retry budget got burned on 2026-08-05 (4 attempts, all rc=5).
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, check=False, **kw: SimpleNamespace(
+                returncode=0, stdout="", stderr=""
+            ),
+        )
+
+        popen_calls = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
+        )
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+
+        cmd = popen_calls[0]
+        script = cmd[cmd.index("--") + 3]
+        # Waits on the OLD pid, and does so AFTER bootout but BEFORE bootstrap.
+        assert "kill -0 4242" in script
+        assert (
+            script.index("bootout")
+            < script.index("kill -0 4242")
+            < script.index("bootstrap")
+        )
+        # The wait must be bounded, so a wedged gateway can't block the reload.
+        assert "_wait_deadline" in script
+
+
+    def test_refresh_falls_back_to_direct_reload_when_helper_cannot_spawn(
+        self, tmp_path, monkeypatch
+    ):
+        """If the transient job can't be spawned, still attempt the reload.
+
+        Bailing out would leave the plist rewritten but the service never
+        reloaded. The in-process path waits out the old gateway's drain first so
+        its retry budget isn't spent on guaranteed-EIO bootstraps.
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+
+        def boom(cmd, **kwargs):
+            raise OSError("launchctl submit unavailable")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", boom)
+
+        waited = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_pid_exit",
+            lambda pid, timeout: waited.append((pid, timeout)) or True,
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            run_calls.append(cmd)
+            if cmd[:2] == ["launchctl", "list"]:
+                # Post-bootstrap launchd reports a supervised PID; without one
+                # the success check correctly refuses to stop retrying.
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{\n\t"PID" = 5150;\n\t"Label" = "ai.hermes.gateway";\n};',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        service_calls = [c for c in run_calls if "bootout" in c or "bootstrap" in c]
+        assert service_calls[:2] == [
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+        ]
+        # Drained the old pid between bootout and bootstrap.
+        assert waited and waited[0][0] == 4242
 
 
     def test_launchd_domain_uses_user_domain(self, monkeypatch):
@@ -547,12 +772,17 @@ class TestGatewaySystemServiceRouting:
 
 
 
+    @pytest.mark.macos_only
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
+        """macOS-gated: the branch under test is ``elif is_macos() and
+        get_launchd_plist_path().exists()``. Faking the platform flags on Linux
+        left ``supports_systemd_services()`` / ``launchctl`` semantics untested;
+        on a real macOS host only ``launchd_restart`` is stubbed (it would touch
+        the user's real launchd domain).
+        """
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("plist\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(
             gateway_cli,
@@ -614,6 +844,54 @@ class TestDetectVenvDir:
 
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
+
+    def test_managed_node_makes_system_unit_independent_of_callers_path(
+        self, monkeypatch, tmp_path
+    ):
+        """A target-managed Node must suppress caller-specific PATH fallbacks."""
+        target_home = tmp_path / "home" / "alice"
+        target_hermes = target_home / ".hermes"
+        root_home = tmp_path / "root"
+        root_hermes = root_home / ".hermes"
+        managed_bin = target_hermes / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        root_hermes.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
+        monkeypatch.setenv("HERMES_HOME", str(root_hermes))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
+        )
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/root/bin/node")
+        root_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/home/alice/.local/bin/node")
+        user_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert root_unit == user_unit
+        assert str(managed_bin) in root_unit
+        assert "/root/bin" not in root_unit
+
+    def test_node_path_lookup_remains_fallback_without_managed_node(
+        self, monkeypatch, tmp_path
+    ):
+        """External Node installs still work when the managed tree is absent."""
+        monkeypatch.setattr(
+            "hermes_constants.iter_hermes_node_dirs", lambda root=None: []
+        )
+        monkeypatch.setattr(
+            gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
+        )
+        entries: list[str] = []
+
+        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+
+        assert entries == ["/opt/external-node/bin"]
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
@@ -993,7 +1271,34 @@ class TestProfileArg:
         assert "--profile mybot gateway run" in unit
         assert f'HERMES_HOME={target_home / ".hermes" / "profiles" / "mybot"}' in unit
 
+    def test_launchd_plist_wraps_gateway_stderr_with_timestamps(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
 
+        plist = gateway_cli.generate_launchd_plist()
+        program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
+
+        assert program_args == [
+            "/usr/bin/python3",
+            "-m",
+            "hermes_cli.stderr_timestamp",
+            "--error-log",
+            str(profile_dir / "logs" / "gateway.error.log"),
+            "--",
+            "/usr/bin/python3",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "mybot",
+            "gateway",
+            "run",
+            "--replace",
+            "--external-supervisor",
+        ]
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -1715,14 +2020,24 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     PLIST = "/tmp/ai.hermes.gateway.plist"
     LABEL = "ai.hermes.gateway"
 
+    # `launchctl list <label>` output for a job launchd is actively running.
+    # Success requires a PID here, not just exit 0 — exit 0 alone also covers a
+    # registered-but-not-running definition (macOS 26+ `state = not running`).
+    RUNNING_LIST_OUTPUT = '{\n\t"PID" = 4242;\n\t"Label" = "ai.hermes.gateway";\n};'
+
     def test_returns_true_once_label_is_registered(self, monkeypatch):
-        """Success requires launchctl list to confirm registration, not just
-        a zero bootstrap exit."""
+        """Success requires launchctl list to confirm a supervised process, not
+        just a zero bootstrap exit."""
         list_results = iter([1, 0])  # first check: not registered, second: registered
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd[:2] == ["launchctl", "list"]:
-                return SimpleNamespace(returncode=next(list_results))
+                rc = next(list_results)
+                return SimpleNamespace(
+                    returncode=rc,
+                    stdout=self.RUNNING_LIST_OUTPUT if rc == 0 else "",
+                    stderr="",
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1747,7 +2062,12 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if cmd[:2] == ["launchctl", "list"]:
                 # registered only after the second (successful) bootstrap
-                return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
+                ok = attempts["bootstrap"] >= 2
+                return SimpleNamespace(
+                    returncode=0 if ok else 1,
+                    stdout=self.RUNNING_LIST_OUTPUT if ok else "",
+                    stderr="",
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1759,4 +2079,33 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is True
         assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
+    def test_registered_but_not_running_is_not_success(self, monkeypatch):
+        """A definition with no PID must not end the loop.
 
+        `launchctl list` exits 0 for a registered-but-not-running job (macOS
+        26+ `state = not running`), so exit-0 alone would report success for a
+        gateway launchd is not actually running. Verified against live launchd
+        on 2026-08-05.
+        """
+        list_calls = {"n": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                list_calls["n"] += 1
+                # Registered (exit 0) but no PID line — never running.
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{\n\t"Label" = "ai.hermes.gateway";\n};',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() - 1,  # already expired
+        )
+        assert ok is False
+        assert list_calls["n"] >= 1

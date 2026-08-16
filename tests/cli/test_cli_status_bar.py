@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,43 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_session_title_is_right_aligned_after_it_is_queued(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_title = "weekly-digest"
+
+        text = cli_obj._build_status_bar_text(width=80)
+
+        assert text.endswith(" weekly-digest ")
+        assert cli_obj._status_bar_display_width(text) == 80
+
+    def test_snapshot_refreshes_persisted_session_title(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "session-1"
+        cli_obj._session_db = SimpleNamespace(  # type: ignore[assignment]
+            get_session_title=lambda sid: "user-profiles" if sid == "session-1" else None
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["session_title"] == "user-profiles"
+
+    def test_status_bar_config_helper_treats_persisted_off_as_hidden(self):
+        for value in (False, "off", "false", "hidden", "no", "0"):
+            assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is False
+
+        for value in (True, "top", "bottom", "on", None):
+            assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is True
+
+    def test_status_bar_initial_visibility_honors_tui_statusbar_config(self, monkeypatch):
+        config = deepcopy(cli_mod.CLI_CONFIG)
+        config.setdefault("display", {})["tui_statusbar"] = False
+        config["display"].pop("statusbar", None)
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
+
+        cli_obj = HermesCLI(model="test-model", toolsets=[], provider="auto")
+
+        assert cli_obj._status_bar_visible is False
+
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()
 
@@ -261,6 +299,19 @@ class TestStatusBarWidthSource:
                 f"At width={width}, fragment total {display_width} cells overflows "
                 f"({total_text!r})"
             )
+
+    def test_fragments_put_session_title_at_far_right(self):
+        cli_obj = self._make_wide_cli()
+        cli_obj._pending_title = "weekly-digest"
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=100)
+
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        text = "".join(value for _, value in frags)
+        assert text.endswith(" weekly-digest ")
+        assert cli_obj._status_bar_display_width(text) == 100
 
     def test_fragments_use_pt_width_over_shutil(self):
         """When prompt_toolkit reports a width, shutil.get_terminal_size must not be used."""

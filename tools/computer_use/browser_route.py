@@ -60,36 +60,44 @@ def _ref_map(payload: Dict[str, Any]) -> Dict[str, Set[str]]:
     cua-driver has emitted both mapping and list representations while the
     semantic snapshot contract evolved.  Accept both without weakening the
     capability rule: a ref with no declared action remains readable only.
+
+    cua-driver >= 0.17 splits the semantic_v2 payload: action-bearing refs
+    live in the ``refs`` array while ``content_refs`` carries every node
+    with empty action lists.  Merge both sources (plus the legacy
+    snapshot.refs forms) so click/pointer/type refs stay usable.
     """
     normalized: Dict[str, Set[str]] = {}
-    snapshot = payload.get("snapshot")
-    # semantic_v2 carries the authoritative action-bearing entries in
-    # ``content_refs``; some transitional builds also emitted a ``refs`` list
-    # or map. Prefer the richer live shape, then accept both older forms.
-    raw = payload.get("content_refs")
-    if not raw:
-        raw = payload.get("refs")
-    if raw is None and isinstance(snapshot, dict):
-        raw = snapshot.get("refs")
-    if isinstance(raw, dict):
-        entries: Iterable[tuple[Optional[str], Any]] = raw.items()
-    elif isinstance(raw, list):
-        entries = ((None, item) for item in raw)
-    else:
-        entries = ()
 
-    for key, value in entries:
-        if isinstance(value, dict):
-            ref = value.get("ref") or key
-            actions = value.get("actions")
+    def absorb(raw: Any) -> None:
+        if isinstance(raw, dict):
+            entries: Iterable[tuple[Optional[str], Any]] = raw.items()
+        elif isinstance(raw, list):
+            entries = ((None, item) for item in raw)
         else:
-            ref = key
-            actions = None
-        if not isinstance(ref, str) or not ref:
-            continue
-        normalized[ref] = {
-            action for action in (actions or []) if isinstance(action, str)
-        }
+            return
+        for key, value in entries:
+            if isinstance(value, dict):
+                ref = value.get("ref") or key
+                actions = value.get("actions")
+            else:
+                ref = key
+                actions = None
+            if not isinstance(ref, str) or not ref:
+                continue
+            action_set = {
+                action for action in (actions or []) if isinstance(action, str)
+            }
+            # Merge, never drop: content_refs entries carry empty action
+            # lists and must not clobber the same ref declared in ``refs``.
+            normalized[ref] = normalized.get(ref, set()) | action_set
+
+    # 0.17 authoritative action refs; older builds emit only ``refs``; some
+    # transitional builds emit a mapping. Absorb every shape.
+    absorb(payload.get("refs"))
+    absorb(payload.get("content_refs"))
+    snapshot = payload.get("snapshot")
+    if isinstance(snapshot, dict):
+        absorb(snapshot.get("refs"))
     return normalized
 
 
@@ -343,6 +351,7 @@ class CuaTypedBrowserRoute:
         profile_mode: str,
         profile_name: Optional[str] = None,
         allow_launch: bool = False,
+        approval_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run explicit setup through the driver's authoritative mode gate."""
         missing = self._require_tool("browser_prepare")
@@ -361,17 +370,22 @@ class CuaTypedBrowserRoute:
                     "Existing-profile attachment requires an exact positive pid and window_id pair.",
                 )
             # The driver owns the immutable standard/bounded/unrestricted
-            # decision. Standard fails closed without a certified host;
-            # explicit Hermes YOLO owns a private unrestricted daemon.
+            # decision. Standard fails closed without a certified host,
+            # a user-minted single-use approval token, or an approved
+            # bounded manifest; explicit Hermes YOLO owns a private
+            # unrestricted daemon.
             self.state.clear()
-            return self._call(
-                "browser_prepare",
-                {
-                    "pid": exact_pid,
-                    "window_id": exact_window,
-                    "strategy": {"kind": "existing_profile"},
-                },
-            )
+            args: Dict[str, Any] = {
+                "pid": exact_pid,
+                "window_id": exact_window,
+                "strategy": {"kind": "existing_profile"},
+            }
+            if isinstance(approval_token, str) and approval_token:
+                # Minted out-of-band by `hermes computer-use browser-approve`
+                # (cua-driver browser-approve): five-minute, single-use. The
+                # user, never the model, is the source of this value.
+                args["approval_token"] = approval_token
+            return self._call("browser_prepare", args)
         if profile_mode not in {"isolated_new", "isolated_named"}:
             return _refusal(
                 "browser_profile_mode_invalid",

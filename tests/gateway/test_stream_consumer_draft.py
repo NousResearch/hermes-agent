@@ -136,6 +136,40 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
+        final_metadata = final_call.kwargs.get("metadata") or {}
+        assert final_metadata.get("notify") is True
+        assert "expect_edits" not in final_metadata
+
+    @pytest.mark.asyncio
+    async def test_edit_preview_still_marks_expect_edits(self):
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        cfg = StreamConsumerConfig(transport="edit", chat_type="dm", cursor="")
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        delivered = await consumer._send_or_edit("Preview", finalize=False)
+
+        assert delivered is True
+        send_mock = adapter.__dict__["send"]
+        metadata = send_mock.call_args.kwargs.get("metadata") or {}
+        assert metadata.get("expect_edits") is True
+        assert "notify" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_final_split_chunk_does_not_mark_expect_edits(self):
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            StreamConsumerConfig(transport="edit", chat_type="dm", cursor=""),
+        )
+
+        message_id = await consumer._send_new_chunk("Sealed head", None, final=True)
+
+        assert message_id == "msg_real"
+        send_mock = adapter.__dict__["send"]
+        metadata = send_mock.call_args.kwargs.get("metadata") or {}
+        assert metadata.get("notify") is True
+        assert "expect_edits" not in metadata
 
 
 class TestDraftFallbackOnFailure:

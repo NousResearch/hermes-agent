@@ -3,20 +3,33 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
-import { $desktopOnboarding } from '@/store/onboarding'
+import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $currentBranch, $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import {
+  $currentBranch,
+  $currentCwd,
+  setCurrentBranch,
+  setCurrentCwd,
+  setSelectedStoredSessionId,
+  workspaceCwdBelongsToSelectedSession
+} from '@/store/session'
+import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
   applyRuntimeInfo,
+  applyStoredSessionPreviewRuntimeInfo,
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
+  dedupeInflightUserAgainstTranscript,
   isSessionGoneError,
+  overlayConcurrentMessageChanges,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  removeRepresentedLocalLiveProjection,
+  resolveResumedBusy,
+  selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages
@@ -60,25 +73,43 @@ const initialOnboardingState = $desktopOnboarding.get()
 
 describe('applyRuntimeInfo credential warnings', () => {
   beforeEach(() => {
+    consumePendingCredentialWarning()
     $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
   })
 
   afterEach(() => {
+    consumePendingCredentialWarning()
     $desktopOnboarding.set(initialOnboardingState)
   })
 
-  it('requests setup for the exact empty-key warning returned by the server', () => {
+  it('defers the empty-key warning to submit time instead of popping onboarding on switch', () => {
     const warning = "No API key configured for provider 'openrouter'. First message will fail."
 
     applyRuntimeInfo({ credential_warning: warning })
 
-    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+    // Merely switching to (or activating a session on) the unconfigured
+    // profile must NOT open the blocking overlay…
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+    // …but the warning is staged for the submit path to consume.
+    expect(consumePendingCredentialWarning()).toBe(warning)
+    // Consuming clears it — the next submit doesn't double-fire.
+    expect(consumePendingCredentialWarning()).toBeNull()
+  })
+
+  it('a warning-free session event clears the stash (profile healed or switched away)', () => {
+    applyRuntimeInfo({
+      credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+    })
+    applyRuntimeInfo({ model: 'gpt-5' })
+
+    expect(consumePendingCredentialWarning()).toBeNull()
   })
 
   it('ignores an auxiliary-provider warning', () => {
     applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
 
     expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+    expect(consumePendingCredentialWarning()).toBeNull()
   })
 })
 
@@ -109,6 +140,93 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect($currentBranch.get()).toBe('main')
     // ...while the caller still gets everything it needs for its own session.
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
+  })
+
+  // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session
+  // never released the previous project and the Files pane stayed on it forever.
+  it('treats an empty runtime cwd as authoritative and releases ownership', () => {
+    setSelectedStoredSessionId('session-detached')
+    const patch = applyRuntimeInfo({ cwd: '' })
+
+    expect(patch).toMatchObject({ cwd: '' })
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(false)
+  })
+
+  // The release must NOT blank the path: setCurrentCwd persists, so writing ''
+  // would also wipe the remembered workspace that seeds $currentCwd on boot.
+  it('leaves the path in place when releasing, so panes do not collapse', () => {
+    setSelectedStoredSessionId('session-detached')
+    applyRuntimeInfo({ cwd: '' })
+
+    expect($currentCwd.get()).toBe('/main-repo')
+  })
+
+  it('claims ownership for the selected session when a real cwd arrives', () => {
+    setSelectedStoredSessionId('session-b')
+    applyRuntimeInfo({ cwd: '/project-b' })
+
+    expect($currentCwd.get()).toBe('/project-b')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+})
+
+describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
+  beforeEach(() => {
+    setCurrentCwd('/previous-project')
+    setSelectedStoredSessionId(null)
+  })
+
+  afterEach(() => {
+    setCurrentCwd('')
+    setSelectedStoredSessionId(null)
+  })
+
+  // The core of the report: cold resume paints before session.resume returns.
+  it('rebinds the workspace from the selected session row before resume settles', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+    setSelectedStoredSessionId('session-next')
+
+    expect($currentCwd.get()).toBe('/next-project')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('releases ownership when the selected session row reports no workspace', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '', model: 'gpt' }, 'session-detached')
+    setSelectedStoredSessionId('session-detached')
+
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(false)
+  })
+
+  // Regression guard: a session outside the loaded sidebar page has no row at
+  // all. Blanking $currentCwd here would drop file-tree state on every switch
+  // into older history, so the path must survive and ownership carry the signal.
+  it('does not blank the pane when the session row is not loaded', () => {
+    applyStoredSessionPreviewRuntimeInfo(undefined, 'session-off-page')
+    setSelectedStoredSessionId('session-off-page')
+
+    expect($currentCwd.get()).toBe('/previous-project')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(false)
+  })
+
+  // Regression guard: git_repo_root is documented null for non-git workspaces
+  // and not-yet-backfilled rows, so it must never stand in for a real cwd —
+  // doing so reads as "no workspace" and blanks a pane that was correct.
+  it('uses the row cwd for a non-git workspace with no repo root', () => {
+    applyStoredSessionPreviewRuntimeInfo(
+      { cwd: '/plain/folder', git_repo_root: null, model: 'gpt' } as never,
+      'session-nongit'
+    )
+    setSelectedStoredSessionId('session-nongit')
+
+    expect($currentCwd.get()).toBe('/plain/folder')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('clears the branch label so the previous project does not leak across a switch', () => {
+    setCurrentBranch('bb/previous')
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+
+    expect($currentBranch.get()).toBe('')
   })
 })
 
@@ -151,6 +269,47 @@ describe('toBranchMessages', () => {
   })
 })
 
+describe('selectBranchMessages', () => {
+  it('uses the complete authoritative transcript for a whole-chat branch', () => {
+    const local = [msg('summary', 'assistant', 'compact summary'), msg('tail', 'assistant', 'latest answer')]
+
+    const authoritative = [
+      msg('old-user', 'user', 'first question', { rowId: 11 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 12 }),
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    expect(selectBranchMessages(local, authoritative).map(message => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'latest question',
+      'latest answer'
+    ])
+  })
+
+  it('maps a clicked local bubble to the authoritative row before slicing', () => {
+    const local = [
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    const authoritative = [
+      msg('old-user', 'user', 'first question', { rowId: 11 }),
+      msg('old-assistant', 'assistant', 'first answer', { rowId: 12 }),
+      msg('tail-user', 'user', 'latest question', { rowId: 13 }),
+      msg('tail-assistant', 'assistant', 'latest answer', { rowId: 14 })
+    ]
+
+    expect(selectBranchMessages(local, authoritative, 'tail-assistant').map(message => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'latest question',
+      'latest answer'
+    ])
+  })
+})
+
 describe('chatPartsEquivalent', () => {
   it('returns true for identical text parts', () => {
     const partA = { type: 'text' as const, text: 'Hello world' }
@@ -164,6 +323,13 @@ describe('chatPartsEquivalent', () => {
     const partB = { type: 'text' as const, text: 'World' }
 
     expect(chatPartsEquivalent(partA, partB)).toBe(false)
+  })
+
+  it('returns false when visible timeline boundaries change', () => {
+    const started = { type: 'text' as const, text: 'Hello', timestamp: 10 }
+    const completed = { ...started, completedAt: 11 }
+
+    expect(chatPartsEquivalent(started, completed)).toBe(false)
   })
 
   it('returns true for identical reasoning parts', () => {
@@ -249,6 +415,13 @@ describe('chatPartsEquivalent', () => {
 describe('chatMessagesEquivalent', () => {
   it('returns true for structurally identical messages', () => {
     expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'Hello'))).toBe(true)
+  })
+
+  it('returns false when a visible message timestamp changes', () => {
+    const before = { ...msg('1', 'user', 'Hello'), timestamp: 10 }
+    const after = { ...before, timestamp: 11 }
+
+    expect(chatMessagesEquivalent(before, after)).toBe(false)
   })
 
   it('returns false when text part content differs', () => {
@@ -624,7 +797,9 @@ describe('preserveLocalPendingTurnMessages', () => {
       msg('user-inflight', 'user', 'the current prompt')
     ]
 
-    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+    expect(
+      preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache, { committedMessages: authoritative })
+    ).toEqual(authoritative)
   })
 
   // The old implementation has already appended the stale settled stream rows
@@ -646,7 +821,9 @@ describe('preserveLocalPendingTurnMessages', () => {
       msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false })
     ]
 
-    expect(preserveLocalPendingTurnMessages(authoritative, alreadyPolluted)).toBe(authoritative)
+    expect(preserveLocalPendingTurnMessages(authoritative, alreadyPolluted, { committedMessages: authoritative })).toBe(
+      authoritative
+    )
   })
 
   // Live-stream rows can stay `pending: true` after a gateway disconnect even
@@ -674,7 +851,9 @@ describe('preserveLocalPendingTurnMessages', () => {
       msg('4-assistant-stream', 'assistant', 'reply two', { pending: true })
     ]
 
-    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+    expect(
+      preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache, { committedMessages: authoritative })
+    ).toBe(authoritative)
   })
 
   // Same disconnect-residue class, pre-user variant: a still-pending stream row
@@ -693,22 +872,28 @@ describe('preserveLocalPendingTurnMessages', () => {
       msg('user-inflight', 'user', 'the current prompt')
     ]
 
-    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+    expect(
+      preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache, { committedMessages: authoritative })
+    ).toBe(authoritative)
   })
 
   it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
     const compressedAuthority = [
-      msg('stored-user', 'user', 'the one genuinely in-flight prompt'),
+      msg('stored-user', 'user', 'the one genuinely in-flight prompt', { timestamp: 1000 }),
       msg('stored-assistant', 'assistant', 'its authoritative reply')
     ]
 
     const pollutedWarmCache = [
       msg('user-old-1', 'user', 'compressed-away prompt one'),
       msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
-      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt', { timestamp: 1000 })
     ]
 
-    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
+    expect(
+      preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache, {
+        committedMessages: compressedAuthority
+      })
+    ).toBe(compressedAuthority)
   })
 
   it('preserves every structured stage when warm activation supplies only a live inflight projection', () => {
@@ -805,6 +990,25 @@ describe('preserveLocalPendingTurnMessages', () => {
       'user-1000',
       'user-2000',
       'assistant-stream-1'
+    ])
+  })
+
+  // Arrival-ordered mid-turn corrections (#73793) seal the live output BETWEEN
+  // the prompt and the correction. The sealed live-tail row must not end the
+  // optimistic run, or a refresh drops the prompt that started the turn.
+  it('keeps the whole live run when sealed live output sits between prompt and correction', () => {
+    const previous = [
+      msg('user-1000', 'user', 'remove the session counts'),
+      msg('assistant-stream-1', 'assistant', 'two screens of output', { interim: true }),
+      msg('user-2000', 'user', 'hurry up'),
+      msg('assistant-stream-2', 'assistant', 'post-redirect output', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'assistant-stream-1',
+      'user-2000',
+      'assistant-stream-2'
     ])
   })
 
@@ -1186,57 +1390,165 @@ describe('preserveLocalPendingTurnMessages', () => {
   // the committed row and the optimistic duplicate — so the duplicate's
   // role-ordinal shifts past the committed user onto a LATER user (e.g. a
   // background process notice), and neither the newest-user check nor ordinal
-  // pairing can see it anymore. It must still be dropped: its send time (from
-  // the optimistic id) matches the committed row's timestamp within the commit
-  // window.
-  it('drops a stale optimistic user row when ordinal pairing lands on a later user', () => {
+  // pairing can see it anymore. The shared submission-event timestamp is exact
+  // evidence that these are two copies of the same event.
+  it('drops a stale optimistic user row only when its event timestamp exactly matches', () => {
     const taskText = '任务：BM 设计卡批 2——D 卡'
     const history = [msg('1-user-stored', 'user', 'earlier question')]
     const committedTask = msg('2-user-stored', 'user', taskText, { timestamp: 1000 })
     const laterUser = msg('3-user-stored', 'user', '[IMPORTANT: background process done]', { timestamp: 1010 })
     const next = [...history, committedTask, laterUser]
 
-    // The warm cache already carries the committed row AND the optimistic
-    // duplicate — the duplicate pairs with the LATER user by ordinal now. Its
-    // optimistic id embeds the same send time as the committed row (1000 s).
-    const optimisticStale = msg('user-1000000-abc123', 'user', taskText)
+    // Deliberately make the legacy id timestamp disagree. Identity comes from
+    // the message/RPC event timestamp, not renderer/backend wall-clock guesses.
+    const optimisticStale = msg('user-1300000-abc123', 'user', taskText, { timestamp: 1000 })
     const previous = [...history, committedTask, optimisticStale, laterUser]
 
-    const preserved = preserveLocalPendingTurnMessages(next, previous)
+    const preserved = preserveLocalPendingTurnMessages(next, previous, { committedMessages: next })
 
-    expect(preserved.map(message => message.id)).not.toContain('user-1000000-abc123')
+    expect(preserved.map(message => message.id)).not.toContain('user-1300000-abc123')
     expect(preserved.filter(message => chatMessageText(message).includes(taskText))).toHaveLength(1)
   })
 
-  // A genuinely NEW re-send of the same text (e.g. the user re-sends an OLDER
-  // prompt after a disconnect — the earlier committed copy is minutes old and
-  // a later user message has since arrived) must NOT be suppressed by the
-  // stale-row guard: its send time is well outside the commit window of the
-  // older committed row, so it is preserved and rendered.
-  it('preserves a fresh re-send of the same text sent well after the committed copy', () => {
+  it('preserves a richer optimistic row when only a flat live projection shares its event identity', () => {
+    const taskText = 'inspect the attachment'
+    const projected = msg('user-inflight-runtime', 'user', taskText, { timestamp: 1000 })
+    const laterUser = msg('user-later-runtime', 'user', 'a later live event', { timestamp: 1010 })
+    const optimistic = msg('user-local-rich', 'user', taskText, {
+      attachmentRefs: ['@file:/tmp/evidence.txt'],
+      timestamp: 1000
+    })
+    const next = [projected, laterUser]
+    const previous = [projected, optimistic, laterUser]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toContain('user-local-rich')
+    expect(preserved.find(message => message.id === 'user-local-rich')).toMatchObject({
+      attachmentRefs: ['@file:/tmp/evidence.txt'],
+      parts: [{ type: 'text', text: taskText }]
+    })
+  })
+
+  // Renderer and backend clocks can be arbitrarily skewed. Even when the legacy
+  // optimistic id appears to match the durable timestamp, distinct event values
+  // prove this is a fresh same-text re-send and it must survive.
+  it('preserves a fresh same-text re-send with a different far-skewed event timestamp', () => {
     const promptText = 'retry this prompt'
     const committedFirst = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
     const committedSecond = msg('2-user-stored', 'user', 'something else', { timestamp: 1100 })
     const next = [committedFirst, committedSecond]
 
-    // The user re-sends the OLDER prompt 5 minutes later — a fresh optimistic
-    // row whose send time (1300 s) is far outside the commit window, and whose
-    // text matches a non-latest user (so the pre-existing newest-user gate does
-    // not see it either).
-    const optimisticResend = msg('user-1300000-abc123', 'user', promptText)
+    // The id embeds 1000 s and would fool the old wall-clock heuristic. The
+    // actual client event timestamp is 1300 s and is the only identity evidence.
+    const optimisticResend = msg('user-1000000-abc123', 'user', promptText, { timestamp: 1300 })
     const previous = [committedFirst, committedSecond, optimisticResend]
 
     const preserved = preserveLocalPendingTurnMessages(next, previous)
 
-    expect(preserved.map(message => message.id)).toContain('user-1300000-abc123')
+    expect(preserved.map(message => message.id)).toContain('user-1000000-abc123')
     expect(preserved.filter(message => chatMessageText(message).includes(promptText))).toHaveLength(2)
+  })
+
+  it('preserves an ambiguous same-text optimistic row when its event timestamp is missing', () => {
+    const promptText = 'retry without client event metadata'
+    const committed = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const laterUser = msg('2-user-stored', 'user', 'later durable event', { timestamp: 1010 })
+    const next = [committed, laterUser]
+
+    // The id embeds the durable wall-clock value, but an old/internal caller did
+    // not provide a client event timestamp. Prefer a temporary duplicate over
+    // deleting a potentially fresh resend.
+    const ambiguous = msg('user-1000000-abc123', 'user', promptText)
+    const preserved = preserveLocalPendingTurnMessages(next, [committed, laterUser, ambiguous])
+
+    expect(preserved.map(message => message.id)).toContain('user-1000000-abc123')
+    expect(preserved.filter(message => chatMessageText(message) === promptText)).toHaveLength(2)
+  })
+
+  it('preserves a fresh re-send when the latest authoritative user has the same text', () => {
+    const promptText = 'retry'
+    const committedUser = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const committedAssistant = msg('2-assistant-stored', 'assistant', 'finished earlier')
+    const next = [committedUser, committedAssistant]
+
+    // The latest durable turn used the same text, but this optimistic row was
+    // sent five minutes later. With no intervening user, text alone cannot
+    // distinguish the old committed prompt from this provably fresh re-send.
+    const optimisticResend = msg('user-1300000-abc123', 'user', promptText)
+    const previous = [...next, optimisticResend]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toContain('user-1300000-abc123')
+    expect(preserved.filter(message => chatMessageText(message) === promptText)).toHaveLength(2)
+  })
+
+  // A still-PENDING stream row whose committed twin the authoritative history
+  // already carries (ordinal shifted under compaction) used to fall through to
+  // `preserved.push` and render the same answer twice — the reported tail
+  // duplication (A B C D E C D). The #70209 guard only covers settled local
+  // rows (`pending !== true`); these cover the pending ones.
+  it('does not re-append a pending stream row the authoritative history already carries', () => {
+    const previous = [
+      msg('1-user', 'user', '查金价'),
+      msg('2-a', 'assistant', 'X'),
+      streamingMsg('assistant-stream-live', '面板内容')
+    ]
+
+    const next = [msg('1-user', 'user', '查金价'), msg('9-assistant', 'assistant', '面板内容')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous, { committedMessages: next })).toBe(next)
+  })
+
+  it('drops a pending stream row whose text the committed authoritative reply extends', () => {
+    const previous = [
+      msg('1-user', 'user', '查金价'),
+      msg('2-a', 'assistant', 'X'),
+      streamingMsg('assistant-stream-live', '面板')
+    ]
+
+    const next = [msg('1-user', 'user', '查金价'), msg('9-assistant', 'assistant', '面板内容完整版')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous, { committedMessages: next })).toBe(next)
+  })
+
+  it('replaces the committed row with a further-along pending copy instead of appending', () => {
+    const previous = [
+      msg('1-user', 'user', '查金价'),
+      msg('2-a', 'assistant', 'X'),
+      streamingMsg('assistant-stream-live', '面板内容完整版')
+    ]
+
+    const next = [msg('1-user', 'user', '查金价'), msg('9-assistant', 'assistant', '面板')]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous, { committedMessages: next })
+
+    expect(preserved.map(message => message.id)).toEqual(['1-user', '9-assistant'])
+    expect(chatMessageText(preserved[1])).toBe('面板内容完整版')
+  })
+
+  // The authoritative history genuinely does not have this reply yet — the
+  // pending row is the only copy and must survive (same contract as the
+  // settled-row variant above).
+  it('still keeps a pending stream row when the authoritative history has no reply', () => {
+    const previous = [msg('1-user', 'user', '查金价'), streamingMsg('assistant-stream-live', '面板内容')]
+
+    const next = [msg('1-user', 'user', '查金价')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-stream-live'
+    ])
   })
 })
 
 describe('appendLiveSessionProjection', () => {
   // Corrections typed while a turn ran are their own user bubbles on the same
-  // turn. Resume must rebuild the prompt AND every correction, in order.
-  it('projects mid-turn redirect corrections after the prompt that started the turn', () => {
+  // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
+  // whole dump precedes them — never the old prompt → corrections → reply
+  // order that spliced them above output the user had already read (#73793).
+  it('projects mid-turn redirect corrections after the assistant output that predates them', () => {
     const restored = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
       inflight: {
@@ -1249,10 +1561,72 @@ describe('appendLiveSessionProjection', () => {
 
     expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
       'remove the session counts',
+      'Moving.',
       'hurry up',
-      'and the worktree ones',
-      'Moving.'
+      'and the worktree ones'
     ])
+  })
+
+  // With correction_offsets the flat dump is split at each accepted-correction
+  // boundary, so every correction lands after exactly the output it followed
+  // and before the output it redirected — arrival order end to end (#73793).
+  it('interleaves corrections into the assistant dump at their arrival offsets', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up', 'and the worktree ones'],
+        correction_offsets: [7, 13],
+        assistant: 'Moving.Still.Done soon.',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'remove the session counts',
+      'Moving.',
+      'hurry up',
+      'Still.',
+      'and the worktree ones',
+      'Done soon.'
+    ])
+    expect(restored.map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant'
+    ])
+    // Only the live tail streams; sealed pre-correction segments are settled.
+    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+    expect(restored[1]).toMatchObject({ pending: false, interim: true })
+    expect(restored[3]).toMatchObject({ pending: false, interim: true })
+  })
+
+  it('keeps the live stream row even when every offset points at the dump tail', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'prompt',
+        corrections: ['nudge'],
+        correction_offsets: [4],
+        assistant: 'text',
+        streaming: true
+      }
+    })
+
+    // The whole dump precedes the correction, and the still-streaming turn
+    // keeps its (empty for now) live row at the tail so future deltas land
+    // BELOW the correction, not above it.
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'prompt',
+      'text',
+      'nudge',
+      ''
+    ])
+    expect(restored.at(-1)).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+    expect(restored.at(-1)?.role).toBe('assistant')
   })
 
   it('does not re-project a correction the transcript already persisted', () => {
@@ -1430,5 +1804,197 @@ describe('appendLiveSessionProjection', () => {
       id: 'assistant-stream-runtime-1',
       pending: true
     })
+  })
+})
+
+describe('resolveResumedBusy', () => {
+  it('keeps a live busy turn when the resume snapshot stalely reports idle (#70449)', () => {
+    expect(resolveResumedBusy(false, true)).toBe(true)
+    expect(resolveResumedBusy(undefined, true)).toBe(true)
+    expect(resolveResumedBusy(null, true)).toBe(true)
+  })
+
+  it('clears busy when both the snapshot and the live cache agree the turn ended', () => {
+    expect(resolveResumedBusy(false, false)).toBe(false)
+    expect(resolveResumedBusy(undefined, false)).toBe(false)
+  })
+
+  it('adopts a running turn reported by the snapshot even without live state', () => {
+    expect(resolveResumedBusy(true, false)).toBe(true)
+    expect(resolveResumedBusy(true, true)).toBe(true)
+  })
+})
+
+const runningProjection = (user: string): SessionResumeResponse =>
+  ({
+    session_id: 'runtime-1',
+    session_key: 'stored-1',
+    resumed: 'stored-1',
+    message_count: 2,
+    messages: [],
+    running: true,
+    inflight: { user, assistant: 'partial answer', streaming: true }
+  }) as SessionResumeResponse
+
+describe('dedupeInflightUserAgainstTranscript', () => {
+  it('retains the in-flight user source only when it already exists after the runtime anchor', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [...runtime, msg('persisted-current', 'user', 'current prompt', { timestamp: 3 })]
+
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, runningProjection('current prompt'))
+
+    expect(deduped.inflight?.user).toBe('current prompt')
+    expect(deduped.inflight?.assistant).toBe('partial answer')
+  })
+
+  it('preserves the assistant boundary before a queued turn when the persisted in-flight user has no delta', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [...runtime, msg('persisted-current', 'user', 'current prompt', { timestamp: 3 })]
+
+    const projection = {
+      ...runningProjection('current prompt'),
+      inflight: { user: 'current prompt', assistant: '', streaming: false },
+      queued: { user: 'queued prompt' }
+    }
+
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+    const restored = appendLiveSessionProjection(persisted, deduped)
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
+    expect(restored.slice(-2).map(message => message.id)).toEqual([
+      'assistant-stream-runtime-1',
+      'user-queued-runtime-1'
+    ])
+  })
+
+  it('preserves an intentionally repeated prompt when the match is before the runtime anchor', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'repeat this', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'finished answer', { timestamp: 2 })
+    ]
+
+    const projection = runningProjection('repeat this')
+    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, projection)
+
+    expect(unchanged).toBe(projection)
+    expect(unchanged.inflight?.user).toBe('repeat this')
+  })
+
+  it('preserves a repeated in-flight prompt when the persisted match already has an answer', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [
+      ...runtime,
+      msg('persisted-repeat', 'user', 'repeat this', { timestamp: 3 }),
+      msg('persisted-repeat-answer', 'assistant', 'finished repeat answer', { timestamp: 4 })
+    ]
+
+    const projection = runningProjection('repeat this')
+    const unchanged = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+
+    expect(unchanged).toBe(projection)
+    expect(unchanged.inflight?.user).toBe('repeat this')
+  })
+})
+
+describe('removeRepresentedLocalLiveProjection', () => {
+  it('removes only matched synthetic rows from the open local tail', () => {
+    const previous = [
+      msg('user-old-optimistic', 'user', 'current prompt'),
+      msg('assistant-complete', 'assistant', 'finished answer'),
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer', { pending: true }),
+      msg('user-queued-runtime', 'user', 'queued prompt'),
+      msg('user-racing', 'user', 'new racing prompt')
+    ]
+
+    const projection = {
+      ...runningProjection('current prompt'),
+      queued: { user: 'queued prompt' }
+    }
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining.map(message => message.id)).toEqual(['user-old-optimistic', 'assistant-complete', 'user-racing'])
+  })
+
+  it('preserves an ambiguous text-identical local race prompt without a matching stream boundary', () => {
+    const previous = [
+      msg('runtime-assistant', 'assistant', 'finished answer'),
+      msg('user-racing', 'user', 'repeat this')
+    ]
+
+    const projection = runningProjection('repeat this')
+
+    expect(removeRepresentedLocalLiveProjection(previous, projection)).toBe(previous)
+  })
+
+  it('does not consume a generic racing user as the activation-owned queued row', () => {
+    const previous = [
+      msg('runtime-assistant', 'assistant', 'finished answer'),
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer', { pending: true }),
+      msg('user-racing', 'user', 'repeat this')
+    ]
+
+    const projection = {
+      ...runningProjection('current prompt'),
+      queued: { user: 'repeat this' }
+    }
+
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining.map(message => message.id)).toEqual(['runtime-assistant', 'user-racing'])
+  })
+})
+
+describe('overlayConcurrentMessageChanges', () => {
+  it('does not replace an authoritative row with an unchanged baseline cache row', () => {
+    const baseline = [msg('shared-assistant', 'assistant', 'stale cached answer')]
+    const authoritative = [msg('shared-assistant', 'assistant', 'completed persisted answer')]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, baseline, baseline)
+
+    expect(overlaid).toBe(authoritative)
+    expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'completed persisted answer' }])
+  })
+
+  it('replaces an activation stream placeholder and appends rows created after the baseline', () => {
+    const baseline = [msg('assistant-stream-runtime', 'assistant', 'partial A', { pending: true })]
+    const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
+
+    const current = [
+      msg('assistant-stream-runtime', 'assistant', 'partial A + delta B', { pending: true }),
+      msg('user-racing', 'user', 'racing prompt')
+    ]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, baseline, current)
+
+    expect(overlaid.map(message => message.id)).toEqual(['assistant-stream-runtime', 'user-racing'])
+    expect(overlaid[0].parts).toEqual([{ type: 'text', text: 'partial A + delta B' }])
+  })
+
+  it('merges an activation prefix with a baseline-new runtime delta chunk', () => {
+    const authoritative = [msg('assistant-stream-activation', 'assistant', 'partial A', { pending: true })]
+    const current = [msg('assistant-stream-runtime', 'assistant', ' + delta B', { pending: true })]
+
+    const overlaid = overlayConcurrentMessageChanges(authoritative, [], current)
+
+    expect(overlaid.map(message => message.id)).toEqual(['assistant-stream-runtime'])
+    expect(overlaid[0].parts).toEqual([
+      { type: 'text', text: 'partial A' },
+      { type: 'text', text: ' + delta B' }
+    ])
   })
 })

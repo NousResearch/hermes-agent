@@ -7,7 +7,7 @@ adapter) and the TUI notification poller only watched process completions.
 ``last_event_id`` stayed 0 forever and no notification was ever delivered.
 
 These tests cover the delivery half that now lives in tui_gateway/server.py:
-``_collect_kanban_notifications`` (cursor claim + formatting + terminal
+``_collect_kanban_notifications`` (cursor claim + formatting + archive-only
 unsubscribe) and ``_format_kanban_event_text``.
 """
 
@@ -65,17 +65,53 @@ class TestCollectKanbanNotifications:
         assert texts == []
         spy_connect.assert_not_called()
 
-    def test_delivers_completed_event_and_unsubscribes(self):
+    def test_done_reopen_notifies_once_per_event_until_archive(self):
         tid = _create_subscribed_task()
         _complete(tid, summary="shipped the fix")
 
-        texts = _collect_kanban_notifications(_session())
+        first = _collect_kanban_notifications(_session())
 
-        assert len(texts) == 1
-        assert tid in texts[0]
-        assert "done" in texts[0]
-        assert "shipped the fix" in texts[0]
-        # Task is at a final status -> subscription removed.
+        assert len(first) == 1
+        assert tid in first[0]
+        assert "done" in first[0]
+        assert "shipped the fix" in first[0]
+        rows = _sub_rows(tid)
+        assert len(rows) == 1, "done must retain the originating session"
+        first_cursor = rows[0]["last_event_id"]
+
+        # The retained subscription must not replay the completed event.
+        assert _collect_kanban_notifications(_session()) == []
+
+        conn = kb.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,)
+                )
+                kb._append_event(conn, tid, "status", {"status": "ready"})
+            assert kb.complete_task(conn, tid, summary="review corrections")
+        finally:
+            conn.close()
+
+        reopened = _collect_kanban_notifications(_session())
+
+        assert len(reopened) == 2
+        assert "ready" in reopened[0]
+        assert "review corrections" in reopened[1]
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["chat_id"] == SESSION_KEY
+        assert rows[0]["last_event_id"] > first_cursor
+        assert _collect_kanban_notifications(_session()) == []
+
+        conn = kb.connect()
+        try:
+            assert kb.archive_task(conn, tid)
+        finally:
+            conn.close()
+
+        # Archive is notification-terminal and removes the retained route.
+        assert _collect_kanban_notifications(_session()) == []
         assert _sub_rows(tid) == []
 
     def test_matching_tui_sub_delivers_and_advances_cursor(self):
@@ -189,7 +225,11 @@ class TestCollectKanbanNotifications:
         assert len(texts) == 1
         assert tid in texts[0]
         assert "cross-profile delivery" in texts[0]
-        assert _sub_rows(tid) == []
+        # Completion is reversible, so the shared-board subscription remains
+        # owned by this exact Desktop session until the task is archived.
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["chat_id"] == SESSION_KEY
 
 
 class TestFormatKanbanEventText:

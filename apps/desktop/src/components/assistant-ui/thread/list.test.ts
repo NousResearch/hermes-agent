@@ -1,21 +1,102 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildGroups,
   firstVisibleGroupIndex,
+  HIDDEN_TRANSCRIPT_RENDER_BUDGET,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
-  messageRenderWeight,
-  RENDER_WEIGHT_CHARS,
-  resolveThreadScrollTarget
+  resolveThreadScrollTarget,
+  subscribeToThreadForeground,
+  transcriptPaneBudget
 } from './list'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('subscribeToThreadForeground', () => {
+  it('reanchors on focus when an active turn keeps document visibility pinned visible', () => {
+    const reanchor = vi.fn()
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 1
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(raf).toHaveBeenCalledOnce()
+    expect(reanchor).toHaveBeenCalledOnce()
+    unsubscribe()
+  })
+
+  it('leaves a scrolled-up reader in place when the window focuses', () => {
+    const reanchor = vi.fn()
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const unsubscribe = subscribeToThreadForeground(() => false, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(raf).not.toHaveBeenCalled()
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('drops a queued reanchor when the reader scrolls away before the frame', () => {
+    const frames: FrameRequestCallback[] = []
+    let following = true
+    const reanchor = vi.fn()
+
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+
+      return 7
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => following, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+    following = false
+    frames[0]?.(0)
+
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('cancels a queued reanchor when its thread unmounts', () => {
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+    const reanchor = vi.fn()
+
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(9)
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+    unsubscribe()
+
+    expect(cancel).toHaveBeenCalledWith(9)
+    expect(reanchor).not.toHaveBeenCalled()
+  })
+})
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
 const signature = (rows: [string, string, number][]) =>
   rows.map(([id, role, weight], index) => `${index}:${id}:${role}:${weight}`).join('\n')
+
+describe('transcriptPaneBudget', () => {
+  it('uses a fixed live-tail budget while hidden instead of charging every mounted transcript', () => {
+    expect(transcriptPaneBudget(1, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+  })
+})
 
 describe('buildGroups', () => {
   it('returns no groups for an empty signature', () => {
@@ -136,49 +217,19 @@ describe('firstVisibleGroupIndex', () => {
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
   })
-})
 
-describe('messageRenderWeight', () => {
-  it('charges large text and tool results by character cost, not only part count', () => {
-    const text = [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 3) }]
+  it('keeps a floor of turns visible however heavy they are', () => {
+    // Without the floor a session of enormous turns puts "Show earlier" two
+    // turns from the bottom, which reads as broken rather than as paging.
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 5_000))
 
-    const tool = [
-      {
-        type: 'tool-call',
-        toolName: 'skill_view',
-        args: { name: 'hermes-agent' },
-        result: { content: 'x'.repeat(RENDER_WEIGHT_CHARS * 100) }
-      }
-    ]
-
-    expect(messageRenderWeight(text)).toBe(4)
-    expect(messageRenderWeight(tool)).toBeGreaterThanOrEqual(101)
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
   })
 
-  it('makes repeated 51KB tool outputs exceed the normal transcript page', () => {
-    const toolOutput = () => [
-      {
-        type: 'tool-call',
-        toolName: 'skill_view',
-        result: { content: 'x'.repeat(51_236) }
-      }
-    ]
+  it('does not force the floor to hide turns the budget already showed', () => {
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
 
-    const groups = Array.from({ length: 5 }, (_, index) => ({
-      id: `tool-${index}`,
-      index,
-      kind: 'standalone' as const,
-      weight: messageRenderWeight(toolOutput())
-    }))
-
-    expect(firstVisibleGroupIndex(groups, 300)).toBeGreaterThan(0)
-  })
-
-  it('handles circular tool payloads without recursing forever', () => {
-    const result: { content: string; self?: unknown } = { content: 'ok' }
-    result.self = result
-
-    expect(messageRenderWeight([{ type: 'tool-call', result }])).toBe(2)
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
   })
 })
 

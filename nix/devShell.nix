@@ -27,10 +27,7 @@
             mkdir -p $out/bin
             install -Dm755 ${../hermes} $out/bin/hermes
           '')
-          (pkgs.runCommand "dev-sandbox" { } ''
-            mkdir -p $out/bin
-            install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
-          '')
+          self'.packages.sandbox
           uv
           # Headless Wayland compositor for E2E tests (test:e2e:visual).
           # cage renders a single client with no window management, so

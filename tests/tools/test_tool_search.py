@@ -297,6 +297,48 @@ class TestHandleFunctionCallIntegration:
         # dispatch path completed without error.
         assert "matches" in parsed or "error" in parsed
 
+    def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
+        """Inline bridge results still complete the tool lifecycle."""
+        import model_tools
+        from hermes_cli import lifecycle
+        from tools import tool_search
+
+        events = []
+        monkeypatch.setattr(
+            lifecycle,
+            "has_hook",
+            lambda name: name == "post_tool_call",
+        )
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda name, **kwargs: events.append((name, kwargs)),
+        )
+        monkeypatch.setattr(
+            tool_search,
+            "dispatch_tool_search",
+            lambda *args, **kwargs: json.dumps({"matches": []}),
+        )
+
+        result = model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "private-query"},
+            session_id="private-session",
+            task_id="private-task",
+            turn_id="private-turn",
+            api_request_id="private-request",
+            tool_call_id="private-call",
+        )
+
+        assert json.loads(result) == {"matches": []}
+        assert len(events) == 1
+        hook_name, payload = events[0]
+        assert hook_name == "post_tool_call"
+        assert payload["status"] == "ok"
+        assert payload["turn_id"] == "private-turn"
+        assert payload["api_request_id"] == "private-request"
+        assert payload["tool_call_id"] == "private-call"
+
 
 class TestRegression_OpenClawCron84141:
     """Regression guard for the OpenClaw cron-tool-loss class of bug.

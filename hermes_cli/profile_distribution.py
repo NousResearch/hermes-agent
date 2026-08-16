@@ -251,12 +251,6 @@ def _load_yaml(text: str) -> Any:
     return yaml.safe_load(text)
 
 
-def _dump_yaml(data: Any) -> str:
-    import yaml
-
-    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
-
-
 def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
     """Return the manifest for *profile_dir*, or None if it isn't a distribution."""
     mf_path = profile_dir / MANIFEST_FILENAME
@@ -271,7 +265,28 @@ def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
 
 def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
     mf_path = profile_dir / MANIFEST_FILENAME
-    mf_path.write_text(_dump_yaml(manifest.to_dict()), encoding="utf-8")
+    # Route through the shared atomic YAML writer (temp file + fsync + atomic
+    # replace, preserving mode/owner and symlinks). A bare write_text()
+    # truncates distribution.yaml before the dump lands, and read_manifest()
+    # treats a missing-or-unparseable manifest as "not a distribution" -- so an
+    # interrupted install/update silently demotes the profile, losing update
+    # tracking and env_requires with no error surfaced anywhere.
+    from utils import atomic_yaml_write
+
+    # create_mode=0o644: _materialize() reaches this line with no manifest on
+    # disk whenever a distribution declares an explicit `distribution_owned`
+    # allowlist that does not list distribution.yaml itself, so the file is
+    # never copied out of the staged tree. The manifest is a shareable
+    # descriptor rather than a secret and used to land at the umask default,
+    # so don't leave a freshly created one at mkstemp's 0600. An existing
+    # file's mode is preserved as before.
+    atomic_yaml_write(
+        mf_path,
+        manifest.to_dict(),
+        sort_keys=False,
+        default_flow_style=False,
+        create_mode=0o644,
+    )
     return mf_path
 
 

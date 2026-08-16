@@ -392,7 +392,7 @@ def test_shared_metrics_and_rich_plugin_share_one_core_session(
     )
     assert len(packages) == 1
     package = json.loads(packages[0].read_text(encoding="utf-8"))
-    assert package["metrics"][0]["name"] == "hermes.model_call.count"
+    assert package["metrics"][0]["name"] == "hermes.model_route.count"
     assert package["metrics"][0]["value"] == 1
     assert (tmp_path / "atif" / "hermes-atif-s1.json").exists()
 

@@ -76,6 +76,11 @@ _DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "surface": "auto",
     "input_device": None,
+    # Where PCM is captured:
+    #   "local"  — PortAudio on the backend host (historic default)
+    #   "client" — desktop/TUI streams int16 frames via wake.feed
+    #   "auto"   — local when a device exists, else client capture
+    "capture": "auto",
     "provider": "openwakeword",
     "phrase": "hey hermes",
     "sensitivity": 0.6,
@@ -244,6 +249,70 @@ def wake_phrase(cfg: Optional[Dict[str, Any]] = None) -> str:
     return str(_get(cfg, "phrase")) or "hey hermes"
 
 
+def resolve_capture_mode(
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    prefer_client: bool = False,
+    force_local: bool = False,
+) -> str:
+    """Return ``local`` or ``client`` capture mode for this arm.
+
+    ``prefer_client`` is set by remote desktop (Mac mic, headless backend).
+    ``force_local`` keeps CLI/TUI on the process mic. Config ``capture`` is
+    ``auto`` | ``local`` | ``client``.
+    """
+    cfg = cfg if cfg is not None else load_wake_word_config()
+    if force_local:
+        return "local"
+    raw = str(_get(cfg, "capture") or "auto").strip().lower()
+    if raw in ("client", "remote", "external"):
+        return "client"
+    if raw == "local":
+        return "local"
+    # auto: a working backend input always wins so local desktops keep
+    # PortAudio and the configured ``input_device`` selection. Client capture
+    # is the fallback for a preferring surface (desktop remote) on a backend
+    # with no usable mic — the headless VPS/Cloud case.
+    if _local_input_device_ready():
+        return "local"
+    if prefer_client:
+        return "client"
+    # No local mic and no client preference (CLI/TUI): stay local so status
+    # reports the real requirement instead of advertising a capture path
+    # nothing will feed.
+    return "local"
+
+
+def _local_input_device_ready() -> bool:
+    """True when PortAudio is importable and at least one input device exists."""
+    try:
+        sd, _ = _import_audio()
+    except (ImportError, OSError):
+        return False
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return False
+    if isinstance(devices, dict):
+        return int(devices.get("max_input_channels") or 0) > 0
+    try:
+        for dev in devices:
+            channels = dev.get("max_input_channels") if isinstance(dev, dict) else None
+            if channels is None:
+                channels = getattr(dev, "max_input_channels", 0)
+            if int(channels or 0) > 0:
+                return True
+    except Exception:
+        return False
+    # Also accept a resolvable default input (some hosts list devices oddly).
+    try:
+        info = sd.query_devices(None, "input")
+        channels = info.get("max_input_channels") if isinstance(info, dict) else 0
+        return int(channels or 0) > 0
+    except Exception:
+        return False
+
+
 def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
     """Should ``surface`` (``cli`` / ``tui`` / ``gui``) host the listener?
 
@@ -367,6 +436,40 @@ def _device_label(details: Dict[str, Any]) -> str:
     label = name or ("system default" if selector is None else str(selector))
     hostapi = str(details.get("hostapi") or "").strip()
     return f"{label} ({hostapi})" if hostapi else label
+
+
+def _capture_sample_rate(details: Dict[str, Any]) -> int:
+    """Use the selected device's native rate when PortAudio reports one."""
+    rate = details.get("default_samplerate")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0:
+        try:
+            return int(round(rate))
+        except (OverflowError, ValueError):
+            pass
+    return SAMPLE_RATE
+
+
+def _resample_audio_frame(np, frame, output_length: int):
+    """Convert one native-rate capture block to an exact engine frame."""
+    source = np.asarray(frame, dtype=np.float64).reshape(-1)
+    if source.size == output_length:
+        return np.asarray(frame, dtype=np.int16).reshape(-1)
+    if source.size == 0:
+        return np.zeros(output_length, dtype=np.int16)
+
+    if source.size > output_length:
+        # Match the desktop wake capture path: average each source window when
+        # reducing the rate so speech energy is retained instead of decimating.
+        edges = np.linspace(0, source.size, output_length + 1, dtype=np.int64)
+        values = np.add.reduceat(source, edges[:-1]) / np.diff(edges)
+    else:
+        # Unusual low-rate devices need interpolation to reach the 16 kHz
+        # frame size expected by every wake-word engine.
+        source_positions = np.arange(source.size, dtype=np.float64)
+        target_positions = np.linspace(0, source.size - 1, output_length)
+        values = np.interp(target_positions, source_positions, source)
+
+    return np.rint(values).clip(-32768, 32767).astype(np.int16)
 
 
 def silent_audio_hint(details: Dict[str, Any]) -> str:
@@ -838,7 +941,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
         hint = lazy_deps.feature_install_command(feature) or ""
     elif not tflite_ok:
         hint = "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"
-    elif deps_ok and not audio_ok:
+    elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
     elif not stt_ok or not tts_ok:
         missing = " and ".join(
@@ -847,12 +950,31 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
         hint = (f"Wake word needs {missing} configured — run `hermes tools` "
                 f"(Voice section) or see the voice-mode docs.")
 
+    capture_mode = resolve_capture_mode(cfg)
+    local_input_ok = _local_input_device_ready() if deps_ok else False
+    # Client capture needs deps (engine) but not a server-side PortAudio device.
+    if capture_mode == "client":
+        mic_ok = deps_ok or (not deps_ok and lazy_ok)
+        if deps_ok and not hint:
+            # No server mic required; clear the local-device hint if that was set.
+            if hint.startswith("Microphone capture needs"):
+                hint = ""
+    else:
+        mic_ok = (deps_ok and audio_ok) or (not deps_ok and lazy_ok)
+        if deps_ok and not audio_ok and not hint:
+            hint = (
+                "No local microphone on this backend. Remote desktop can stream "
+                "the client mic — set wake_word.capture: client or use a desktop "
+                "build with client-capture wake support."
+            )
+
     return {
-        "available": key_ok and stt_ok and tts_ok and tflite_ok
-        and ((deps_ok and audio_ok) or (not deps_ok and lazy_ok)),
+        "available": key_ok and stt_ok and tts_ok and tflite_ok and mic_ok,
         "provider": provider,
         "deps_available": deps_ok,
         "audio_available": audio_ok,
+        "local_input_available": local_input_ok,
+        "capture": capture_mode,
         "access_key_set": key_ok,
         "stt_available": stt_ok,
         "tts_available": tts_ok,
@@ -875,18 +997,28 @@ class WakeWordDetector:
     def __init__(self, engine: _Engine, on_wake: Callable[[], None],
                  cooldown: float = _FIRE_COOLDOWN_SECONDS,
                  on_failure: Optional[Callable[["WakeWordDetector"], None]] = None,
-                 input_device: int | str | None = None):
+                 input_device: int | str | None = None,
+                 external_audio: bool = False):
         self.engine = engine
         self.on_wake = on_wake
         self.cooldown = cooldown
         self.on_failure = on_failure
         self.input_device = input_device
-        self.input_device_details: Dict[str, Any] = {"selector": input_device}
+        self.external_audio = bool(external_audio)
+        self.input_device_details: Dict[str, Any] = (
+            {"selector": "client", "name": "client capture", "hostapi": "remote"}
+            if self.external_audio
+            else {"selector": input_device}
+        )
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._callback_inflight = threading.Event()
         self._last_fire = 0.0
         self._lock = threading.Lock()
+        # Client-capture PCM queue (int16 mono frames). Local mode ignores this.
+        import queue as _queue
+
+        self._audio_q: "_queue.Queue[Any]" = _queue.Queue(maxsize=64)
         # True when the stream is open but every frame is (near-)silence.
         # Surfaced via wake.status / /wake status so users can tell "armed"
         # from "deaf".
@@ -898,8 +1030,50 @@ class WakeWordDetector:
         t = self._thread
         return t is not None and t.is_alive()
 
+    def feed(self, pcm_int16) -> None:
+        """Enqueue one int16 mono frame (or raw bytes) for client capture.
+
+        Frame length should match ``engine.frame_length`` (typically 1280 samples
+        at 16 kHz). Short frames are zero-padded; long frames are split.
+        """
+        if not self.external_audio:
+            return
+        try:
+            import numpy as np
+        except Exception:
+            return
+        if isinstance(pcm_int16, (bytes, bytearray, memoryview)):
+            arr = np.frombuffer(pcm_int16, dtype=np.int16)
+        else:
+            arr = np.asarray(pcm_int16, dtype=np.int16).reshape(-1)
+        fl = int(self.engine.frame_length)
+        if fl <= 0:
+            return
+        # Split / pad into engine frames
+        offset = 0
+        n = int(arr.shape[0])
+        while offset < n:
+            chunk = arr[offset : offset + fl]
+            offset += fl
+            if chunk.shape[0] < fl:
+                pad = np.zeros(fl, dtype=np.int16)
+                pad[: chunk.shape[0]] = chunk
+                chunk = pad
+            try:
+                self._audio_q.put_nowait(chunk)
+            except Exception:
+                # Drop oldest on overflow so we stay real-time
+                try:
+                    self._audio_q.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    self._audio_q.put_nowait(chunk)
+                except Exception:
+                    pass
+
     def start(self) -> None:
-        """Open the mic and begin listening. Idempotent."""
+        """Open the mic (or client feeder) and begin listening. Idempotent."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -950,39 +1124,61 @@ class WakeWordDetector:
 
     def _run(self, ready: threading.Event,
              startup_errors: list[BaseException]) -> None:
-        try:
-            sd, _ = _import_audio()
-        except (ImportError, OSError) as e:
-            logger.error("wake word: audio libraries unavailable: %s", e)
-            startup_errors.append(e)
-            ready.set()
-            return
-
         frame_length = self.engine.frame_length
-        self.input_device_details = _describe_input_device(sd, self.input_device)
-        logger.info(
-            "wake word: opening microphone device=%s selector=%r hostapi=%s "
-            "default_rate=%s requested_rate=%d",
-            self.input_device_details.get("name") or "system default",
-            self.input_device,
-            self.input_device_details.get("hostapi") or "unknown",
-            self.input_device_details.get("default_samplerate") or "unknown",
-            SAMPLE_RATE,
-        )
-        try:
-            stream = sd.InputStream(
-                device=self.input_device,
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                dtype="int16",
-                blocksize=frame_length,
+        capture_frame_length = frame_length
+        capture_rate = SAMPLE_RATE
+        np = None
+        stream = None
+
+        if self.external_audio:
+            # Drain any stale frames from a previous arm.
+            try:
+                while True:
+                    self._audio_q.get_nowait()
+            except Exception:
+                pass
+            logger.info(
+                "wake word: client-capture mode (frame=%d, rate=%d) — waiting for wake.feed",
+                frame_length, SAMPLE_RATE,
             )
-            stream.start()
-        except Exception as e:
-            logger.error("wake word: failed to open microphone: %s", e)
-            startup_errors.append(e)
-            ready.set()
-            return
+        else:
+            try:
+                sd, np = _import_audio()
+            except (ImportError, OSError) as e:
+                logger.error("wake word: audio libraries unavailable: %s", e)
+                startup_errors.append(e)
+                ready.set()
+                return
+
+            self.input_device_details = _describe_input_device(sd, self.input_device)
+            capture_rate = _capture_sample_rate(self.input_device_details)
+            capture_frame_length = max(
+                1, int(round(frame_length * capture_rate / SAMPLE_RATE))
+            )
+            logger.info(
+                "wake word: opening microphone device=%s selector=%r hostapi=%s "
+                "default_rate=%s capture_rate=%d engine_rate=%d",
+                self.input_device_details.get("name") or "system default",
+                self.input_device,
+                self.input_device_details.get("hostapi") or "unknown",
+                self.input_device_details.get("default_samplerate") or "unknown",
+                capture_rate,
+                SAMPLE_RATE,
+            )
+            try:
+                stream = sd.InputStream(
+                    device=self.input_device,
+                    samplerate=capture_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=capture_frame_length,
+                )
+                stream.start()
+            except Exception as e:
+                logger.error("wake word: failed to open microphone: %s", e)
+                startup_errors.append(e)
+                ready.set()
+                return
 
         # Drop any buffered audio/feature state so a resume right after a voice
         # turn can't immediately re-fire on audio captured before the pause (the
@@ -992,7 +1188,8 @@ class WakeWordDetector:
         except Exception:
             pass
 
-        logger.info("wake word: listening (frame=%d, rate=%d)", frame_length, SAMPLE_RATE)
+        logger.info("wake word: listening (frame=%d, rate=%d, external=%s)",
+                    frame_length, SAMPLE_RATE, self.external_audio)
         ready.set()
         failed = False
         # ~seconds of consecutive near-zero frames before we flag the stream
@@ -1001,12 +1198,25 @@ class WakeWordDetector:
         try:
             while not self._stop.is_set():
                 try:
-                    data, _overflow = stream.read(frame_length)
+                    if self.external_audio:
+                        try:
+                            frame = self._audio_q.get(timeout=0.25)
+                        except Exception:
+                            # No client frames yet — count as silence for status.
+                            self._silent_frames += 1
+                            if self._silent_frames == silent_alert_frames:
+                                self.audio_silent = True
+                            continue
+                        data = frame
+                    else:
+                        data, _overflow = stream.read(capture_frame_length)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
                     failed = not self._stop.is_set()
                     break
                 frame = data[:, 0] if getattr(data, "ndim", 1) == 2 else data
+                if capture_rate != SAMPLE_RATE:
+                    frame = _resample_audio_frame(np, frame, frame_length)
                 try:
                     peak = int(abs(frame).max()) if len(frame) else 0
                 except Exception:
@@ -1045,11 +1255,12 @@ class WakeWordDetector:
                     else:
                         logger.debug("wake word: detection within cooldown — ignored")
         finally:
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
             logger.info("wake word: stream closed")
             if failed and self.on_failure is not None:
                 self.on_failure(self)
@@ -1136,6 +1347,7 @@ def start_listening(
     *,
     owner: object,
     config: Optional[Dict[str, Any]] = None,
+    external_audio: bool = False,
 ) -> WakeWordDetector:
     """Claim, build, and start the detector. Idempotent for the same owner.
 
@@ -1163,6 +1375,7 @@ def start_listening(
                 on_wake,
                 on_failure=_detector_failed,
                 input_device=_input_device(cfg),
+                external_audio=external_audio,
             )
             _detector = detector
             _detector_owner = owner
@@ -1265,3 +1478,31 @@ def get_last_match() -> Optional[tuple[str, str]]:
     if det is None:
         return None
     return getattr(det.engine, "last_match", None)
+
+
+def feed_audio(*, owner: object, pcm_int16) -> bool:
+    """Push client-captured PCM into the armed detector (client capture mode).
+
+    Returns True when the frame was accepted for ``owner``'s armed detector.
+    """
+    with _detector_lock:
+        if _detector is None or _detector_owner is not owner:
+            return False
+        if not _detector.external_audio:
+            return False
+        det = _detector
+    det.feed(pcm_int16)
+    return True
+
+
+def detector_frame_info() -> Dict[str, Any]:
+    """Sample rate + frame length for client capture streamers."""
+    with _detector_lock:
+        det = _detector
+    if det is None:
+        return {"sample_rate": SAMPLE_RATE, "frame_length": 1280}
+    return {
+        "sample_rate": SAMPLE_RATE,
+        "frame_length": int(getattr(det.engine, "frame_length", 1280) or 1280),
+        "external_audio": bool(det.external_audio),
+    }

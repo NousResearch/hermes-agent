@@ -50,7 +50,11 @@ def run_git(cwd: str, *args: str) -> str:
     session readiness when a killed git left a suspended descendant holding the
     pipe handles (issue #68609).
     """
-    if not cwd:
+    if not cwd or not os.path.isdir(cwd):
+        # `git -C` on a directory that no longer exists can only fail, and it
+        # fails at the price of a fork. Deleted worktrees dominate the cwds a
+        # long-lived session history hands us, so the stat pays for itself many
+        # times over on every project-tree build.
         return ""
     return bounded_git_probe(["git", "-C", cwd, *args], timeout=_GIT_TIMEOUT)
 
@@ -141,8 +145,23 @@ def common_repo_root(cwd: str) -> str:
     splits every worktree into a separate "repo". The common ``.git`` dir
     (``--git-common-dir``) is shared by a repo and all its worktrees, so its
     parent is the one true repo root; fall back to the toplevel root otherwise.
+
+    The returned path is normalized to git's forward-slash spelling so it can be
+    compared against :func:`repo_root` (which returns raw ``--show-toplevel``
+    output). ``os.path.realpath`` rewrites separators to the platform's native
+    ``\\`` on Windows, so without this the SAME directory came back spelled two
+    ways and the repo's own checkout compared unequal to its common root — the
+    main checkout was then misread as a linked worktree and the desktop sidebar
+    rendered it twice (a dir-labeled lane plus a branch-labeled ``main`` lane).
     """
     if not cwd:
+        return ""
+
+    # No work tree, nothing to fold. Reading the (warmed, negative-cached)
+    # toplevel first spares every non-repo cwd a second `git` spawn — one the
+    # parallel warm can never absorb, since `resolve()` only reaches here for
+    # cwds that ARE repos.
+    if not repo_root(cwd):
         return ""
 
     def _probe() -> str:
@@ -150,7 +169,7 @@ def common_repo_root(cwd: str) -> str:
         if gitdir:
             gitdir = os.path.realpath(gitdir)
             if os.path.basename(gitdir) == ".git":
-                return os.path.dirname(gitdir)
+                return os.path.dirname(gitdir).replace(os.sep, "/")
         return repo_root(cwd)
 
     return _cache.resolve(f"common:{cwd}", _probe)

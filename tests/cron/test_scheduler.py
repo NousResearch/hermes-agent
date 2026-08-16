@@ -179,6 +179,40 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_desktop_origin_delivery_uses_captured_session_key(self):
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "desktop",
+            "chat_id": "desktop-session-key",
+            "thread_id": None,
+        }
+
+    def test_desktop_explicit_target_must_match_captured_origin(self, caplog):
+        job = {
+            "id": "desktop-job",
+            "deliver": "desktop:other-session",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            assert _resolve_delivery_target(job) is None
+
+        assert any(
+            "does not match the captured desktop origin" in record.message
+            and "desktop-job" in record.message
+            for record in caplog.records
+        )
+
 
     def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-parent")
@@ -358,6 +392,61 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+
+    def test_desktop_delivery_uses_session_queue_without_gateway_config(self):
+        job = {
+            "id": "desktop-job",
+            "name": "desktop report",
+            "deliver": "origin",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        with (
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("cron.scheduler._queue_desktop_cron_delivery", return_value=True) as queue_delivery,
+            patch("gateway.config.load_gateway_config") as load_gateway_config,
+        ):
+            assert _deliver_result(job, "desktop report content") is None
+
+        queue_delivery.assert_called_once_with(
+            job,
+            {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+                "thread_id": None,
+            },
+            "desktop report content",
+        )
+        load_gateway_config.assert_not_called()
+
+    def test_desktop_queue_failure_is_not_reported_as_inactive(self, caplog):
+        job = {
+            "id": "desktop-job",
+            "name": "desktop report",
+            "deliver": "origin",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        with (
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("cron.scheduler._queue_desktop_cron_delivery", return_value=None),
+            patch("gateway.config.load_gateway_config") as load_gateway_config,
+            caplog.at_level(logging.ERROR, logger="cron.scheduler"),
+        ):
+            assert _deliver_result(job, "desktop report content") is None
+
+        assert any(
+            "failed to queue desktop delivery" in record.message
+            for record in caplog.records
+        )
+        assert not any("is not active" in record.message for record in caplog.records)
+        load_gateway_config.assert_not_called()
 
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
@@ -2555,4 +2644,3 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-

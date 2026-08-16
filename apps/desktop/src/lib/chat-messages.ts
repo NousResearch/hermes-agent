@@ -450,6 +450,14 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
       : `${count} background agent${count === 1 ? '' : 's'} finished`
   }
 
+  if (message.display_kind === 'cron_delivery') {
+    const jobName = parseDisplayMetadata(message.display_metadata)?.job_name
+
+    return typeof jobName === 'string' && jobName.trim()
+      ? `cron job '${jobName}' reported`
+      : 'cron job reported'
+  }
+
   return content
 }
 
@@ -1130,6 +1138,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const displayRole =
       message.display_kind === 'model_switch' ||
       message.display_kind === 'async_delegation_complete' ||
+      message.display_kind === 'cron_delivery' ||
       message.display_kind === 'auto_continue' ||
       message.display_kind === 'personality_switch'
         ? 'system'

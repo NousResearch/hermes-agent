@@ -136,6 +136,25 @@ class TestDeliveryNote:
             == expected
         )
 
+    def test_empty_or_missing_deliver_reads_saved_locally(self):
+        """Falsy deliver = no target, and the fire-time path treats it as
+        "local" (no delivery, no delivery error) — the note must not claim
+        "delivered there" for a target that doesn't exist (#83993 class)."""
+        expected = " (output saved locally only)"
+        assert _manual_run_delivery_note("", {}) == expected
+        assert _manual_run_delivery_note(None, {}) == expected
+        # Falsy deliver never attempts delivery — a stale error (e.g. from an
+        # earlier deliver config) must not flip the wording either.
+        assert _manual_run_delivery_note("", {"last_delivery_error": "old"}) == expected
+
+    def test_whitespace_deliver_defers_to_error_record(self):
+        """Whitespace-only deliver is NOT folded into local: fire time lets it
+        through as a target that fails to resolve, so the recorded error must
+        stay visible rather than being masked by a saved-locally wording."""
+        note = _manual_run_delivery_note(" ", {"last_delivery_error": "no target"})
+        assert "delivery FAILED" in note
+        assert "no target" in note
+
     def test_remote_with_error_says_delivery_failed(self):
         note = _manual_run_delivery_note(
             "telegram", {"last_delivery_error": "send failed: 400 Bad Request"}
@@ -177,6 +196,29 @@ class TestRunnerSummaryWiring:
         assert "Delivery target: telegram" in summary
         assert "delivery FAILED" in summary
         assert "telegram send failed: 400" in summary
+        assert "delivered there by the job itself" not in summary
+
+    def test_empty_deliver_summary_states_local_not_phantom_target(self):
+        """End-to-end: an empty stored deliver must render as the local target
+        it behaves as at fire time — never a bare "Delivery target: " followed
+        by a delivered-there claim."""
+        from tools.cronjob_tools import _try_dispatch_background_run
+
+        with _bound_session_key("agent:main:telegram:dm:86622"):
+            with (
+                patch("tools.cronjob_tools.claim_job_for_fire", return_value=True),
+                patch("cron.scheduler.run_one_job", return_value=True),
+                patch(
+                    "tools.cronjob_tools.get_job",
+                    return_value={"last_status": "ok", "last_error": None},
+                ),
+            ):
+                res = _try_dispatch_background_run(_job("job-dn-03", ""))
+                assert res["dispatched"] is True
+                evt = _drain_completion_event(res["delegation_id"])
+        assert evt is not None, "completion event never reached the queue"
+        summary = evt.get("summary") or ""
+        assert "Delivery target: local (output saved locally only)" in summary
         assert "delivered there by the job itself" not in summary
 
     def test_delivery_success_wording_unchanged_in_completion_summary(self):

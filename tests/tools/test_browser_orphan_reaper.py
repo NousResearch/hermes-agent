@@ -3,6 +3,7 @@ daemons whose Python parent exited without cleaning up."""
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -212,6 +213,101 @@ class TestReapOrphanedBrowserSessions:
 
         assert d.exists()
         assert (d / "cdp_dead12345.target").exists()
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            None,
+            "{truncated",
+            "[]",
+            '{"pinned":true}',
+        ],
+        ids=["missing", "truncated", "non_object", "wrong_schema"],
+    )
+    def test_unknown_shared_target_metadata_preserves_daemon_and_directory(
+        self,
+        fake_tmpdir,
+        metadata,
+    ):
+        session_name = f"cdp_unknown_{abs(hash(str(metadata)))}"
+        d = _make_socket_dir(
+            fake_tmpdir,
+            session_name,
+            pid=12345,
+            owner_pid=54321,
+        )
+        if metadata is not None:
+            (d / f"{session_name}.target").write_text(metadata)
+
+        with (
+            patch("gateway.status._pid_exists", return_value=False),
+            patch(
+                "tools.process_registry.ProcessRegistry._terminate_host_pid"
+            ) as terminate,
+        ):
+            self._run_reaper()
+
+        terminate.assert_not_called()
+        assert d.exists()
+
+    def test_unreadable_shared_target_metadata_is_unknown(
+        self,
+        fake_tmpdir,
+        monkeypatch,
+    ):
+        session_name = "cdp_unreadable"
+        d = _make_socket_dir(
+            fake_tmpdir,
+            session_name,
+            pid=12345,
+            owner_pid=54321,
+        )
+        target_file = d / f"{session_name}.target"
+        target_file.write_text('{"pinned":true,"targetId":"TARGET"}')
+        original_read_text = Path.read_text
+
+        def _read_text(path, *args, **kwargs):
+            if path == target_file:
+                raise PermissionError("unreadable")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _read_text)
+        with (
+            patch("gateway.status._pid_exists", return_value=False),
+            patch(
+                "tools.process_registry.ProcessRegistry._terminate_host_pid"
+            ) as terminate,
+        ):
+            self._run_reaper()
+
+        terminate.assert_not_called()
+        assert d.exists()
+
+    def test_non_object_metadata_does_not_abort_remaining_orphan_sweep(
+        self,
+        fake_tmpdir,
+    ):
+        cdp_name = "cdp_nonobject_continue"
+        cdp_dir = _make_socket_dir(
+            fake_tmpdir,
+            cdp_name,
+            pid=12345,
+            owner_pid=54321,
+        )
+        (cdp_dir / f"{cdp_name}.target").write_text("[]")
+        legacy_dir = _make_socket_dir(fake_tmpdir, "h_stale_after_unknown")
+
+        with patch("gateway.status._pid_exists", return_value=False):
+            self._run_reaper()
+
+        assert cdp_dir.exists()
+        assert not legacy_dir.exists()
+
+    @staticmethod
+    def _run_reaper():
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        _reap_orphaned_browser_sessions()
 
     def test_orphan_close_uses_exact_named_session_without_discovery(
         self, fake_tmpdir, monkeypatch

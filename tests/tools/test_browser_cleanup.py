@@ -38,6 +38,10 @@ class TestBrowserCleanup:
         self.orig_retired_browser_tasks = getattr(
             browser_tool, "_retired_browser_tasks", set()
         ).copy()
+        self.orig_task_states = browser_tool._browser_task_states.copy()
+        self.orig_task_generations = browser_tool._browser_task_generations.copy()
+        self.orig_cleanup_reasons = browser_tool._browser_task_cleanup_reasons.copy()
+        self.orig_provider_cleanups = browser_tool._pending_provider_cleanups.copy()
         self.orig_recording_sessions = browser_tool._recording_sessions.copy()
         self.orig_cleanup_done = browser_tool._cleanup_done
 
@@ -55,6 +59,18 @@ class TestBrowserCleanup:
             self.browser_tool._retired_browser_tasks.update(
                 self.orig_retired_browser_tasks
             )
+        self.browser_tool._browser_task_states.clear()
+        self.browser_tool._browser_task_states.update(self.orig_task_states)
+        self.browser_tool._browser_task_generations.clear()
+        self.browser_tool._browser_task_generations.update(self.orig_task_generations)
+        self.browser_tool._browser_task_cleanup_reasons.clear()
+        self.browser_tool._browser_task_cleanup_reasons.update(
+            self.orig_cleanup_reasons
+        )
+        self.browser_tool._pending_provider_cleanups.clear()
+        self.browser_tool._pending_provider_cleanups.update(
+            self.orig_provider_cleanups
+        )
         self.browser_tool._recording_sessions.clear()
         self.browser_tool._recording_sessions.update(self.orig_recording_sessions)
         self.browser_tool._cleanup_done = self.orig_cleanup_done
@@ -81,7 +97,9 @@ class TestBrowserCleanup:
         assert "task-1" not in browser_tool._active_sessions
         assert "task-1" not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
-        mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
+        mock_run.assert_called_once_with(
+            "task-1", "close", [], timeout=10, _allow_cleanup=True
+        )
 
     def test_cleanup_shared_cdp_closes_pinned_tab_before_session(self):
         browser_tool = self.browser_tool
@@ -104,8 +122,8 @@ class TestBrowserCleanup:
         assert cleaned is True
         assert "task-cdp" not in browser_tool._active_sessions
         assert mock_run.call_args_list == [
-            (("task-cdp", "tab", ["close"]), {"timeout": 10}),
-            (("task-cdp", "close", []), {"timeout": 10}),
+            (("task-cdp", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
+            (("task-cdp", "close", []), {"timeout": 10, "_allow_cleanup": True}),
         ]
 
     def test_cleanup_shared_cdp_accepts_already_gone_tab(self):
@@ -138,8 +156,8 @@ class TestBrowserCleanup:
         assert "task-gone" not in browser_tool._active_sessions
         assert "task-gone" not in browser_tool._session_last_activity
         assert mock_run.call_args_list == [
-            (("task-gone", "tab", ["close"]), {"timeout": 10}),
-            (("task-gone", "close", []), {"timeout": 10}),
+            (("task-gone", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
+            (("task-gone", "close", []), {"timeout": 10, "_allow_cleanup": True}),
         ]
 
     def test_cleanup_shared_cdp_transient_failure_retains_ownership(self):
@@ -169,7 +187,7 @@ class TestBrowserCleanup:
         assert "task-retry" not in browser_tool._retired_browser_tasks
         assert session["_cleanup_retry_pending"] is True
         mock_run.assert_called_once_with(
-            "task-retry", "tab", ["close"], timeout=10
+            "task-retry", "tab", ["close"], timeout=10, _allow_cleanup=True
         )
 
     def test_cleanup_shared_cdp_retries_then_becomes_idempotent(self):
@@ -200,9 +218,9 @@ class TestBrowserCleanup:
 
         assert "task-repeat" not in browser_tool._active_sessions
         assert mock_run.call_args_list == [
-            (("task-repeat", "tab", ["close"]), {"timeout": 10}),
-            (("task-repeat", "tab", ["close"]), {"timeout": 10}),
-            (("task-repeat", "close", []), {"timeout": 10}),
+            (("task-repeat", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
+            (("task-repeat", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
+            (("task-repeat", "close", []), {"timeout": 10, "_allow_cleanup": True}),
         ]
 
     def test_successful_sidecar_cleanup_preserves_primary_binding(self):
@@ -387,7 +405,10 @@ def test_inactivity_reaper_spares_task_owned_shared_cdp(monkeypatch):
 
     browser_tool._cleanup_inactive_browser_sessions()
 
-    cleanup.assert_called_once_with(task_id)
+    cleanup.assert_called_once_with(
+        task_id,
+        reason=browser_tool.BrowserCleanupReason.INACTIVITY,
+    )
 
 
 def test_inactivity_reaper_still_cleans_local_session(monkeypatch):
@@ -418,7 +439,10 @@ def test_inactivity_reaper_still_cleans_local_session(monkeypatch):
 
     browser_tool._cleanup_inactive_browser_sessions()
 
-    cleanup.assert_called_once_with(task_id)
+    cleanup.assert_called_once_with(
+        task_id,
+        reason=browser_tool.BrowserCleanupReason.INACTIVITY,
+    )
     assert task_id not in browser_tool._session_last_activity
 
 

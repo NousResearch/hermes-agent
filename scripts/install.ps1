@@ -3637,10 +3637,11 @@ function Install-CuaDriver {
         if (Wait-Job $job -Timeout 660) {
             Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
             Remove-Job $job -Force -ErrorAction SilentlyContinue
-            if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
+            $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+            if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
             } else {
-                Write-Warn "Computer Use driver install did not complete -- it will install on demand when you enable the tool."
+                Write-Warn "Computer Use driver install did not produce a compatible runtime -- repair it before enabling the tool."
                 Write-Info "Install later with: hermes computer-use install"
             }
         } else {

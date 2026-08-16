@@ -5,6 +5,7 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { activeConnectionScopeSuffix, rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
@@ -42,7 +43,12 @@ const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 function profileNavigationKey(base: string, profile: string): string {
   const key = profile.trim() || 'default'
 
-  return `${base}.profile.${encodeURIComponent(key)}`
+  // Also carries the CONNECTION scope: the same profile name on a different
+  // gateway is a different backend with its own sessions, and windows on
+  // different gateways share this localStorage area — restoring one
+  // gateway's remembered session under another navigates to a session that
+  // backend has never seen (#77318).
+  return `${base}.profile.${encodeURIComponent(key)}${activeConnectionScopeSuffix()}`
 }
 
 // Discard legacy global keys once per tick. A module-level flag avoids
@@ -660,6 +666,11 @@ export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => {
   updateAtom($connection, next)
+  // Repoint connection-scoped persistence (pins, manual session order,
+  // remembered navigation) at the new backend's storage scope before any
+  // consumer reconciles against it. A null descriptor (reconnect blip)
+  // keeps the current scope.
+  rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
 }
 

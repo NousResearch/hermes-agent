@@ -245,6 +245,8 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
         )
     assert "<tag>...</tag>" in system_prompt
     assert "[/tag]" not in system_prompt
+    assert "laugh-speak" not in _XAI_WRAPPING_SPEECH_TAGS
+    assert "laugh-speak" not in system_prompt
 
     # The user message carries the locally pause-tagged transcript (the
     # conservative fallback the rewriter is asked to enrich).

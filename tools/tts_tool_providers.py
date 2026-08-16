@@ -235,7 +235,7 @@ _XAI_INLINE_SPEECH_TAGS = (
     "tongue-click", "lip-smack", "breath", "inhale", "exhale", "sigh")
 _XAI_WRAPPING_SPEECH_TAGS = (
     "soft", "whisper", "loud", "build-intensity", "decrease-intensity", "higher-pitch",
-    "lower-pitch", "slow", "fast", "sing-song", "singing", "laugh-speak", "emphasis")
+    "lower-pitch", "slow", "fast", "sing-song", "singing", "emphasis")
 _XAI_SPEECH_TAG_RE = re.compile(
     rf"(\[(?:{'|'.join(_XAI_INLINE_SPEECH_TAGS)})\]|</?(?:{'|'.join(_XAI_WRAPPING_SPEECH_TAGS)})>)",
     flags=re.IGNORECASE)

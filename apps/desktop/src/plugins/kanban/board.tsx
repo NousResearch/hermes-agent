@@ -1,9 +1,10 @@
 /**
  * The Kanban board page — mounted at `/kanban` (a ROUTES_AREA contribution) in
- * the workspace pane. The desktop port of the dashboard board: one compact
- * header row (count, filter kebab, search, settings, new task — the board
+ * the workspace pane. The desktop port of the dashboard board: a compact
+ * responsive header (count, filter kebab, search, settings, new task — the board
  * SWITCHER lives in the titlebar, see board-switcher.tsx), columns in
- * BOARD_COLUMNS order, drag-to-move (optimistic, workflow-checked),
+ * BOARD_COLUMNS order with touch-friendly narrow-screen snapping,
+ * drag-to-move (optimistic, workflow-checked),
  * ⌘-click multi-select with a floating bulk bar, right-click actions, and
  * the detail drawer. Dispatch nudges ride every write (see api.ts).
  */
@@ -441,7 +442,10 @@ function Column({
   return (
     <div
       {...dragHandlers}
-      className={cn('group/col flex h-full w-64 shrink-0 flex-col rounded-lg p-2 transition-colors', wash)}
+      className={cn(
+        'group/col flex h-full w-[calc(100vw-2rem)] max-w-full shrink-0 snap-start snap-always flex-col rounded-lg p-2 transition-colors md:w-64 md:[scroll-snap-align:none]',
+        wash
+      )}
     >
       <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
@@ -1326,24 +1330,14 @@ export function KanbanBoardPage() {
         <BoardSwitcher />
       </Contribute>
 
-      <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
-        <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
-          {total}
-        </span>
-        {board && (
-          <FilterMenu
-            archived={archived}
-            assignee={assignee}
-            board={board}
-            onArchived={setArchived}
-            onAssignee={setAssignee}
-            onTenant={setTenant}
-            tenant={tenant}
-          />
-        )}
-        <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+      <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 py-2 md:flex md:flex-wrap">
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="truncate text-sm font-semibold text-foreground">{k.title}</h1>
+          <span className="shrink-0 rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
+            {total}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 md:order-last md:ml-auto">
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1359,6 +1353,26 @@ export function KanbanBoardPage() {
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
+        </div>
+        <div className="col-span-2 flex min-w-0 items-center gap-2 md:col-auto">
+          {board && (
+            <FilterMenu
+              archived={archived}
+              assignee={assignee}
+              board={board}
+              onArchived={setArchived}
+              onAssignee={setAssignee}
+              onTenant={setTenant}
+              tenant={tenant}
+            />
+          )}
+          <SearchField
+            aria-label={k.filterCards}
+            containerClassName="min-w-0 flex-1 md:flex-none"
+            onChange={setSearch}
+            placeholder={k.filterCards}
+            value={search}
+          />
         </div>
       </header>
 
@@ -1387,7 +1401,10 @@ export function KanbanBoardPage() {
         </div>
       ) : (
         <div
-          className={cn('flex flex-1 gap-2 overflow-x-auto px-4 pt-1 pb-3', grabbing && 'cursor-grabbing')}
+          className={cn(
+            'flex flex-1 snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain px-4 pt-1 pb-3 md:snap-none',
+            grabbing && 'cursor-grabbing'
+          )}
           onMouseDown={onMouseDown}
           ref={lanesRef}
         >

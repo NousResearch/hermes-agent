@@ -674,8 +674,8 @@ export function TaskDrawer({
   }
 
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4">
-      <header className="flex flex-col gap-2 px-4 pt-3.5 pb-3">
+    <div className="absolute inset-y-0 right-0 z-20 flex w-full max-w-full flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out motion-reduce:duration-0 motion-reduce:animate-none animate-in fade-in slide-in-from-right-4 md:w-[26rem]">
+      <header className="flex flex-col gap-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] pt-[max(0.875rem,env(safe-area-inset-top))] pb-3 md:px-4 md:pt-3.5">
         <div className="flex items-center gap-2">
           {task ? (
             <StatusMenu columns={columns} onMove={move} status={task.status} />
@@ -747,7 +747,10 @@ export function TaskDrawer({
         )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-selectable-text="true">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto pr-[max(1rem,env(safe-area-inset-right))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] md:px-4 md:pb-4"
+        data-selectable-text="true"
+      >
         {errorMessage ? (
           <ErrorState title={errorMessage} />
         ) : !detail || !task ? (

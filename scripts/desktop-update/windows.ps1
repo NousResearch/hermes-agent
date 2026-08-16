@@ -1498,8 +1498,18 @@ try {
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
-    . (Join-Path $PSScriptRoot "retry-policy.ps1")
-    if (Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot) {
+    $retryPolicyPath = Join-Path $PSScriptRoot "retry-policy.ps1"
+    if (Test-Path -LiteralPath $retryPolicyPath) {
+        . $retryPolicyPath
+        $shouldRetry = Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot
+    } else {
+        # The child may have swapped to a checkout without the companion policy
+        # while this older script is still running in memory. Preserve the
+        # previous fail-closed behavior instead of calling an undefined function.
+        Write-HandoffLog "retry policy is unavailable after checkout swap; using legacy retry rules"
+        $shouldRetry = $res.Code -ne 0 -and $res.Code -ne 2
+    }
+    if ($shouldRetry) {
         # One retry for update-boundary failures. Most exit-2 safety refusals
         # remain terminal, but self-lock deferral also uses exit 2 and writes
         # .update-incomplete after the code swap. That marker is only a retry

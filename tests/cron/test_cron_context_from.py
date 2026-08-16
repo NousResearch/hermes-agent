@@ -106,7 +106,7 @@ class TestBuildJobPromptContextFrom:
         from cron.scheduler import _build_job_prompt
 
         source = create_job(prompt="Find news", schedule="every 1h")
-        exact = "lead\n## Response\nembedded heading stays data\n```\ntail"
+        exact = "  lead\n## Response\nembedded heading stays data\n```\ntail  "
         save_job_output(source["id"], "human wrapper must not leak", response=exact)
         consumer = create_job(
             prompt="Summarize",
@@ -117,6 +117,74 @@ class TestBuildJobPromptContextFrom:
         prompt = _build_job_prompt(consumer)
         assert exact in prompt
         assert "human wrapper must not leak" not in prompt
+
+    def test_empty_structured_response_injects_explicit_context(self, cron_env):
+        from cron.jobs import create_job, save_job_output
+        from cron.scheduler import _build_job_prompt
+
+        source = create_job(prompt="Find news", schedule="every 1h")
+        save_job_output(source["id"], "human wrapper must not leak", response="")
+        consumer = create_job(
+            prompt="Summarize",
+            schedule="every 2h",
+            context_from=source["id"],
+        )
+
+        prompt = _build_job_prompt(consumer)
+        assert f"Output from job '{source['id']}'" in prompt
+        assert "empty response" in prompt.lower()
+        assert "human wrapper must not leak" not in prompt
+
+    def test_whitespace_only_structured_response_injects_explicit_context(
+        self, cron_env
+    ):
+        from cron.jobs import create_job, save_job_output
+        from cron.scheduler import _build_job_prompt
+
+        source = create_job(prompt="Find news", schedule="every 1h")
+        save_job_output(
+            source["id"], "human wrapper must not leak", response=" \t\r\n "
+        )
+        consumer = create_job(
+            prompt="Summarize",
+            schedule="every 2h",
+            context_from=source["id"],
+        )
+
+        prompt = _build_job_prompt(consumer)
+        assert f"Output from job '{source['id']}'" in prompt
+        assert "empty response" in prompt.lower()
+        assert "human wrapper must not leak" not in prompt
+
+    def test_legacy_output_with_multiple_response_markers_uses_whole_bounded_file(
+        self, cron_env
+    ):
+        from cron.jobs import OUTPUT_DIR, create_job
+        from cron.scheduler import _build_job_prompt
+
+        source = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / source["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        legacy_output = (
+            "legacy metadata\n"
+            "## Response\n"
+            "first response section\n"
+            "## Response\n"
+            "second response section"
+        )
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            legacy_output, encoding="utf-8"
+        )
+        consumer = create_job(
+            prompt="Summarize",
+            schedule="every 2h",
+            context_from=source["id"],
+        )
+
+        prompt = _build_job_prompt(consumer)
+        assert legacy_output in prompt
+        assert "first response section" in prompt
+        assert "second response section" in prompt
 
     def test_corrupt_new_structured_run_falls_back_to_older_committed_run(
         self, cron_env

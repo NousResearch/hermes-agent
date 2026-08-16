@@ -16,9 +16,8 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { atom, computed } from 'nanostores'
-
 import { backendScopeKey } from '@hermes/shared'
+import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'

@@ -1754,7 +1754,7 @@ class TestOpenVikingEnvWriter:
         assert not any(l.endswith("=old") for l in lines)
         assert "OTHER=1" in lines
 
-    def test_non_utf8_env_does_not_abort_setup(self, tmp_path):
+    def test_non_utf8_env_preserves_unrelated_bytes(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars
 
         env = tmp_path / ".env"
@@ -1762,8 +1762,7 @@ class TestOpenVikingEnvWriter:
 
         _write_env_vars(env, {"OPENAI_API_KEY": "new"})
 
-        lines = env.read_text(encoding="utf-8-sig").splitlines()
-        assert "OPENAI_API_KEY=new" in lines
+        assert env.read_bytes() == b"NAME=caf\xe9\nOPENAI_API_KEY=new\n"
 
     def test_plain_env_is_unchanged_apart_from_the_write(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars

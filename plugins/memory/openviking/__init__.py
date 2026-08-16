@@ -1217,13 +1217,12 @@ def _env_line_safe(value: Any) -> str:
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
-    # Read exactly like the canonical .env reader in hermes_cli/config.py
-    # (save_env_value). A Windows editor can leave a UTF-8 BOM, which fails
-    # the key match on the first line so that key gets duplicated on write,
-    # or save the file as cp1252, which makes a strict utf-8 read raise and
-    # abort setup. Copying existing lines through must never do either.
+    # A Windows editor can leave a UTF-8 BOM, which prevents the first key
+    # from matching, or save the file as cp1252, which makes a strict UTF-8
+    # read fail. Strip the BOM and round-trip undecodable bytes unchanged so
+    # updating one credential cannot corrupt an unrelated value.
     existing_lines = (
-        env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines()
         if env_path.exists()
         else []
     )
@@ -1243,7 +1242,11 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
             new_lines.append(f"{key}={_env_line_safe(val)}")
     # Pre-create with 0600 so secrets are never briefly world-readable.
     _precreate_secret_file(env_path)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    env_path.write_text(
+        "\n".join(new_lines) + ("\n" if new_lines else ""),
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
     _restrict_secret_file_permissions(env_path)
 
 

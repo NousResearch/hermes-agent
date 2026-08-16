@@ -206,6 +206,55 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     assert db.released is True
 
 
+def _write_flush_file(flush_dir: Path, name: str, session_id: str, text: str) -> Path:
+    """Write one well-formed pending-message flush file."""
+    path = flush_dir / name
+    path.write_text(
+        json.dumps(
+            {
+                "session_key": "agent:main:telegram:supergroup:123",
+                "reason": "shutdown",
+                "ts": 1700000000,
+                "data": {"text": text, "session_id": session_id},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_recover_skips_failing_payload_and_continues(tmp_path, monkeypatch):
+    """One unrecoverable file must not abort recovery of the others.
+
+    Recovery walks ``sorted(glob("*.json"))``, so a file that raises an
+    ordinary exception used to propagate out of the whole pass.  Because
+    that file is never unlinked it would then re-poison every subsequent
+    boot, stranding a different subset of messages each time.
+    """
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    bad = _write_flush_file(flush_dir, "pending-a.json", "sid-bad", "first")
+    good = _write_flush_file(flush_dir, "pending-b.json", "sid-good", "second")
+
+    class PartiallyFailingDB:
+        def __init__(self):
+            self.appended = []
+
+        def append_message(self, **kwargs):
+            if kwargs["session_id"] == "sid-bad":
+                raise RuntimeError("session is closed")
+            self.appended.append(kwargs["session_id"])
+
+    db = PartiallyFailingDB()
+    assert recover_pending_to_db(db) == 1
+    assert db.appended == ["sid-good"]
+    # The good file is consumed; the bad one is preserved for a retry.
+    assert not good.exists()
+    assert bad.exists()
+
+
 def test_serialise_object_with_text():
     obj = MagicMock()
     obj.text = "msg"

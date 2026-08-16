@@ -667,13 +667,30 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+// The agent-scoped analogue of prepareGatewayForProfile, and the same
+// publication seam: dial the agent's socket without publishing anything, and
+// hand back the synchronous activation thunk. A local/null connection falls
+// through to the profile seam, so both doors into an activation share one
+// atomicity contract instead of drifting apart.
+//
+// The thunk reports whether it actually published, preserving the `activated`
+// contract callers rely on: a source edit/remove can dispose this entry while
+// its dial is in flight, and a caller must be able to tell "switched" from
+// "the target stopped existing" rather than assume the former.
+export async function prepareGatewayForAgent(
+  connectionId: null | string,
+  profile: string
+): Promise<() => boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
-    await ensureGatewayForProfile(profile)
+    const activate = await prepareGatewayForProfile(profile)
 
-    return true
+    return () => {
+      activate()
+
+      return true
+    }
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -702,19 +719,28 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
     }
   }
 
-  // A source edit/remove may dispose this entry while its dial is still in
-  // flight. Only the still-registered, still-owned activation may publish.
-  const activated =
-    entry.wantOpen &&
-    g.secondaries.get(scope) === entry &&
-    Boolean(entry.connection) &&
-    applyActive(scope, activationEpoch)
+  // Bind the entry this dial settled on; see prepareGatewayForProfile.
+  const prepared = entry
 
-  if (activated && entry.connection) {
-    publishActiveConnection(entry.connection)
+  return () => {
+    // A source edit/remove may dispose this entry while its dial is still in
+    // flight. Only the still-registered, still-owned activation may publish.
+    const activated =
+      prepared.wantOpen &&
+      g.secondaries.get(scope) === prepared &&
+      Boolean(prepared.connection) &&
+      applyActive(scope, activationEpoch)
+
+    if (activated && prepared.connection) {
+      publishActiveConnection(prepared.connection)
+    }
+
+    return activated
   }
+}
 
-  return activated
+export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+  return (await prepareGatewayForAgent(connectionId, profile))()
 }
 
 // Open `profile`'s socket if needed and hand back a synchronous activation

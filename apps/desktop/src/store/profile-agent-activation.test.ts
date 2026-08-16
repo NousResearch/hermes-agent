@@ -13,18 +13,40 @@ import type { HermesConnection } from '@/global'
 //  2. Agent activations share the gatewaySwitch mutex with profile switches —
 //     without it, two rapid activations could complete out of order and the
 //     EARLIER setActive() landed last.
+//  3. An activation publishes the gateway, the profile pointer and the
+//     connection descriptor in ONE synchronous frame. Activating first and
+//     awaiting the descriptor after left $gateway on the new backend while
+//     $connection still described the old one.
+//
+// Both doors go through the prepare/publish seam (prepareGatewayFor*, which
+// dial without publishing and return the activation thunk), so these mocks
+// hand back a spy thunk instead of activating on call.
 
-const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
-const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+// Distinct gateway identities so a listener can tell WHICH backend it was
+// handed. A bare vi.fn() thunk never touches $gateway, which would let an
+// out-of-order publication pass unnoticed.
+const INITIAL_GATEWAY = { id: 'live-socket' }
+const AGENT_GATEWAY = { id: 'agent-socket' }
+const PROFILE_GATEWAY = { id: 'profile-socket' }
+const activateAgent = vi.fn(() => {
+  $gateway.set(AGENT_GATEWAY)
+
+  return true
+})
+const activateProfile = vi.fn(() => {
+  $gateway.set(PROFILE_GATEWAY)
+})
+const prepareGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => activateAgent)
+const prepareGatewayForProfile = vi.fn(async (_profile: string) => activateProfile)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const $gateway = atom<unknown>({ id: 'live-socket' })
+const $gateway = atom<unknown>(INITIAL_GATEWAY)
 const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
-  ensureGatewayForAgent,
-  ensureGatewayForProfile,
-  openGatewayForProfile
+  openGatewayForProfile,
+  prepareGatewayForAgent,
+  prepareGatewayForProfile
 }))
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
@@ -60,8 +82,12 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 beforeEach(() => {
   getConnection.mockReset()
   getConnectionFor.mockReset()
-  ensureGatewayForAgent.mockClear()
-  ensureGatewayForProfile.mockClear()
+  prepareGatewayForAgent.mockReset()
+  prepareGatewayForAgent.mockResolvedValue(activateAgent)
+  prepareGatewayForProfile.mockReset()
+  prepareGatewayForProfile.mockResolvedValue(activateProfile)
+  activateAgent.mockClear()
+  activateProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
@@ -81,7 +107,8 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
 
     await ensureGatewayAgent('homelab', 'research')
 
-    expect(ensureGatewayForAgent).toHaveBeenCalledWith('homelab', 'research')
+    expect(prepareGatewayForAgent).toHaveBeenCalledWith('homelab', 'research')
+    expect(activateAgent).toHaveBeenCalledTimes(1)
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research' })
     expect($activeGatewayProfile.get()).toBe('research')
     expect($connection.get()?.mode).toBe('remote')
@@ -113,8 +140,8 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
 
     await ensureGatewayAgent(null, 'research')
 
-    expect(ensureGatewayForProfile).toHaveBeenCalledWith('research')
-    expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+    expect(prepareGatewayForProfile).toHaveBeenCalledWith('research')
+    expect(prepareGatewayForAgent).not.toHaveBeenCalled()
     expect(getConnectionFor).not.toHaveBeenCalled()
   })
 
@@ -123,9 +150,39 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
 
     await ensureGatewayAgent('local', 'research')
 
-    expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'research')
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect(prepareGatewayForAgent).toHaveBeenCalledWith('local', 'research')
+    expect(prepareGatewayForProfile).not.toHaveBeenCalled()
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'research' })
+  })
+
+  it('never publishes the agent gateway before its connection descriptor', async () => {
+    // The same mixed-state window the profile path closes, through the door
+    // added for the SDK's ensureAgent. A slow getConnectionFor must not leave
+    // $gateway/$activeGatewayProfile on the agent's backend while $connection
+    // still describes the previous one — anything requesting in that window
+    // announces the WRONG mode to the new backend.
+    let resolveDescriptor: (conn: HermesConnection) => void = () => undefined
+    getConnectionFor.mockReturnValue(
+      new Promise<HermesConnection>(resolve => {
+        resolveDescriptor = resolve
+      })
+    )
+
+    const switching = ensureGatewayAgent('homelab', 'research')
+    // Let the socket-dial half settle; the descriptor is still pending.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(activateAgent).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+
+    resolveDescriptor(agentConn())
+    await switching
+
+    expect(activateAgent).toHaveBeenCalledTimes(1)
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($connection.get()?.mode).toBe('remote')
   })
 })
 
@@ -134,14 +191,16 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     const profileGate = deferred()
     const order: string[] = []
 
-    ensureGatewayForProfile.mockImplementation(async (profile: string) => {
+    prepareGatewayForProfile.mockImplementation(async (profile: string) => {
       order.push(`profile:${profile}`)
       await profileGate.promise
+
+      return activateProfile
     })
-    ensureGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
+    prepareGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
       order.push(`agent:${profile}`)
 
-      return true
+      return activateAgent
     })
     getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
     getConnectionFor.mockResolvedValue(agentConn())
@@ -170,14 +229,16 @@ describe('ensureGatewayAgent shares the gatewaySwitch mutex with profile switche
     const agentGate = deferred()
     const order: string[] = []
 
-    ensureGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
+    prepareGatewayForAgent.mockImplementation(async (_connectionId, profile) => {
       order.push(`agent:${profile}`)
       await agentGate.promise
 
-      return true
+      return activateAgent
     })
-    ensureGatewayForProfile.mockImplementation(async (profile: string) => {
+    prepareGatewayForProfile.mockImplementation(async (profile: string) => {
       order.push(`profile:${profile}`)
+
+      return activateProfile
     })
     getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
     getConnectionFor.mockResolvedValue(agentConn())

@@ -329,7 +329,7 @@ export const ja = defineLocale({
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
-        `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+        `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。または任意の値を入力してください。現在: ${percent}%`,
       sessionDensityTitle: 'セッションリストの密度',
       sessionDensityDesc: 'サイドバーのセッションタイトルの下に表示する情報量を選びます。',
       sessionDensityCompact: 'コンパクト',

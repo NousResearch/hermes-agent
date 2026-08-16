@@ -461,7 +461,7 @@ export const zh: Translations = {
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
-        `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+        `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整，或输入自定义值。当前：${percent}%`,
       sessionDensityTitle: '会话列表密度',
       sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
       sessionDensityCompact: '紧凑',

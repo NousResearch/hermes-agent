@@ -471,7 +471,7 @@ export const en: Translations = {
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
-        `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+        `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works, or type a custom value. Current: ${percent}%.`,
       sessionDensityTitle: 'Session List Density',
       sessionDensityDesc: 'Choose how much context appears beneath session titles in the sidebar.',
       sessionDensityCompact: 'Compact',

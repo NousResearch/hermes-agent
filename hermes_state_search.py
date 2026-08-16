@@ -706,7 +706,13 @@ class SessionSearchMixin:
                         "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
                     )
                 finally:
-                    conn.execute("PRAGMA writable_schema=RESET")
+                    try:
+                        conn.execute("PRAGMA writable_schema=RESET")
+                    except Exception:
+                        logger.warning(
+                            "Failed to reset PRAGMA writable_schema after FTS demote",
+                            exc_info=True,
+                        )
                 shadows = [
                     r[0] for r in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type = 'table' "

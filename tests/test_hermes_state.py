@@ -3130,6 +3130,8 @@ class TestFTSExternalContentMigration:
             # roll back with the transaction; the finally must reset it.
             value = conn.execute("PRAGMA writable_schema").fetchone()[0]
             assert value in (0, None, False), f"writable_schema should be off after failed demote, got {value!r}"
+            # The failed DELETE must not leave the long-lived write connection unusable.
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
         finally:
             db.close()
 

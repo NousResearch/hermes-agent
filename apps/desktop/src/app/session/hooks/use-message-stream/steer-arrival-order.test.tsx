@@ -75,6 +75,10 @@ const flushDeltas = async () => {
 
 const emit = (event: RpcEvent) => act(() => handleEvent?.(event))
 
+/** Monotonic id source — Date.now() is frozen under fake timers, so two steers
+ * without a clock advance between them would collide on a wall-clock id. */
+let steerSeq = 0
+
 /** The optimistic steer insert redirectPrompt performs (appendAfterActiveReply). */
 const steer = (text: string) =>
   act(() => {
@@ -83,7 +87,7 @@ const steer = (text: string) =>
     states.set(
       SID,
       appendMidTurnUserMessage(current, {
-        id: `user-${Date.now()}-steer`,
+        id: `user-${(steerSeq += 1)}-steer`,
         role: 'user',
         parts: [{ type: 'text', text }]
       })
@@ -178,7 +182,10 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
 
     // The already-streamed reply settles onto its sealed bubble ABOVE the
     // correction; the correction stays the tail, waiting for its own turn —
-    // no duplicate reply row appended below it.
+    // no duplicate reply row appended below it. Load-bearing assumption: a
+    // completion settles the sealed pre-steer bubble in place and never
+    // appends/merges below the correction — if the reducer ever changes that,
+    // this test is the tripwire.
     expect(steerIndex).toBe(messages.length - 1)
     expect(messages.filter(message => chatMessageText(message).includes('whole reply already streamed'))).toHaveLength(1)
     expect(messages.every(message => message.pending !== true)).toBe(true)

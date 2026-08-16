@@ -143,6 +143,96 @@ def test_existing_v23_db_gains_cjk_via_optimize(cjk_so, tmp_path, monkeypatch):
     d2.close()
 
 
+def test_optimize_rebuilds_v1_cjk_with_multimodal_projection(cjk_so, tmp_path, monkeypatch):
+    """#69672's CJK-index companion: an existing cjk index built before the
+    multimodal text projection still indexes raw sentinel-prefixed JSON
+    (and the base64 image payload inside it). `optimize_fts_storage()` must
+    rebuild it onto the text-only projection, same as the trigram index —
+    the reviewer-requested regression test for PR #69798's CJK branch,
+    covering text + an image payload + an FTS integrity check across the
+    upgrade."""
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id="s1", source="cli", model="m")
+        db.append_message(
+            "s1",
+            role="user",
+            content=[
+                {"type": "text", "text": "레거시 검색 가능한 텍스트"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,legacycjkbase64payload"
+                    },
+                },
+            ],
+        )
+
+        def _restore_v1_cjk(conn):
+            for trig in (
+                "messages_fts_cjk_insert",
+                "messages_fts_cjk_delete",
+                "messages_fts_cjk_update",
+            ):
+                conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            conn.execute("DROP VIEW messages_fts_cjk_src")
+            conn.executescript("""
+                CREATE VIEW messages_fts_cjk_src AS
+                    SELECT id, role, content, tool_name, tool_calls
+                    FROM messages WHERE role <> 'tool';
+                CREATE TRIGGER messages_fts_cjk_insert AFTER INSERT ON messages
+                WHEN new.role <> 'tool' BEGIN
+                    INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
+                    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+                END;
+                CREATE TRIGGER messages_fts_cjk_delete AFTER DELETE ON messages
+                WHEN old.role <> 'tool' BEGIN
+                    INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
+                    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+                END;
+                CREATE TRIGGER messages_fts_cjk_update AFTER UPDATE ON messages
+                WHEN old.role <> 'tool' BEGIN
+                    INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
+                    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+                    INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
+                    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+                END;
+            """)
+            conn.execute(
+                "INSERT INTO messages_fts_cjk(messages_fts_cjk) VALUES('rebuild')"
+            )
+
+        db._execute_write(_restore_v1_cjk)
+        assert not db._fts_view_uses_multimodal_projection(
+            db._conn, "messages_fts_cjk_src"
+        )
+
+        result = db.optimize_fts_storage(vacuum=False)
+        assert result["ok"] is True
+
+        assert db._fts_view_uses_multimodal_projection(
+            db._conn, "messages_fts_cjk_src"
+        )
+        projected = db._conn.execute(
+            "SELECT content FROM messages_fts_cjk_src"
+        ).fetchone()[0]
+        assert projected == "레거시 검색 가능한 텍스트"
+        assert "\x00" not in projected
+        assert "legacycjkbase64payload" not in projected
+
+        rows = db.search_messages("검색", limit=10)
+        assert rows
+        assert "legacycjkbase64payload" not in rows[0].get("snippet", "")
+
+        db._conn.execute(
+            "INSERT INTO messages_fts_cjk(messages_fts_cjk) VALUES('integrity-check')"
+        )
+        assert db._conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    finally:
+        db.close()
+
+
 def test_legacy_v22_optimize_lands_on_cjk(cjk_so, tmp_path, monkeypatch):
     """A legacy inline-FTS (pre-v23) DB optimized on a tokenizer-capable
     host comes out with BOTH the v23 external-content layout AND a complete

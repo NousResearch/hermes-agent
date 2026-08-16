@@ -26,6 +26,7 @@ from hermes_state_common import (
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
+    _fts_index_content_sql,
     escape_like as _escape_like,
 )
 
@@ -156,9 +157,10 @@ class SessionSearchMixin:
                     (lo, hi),
                 )
                 if include_trigram:
+                    self._backfill_fts_content(conn, lo=lo, hi=hi)
                     conn.execute(
                         "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
-                        "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                        f"SELECT m.id, {_fts_index_content_sql('m.content', 'm.fts_content')}, m.tool_name, m.tool_calls "
                         "FROM messages m "
                         "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
                         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
@@ -314,10 +316,11 @@ class SessionSearchMixin:
                 (progress, upper),
             )
             if include_trigram:
+                self._backfill_fts_content(conn, lo=progress, hi=upper)
                 conn.execute(
                     "INSERT INTO messages_fts_trigram"
                     "(rowid, content, tool_name, tool_calls) "
-                    "SELECT id, content, tool_name, tool_calls FROM messages "
+                    f"SELECT id, {_fts_index_content_sql('content', 'fts_content')}, tool_name, tool_calls FROM messages "
                     "WHERE id > ? AND id <= ? AND role <> 'tool'",
                     (progress, upper),
                 )
@@ -381,9 +384,10 @@ class SessionSearchMixin:
             if progress >= high_water:
                 return False
             upper = min(progress + chunk, high_water)
+            self._backfill_fts_content(conn, lo=progress, hi=upper)
             conn.execute(
                 "INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls) "
-                "SELECT id, content, tool_name, tool_calls FROM messages "
+                f"SELECT id, {_fts_index_content_sql('content', 'fts_content')}, tool_name, tool_calls FROM messages "
                 "WHERE id > ? AND id <= ? AND role <> 'tool'",
                 (progress, upper),
             )
@@ -416,9 +420,10 @@ class SessionSearchMixin:
             if hw_row is not None:
                 hw = int(hw_row[0])
                 lo, hi = hw - 1000, hw + 1000
+                self._backfill_fts_content(conn, lo=lo, hi=hi)
                 conn.execute(
                     "INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    f"SELECT m.id, {_fts_index_content_sql('m.content', 'm.fts_content')}, m.tool_name, m.tool_calls "
                     "FROM messages m "
                     "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_cjk_docsize d WHERE d.id = m.id)",
@@ -638,18 +643,31 @@ class SessionSearchMixin:
     def fts_optimize_available(self) -> bool:
         """True when `optimize_fts_storage()` has work to do: either this DB
         is a legacy inline-FTS install that can be optimized to the v23
-        external-content schema, or a previous optimize run was interrupted
-        (legacy vtables already demoted, but backfill markers and/or trash
-        tables remain) and re-running would resume it, or the CJK-bigram
-        index needs a backfill/rebuild on this tokenizer-capable host, or
-        a prior demote left an empty external-content index without markers
-        (healable on re-run).
+        external-content schema, or the trigram/CJK index still indexes raw
+        multimodal JSON instead of the text-only projection (#69672), or a
+        previous optimize run was interrupted (legacy vtables already
+        demoted, but backfill markers and/or trash tables remain) and
+        re-running would resume it, or the CJK-bigram index needs a
+        backfill/rebuild on this tokenizer-capable host, or a prior demote
+        left an empty external-content index without markers (healable on
+        re-run).
         False for fresh and fully-optimized installs (and when FTS5 is
         unavailable)."""
         if not self._fts_enabled or self.read_only:
             return False
         with self._lock:
             if self._db_has_legacy_inline_fts(self._conn):
+                return True
+            # A live index still indexing raw multimodal JSON (#69672):
+            # offer the rebuild that projects it to text-only.
+            if self._fts_trigram_needs_multimodal_projection(self._conn):
+                return True
+            if self._fts_cjk_loaded and bool(self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'messages_fts_cjk'"
+            ).fetchone()) and not self._fts_view_uses_multimodal_projection(
+                self._conn, "messages_fts_cjk_src"
+            ):
                 return True
             # Interrupted optimize: demotion already removed the legacy
             # vtables (so the check above is False), but the transition is
@@ -744,6 +762,78 @@ class SessionSearchMixin:
             self._conn.commit()
         return hw
 
+    @staticmethod
+    def _fts_view_uses_multimodal_projection(cursor, view_name: str) -> bool:
+        """True when a content-source view already reads ``fts_content``.
+
+        A missing view (table absent, e.g. trigram unavailable on this
+        build) is treated as "nothing to upgrade" — ``True`` — so callers
+        don't offer an upgrade that has no view to rebuild.
+        """
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+            (view_name,),
+        ).fetchone()
+        return row is None or "fts_content" in ((row[0] or "").lower())
+
+    def _fts_trigram_needs_multimodal_projection(self, cursor) -> bool:
+        """True when a live trigram index still indexes raw multimodal JSON."""
+        return self._trigram_available and not self._fts_view_uses_multimodal_projection(
+            cursor, "messages_fts_trigram_src"
+        )
+
+    def _upgrade_fts_trigram_projection(self) -> bool:
+        """Rebuild the trigram index against the multimodal text projection.
+
+        No-op (returns False) when the trigram index is unavailable or
+        already projected. Otherwise: backfill ``fts_content`` for every
+        multimodal row, drop the stale view/triggers, recreate them from the
+        current ``FTS_TRIGRAM_SQL`` (which reads through the projection —
+        see ``_fts_index_content_sql``), and run the FTS5 ``'rebuild'``
+        special command so every existing row re-indexes from the projected
+        content. A single foreground pass: unlike the legacy-demote backfill,
+        this has no chunked/resumable state of its own — it runs to
+        completion inside one call, the same way the existing repair path
+        (``_rebuild_fts_indexes``) already rebuilds this table in one shot.
+        """
+        if not self._trigram_available:
+            return False
+        with self._lock:
+            if self._fts_view_uses_multimodal_projection(
+                self._conn, "messages_fts_trigram_src"
+            ):
+                return False
+
+        def _backfill_and_drop(conn):
+            self._backfill_fts_content(conn)
+            self._drop_fts_triggers(conn)
+            conn.execute("DROP VIEW IF EXISTS messages_fts_trigram_src")
+
+        self._execute_write(_backfill_and_drop)
+
+        # Recreate outside the write transaction — _ensure_fts_schema uses
+        # executescript(), which implicitly commits and must not run inside
+        # _execute_write's BEGIN IMMEDIATE (same rule as the legacy-demote
+        # and CJK-recreate paths above).
+        with self._lock:
+            trigram_ok = self._ensure_fts_schema(
+                self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            )
+            self._trigram_available = bool(trigram_ok)
+            if not trigram_ok:
+                raise sqlite3.OperationalError(
+                    "failed to recreate messages_fts_trigram during the "
+                    "multimodal-projection upgrade"
+                )
+            self._conn.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')"
+            )
+            self._conn.commit()
+        logger.info(
+            "Rebuilt messages_fts_trigram onto the multimodal text projection (#69672)."
+        )
+        return True
+
     def optimize_fts_storage(
         self,
         *,
@@ -801,6 +891,13 @@ class SessionSearchMixin:
                     )
                 self._conn.commit()
 
+        # An already-current-layout install whose trigram index still
+        # carries raw multimodal JSON (fts_storage_version < 2, #69672):
+        # rebuild it onto the text-only projection. No-op when already
+        # projected, unavailable, or a legacy demote just above created a
+        # freshly (and already correctly) projected view.
+        self._upgrade_fts_trigram_projection()
+
         # A stale CJK index (triggers dropped by a tokenizer-less process)
         # can only be recovered from scratch — reset it now so the cjk
         # backfill phase below rebuilds it. No-op without the tokenizer.
@@ -812,6 +909,9 @@ class SessionSearchMixin:
             with self._lock:
                 self._ensure_fts_cjk_schema(self._conn)
                 self._conn.commit()
+        # Same multimodal-projection upgrade as the trigram index above, for
+        # the CJK-bigram index (#69672). No-op when unavailable or current.
+        self._upgrade_fts_cjk_projection()
 
         def _emit(phase: str) -> None:
             if progress_cb is None:

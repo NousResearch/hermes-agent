@@ -24,10 +24,11 @@ import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
-import { $gateway, ensureGatewayForAgent, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import { $gateway, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  ensureGatewayAgent,
   ensureGatewayProfile,
   newSessionInProfile,
   normalizeProfileKey,
@@ -190,11 +191,13 @@ export const host = {
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
-   *  host.request calls hit that agent's backend. The local source falls
+   *  host.request calls hit that agent's backend. Goes through the store's
+   *  serialized activation path so $connection / $activeGatewayProfile follow
+   *  and rapid switches can't land out of order. The local source falls
    *  through to the profile path — single-source plugins keep working
    *  against older behavior unchanged. */
   ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
-    ensureGatewayForAgent(connectionId, (profile ?? '').trim() || 'default'),
+    ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
   openSession: async (
     storedSessionId: string,

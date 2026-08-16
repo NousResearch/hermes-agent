@@ -1,3 +1,4 @@
+import { backendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -12,7 +13,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -297,6 +298,66 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // The active backend just changed; resync $connection so remote-aware
     // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
     await syncConnectionToActiveProfile(target)
+  })()
+
+  try {
+    await gatewaySwitch
+  } finally {
+    gatewaySwitch = null
+    $gatewaySwapTarget.set(null)
+  }
+}
+
+// Registry-aware sibling of syncConnectionToActiveProfile: a connection-scoped
+// agent's descriptor comes from getConnectionFor (its SOURCE connection), not
+// getConnection (the local pool). Same best-effort contract.
+async function syncConnectionToActiveAgent(connectionId: string, profile: string): Promise<void> {
+  const getConnectionFor = window.hermesDesktop?.getConnectionFor
+
+  if (!getConnectionFor) {
+    return
+  }
+
+  try {
+    setConnection(await getConnectionFor({ connectionId, profile }))
+  } catch {
+    // Leave the prior connection in place; boot/reconnect resyncs it later.
+  }
+}
+
+// Activate a connection-scoped agent's gateway — the (connectionId, profile)
+// analogue of ensureGatewayProfile, and the door the SDK's ensureAgent goes
+// through. Two invariants the raw store call (ensureGatewayForAgent) does not
+// provide on its own:
+//  - Every activation moves $activeGatewayProfile and resyncs $connection,
+//    exactly like the profile path — otherwise activating an ALREADY-OPEN
+//    registry agent left both describing the previous backend, routing
+//    /api/fs, /api/media and image.attach to the wrong machine (the same
+//    class as #46651) and pointing newSessionInProfile at the stale profile.
+//  - Activations share the gatewaySwitch mutex with profile switches, so a
+//    rapid agent↔profile (or agent↔agent) interleave can't finish out of
+//    order and leave the EARLIER setActive() as the last write.
+// A local/null connectionId falls through to the profile path verbatim.
+export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {
+  const target = normalizeProfileKey(profile)
+  const connection = (connectionId ?? '').trim() || null
+
+  if (!connection || backendScopeKey(connection, target) === target) {
+    return ensureGatewayProfile(target)
+  }
+
+  // Serialize against any in-flight profile/agent switch (shared mutex).
+  if (gatewaySwitch) {
+    await gatewaySwitch.catch(() => undefined)
+  }
+
+  $gatewaySwapTarget.set(target)
+  gatewaySwitch = (async () => {
+    await ensureGatewayForAgent(connection, target)
+    $activeGatewayProfile.set(target)
+    // The active backend just changed; resync $connection so remote-aware
+    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
+    await syncConnectionToActiveAgent(connection, target)
   })()
 
   try {

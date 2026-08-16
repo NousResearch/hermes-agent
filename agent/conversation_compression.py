@@ -3524,6 +3524,7 @@ def compress_context(
                         profile_name=_profile_for_child,
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
+                        watermark=_commit_watermark,
                     )
                     agent.session_id = new_session_id
                     try:

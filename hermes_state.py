@@ -5590,12 +5590,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         profile_name: str = None,
         compression_lock_holder: str = None,
         require_compression_lease: bool = True,
+        watermark: Optional[int] = None,
     ) -> None:
         """Atomically close a parent and publish its durable compression child.
 
         The parent closure, child row, and compacted handoff become visible in
         one transaction. Readers can therefore observe either the live parent or
         a complete child, never an ended parent with a missing/empty child.
+
+        Concurrent-append safety (#75316): when *watermark* is provided (the
+        parent's :meth:`get_active_message_watermark` captured at compression
+        start), parent rows that arrived during the slow summary call
+        (``id > watermark``) are cloned into the child AFTER the handoff —
+        same pure-SQL column clone as :meth:`archive_and_compact`, with the
+        session id rewritten — so a mid-compression append survives rotation
+        instead of stranding in the closed parent.
         """
         def _do(conn):
             lock_row = conn.execute(
@@ -5663,6 +5672,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             total_messages, total_tool_calls = self._insert_message_rows(
                 conn, child_session_id, messages
             )
+            if watermark is not None:
+                # Clone the parent's concurrent tail (rows landed after the
+                # watermark) into the child, after the handoff. Column-exact
+                # except id/session_id; originals stay in the (closed) parent
+                # for lineage recovery.
+                tail_rows = conn.execute(
+                    "SELECT id, tool_calls FROM messages "
+                    "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+                    (parent_session_id, int(watermark)),
+                ).fetchall()
+                if tail_rows:
+                    tail_ids = [int(r["id"]) for r in tail_rows]
+                    placeholders = ",".join("?" for _ in tail_ids)
+                    clone_cols = [
+                        c for c in self._message_column_names(conn)
+                        if c not in ("id", "session_id", "active", "compacted")
+                    ]
+                    col_list = ", ".join(clone_cols)
+                    conn.execute(
+                        f"INSERT INTO messages ({col_list}, session_id, active, compacted) "
+                        f"SELECT {col_list}, ?, 1, 0 FROM messages "
+                        f"WHERE id IN ({placeholders}) ORDER BY id",
+                        [child_session_id, *tail_ids],
+                    )
+                    total_messages += len(tail_ids)
+                    for r in tail_rows:
+                        raw = r["tool_calls"]
+                        if raw:
+                            try:
+                                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                                total_tool_calls += len(parsed) if isinstance(parsed, list) else 0
+                            except (TypeError, ValueError):
+                                pass
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, child_session_id),

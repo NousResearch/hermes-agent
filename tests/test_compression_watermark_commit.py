@@ -226,3 +226,54 @@ class TestConcurrentAppendDuringCompaction:
         assert not append_err, f"append died during commit race: {append_err}"
         contents = [r["content"] for r in db.get_messages("sess1")]
         assert "racer" in contents, "racing append was lost"
+
+
+class TestRotationPathWatermark:
+    """Legacy (non-in-place) compression rotates to a child session —
+    the concurrent tail must follow the rotation instead of stranding in
+    the closed parent."""
+
+    def test_tail_clones_into_the_child(self, db: SessionDB) -> None:
+        _seed(db)
+        watermark = db.get_active_message_watermark("sess1")
+        assert db.try_acquire_compression_lock("sess1", "rotator") is True
+        db.append_message("sess1", role="user", content="mid-rotation steer")
+
+        db.publish_compression_child(
+            parent_session_id="sess1",
+            child_session_id="child1",
+            source="test",
+            messages=SUMMARY,
+            compression_lock_holder="rotator",
+            require_compression_lease=True,
+            watermark=watermark,
+        )
+
+        child = db.get_messages_as_conversation("child1")
+        assert [m["content"] for m in child] == [
+            SUMMARY[0]["content"],
+            SUMMARY[1]["content"],
+            "mid-rotation steer",
+        ]
+        info = db.get_session("child1")
+        assert info["message_count"] == 3
+        # Parent keeps its copy for lineage recovery; parent is closed.
+        parent_info = db.get_session("sess1")
+        assert parent_info["end_reason"] == "compression"
+
+    def test_no_watermark_keeps_historical_rotation(self, db: SessionDB) -> None:
+        _seed(db)
+        assert db.try_acquire_compression_lock("sess1", "rotator") is True
+        db.append_message("sess1", role="user", content="stranded either way")
+        db.publish_compression_child(
+            parent_session_id="sess1",
+            child_session_id="child1",
+            source="test",
+            messages=SUMMARY,
+            compression_lock_holder="rotator",
+            require_compression_lease=True,
+        )
+        child = db.get_messages_as_conversation("child1")
+        assert [m["content"] for m in child] == [
+            SUMMARY[0]["content"], SUMMARY[1]["content"],
+        ]

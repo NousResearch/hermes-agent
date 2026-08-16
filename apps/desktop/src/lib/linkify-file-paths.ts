@@ -22,12 +22,16 @@
 // rejects double slashes — a URL scheme's `//` must not start a match.
 const ABSOLUTE_FILE_PATH = /(?<![A-Za-z0-9_./])(\/(?!\/)[^`"<>\[\]{}()\s]+?\.([A-Za-z0-9]{1,8}))(?![A-Za-z0-9_])/g
 
-// Project-relative path with an extension: docs/guide.md, ./src/main.ts,
-// ../shared/types.ts. The leading lookbehind rejects URLs (path segment right
-// after a dot like github.com/user/file.md) and any segment glued to a word
-// character; the trailing lookbehind avoids half-path truncation.
+// 相对路径必须包含至少一个目录分隔符（./ ../ 或 /），这样
+// seed-audio-1.0 / whisper-large-v3 等技术词不会被当成路径。
+// 两种形式：
+//   1) 以 ./ 或 ../ 开头：./src/main.ts, ../shared/types.ts
+//   2) 有至少一个 / 分隔：docs/guide.md, a/b/c/file.ts
+// 匹配非贪婪以避免吞相邻路径。
+// 扩展名限 1-8 个字母数字（.ts, .py, .json, .md 等），不含点号以免
+// seed-audio-1.0 中 .0 被当扩展名。
 const RELATIVE_FILE_PATH =
-  /(?<![A-Za-z0-9_/.])((?:\.\.?\/)?[\w@%.-]+(?:\/[\w@%.-]+)*\.(?:[A-Za-z0-9]{1,8}))(?![A-Za-z0-9_/])/g
+  /(?<![A-Za-z0-9_/.])((?:\.\.?\/[\w@%.-]+(?:\/[\w@%.-]+)*|[\w@%.-]+\/[\w@%.-]+(?:\/[\w@%.-]+)*)\.([A-Za-z0-9]{1,8}))(?![A-Za-z0-9_/])/g
 
 /**
  * Turn file paths in markdown text into `#media:` links.
@@ -52,13 +56,25 @@ function linkifyProseChunk(chunk: string, cwd?: string): string {
   // backticks renders as code, not as a link, so rewriting it there would
   // leak raw markdown syntax onto the screen.
   const protectedSpans: string[] = []
-  const masked = chunk.replace(/\[[^\]]*\]\([^)]*\)/g, match => {
+  const mask = (match: string) => {
     protectedSpans.push(match)
     return `\u0000${protectedSpans.length - 1}\u0000`
-  }).replace(/`[^`\n]+`/g, match => {
-    protectedSpans.push(match)
-    return `\u0000${protectedSpans.length - 1}\u0000`
-  })
+  }
+  // Protect spans that must never be re-linked into media attachments:
+  // existing markdown links, inline code, and emphasis/strikethrough markers
+  // (bold `**x**`, `__x__`; italic `*x*`, `_x_`; strikethrough `~~x~~`). A
+  // path wrapped in emphasis is prose the author chose to highlight, not a
+  // file they're pointing at — relinking it (e.g. turning `**docs/README.md**`
+  // into an "Open README.md" media chip) is wrong. `_x_`/`*x*` need a
+  // non-word boundary on both sides so arithmetic (`2*3`, `a_b`) isn't
+  // mistaken for italic.
+  const masked = chunk
+    .replace(/\[[^\]]*\]\([^)]*\)/g, mask)
+    .replace(/`[^`\n]+`/g, mask)
+    .replace(/\*\*[^*\n]+\*\*/g, mask)
+    .replace(/__[^_\n]+__/g, mask)
+    .replace(/~~[^~\n]+~~/g, mask)
+    .replace(/(?<!\w)[*_][^\n*_]+[*_](?!\w)/g, mask)
 
   let linked = masked.replace(ABSOLUTE_FILE_PATH, (path: string) => `[${path}](#media:${encodeURIComponent(path)})`)
 

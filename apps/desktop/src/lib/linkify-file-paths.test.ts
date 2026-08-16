@@ -76,4 +76,25 @@ describe('linkifyFilePaths', () => {
     expect(out).toContain('[docs/guide.md](#media:%2Frepo%2Fdocs%2Fguide.md)')
     expect(out).toContain('`docs/guide.md`')
   })
+
+  it('does not relink paths wrapped in bold/italic/strikethrough', () => {
+    // Emphasis wrappers mark prose to be highlighted, not files to open. A
+    // path inside them must stay as-is (renders highlighted), never become a
+    // media attachment chip.
+    expect(linkifyFilePaths('见 **docs/README.md** 硬规则', '/repo')).toBe(
+      '见 **docs/README.md** 硬规则'
+    )
+    expect(linkifyFilePaths('看 __docs/guide.md__ 与 /tmp/a.md', '/repo')).toBe(
+      '看 __docs/guide.md__ 与 [/tmp/a.md](#media:%2Ftmp%2Fa.md)'
+    )
+    expect(linkifyFilePaths('文件 *docs/guide.md* 请忽略', '/repo')).toBe(
+      '文件 *docs/guide.md* 请忽略'
+    )
+    expect(linkifyFilePaths('已废弃 ~~docs/old.md~~ 用新文件', '/repo')).toContain(
+      '~~docs/old.md~~'
+    )
+    expect(linkifyFilePaths('绝对路径 **/tmp/b.md** 也在强调', '/repo')).toBe(
+      '绝对路径 **/tmp/b.md** 也在强调'
+    )
+  })
 })

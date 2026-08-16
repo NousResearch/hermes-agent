@@ -1081,6 +1081,8 @@ class SlackAdapter(BasePlatformAdapter):
         # round-trip (see #85574: zombie aiohttp session self-heal).
         self._bot_tokens: List[str] = []
         self._team_tokens: Dict[str, str] = {}  # team_id → token
+        # One-shot: empty token cache must not ERROR on every watchdog tick.
+        self._socket_rebuild_skipped_no_tokens = False
         self._proxy_url: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
@@ -1568,11 +1570,10 @@ class SlackAdapter(BasePlatformAdapter):
         stopping and restarting the Socket Mode handler reuses the same dead
         client, so every reconnect attempt fails identically with
         ``RuntimeError("Session is closed")`` (see #85574: 15,948 failed
-        attempts over 29.5 hours).  This method closes the old handler and
-        clients, builds a fresh ``AsyncApp`` and per-workspace
-        ``AsyncWebClient`` instances from the stored tokens, re-registers all
-        handlers, and starts a new handler — mirroring what a full process
-        restart does but scoped to the Slack adapter.
+        attempts over 29.5 hours).  New clients are constructed first; the
+        old handler and sessions are torn down only after that succeeds, so a
+        construct failure cannot leave ``_app is None`` and disable every
+        later watchdog retry.
         """
         if not self._running:
             return
@@ -1581,50 +1582,68 @@ class SlackAdapter(BasePlatformAdapter):
             if not self._running or not self._app or not self._app_token:
                 return
 
-            logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
-            await self._stop_socket_mode_handler()
-
             if not self._bot_tokens:
-                logger.error(
-                    "[Slack] Cannot rebuild Socket Mode app: no bot tokens stored"
-                )
+                if not self._socket_rebuild_skipped_no_tokens:
+                    logger.warning(
+                        "[Slack] Cannot rebuild Socket Mode app: no bot tokens "
+                        "stored; skipping until connect() succeeds"
+                    )
+                    self._socket_rebuild_skipped_no_tokens = True
                 return
 
-            try:
-                # Close the dead aiohttp sessions owned by the old AsyncApp
-                # and per-workspace clients, then drop them.
-                await self._close_workspace_clients()
-                self._app = None
-                self._team_clients = {}
+            logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
 
-                # Rebuild the AsyncApp with a fresh primary client/session.
+            try:
+                # Build replacements before touching the live app so a
+                # construct failure keeps the current ``_app`` reference.
+                # The old aiohttp session may already be dead; keeping the
+                # object is what lets the next watchdog tick retry.
                 primary_token = self._bot_tokens[0]
                 primary_client = AsyncWebClient(
                     token=primary_token,
                     user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
                 )
-                self._app = AsyncApp(token=primary_token, client=primary_client)
-                _apply_slack_proxy(self._app.client, self._proxy_url)
+                new_app = AsyncApp(token=primary_token, client=primary_client)
+                _apply_slack_proxy(new_app.client, self._proxy_url)
 
-                # Rebuild per-workspace clients with fresh aiohttp sessions.
-                # We reuse the existing team_id → token mapping from
-                # ``connect()`` so no extra auth_test round-trip is needed;
-                # the bot identity and team metadata are already known.
+                # Reuse the team_id → token mapping from ``connect()`` so no
+                # extra auth_test round-trip is needed.
+                new_team_clients: Dict[str, Any] = {}
                 for team_id, token in self._team_tokens.items():
                     client = AsyncWebClient(
                         token=token,
                         user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
                     )
                     _apply_slack_proxy(client, self._proxy_url)
-                    self._team_clients[team_id] = client
+                    new_team_clients[team_id] = client
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "[Slack] Socket Mode rebuild failed; keeping current app: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
 
-                # Re-register all event/slash/action handlers on the new app.
+            if len(self._team_tokens) != len(self._bot_tokens):
+                logger.debug(
+                    "[Slack] Socket Mode rebuild using %d/%d workspace tokens "
+                    "(tokens that failed auth_test in connect() are omitted)",
+                    len(self._team_tokens),
+                    len(self._bot_tokens),
+                )
+
+            await self._stop_socket_mode_handler()
+            await self._close_workspace_clients()
+            self._app = new_app
+            self._team_clients = new_team_clients
+            try:
                 self._register_app_event_handlers()
-
                 self._start_socket_mode_handler()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
-                    "[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True
+                    "[Slack] Socket Mode reconnect failed after rebuild: %s",
+                    exc,
+                    exc_info=True,
                 )
 
     async def _socket_watchdog_loop(self) -> None:
@@ -2229,6 +2248,7 @@ class SlackAdapter(BasePlatformAdapter):
             self._team_bot_names = {}
             self._bot_tokens = list(bot_tokens)
             self._team_tokens = {}
+            self._socket_rebuild_skipped_no_tokens = False
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]

@@ -378,17 +378,44 @@ class TestSocketModeAppRebuild:
 
     @pytest.mark.asyncio
     async def test_restart_skips_without_stored_tokens(self, adapter):
-        """If bot tokens were never stored, _restart_socket_mode gives up safely."""
+        """Empty token cache leaves the live app/handler alone and warns once."""
         adapter._bot_tokens = []
+        adapter._app_token = "xapp-fake"
+        old_app = adapter._app
+
+        adapter._stop_socket_mode_handler = AsyncMock()
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._start_socket_mode_handler = MagicMock()
+
+        with patch.object(_slack_mod.logger, "warning") as warn:
+            await adapter._restart_socket_mode("ping/pong stale")
+            await adapter._restart_socket_mode("ping/pong stale")
+
+        adapter._stop_socket_mode_handler.assert_not_awaited()
+        adapter._close_workspace_clients.assert_not_awaited()
+        adapter._start_socket_mode_handler.assert_not_called()
+        assert adapter._app is old_app
+        assert adapter._socket_rebuild_skipped_no_tokens is True
+        assert warn.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_restart_keeps_app_when_construct_fails(self, adapter):
+        """A failed AsyncApp construct must not null _app or stop the handler."""
+        old_app = adapter._app
+        adapter._bot_tokens = ["xoxb-primary"]
+        adapter._team_tokens = {"T1": "xoxb-primary"}
         adapter._app_token = "xapp-fake"
 
         adapter._stop_socket_mode_handler = AsyncMock()
         adapter._close_workspace_clients = AsyncMock()
         adapter._start_socket_mode_handler = MagicMock()
 
-        await adapter._restart_socket_mode("ping/pong stale")
+        with patch.object(_slack_mod, "AsyncApp", side_effect=RuntimeError("boom")):
+            with patch.object(_slack_mod, "AsyncWebClient", return_value=MagicMock()):
+                await adapter._restart_socket_mode("ping/pong stale")
 
-        adapter._stop_socket_mode_handler.assert_awaited_once()
+        assert adapter._app is old_app
+        adapter._stop_socket_mode_handler.assert_not_awaited()
         adapter._close_workspace_clients.assert_not_awaited()
         adapter._start_socket_mode_handler.assert_not_called()
 

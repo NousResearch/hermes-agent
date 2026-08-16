@@ -1332,23 +1332,27 @@ def _build_replay_entry(
     return entry
 
 
-_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_OBSERVED_CONTEXT_PROMPT_MARKERS = (
+    "observed Telegram group context",
+    "observed WhatsApp group context",
+)
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
 def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
+    """Return True for group turns that may include observed chatter.
 
-    Telegram's observe-unmentioned mode persists skipped group chatter so a
-    later @mention can see it. Those rows must not replay as ordinary user
-    turns: a weak wake word like ``@bot cambio`` should not make the model treat
-    old unmentioned chatter as pending work. The Telegram adapter marks these
-    turns with a channel prompt; this helper keeps the run-path check explicit
-    and unit-testable.
+    Telegram and WhatsApp observe-unmentioned modes persist skipped group
+    chatter so a later trigger can see it. Those rows must not replay as
+    ordinary user turns. Adapters mark eligible turns in their channel prompt;
+    the legacy helper name is retained for compatibility with existing tests.
     """
 
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+    return bool(
+        channel_prompt
+        and any(marker in channel_prompt for marker in _OBSERVED_CONTEXT_PROMPT_MARKERS)
+    )
 
 
 def _csv_or_list_to_set(raw: Any) -> set[str]:
@@ -1426,7 +1430,7 @@ def _build_gateway_agent_history(
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
-    Observed Telegram group rows are returned as API-only context for the
+    Observed group rows are returned as API-only context for the
     current addressed message instead of being replayed as normal prior user
     turns.  Keeping that context out of ``conversation_history`` avoids
     consecutive-user repair merging it with the live user turn and then hiding
@@ -1558,7 +1562,7 @@ def _select_cached_agent_history(
 
 
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
+    """Prepend observed group context to the API-only current user turn."""
 
     if not observed_context:
         return message
@@ -6137,6 +6141,10 @@ class TurnRunner:
                 _conversation_kwargs["persist_user_display_kind"] = (
                     ctx.persist_user_display_kind
                 )
+                if ctx.persist_user_display_metadata:
+                    _conversation_kwargs["persist_user_display_metadata"] = (
+                        ctx.persist_user_display_metadata
+                    )
             if ctx.moa_config is not None:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
@@ -18487,6 +18495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_display_kind = (
             "internal_notification" if getattr(event, "internal", False) else None
         )
+        persist_user_display_metadata = None
         try:
             _pcfg = _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
@@ -19616,6 +19625,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
 
+        # Addressed WhatsApp turns in durable-observe mode use the same
+        # structured archive contract as ambient rows. Persist only the trigger
+        # message here; channel_context stays API-only and cannot inflate
+        # archive search/count results.
+        _event_meta = getattr(event, "metadata", None) or {}
+        if _event_meta.get("whatsapp_chat_id"):
+            persist_user_message = event.text
+            persist_user_display_kind = "whatsapp_group_message"
+            persist_user_display_metadata = {
+                "archive_text": _event_meta.get("whatsapp_archive_text", ""),
+                "sender_id": _event_meta.get("whatsapp_sender_id", ""),
+                "sender_name": _event_meta.get("whatsapp_sender_name", ""),
+                "chat_id": _event_meta.get("whatsapp_chat_id", ""),
+                "chat_name": _event_meta.get("whatsapp_chat_name", ""),
+            }
+
         # Stage the collected must-deliver notes for this turn's agent run
         # (one-shot; consumed in run_sync).  Staged AFTER the message_text
         # early-out above so an aborted turn cannot leak its notes into the
@@ -19665,6 +19690,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -20106,6 +20132,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if persist_user_display_kind:
                     _user_entry["display_kind"] = persist_user_display_kind
+                    if persist_user_display_metadata:
+                        _user_entry["display_metadata"] = persist_user_display_metadata
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 # Dedupe: skip if this platform message_id is already in the
@@ -20150,6 +20178,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if persist_user_display_kind:
                         _user_entry["display_kind"] = persist_user_display_kind
+                        if persist_user_display_metadata:
+                            _user_entry["display_metadata"] = persist_user_display_metadata
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     await self.async_session_store.append_to_transcript(
@@ -20341,6 +20371,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         }
                         if 'persist_user_display_kind' in locals() and persist_user_display_kind:
                             _user_entry["display_kind"] = persist_user_display_kind
+                            if persist_user_display_metadata:
+                                _user_entry["display_metadata"] = persist_user_display_metadata
                         if getattr(event, "message_id", None):
                             _user_entry["message_id"] = str(event.message_id)
                         await self.async_session_store.append_to_transcript(
@@ -27243,6 +27275,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[dict] = None,
         message_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
@@ -27263,6 +27296,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
                 message_type=message_type,
             )
 
@@ -27276,6 +27310,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
                 message_type=message_type,
             )
 
@@ -27419,6 +27454,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
+        persist_user_display_metadata: Optional[dict] = None,
         message_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -27727,6 +27763,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to

@@ -2573,7 +2573,12 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
     blob = _error_blob(exc, error_text)
     if not blob.strip():
         return "unknown"
-    if "message_too_long" in blob or "too long" in blob or "message is too long" in blob:
+    if (
+        "message_too_long" in blob
+        or "msg_too_long" in blob
+        or "too long" in blob
+        or "message is too long" in blob
+    ):
         return "too_long"
     if (
         "can't parse entities" in blob

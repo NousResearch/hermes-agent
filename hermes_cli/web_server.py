@@ -11707,18 +11707,68 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             return _open_probed()
 
 
+def _multiplex_host_home() -> Optional[Path]:
+    """Home of a live multiplexed gateway serving more than one profile.
+
+    A multiplexed gateway keeps every served profile's sessions in a single
+    store under its own home, namespaced ``agent:<profile>:…`` and stamped
+    with ``profile_name`` (``website/docs/user-guide/multi-profile-gateways.md``,
+    "Session keys are namespaced by profile"). Profile-scoped session reads
+    must therefore target that shared file rather than
+    ``profiles/<name>/state.db``, which only holds standalone-gateway history.
+
+    Returns None whenever no multiplexer is running, which keeps
+    single-profile installs on the historical one-file-per-profile path.
+    """
+    try:
+        from hermes_cli.profiles import _check_gateway_running
+        from hermes_state import _default_db_path
+        from gateway.status import read_runtime_status
+
+        host = Path(_default_db_path()).parent
+        if not _check_gateway_running(host):
+            return None
+        runtime = read_runtime_status(host / "gateway_state.json") or {}
+        served = [str(p) for p in (runtime.get("served_profiles") or [])]
+        return host if len(served) > 1 else None
+    except Exception:
+        _log.debug("multiplex host detection failed", exc_info=True)
+        return None
+
+
+def _session_profile_filter(profile: Optional[str]) -> Optional[str]:
+    """``profile_name`` filter for a session listing, or None for no filter.
+
+    Only a shared (multiplexed) store needs filtering: it holds every served
+    profile's rows, so an unfiltered read surfaces one profile's chats under
+    another. A per-profile store is already scoped by the file itself, and
+    filtering it would hide legitimately unstamped rows written before the
+    ``profile_name`` column existed.
+    """
+    host = _multiplex_host_home()
+    if host is None:
+        return None
+    if not profile:
+        return _cron_default_profile()
+    name, _home = _cron_profile_home(profile)
+    return name
+
+
 def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
     """Open a SessionDB with an explicit access mode for a profile.
 
     ``profile`` None/empty selects this process's own ``state.db``. A named
-    profile opens that profile's on-disk store directly. Access-mode
-    semantics are documented on :func:`_open_session_db_at_path`.
+    profile opens that profile's on-disk store — unless a multiplexed gateway
+    is serving it, in which case its sessions live in the multiplexer's shared
+    store and that file is opened instead (see :func:`_multiplex_host_home`).
+    Access-mode semantics are documented on :func:`_open_session_db_at_path`.
     """
     from hermes_state import _default_db_path
 
     if profile:
         _name, home = _cron_profile_home(profile)
-        db_path = Path(home) / "state.db"
+        host = _multiplex_host_home()
+        db_path = (host / "state.db") if host else (Path(home) / "state.db")
     else:
         db_path = Path(_default_db_path())
     return _open_session_db_at_path(db_path, read_only=read_only)

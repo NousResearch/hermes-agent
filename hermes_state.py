@@ -279,6 +279,33 @@ def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     )
 
 
+# Values that all denote the default profile's session namespace. The column
+# postdates the default profile and the multiplexed gateway still writes its
+# rows unstamped, so a "default" filter has to match NULL and '' as well as the
+# literal names. ``main`` appears because the default profile keeps the
+# historical ``agent:main:…`` key namespace byte-for-byte.
+_DEFAULT_PROFILE_NAMES = ("default", "main")
+
+
+def _profile_name_clause(profile_name: str, alias: str = "s") -> Tuple[str, List[str]]:
+    """Restrict rows to one profile's slice of the shared session store.
+
+    A multiplexed gateway keeps every profile's sessions in one store, keyed
+    by an ``agent:<profile>:…`` namespace and stamped with ``profile_name``
+    (see ``website/docs/user-guide/multi-profile-gateways.md``). Listings must
+    therefore filter on the column rather than assume one database per
+    profile, or a secondary profile's conversations surface under the default.
+    """
+    col = f"{alias}.profile_name"
+    if (profile_name or "").strip().lower() in ("",) + _DEFAULT_PROFILE_NAMES:
+        placeholders = ",".join("?" for _ in _DEFAULT_PROFILE_NAMES)
+        return (
+            f"({col} IS NULL OR {col} = '' OR LOWER({col}) IN ({placeholders}))",
+            list(_DEFAULT_PROFILE_NAMES),
+        )
+    return (f"{col} = ?", [profile_name])
+
+
 def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
     """Match sessions whose ``workspace_key(row)`` equals ``key``.
 
@@ -8514,6 +8541,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         session_key: str = None,
         include_hidden: bool = False,
+        profile_name: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -8601,6 +8629,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if session_key:
             where_clauses.append("s.session_key = ?")
             params.append(session_key)
+        if profile_name is not None:
+            clause, clause_params = _profile_name_clause(profile_name)
+            where_clauses.append(clause)
+            params.extend(clause_params)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -10954,6 +10986,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived_only: bool = False,
         exclude_children: bool = False,
         exclude_sources: List[str] = None,
+        profile_name: str = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -10987,6 +11020,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        if profile_name is not None:
+            clause, clause_params = _profile_name_clause(profile_name)
+            where_clauses.append(clause)
+            params.extend(clause_params)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
             where_clauses.append(clause)
@@ -12054,6 +12091,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchall()
         return [(row[0], row[1]) for row in rows]
 
+    @staticmethod
+    def _topic_profile(profile: Optional[str]) -> str:
+        """Normalize a profile name for the Telegram DM topic tables.
+
+        None/empty means the gateway's default profile, which is also what
+        every pre-v3 row was backfilled to.
+        """
+        return str(profile).strip() if profile and str(profile).strip() else "default"
+
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
 
@@ -12066,12 +12112,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           v1 — initial shape (no ON DELETE CASCADE on session_id FK)
           v2 — session_id FK gets ON DELETE CASCADE so session pruning
                automatically clears bindings.
+          v3 — both tables gain a ``profile`` column and it joins their
+               primary keys. A Telegram private chat's ``chat.id`` is the
+               *user's* own id, so every bot in a multiplexed gateway sees
+               the identical chat_id for the same human. Keyed on chat_id
+               alone, one profile's DM topics were visible to every other
+               profile, and lobby-message recovery pinned a secondary
+               profile's turn to whichever topic some other bot had bound
+               most recently — sending its reply to a message_thread_id that
+               does not exist in its own chat, where Telegram drops it.
         """
         def _do(conn):
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS telegram_dm_topic_mode (
-                    chat_id TEXT PRIMARY KEY,
+                    profile TEXT NOT NULL DEFAULT 'default',
+                    chat_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     activated_at REAL NOT NULL,
@@ -12080,10 +12136,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     allows_users_to_create_topics INTEGER,
                     capability_checked_at REAL,
                     intro_message_id TEXT,
-                    pinned_message_id TEXT
+                    pinned_message_id TEXT,
+                    PRIMARY KEY (profile, chat_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS telegram_dm_topic_bindings (
+                    profile TEXT NOT NULL DEFAULT 'default',
                     chat_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -12092,16 +12150,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     managed_mode TEXT NOT NULL DEFAULT 'auto',
                     linked_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    PRIMARY KEY (chat_id, thread_id)
+                    PRIMARY KEY (profile, chat_id, thread_id)
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
                 ON telegram_dm_topic_bindings(session_id);
-
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(user_id, chat_id);
                 """
             )
+            # The (profile, ...) covering index is created *after* the version
+            # gates below: on a pre-v3 database the table still lacks the
+            # profile column at this point.
 
             # v1 → v2: rebuild telegram_dm_topic_bindings if its session_id FK
             # lacks ON DELETE CASCADE. SQLite can't ALTER a foreign key, so we
@@ -12147,10 +12205,92 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         """
                     )
 
+            # v2 → v3: add the ``profile`` column and fold it into both
+            # primary keys. Pre-v3 rows all predate multiplexed profiles, so
+            # they belong to the gateway's default profile by definition.
+            if current_version < 3:
+                mode_cols = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info('telegram_dm_topic_mode')"
+                    ).fetchall()
+                }
+                if mode_cols and "profile" not in mode_cols:
+                    conn.executescript(
+                        """
+                        CREATE TABLE telegram_dm_topic_mode_new (
+                            profile TEXT NOT NULL DEFAULT 'default',
+                            chat_id TEXT NOT NULL,
+                            user_id TEXT NOT NULL,
+                            enabled INTEGER NOT NULL DEFAULT 1,
+                            activated_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            has_topics_enabled INTEGER,
+                            allows_users_to_create_topics INTEGER,
+                            capability_checked_at REAL,
+                            intro_message_id TEXT,
+                            pinned_message_id TEXT,
+                            PRIMARY KEY (profile, chat_id)
+                        );
+                        INSERT INTO telegram_dm_topic_mode_new
+                            SELECT 'default', chat_id, user_id, enabled,
+                                   activated_at, updated_at, has_topics_enabled,
+                                   allows_users_to_create_topics,
+                                   capability_checked_at, intro_message_id,
+                                   pinned_message_id
+                            FROM telegram_dm_topic_mode;
+                        DROP TABLE telegram_dm_topic_mode;
+                        ALTER TABLE telegram_dm_topic_mode_new
+                            RENAME TO telegram_dm_topic_mode;
+                        """
+                    )
+
+                binding_cols = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info('telegram_dm_topic_bindings')"
+                    ).fetchall()
+                }
+                if binding_cols and "profile" not in binding_cols:
+                    conn.executescript(
+                        """
+                        CREATE TABLE telegram_dm_topic_bindings_v3 (
+                            profile TEXT NOT NULL DEFAULT 'default',
+                            chat_id TEXT NOT NULL,
+                            thread_id TEXT NOT NULL,
+                            user_id TEXT NOT NULL,
+                            session_key TEXT NOT NULL,
+                            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                            managed_mode TEXT NOT NULL DEFAULT 'auto',
+                            linked_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            PRIMARY KEY (profile, chat_id, thread_id)
+                        );
+                        INSERT INTO telegram_dm_topic_bindings_v3
+                            SELECT 'default', chat_id, thread_id, user_id,
+                                   session_key, session_id, managed_mode,
+                                   linked_at, updated_at
+                            FROM telegram_dm_topic_bindings;
+                        DROP TABLE telegram_dm_topic_bindings;
+                        ALTER TABLE telegram_dm_topic_bindings_v3
+                            RENAME TO telegram_dm_topic_bindings;
+                        CREATE UNIQUE INDEX idx_telegram_dm_topic_bindings_session
+                            ON telegram_dm_topic_bindings(session_id);
+                        CREATE INDEX idx_telegram_dm_topic_bindings_user
+                            ON telegram_dm_topic_bindings(profile, user_id, chat_id);
+                        """
+                    )
+
+            # Safe now: every path above leaves the table in v3 shape.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user "
+                "ON telegram_dm_topic_bindings(profile, user_id, chat_id)"
+            )
+
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "2"),
+                ("telegram_dm_topic_schema_version", "3"),
             )
         self._execute_write(_do)
 
@@ -12159,6 +12299,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         user_id: str,
+        profile: Optional[str] = None,
         has_topics_enabled: Optional[bool] = None,
         allows_users_to_create_topics: Optional[bool] = None,
     ) -> None:
@@ -12169,6 +12310,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         self.apply_telegram_topic_migration()
         now = time.time()
+        profile = self._topic_profile(profile)
 
         def _to_int(value: Optional[bool]) -> Optional[int]:
             if value is None:
@@ -12179,11 +12321,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             conn.execute(
                 """
                 INSERT INTO telegram_dm_topic_mode (
-                    chat_id, user_id, enabled, activated_at, updated_at,
+                    profile, chat_id, user_id, enabled, activated_at, updated_at,
                     has_topics_enabled, allows_users_to_create_topics,
                     capability_checked_at
-                ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile, chat_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     enabled = 1,
                     updated_at = excluded.updated_at,
@@ -12192,6 +12334,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     capability_checked_at = excluded.capability_checked_at
                 """,
                 (
+                    profile,
                     str(chat_id),
                     str(user_id),
                     now,
@@ -12207,6 +12350,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         *,
         chat_id: str,
+        profile: Optional[str] = None,
         clear_bindings: bool = True,
     ) -> None:
         """Disable Telegram DM topic mode for one private chat.
@@ -12219,33 +12363,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Never creates the topic-mode tables from scratch; if they don't
         exist there is nothing to disable and the call is a no-op.
         """
+        profile = self._topic_profile(profile)
+
         def _do(conn):
             try:
                 conn.execute(
                     "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
-                    "WHERE chat_id = ?",
-                    (time.time(), str(chat_id)),
+                    "WHERE profile = ? AND chat_id = ?",
+                    (time.time(), profile, str(chat_id)),
                 )
                 if clear_bindings:
                     conn.execute(
-                        "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ?",
-                        (str(chat_id),),
+                        "DELETE FROM telegram_dm_topic_bindings "
+                        "WHERE profile = ? AND chat_id = ?",
+                        (profile, str(chat_id)),
                     )
             except sqlite3.OperationalError:
                 # Tables don't exist yet — nothing to disable.
                 return
         self._execute_write(_do)
 
-    def is_telegram_topic_mode_enabled(self, *, chat_id: str, user_id: str) -> bool:
+    def is_telegram_topic_mode_enabled(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        profile: Optional[str] = None,
+    ) -> bool:
         """Return whether Telegram DM topic mode is enabled for this chat/user."""
         with self._lock:
             try:
                 row = self._conn.execute(
                     """
                     SELECT enabled FROM telegram_dm_topic_mode
-                    WHERE chat_id = ? AND user_id = ?
+                    WHERE profile = ? AND chat_id = ? AND user_id = ?
                     """,
-                    (str(chat_id), str(user_id)),
+                    (self._topic_profile(profile), str(chat_id), str(user_id)),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return False
@@ -12259,6 +12412,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         thread_id: str,
+        profile: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Return the session binding for a Telegram DM topic, if present."""
         with self._lock:
@@ -12266,9 +12420,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 row = self._conn.execute(
                     """
                     SELECT * FROM telegram_dm_topic_bindings
-                    WHERE chat_id = ? AND thread_id = ?
+                    WHERE profile = ? AND chat_id = ? AND thread_id = ?
                     """,
-                    (str(chat_id), str(thread_id)),
+                    (self._topic_profile(profile), str(chat_id), str(thread_id)),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None
@@ -12278,8 +12432,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         *,
         chat_id: str,
+        profile: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """All Telegram DM topic bindings for one chat, newest first.
+
+        Scoped to ``profile``: a Telegram DM's chat_id is the user's own id
+        and is therefore identical across every bot in a multiplexed gateway,
+        so an unscoped read would return another profile's topics.
 
         Read-only; returns [] if the bindings table doesn't exist yet
         (does not trigger the topic-mode migration).
@@ -12288,8 +12447,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             try:
                 rows = self._conn.execute(
                     "SELECT * FROM telegram_dm_topic_bindings "
-                    "WHERE chat_id = ? ORDER BY updated_at DESC",
-                    (str(chat_id),),
+                    "WHERE profile = ? AND chat_id = ? ORDER BY updated_at DESC",
+                    (self._topic_profile(profile), str(chat_id)),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return []
@@ -12324,6 +12483,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         chat_id: str,
         thread_id: str,
+        profile: Optional[str] = None,
     ) -> int:
         """Remove the binding row for a single (chat, thread) pair.
 
@@ -12354,6 +12514,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         chat_id = str(chat_id)
         thread_id = str(thread_id)
+        profile = self._topic_profile(profile)
         deleted = {"count": 0}
 
         def _do(conn):
@@ -12361,9 +12522,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 cursor = conn.execute(
                     """
                     DELETE FROM telegram_dm_topic_bindings
-                    WHERE chat_id = ? AND thread_id = ?
+                    WHERE profile = ? AND chat_id = ? AND thread_id = ?
                     """,
-                    (chat_id, thread_id),
+                    (profile, chat_id, thread_id),
                 )
                 deleted["count"] = cursor.rowcount or 0
             except sqlite3.OperationalError:
@@ -12379,15 +12540,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 remaining = conn.execute(
                     """
                     SELECT 1 FROM telegram_dm_topic_bindings
-                    WHERE chat_id = ? LIMIT 1
+                    WHERE profile = ? AND chat_id = ? LIMIT 1
                     """,
-                    (chat_id,),
+                    (profile, chat_id),
                 ).fetchone()
                 if remaining is None:
                     conn.execute(
                         "UPDATE telegram_dm_topic_mode "
-                        "SET enabled = 0, updated_at = ? WHERE chat_id = ?",
-                        (time.time(), chat_id),
+                        "SET enabled = 0, updated_at = ? "
+                        "WHERE profile = ? AND chat_id = ?",
+                        (time.time(), profile, chat_id),
                     )
             except sqlite3.OperationalError:
                 # telegram_dm_topic_mode absent — binding prune still stands.
@@ -12404,6 +12566,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         user_id: str,
         session_key: str,
         session_id: str,
+        profile: Optional[str] = None,
         managed_mode: str = "auto",
     ) -> None:
         """Bind one Telegram DM topic thread to one Hermes session.
@@ -12419,28 +12582,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         user_id = str(user_id)
         session_key = str(session_key)
         session_id = str(session_id)
+        profile = self._topic_profile(profile)
 
         def _do(conn):
             existing_session = conn.execute(
                 """
-                SELECT chat_id, thread_id FROM telegram_dm_topic_bindings
+                SELECT profile, chat_id, thread_id FROM telegram_dm_topic_bindings
                 WHERE session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
             if existing_session is not None:
-                linked_chat = existing_session["chat_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[0]
-                linked_thread = existing_session["thread_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[1]
-                if str(linked_chat) != chat_id or str(linked_thread) != thread_id:
+                linked_profile = existing_session["profile"] if isinstance(existing_session, sqlite3.Row) else existing_session[0]
+                linked_chat = existing_session["chat_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[1]
+                linked_thread = existing_session["thread_id"] if isinstance(existing_session, sqlite3.Row) else existing_session[2]
+                if (
+                    str(linked_profile) != profile
+                    or str(linked_chat) != chat_id
+                    or str(linked_thread) != thread_id
+                ):
                     raise ValueError("session is already linked to another Telegram topic")
 
             conn.execute(
                 """
                 INSERT INTO telegram_dm_topic_bindings (
-                    chat_id, thread_id, user_id, session_key, session_id,
+                    profile, chat_id, thread_id, user_id, session_key, session_id,
                     managed_mode, linked_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile, chat_id, thread_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     session_key = excluded.session_key,
                     session_id = excluded.session_id,
@@ -12448,6 +12617,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     updated_at = excluded.updated_at
                 """,
                 (
+                    profile,
                     chat_id,
                     thread_id,
                     user_id,

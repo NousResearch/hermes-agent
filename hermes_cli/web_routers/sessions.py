@@ -47,6 +47,7 @@ _open_session_db_for_profile = late("_open_session_db_for_profile")
 _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
+_session_profile_filter = late("_session_profile_filter")
 _strip_session_list_rows = late("_strip_session_list_rows")
 
 
@@ -112,6 +113,9 @@ def get_sessions(
             # section (source=cron) into two independent lists.
             source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
             exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
+            # Non-None only when the store is shared by a multiplexed gateway,
+            # where every served profile's rows sit in one file.
+            profile_filter = _session_profile_filter(profile)
             sessions = db.list_sessions_rich(
                 source=source or None,
                 sources=source_list or None,
@@ -128,6 +132,7 @@ def get_sessions(
                 # with the API-level _strip_session_list_rows below).
                 compact_rows=not full,
                 include_pinned=True,
+                profile_name=profile_filter,
             )
             total = db.session_count(
                 source=source or None,
@@ -138,19 +143,24 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
+                profile_name=profile_filter,
             )
             now = time.time()
             # Same ownership contract as get_session_detail: rows are stamped
             # with the serving profile even when the request wasn't explicitly
-            # scoped, so default-profile rows never circulate unowned.
-            row_profile = profile_name or _cron_default_profile()
+            # scoped, so default-profile rows never circulate unowned. A row's
+            # own profile_name wins where present — in a multiplexed gateway's
+            # shared store the requested profile is not the owner of every row,
+            # and overwriting it filed secondary-profile chats under default.
+            fallback_profile = profile_name or _cron_default_profile()
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
+                row_profile = (s.get("profile_name") or "").strip() or fallback_profile
                 s["profile"] = row_profile
-                s["is_default_profile"] = row_profile == "default"
+                s["is_default_profile"] = row_profile in ("default", "main")
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))

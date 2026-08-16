@@ -308,6 +308,23 @@ class TestAdapterToSessionKeyIntegration:
         # A default-profile key would land in agent:main — must differ.
         assert key != build_session_key(source, profile=None)
 
+    def test_secondary_credential_adapter_stamps_owner_before_batching(self, mock_runner):
+        """A per-credential adapter must not inherit agent:main before its
+        message handler has a chance to stamp the owning profile."""
+        mock_runner.config.profile_routes = []
+        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+        adapter._multiplex_profile_name = "career-ops"
+
+        source = adapter.build_source(
+            chat_id="5550001111", chat_type="dm", user_id="5550001111",
+            thread_id="1343",
+        )
+
+        assert source.profile == "career-ops"
+        assert build_session_key(source, profile=source.profile).startswith(
+            "agent:career-ops:"
+        )
+
     @pytest.mark.asyncio
     async def test_adapter_drops_rejected_route_before_dispatch(self, mock_runner):
         mock_runner.config.multiplex_profile_allowlist = []
@@ -385,5 +402,4 @@ class TestMultiplexGate:
         discord_source.profile = None
 
         assert mock_runner._profile_name_for_source(discord_source) is None
-
 

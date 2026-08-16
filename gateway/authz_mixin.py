@@ -107,14 +107,23 @@ class GatewayAuthorizationMixin:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
-            active_profile = None
-            active_profile_fn = getattr(self, "_active_profile_name", None)
-            if callable(active_profile_fn):
-                try:
-                    active_profile = active_profile_fn()
-                except Exception:
-                    active_profile = None
-            if profile_name == active_profile:
+            # A profile runtime scope makes ``_active_profile_name()`` report
+            # the profile currently handling the turn.  Adapter ownership is
+            # process-wide, however: only the profile captured during gateway
+            # startup owns ``self.adapters``.  Otherwise a secondary turn
+            # (for example Career Ops) selects the default Telegram bot for
+            # streamed egress simply because its own profile scope is active.
+            primary_profile = getattr(self, "_primary_profile_name", None)
+            if not primary_profile:
+                # Compatibility for partial test fixtures and legacy runners
+                # constructed before the startup identity was introduced.
+                active_profile_fn = getattr(self, "_active_profile_name", None)
+                if callable(active_profile_fn):
+                    try:
+                        primary_profile = active_profile_fn()
+                    except Exception:
+                        primary_profile = None
+            if profile_name == primary_profile:
                 adapters = getattr(self, "adapters", None) or {}
                 return adapters.get(platform)
             profile_adapters = getattr(self, "_profile_adapters", None) or {}

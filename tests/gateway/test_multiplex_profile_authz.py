@@ -74,6 +74,28 @@ def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
     assert runner._authorization_adapter(Platform.WECOM, profile="dev") is default_adapter
 
 
+def test_secondary_profile_scope_does_not_retarget_primary_adapter(monkeypatch):
+    """A scoped secondary turn must still deliver through its own adapter.
+
+    During a multiplexed turn, ``get_active_profile_name()`` follows the
+    context-local Hermes home and therefore reports the *turn's* profile.  It
+    is not the process-level primary adapter owner.  Treating it as such sent
+    streamed Career Ops Telegram responses through the default bot.
+    """
+    runner, default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)
+    runner._primary_profile_name = "default"
+    runner._active_profile_name = lambda: "coder"
+
+    assert (
+        runner._authorization_adapter(Platform.WECOM, profile="coder")
+        is secondary_adapter
+    )
+    assert (
+        runner._authorization_adapter(Platform.WECOM, profile="default")
+        is default_adapter
+    )
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

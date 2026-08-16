@@ -7078,6 +7078,18 @@ class BasePlatformAdapter(ABC):
                     self.platform, chat_id, exc_info=True,
                 )
 
+        # Secondary adapters in a multiplexed gateway each own a distinct
+        # credential.  Stamp that owner at ingress when no explicit route
+        # matched, before adapter-local batching calculates its session key.
+        # Waiting for the runner's message handler is too late: Telegram's
+        # text batch key would already have been created under ``agent:main``.
+        if profile is None:
+            owned_profile = str(
+                getattr(self, "_multiplex_profile_name", "") or ""
+            ).strip()
+            if owned_profile:
+                profile = owned_profile
+
         source = SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),

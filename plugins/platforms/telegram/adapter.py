@@ -1621,6 +1621,11 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             removed = db.delete_telegram_topic_binding(
                 chat_id=str(chat_id), thread_id=str(thread_id),
+                # Secondary adapters own their own topic lanes; pruning
+                # unscoped would delete another bot's binding for the same
+                # chat_id (a DM's chat_id is the user's id, shared by every
+                # bot). Unset on the primary adapter -> "default".
+                profile=getattr(self, "_multiplex_profile_name", None),
             )
         except Exception:
             logger.debug(

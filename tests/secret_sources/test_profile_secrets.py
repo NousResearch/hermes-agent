@@ -105,6 +105,15 @@ def test_profile_suffixed_var_hydrates_canonical():
                for w in report.sources[0].result.warnings)
 
 
+def test_default_suffixed_var_hydrates_canonical():
+    _, env = _apply(
+        {"TELEGRAM_BOT_TOKEN_DEFAULT": "123:default"},
+        home=Path("/home/u/.hermes"),
+    )
+    assert env["TELEGRAM_BOT_TOKEN_DEFAULT"] == "123:default"
+    assert env["TELEGRAM_BOT_TOKEN"] == "123:default"
+
+
 
 
 
@@ -171,7 +180,6 @@ def test_empty_injected_environment_does_not_fall_back_to_process(monkeypatch, t
     registry.apply_all(
         {"canary": {"enabled": True}}, tmp_path, environ={}
     )
-
 
 
 

@@ -18,10 +18,11 @@
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
 
-import { atom, type ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
+import type { ClientSessionState } from '@/app/types'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
@@ -37,12 +38,43 @@ import {
   setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
-import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentCwd,
+  $currentModel,
+  $gatewayState,
+  $selectedStoredSessionId
+} from '@/store/session'
+import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
 const readonlyAtom = <T>(atomLike: ReadableAtom<T>): ReadableAtom<T> => atomLike
+
+/**
+ * Turn flag for the FOCUSED chat — same semantics as the statusbar's busy
+ * pulse. While the focused surface is the primary workspace (or a draft with
+ * no runtime slice yet) this reads the primary view, which itself falls back
+ * to the global draft atoms. Once a session TILE holds focus, the tile's own
+ * state slice is authoritative — a background session can never leak in.
+ */
+const focusedTurnFlag = (
+  select: (state: ClientSessionState) => boolean,
+  $primary: ReadableAtom<boolean>
+): ReadableAtom<boolean> =>
+  computed(
+    [$focusedStoredSessionId, $selectedStoredSessionId, $focusedSessionState, $primary],
+    (focused, selected, state, primary) =>
+      !focused || focused === selected ? primary : Boolean(state && select(state))
+  )
+
+const $focusedBusy = focusedTurnFlag(state => state.busy, PRIMARY_SESSION_VIEW.$busy)
+
+const $focusedAwaitingResponse = focusedTurnFlag(
+  state => state.awaitingResponse,
+  PRIMARY_SESSION_VIEW.$awaitingResponse
+)
 
 /** Window geometry + the app's responsive posture, one readonly rect. */
 export interface ViewportRect {
@@ -71,13 +103,14 @@ export const host = {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
     /** True from send until the first assistant payload on the focused chat. */
-    awaitingResponse: readonlyAtom<boolean>(PRIMARY_SESSION_VIEW.$awaitingResponse),
+    awaitingResponse: readonlyAtom<boolean>($focusedAwaitingResponse),
     /**
      * True while the focused chat is working after a send. Covers the wait
-     * for the first token and the stream that follows. Same session as
-     * `activeSessionId`. A draft with no runtime id uses the global flag.
+     * for the first token and the stream that follows. Follows tile focus —
+     * same signal the statusbar's busy pulse reads. A draft with no runtime
+     * id uses the global flag.
      */
-    busy: readonlyAtom<boolean>(PRIMARY_SESSION_VIEW.$busy),
+    busy: readonlyAtom<boolean>($focusedBusy),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. */

@@ -409,7 +409,9 @@ probe) and `profiles.create` (`name`, `description`, `clone_from`,
 ws twins of the dashboard's `/api/profiles` REST routes.
 `host.state.busy` is the focused chat's live turn (thinking and streaming).
 `host.state.awaitingResponse` stays true from send until the first assistant
-payload. Both follow `activeSessionId`. Subscribe in a component:
+payload. Both follow the chat the user is actually looking at — the focused
+session tile when one holds focus, else the primary workspace chat (the same
+signal the statusbar's busy pulse reads). Subscribe in a component:
 
 ```javascript
 const busy = useValue(host.state.busy)

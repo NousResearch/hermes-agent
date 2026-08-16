@@ -63,4 +63,51 @@ describe('host.state turn flags', () => {
     expect(host.state.busy.get()).toBe(false)
     expect(host.state.awaitingResponse.get()).toBe(false)
   })
+
+  it('follows a focused session tile, not the primary', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+    const { $sessionTiles } = await import('@/store/session-states')
+
+    // A second chat zone holding a session tile, next to the main workspace.
+    for (const id of ['workspace', 'session-tile:tile-a']) {
+      registry.register({
+        area: 'panes',
+        data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
+        id,
+        render: () => null,
+        title: id
+      })
+    }
+
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['session-tile:tile-a'], { active: 'session-tile:tile-a', id: 'grp-side' })
+      ])
+    )
+
+    // Primary chat is idle; the tile's session is mid-turn.
+    setActiveSessionId('rt-primary')
+    publishSessionState('rt-primary', createClientSessionState('stored-primary'))
+    $sessionTiles.set([{ runtimeId: 'rt-tile-a', storedSessionId: 'tile-a' }])
+    publishSessionState('rt-tile-a', {
+      ...createClientSessionState('tile-a'),
+      awaitingResponse: true,
+      busy: true
+    })
+
+    // Focusing the tile zone moves the flags onto the tile's session…
+    tree.noteActiveTreeGroup('grp-side')
+    expect(host.state.busy.get()).toBe(true)
+    expect(host.state.awaitingResponse.get()).toBe(true)
+
+    // …and homing back to the workspace returns to the (idle) primary.
+    tree.noteActiveTreeGroup('grp-main')
+    expect(host.state.busy.get()).toBe(false)
+    expect(host.state.awaitingResponse.get()).toBe(false)
+
+    $sessionTiles.set([])
+  })
 })

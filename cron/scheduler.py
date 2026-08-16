@@ -3889,7 +3889,14 @@ def _build_job_prompt(
                     if has_structured_response:
                         # New runs use an out-of-band JSON frame, so response-like
                         # headings inside the response cannot alter its boundary.
-                        latest_output = structured_response or ""
+                        # Preserve a committed empty or whitespace-only response as
+                        # explicit context instead of silently behaving as if no run
+                        # existed. Keep non-whitespace responses byte-for-byte intact.
+                        latest_output = (
+                            structured_response
+                            if structured_response and structured_response.strip()
+                            else "[The preceding cron job produced an empty response.]"
+                        )
                         if len(latest_output) > _MAX_CONTEXT_CHARS:
                             latest_output = (
                                 latest_output[:_MAX_CONTEXT_CHARS]
@@ -3911,9 +3918,10 @@ def _build_job_prompt(
                     response_markers = list(
                         re.finditer(r"(?m)^## Response[ \t]*\r?$", saved_output)
                     )
-                    if response_markers:
-                        # Legacy Markdown has no unambiguous response boundary.
-                        latest_output = saved_output[response_markers[-1].end():].strip()
+                    if len(response_markers) == 1:
+                        # A single canonical marker preserves the legacy response
+                        # extraction behavior without guessing between boundaries.
+                        latest_output = saved_output[response_markers[0].end():].strip()
                         if len(latest_output) > _MAX_CONTEXT_CHARS:
                             latest_output = (
                                 latest_output[:_MAX_CONTEXT_CHARS]
@@ -3921,6 +3929,25 @@ def _build_job_prompt(
                             )
                         selected_output = True
                         break
+                    if len(response_markers) > 1:
+                        # Multiple canonical markers are ambiguous. Preserve the
+                        # entire bounded file rather than silently discarding
+                        # everything before the last marker.
+                        if len(saved_output) <= _MAX_CONTEXT_CHARS:
+                            latest_output = saved_output.strip()
+                            selected_output = True
+                            logger.warning(
+                                "context_from: using whole bounded legacy output with "
+                                "multiple ## Response markers for job %r",
+                                source_job_id,
+                            )
+                            break
+                        logger.warning(
+                            "context_from: skipping oversized ambiguous legacy output "
+                            "with multiple ## Response markers for job %r",
+                            source_job_id,
+                        )
+                        continue
                     if len(saved_output) <= _MAX_CONTEXT_CHARS:
                         latest_output = saved_output.strip()
                         selected_output = True

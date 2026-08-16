@@ -262,7 +262,7 @@ import {
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
-  resolveUpdateScriptHandoff,
+  resolveWindowsUpdateTransport,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
@@ -310,6 +310,13 @@ import {
   writeSandboxMarker
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
+import {
+  buildWindowsRelaunchCommand,
+  configureWindowsTaskbarDetails,
+  resolveWindowsAppUserModelId,
+  resolveWindowsDevRelaunchAppPath
+} from './windows-taskbar-details'
+import { forceDrainWindowsUpdateBlockers } from './windows-update-force-drain'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -757,6 +764,7 @@ const BOOT_FAKE_STEP_MS = (() => {
 })()
 
 const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const WINDOWS_RUNTIME_APP_USER_MODEL_ID = resolveWindowsAppUserModelId(process.defaultApp)
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1065,7 +1073,7 @@ app.setName(APP_NAME)
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(WINDOWS_RUNTIME_APP_USER_MODEL_ID)
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -3255,13 +3263,13 @@ async function releaseBackendLock(updateRoot, tag) {
   return { unlocked: false }
 }
 
-// applyUpdates — hand off to the installer's --update flow, then exit.
+// applyUpdates — hand off to a detached repo-owned orchestrator, then exit.
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
 // itself (the old open-coded git dance lived here and drifted from
-// `hermes update`). Instead we spawn the staged Hermes-Setup binary with
-// --update and quit, so it can run `hermes update` (which refuses while we
-// hold the venv shim) and rebuild the desktop with our exe already gone.
+// `hermes update`). On Windows the canonical repo script owns the visible
+// updater and runs `hermes update` after this process releases the venv shim.
+// The staged installer is reserved for packaged bootstrap recovery.
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
@@ -3274,6 +3282,8 @@ async function applyUpdates(opts = {}) {
 
   try {
     const updater = resolveUpdaterBinary()
+    const updateRoot = resolveUpdateRoot()
+    const windowsUpdateTransport = IS_WINDOWS ? resolveWindowsUpdateTransport(updateRoot) : null
 
     if (!updater && !IS_WINDOWS) {
       // macOS/Linux: hand off to the repo-owned posix script — same shape as
@@ -3288,17 +3298,8 @@ async function applyUpdates(opts = {}) {
       return await applyUpdatesPosixHandoff(opts)
     }
 
-    if (!updater) {
-      // No staged updater binary — this is a CLI-installed user (they ran
-      // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). On Windows the repo hand-off
-      // script serves them just as well as installer users — it only needs
-      // PowerShell and the checkout — so fall through to the normal hand-off
-      // when the script exists. Only when the checkout predates the script do
-      // we surface the manual one-liner.
-      const updateRoot = resolveUpdateRoot()
-
-      if (!resolveUpdateScriptHandoff(updateRoot)) {
+    if (IS_WINDOWS) {
+      if (windowsUpdateTransport?.kind === 'manual') {
         // They DO have a working `hermes` on PATH / in the venv, so the
         // correct path is the one-liner in their native medium. We show the
         // EXACT command, branch-pinned to the checkout they're on — bare
@@ -3323,13 +3324,11 @@ async function applyUpdates(opts = {}) {
           // Best-effort: fall back to bare `hermes update` if branch detection fails.
         }
 
-        rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
+        rememberLog(`[updates] canonical repo hand-off absent; surfacing manual \`${command}\` at ${updateRoot}`)
         emitUpdateProgress({ stage: 'manual', message: command, percent: null })
 
         return { ok: true, manual: true, command, hermesRoot: updateRoot }
       }
-
-      rememberLog('[updates] no staged updater; using repo hand-off script for CLI install')
     }
 
     const handoffConflict = updateHandoffConflict(HERMES_HOME)
@@ -3353,7 +3352,6 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]
@@ -3392,17 +3390,24 @@ async function applyUpdates(opts = {}) {
       return { ok: false, error: message }
     }
 
-    // Preflight: after releasing our own backends, check for remaining
-    // Hermes processes running from this venv.  The updater normally refuses
-    // when it detects a holder, but because the updater is spawned detached
-    // with stdio:ignore, the user never sees that refusal and the update
-    // silently fails.  This preflight detects holders early and gives the
-    // user an actionable error.  Windows-only; the .pyd lock hazard is a
-    // Windows phenomenon.  ALL failures (blocked, missing python, timeout,
-    // malformed output, missing psutil) abort the handoff — never proceed
-    // to the detached updater when the venv state is unknown.
+    // Preflight: after releasing our own backends, scan for remaining Hermes
+    // processes running from this venv. The scanner proves each target belongs
+    // to this install; on a block we force-kill those trees, then rescan before
+    // the detached handoff. Windows-only: the .pyd lock hazard is a Windows
+    // phenomenon. Probe failures still abort — never hand off when the venv
+    // state is unknown.
     if (IS_WINDOWS) {
-      const scanOutcome = await scanVenvBlockers(updateRoot)
+      let scanOutcome = await scanVenvBlockers(updateRoot)
+
+      if (scanOutcome.kind === 'blocked') {
+        const blockerCount = scanOutcome.result.processes.length
+
+        rememberLog(`[updates] force-draining ${blockerCount} Hermes process(es) holding the install`)
+        scanOutcome = await forceDrainWindowsUpdateBlockers(scanOutcome, {
+          forceKillProcessTree,
+          scan: () => scanVenvBlockers(updateRoot)
+        })
+      }
 
       if (scanOutcome.kind === 'blocked') {
         const message = formatBlockerMessage(scanOutcome.result)
@@ -3428,18 +3433,13 @@ async function applyUpdates(opts = {}) {
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
     //
-    // Prefer the repo-owned hand-off script over the staged Tauri binary.
-    // The staged binary is frozen (no self-update path) and historically runs
-    // months-stale updater logic — pre-#67369 cache resolver, pre-#74782
-    // marker adoption — producing failures that were fixed on main long ago
-    // (2026-08-09 incident). scripts/desktop-update/windows.ps1 ships WITH the
-    // checkout, so each `hermes update` refreshes the code that drives the
-    // next one. Checkouts that predate the script fall back to the binary
-    // path unchanged.
-    const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
+    // Ordinary Windows updates use only the canonical repo-owned script. The
+    // staged installer is frozen and has a different lifecycle contract; it
+    // remains available only through handOffWindowsBootstrapRecovery below.
+    const scriptHandoff = windowsUpdateTransport?.kind === 'script' ? windowsUpdateTransport.handoff : null
     let child
 
-    if (scriptHandoff) {
+    if (IS_WINDOWS && scriptHandoff) {
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
       // wrapHandoffForDetachedConsole). Route through `cmd start` so the
@@ -3483,7 +3483,7 @@ async function applyUpdates(opts = {}) {
       rememberLog(
         `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
       )
-    } else {
+    } else if (!IS_WINDOWS && updater) {
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: HERMES_HOME,
         env: {
@@ -3521,6 +3521,8 @@ async function applyUpdates(opts = {}) {
       rememberLog(
         `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
       )
+    } else {
+      throw new Error('No supported update hand-off is available.')
     }
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
@@ -5720,6 +5722,20 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+function configureTaskbarDetails(win, icon = getAppIconPath()) {
+  configureWindowsTaskbarDetails(win, {
+    appId: WINDOWS_RUNTIME_APP_USER_MODEL_ID,
+    iconPath: icon,
+    isWindows: IS_WINDOWS,
+    relaunchCommand: buildWindowsRelaunchCommand({
+      executablePath: process.execPath,
+      appEntryPath: resolveWindowsDevRelaunchAppPath(process.defaultApp, process.argv),
+      isDefaultApp: process.defaultApp
+    }),
+    relaunchDisplayName: APP_NAME
+  })
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -6541,6 +6557,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
           webSecurity: true
         }
       })
+      configureTaskbarDetails(win)
     } catch (error) {
       finish(error instanceof Error ? error : new Error(String(error)))
 
@@ -7453,6 +7470,7 @@ function openPortalLoginWindow() {
           webSecurity: true
         }
       })
+      configureTaskbarDetails(win)
     } catch (error) {
       finish(error instanceof Error ? error : new Error(String(error)))
 
@@ -10146,6 +10164,8 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  configureTaskbarDetails(win, icon)
+
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
   }
@@ -10239,6 +10259,8 @@ function createInstanceWindow() {
     backgroundColor: getWindowBackgroundColor(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  configureTaskbarDetails(win, icon)
 
   instanceWindows.add(win)
 
@@ -11110,6 +11132,8 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
+
+  configureTaskbarDetails(createdMainWindow, icon)
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)

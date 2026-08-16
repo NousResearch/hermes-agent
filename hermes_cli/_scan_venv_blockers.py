@@ -150,7 +150,7 @@ def main() -> None:
     try:
         from hermes_cli.main import _detect_venv_python_processes  # noqa: PLC0415
 
-        matches = _detect_venv_python_processes()
+        matches = _detect_venv_python_processes(include_force_drain_eligibility=True, strict=True)
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
@@ -162,11 +162,16 @@ def main() -> None:
             # full cmdline (long managed-runtime interpreter paths would
             # otherwise swallow the `gateway run` argv).
             "cmdline": _redact_sensitive_cmdline(cmdline)[:120],
+            # Cmdline-only matches keep the update blocked but are never safe
+            # targets for a destructive process-tree kill.
+            "force_drain_eligible": force_drain_eligible,
         }
-        for pid, name, cmdline in matches
+        for pid, name, cmdline, force_drain_eligible in matches
         if not _is_pausable_gateway(cmdline)
     ]
-    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
+    exempted = sum(
+        1 for _pid, _name, cmdline, _force_drain_eligible in matches if _is_pausable_gateway(cmdline)
+    )
     data = {
         "ok": True,
         "blocked": bool(processes),

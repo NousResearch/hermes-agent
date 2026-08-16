@@ -31,9 +31,9 @@
 //   node scripts/set-exe-identity.mjs <path-to-Hermes.exe>
 //
 // Exits 0 on success, non-zero on failure when run as a CLI. As a hook,
-// stampExeIdentity() resolves on success and rejects on failure; the caller
-// (after-pack.mjs) swallows the rejection so a stamp failure never fails an
-// otherwise-good build (worst case: stock icon, not a broken app).
+// stampExeIdentity() resolves on success and rejects on failure. The Windows
+// afterPack hook propagates failures, because shipping a rebuilt Electron.exe
+// would leave the taskbar and Start Menu with the wrong identity.
 
 import { resolve, join } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -65,7 +65,9 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
       ProductName: 'Hermes',
       FileDescription: 'Hermes',
       CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
+      InternalName: 'Hermes',
+      LegalCopyright: 'Copyright (c) 2026 Nous Research',
+      OriginalFilename: 'Hermes.exe'
     }
   })
 

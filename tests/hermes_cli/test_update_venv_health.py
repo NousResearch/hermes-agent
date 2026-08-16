@@ -9,13 +9,13 @@ Covers three additions to ``hermes update``:
    holds .pyd files mapped.
 3. The commit_count == 0 repair branch wiring in ``_cmd_update_impl``.
 
-All Windows-specific paths are exercised via ``_is_windows`` patching so
-they run on any host (same approach as test_update_concurrent_quarantine).
+These runtime paths are exercised on native Windows under the project's
+``windows_only`` marker.  ``psutil`` remains deterministic via fake process
+tables; only the host gate is real.
 """
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import types
 from types import SimpleNamespace
@@ -24,6 +24,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import main as cli_main
+
+
+pytestmark = pytest.mark.windows_only
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +65,7 @@ def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: 
 
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
+def test_detect_venv_python_excludes_self_and_ancestors(tmp_path):
     import os as _os
 
     venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
@@ -84,6 +86,18 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         sys.modules, {"psutil": fake_psutil}
     ):
         assert cli_main._detect_venv_python_processes() == []
+
+
+def test_detect_venv_python_processes_strictly_fails_on_unreadable_table(tmp_path):
+    """The detached desktop scan must not call a partial process table clear."""
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda _attrs: (_ for _ in ()).throw(PermissionError("access denied")),
+        Process=lambda *a, **k: MagicMock(),
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ), pytest.raises(RuntimeError, match="enumerate process table"):
+        cli_main._detect_venv_python_processes(strict=True)
 
 
 
@@ -123,9 +137,9 @@ def _run_update_until_guard(args):
         def __truediv__(self, _other):
             raise _PastGuard
 
-    with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
-        cli_main, "_venv_scripts_dir", return_value=None
-    ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
+    with patch.object(cli_main, "_venv_scripts_dir", return_value=None), patch.object(
+        cli_main, "_run_pre_update_backup"
+    ), patch.object(
         cli_main, "_pause_windows_gateways_for_update", return_value=None
     ), patch.object(
         cli_main, "_resume_windows_gateways_after_update"

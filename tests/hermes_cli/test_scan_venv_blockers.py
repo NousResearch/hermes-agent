@@ -158,7 +158,10 @@ def _run_main_with_detector(monkeypatch, capsys, matches):
         monkeypatch.setitem(sys.modules, name, mod)
     import hermes_cli.main as cli_main
 
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: matches)
+    def detector(**_kwargs):
+        return [match if len(match) == 4 else (*match, False) for match in matches]
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", detector)
     with pytest.raises(SystemExit) as excinfo:
         main()
     out = capsys.readouterr().out
@@ -250,6 +253,37 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+
+
+def test_main_preserves_force_drain_eligibility(monkeypatch, capsys):
+    """Only a process proven to execute from the target venv is killable.
+
+    A cmdline-only match remains a blocker, but the Electron preflight must
+    not use it as a destructive tree-kill target.
+    """
+    target_venv_python = (
+        78,
+        "python.exe",
+        r"C:\\x\\venv\\Scripts\\python.exe -m hermes_cli.main serve",
+        True,
+    )
+    external_python_with_path_argument = (
+        79,
+        "python.exe",
+        r"C:\\Python\\python.exe worker.py --input C:\\x\\venv\\state.json",
+        False,
+    )
+
+    code, data = _run_main_with_detector(
+        monkeypatch, capsys, [target_venv_python, external_python_with_path_argument]
+    )
+
+    assert code == 0
+    assert data["blocked"] is True
+    assert [(item["pid"], item["force_drain_eligible"]) for item in data["processes"]] == [
+        (78, True),
+        (79, False),
+    ]
 
 def test_main_gateway_with_long_managed_runtime_path_is_exempt(monkeypatch, capsys):
     """Regression: the detector must hand the FULL cmdline to the exemption.

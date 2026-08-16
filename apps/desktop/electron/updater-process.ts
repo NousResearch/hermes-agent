@@ -20,8 +20,10 @@ export interface UpdateScriptHandoff {
   scriptPath: string
 }
 
+export type WindowsUpdateTransport = { kind: 'script'; handoff: UpdateScriptHandoff } | { kind: 'manual' }
+
 /**
- * Repo-owned Windows update hand-off (frozen-binary escape hatch).
+ * Canonical repo-owned Windows update hand-off.
  *
  * The staged Tauri `hermes-setup.exe` has no self-update path, so every
  * updater-side fix only reaches users when a new binary is built, signed and
@@ -31,11 +33,12 @@ export interface UpdateScriptHandoff {
  * checkout instead: every `hermes update` refreshes the code that drives the
  * NEXT update, and only PowerShell itself is frozen.
  *
- * Returns the spawn recipe when the script exists in the checkout, or null
- * (caller falls back to the staged binary — old checkouts that predate the
- * script keep working unchanged). Windows-only by the same policy as
+ * Returns the spawn recipe when the canonical script exists in the checkout,
+ * or null. Ordinary Desktop updates fail closed when it is absent; the staged
+ * installer remains available only to the separately bounded packaged
+ * bootstrap-recovery path. Windows-only by the same policy as
  * resolveStagedUpdaterBinary: POSIX updates in place via
- * applyUpdatesPosixInApp and needs no hand-off at all.
+ * applyUpdatesPosixInApp and need no Windows hand-off.
  */
 export function resolveUpdateScriptHandoff(
   updateRoot: string,
@@ -49,23 +52,27 @@ export function resolveUpdateScriptHandoff(
 
   const exists = deps.fileExists ?? stagedFileExists
 
-  // Current layout first, then the pre-reorg flat path — an updated asar can
-  // meet a checkout from either side of the move (the checkout also ships a
-  // forwarder at the legacy path for the inverse skew).
-  for (const candidate of [
-    path.join(updateRoot, 'scripts', 'desktop-update', 'windows.ps1'),
-    path.join(updateRoot, 'scripts', 'desktop-update.ps1')
-  ]) {
-    if (exists(candidate)) {
-      return {
-        command: 'powershell',
-        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', candidate],
-        scriptPath: candidate
-      }
+  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update', 'windows.ps1')
+
+  if (exists(scriptPath)) {
+    return {
+      command: 'powershell',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      scriptPath
     }
   }
 
   return null
+}
+
+/** Resolve the only transport allowed for an ordinary Windows update. */
+export function resolveWindowsUpdateTransport(
+  updateRoot: string,
+  deps: ResolveUpdateScriptHandoffDeps = {}
+): WindowsUpdateTransport {
+  const handoff = resolveUpdateScriptHandoff(updateRoot, deps)
+
+  return handoff ? { kind: 'script', handoff } : { kind: 'manual' }
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  resolveWindowsUpdateTransport,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
@@ -187,7 +188,7 @@ test('resolveUpdateScriptHandoff prefers the repo script on Windows when present
   assert.deepEqual(handoff.args, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', expected])
 })
 
-test('resolveUpdateScriptHandoff falls back to the pre-reorg flat path', () => {
+test('resolveUpdateScriptHandoff does not select the legacy flat entry point', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const legacy = path.join(root, 'scripts', 'desktop-update.ps1')
 
@@ -196,8 +197,7 @@ test('resolveUpdateScriptHandoff falls back to the pre-reorg flat path', () => {
     fileExists: candidate => candidate === legacy
   })
 
-  assert.ok(handoff)
-  assert.equal(handoff.scriptPath, legacy)
+  assert.equal(handoff, null)
 })
 
 test('resolveUpdateScriptHandoff returns null when the checkout predates the script', () => {
@@ -216,6 +216,35 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   })
 
   assert.equal(handoff, null)
+})
+
+test('ordinary Windows updates select the canonical repo script', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const canonical = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
+
+  const transport = resolveWindowsUpdateTransport(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === canonical
+  })
+
+  assert.equal(transport.kind, 'script')
+
+  if (transport.kind === 'script') {
+    assert.equal(transport.handoff.scriptPath, canonical)
+  }
+})
+
+test('ordinary Windows updates refuse staged and legacy-flat fallbacks', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const legacy = path.join(root, 'scripts', 'desktop-update.ps1')
+  const staged = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-setup.exe`
+
+  const transport = resolveWindowsUpdateTransport(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === legacy || candidate === staged
+  })
+
+  assert.deepEqual(transport, { kind: 'manual' })
 })
 
 test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {

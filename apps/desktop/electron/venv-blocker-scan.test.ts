@@ -56,7 +56,9 @@ describe('formatBlockerMessage', () => {
   it('includes PID, name, cmdline, remote-client warning, and retry suggestion', () => {
     const msg = formatBlockerMessage({
       blocked: true,
-      processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1' }]
+      processes: [
+        { pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1', forceDrainEligible: true }
+      ]
     })
 
     assert.ok(msg.includes('PID 101'))
@@ -92,11 +94,23 @@ describe('parseVenvBlockerScanOutput', () => {
     const o = parseVenvBlockerScanOutput(
       ok({
         blocked: true,
-        processes: [{ pid: 1, name: 'p', cmdline: 'c' }]
+        processes: [{ pid: 1, name: 'p', cmdline: 'c', force_drain_eligible: true }]
       })
     )
 
     assert.equal(o.kind, 'blocked')
+  })
+
+  it('treats older scanner output as blocked but not force-drain eligible', () => {
+    const outcome = parseVenvBlockerScanOutput(
+      ok({ blocked: true, processes: [{ pid: 1, name: 'p', cmdline: 'c' }] })
+    )
+
+    assert.equal(outcome.kind, 'blocked')
+
+    if (outcome.kind === 'blocked') {
+      assert.equal(outcome.result.processes[0]?.forceDrainEligible, false)
+    }
   })
 
   it('malformed JSON', () => {
@@ -158,7 +172,7 @@ describe('scanVenvBlockers', () => {
   const blockedJson = JSON.stringify({
     ok: true,
     blocked: true,
-    processes: [{ pid: 1, name: 'p', cmdline: 'c' }]
+    processes: [{ pid: 1, name: 'p', cmdline: 'c', force_drain_eligible: true }]
   })
 
   function execReturn(json: string): any {

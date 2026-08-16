@@ -65,7 +65,7 @@ impl ScriptKind {
 
 /// Validates a string looks like a git SHA (7+ hex chars). Mirrors
 /// `STAMP_COMMIT_RE` from bootstrap-runner.ts.
-fn is_valid_commit(s: &str) -> bool {
+pub(crate) fn is_valid_commit(s: &str) -> bool {
     let len = s.len();
     (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
 }

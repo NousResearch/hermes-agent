@@ -6314,6 +6314,45 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+def _desktop_packaged_install_stamp_path(executable: Path) -> Path:
+    """Return the runtime install stamp shipped beside a packaged desktop."""
+    if sys.platform == "darwin":
+        # .../Hermes.app/Contents/MacOS/Hermes -> .../Contents/Resources
+        return executable.parents[1] / "Resources" / "install-stamp.json"
+    return executable.parent / "resources" / "install-stamp.json"
+
+
+def _desktop_checkout_commit(project_root: Path) -> str | None:
+    """Return the exact checkout commit from the cheap git fingerprint."""
+    fingerprint = _read_git_revision_fingerprint(project_root)
+    if not fingerprint:
+        return None
+    commit = fingerprint.rsplit(":", 1)[-1].strip()
+    if len(commit) != 40 or not all(
+        char in "0123456789abcdefABCDEF" for char in commit
+    ):
+        return None
+    return commit.lower()
+
+
+def _desktop_packaged_commit(executable: Path) -> str | None:
+    """Read the checkout commit embedded in a packaged desktop artifact."""
+    stamp_path = _desktop_packaged_install_stamp_path(executable)
+    try:
+        stamp_data = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    commit = stamp_data.get("commit")
+    if not isinstance(commit, str):
+        return None
+    commit = commit.strip()
+    if len(commit) != 40 or not all(
+        char in "0123456789abcdefABCDEF" for char in commit
+    ):
+        return None
+    return commit.lower()
+
+
 def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:
     """The renderer ``dist`` directory a launch loads, when it is inspectable.
 
@@ -6390,7 +6429,19 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
     else:
-        if _desktop_packaged_executable(desktop_dir) is None:
+        packaged_executable = _desktop_packaged_executable(desktop_dir)
+        if packaged_executable is None:
+            return True
+        # Desktop inputs are only part of the package. A backend-only update
+        # can leave their content hash unchanged while the packaged install
+        # stamp still names the pre-update checkout. The staged updater may be
+        # an older binary that invokes only ``desktop --build-only``, so keep
+        # this invariant in the repo-refreshed CLI decision as well as forcing
+        # builds from newly-produced updater binaries.
+        checkout_commit = _desktop_checkout_commit(project_root)
+        if checkout_commit is not None and (
+            _desktop_packaged_commit(packaged_executable) != checkout_commit
+        ):
             return True
 
     # A torn renderer bundle is stale no matter what the stamp says: the hash

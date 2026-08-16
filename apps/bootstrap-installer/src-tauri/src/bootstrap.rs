@@ -214,26 +214,140 @@ pub async fn launch_hermes_desktop(
 /// <os>-unpacked/<exe>).
 pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
-    let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
-        &[
-            ("win-unpacked", "Hermes.exe"),
-            ("win-arm64-unpacked", "Hermes.exe"),
-        ]
-    } else if cfg!(target_os = "macos") {
-        &[
-            ("mac/Hermes.app/Contents/MacOS", "Hermes"),
-            ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
-        ]
-    } else {
-        &[("linux-unpacked", "hermes")]
-    };
-    for (subdir, exe) in candidates {
-        let p = release_dir.join(subdir).join(exe);
-        if p.exists() {
-            return Some(p);
-        }
+    #[cfg(target_os = "windows")]
+    {
+        return resolve_windows_desktop_exe_for_machines(
+            &release_dir,
+            &runnable_windows_pe_machines(),
+        );
     }
-    None
+    #[cfg(not(target_os = "windows"))]
+    {
+        let candidates: &[(&str, &str)] = if cfg!(target_os = "macos") {
+            &[
+                ("mac/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
+            ]
+        } else {
+            &[("linux-unpacked", "hermes")]
+        };
+        for (subdir, exe) in candidates {
+            let p = release_dir.join(subdir).join(exe);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+const PE_MACHINE_I386: u16 = 0x014c;
+#[cfg(target_os = "windows")]
+const PE_MACHINE_AMD64: u16 = 0x8664;
+#[cfg(target_os = "windows")]
+const PE_MACHINE_ARM64: u16 = 0xaa64;
+
+#[cfg(target_os = "windows")]
+fn windows_native_pe_machine() -> Option<u16> {
+    let architecture = std::env::var("PROCESSOR_ARCHITEW6432")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("PROCESSOR_ARCHITECTURE").ok());
+    architecture
+        .as_deref()
+        .and_then(|value| match value.trim().to_ascii_uppercase().as_str() {
+            "ARM64" | "AARCH64" => Some(PE_MACHINE_ARM64),
+            "AMD64" | "X86_64" => Some(PE_MACHINE_AMD64),
+            "X86" | "I386" | "I686" => Some(PE_MACHINE_I386),
+            _ => None,
+        })
+        .or({
+            #[cfg(target_arch = "aarch64")]
+            {
+                Some(PE_MACHINE_ARM64)
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                Some(PE_MACHINE_AMD64)
+            }
+            #[cfg(target_arch = "x86")]
+            {
+                Some(PE_MACHINE_I386)
+            }
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "x86")))]
+            {
+                None
+            }
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn runnable_windows_pe_machines() -> Vec<u16> {
+    match windows_native_pe_machine() {
+        // Windows on ARM can run native ARM64 plus x64/x86 under emulation.
+        Some(PE_MACHINE_ARM64) => vec![PE_MACHINE_ARM64, PE_MACHINE_AMD64, PE_MACHINE_I386],
+        // 64-bit Windows can run both x64 and 32-bit x86 applications.
+        Some(PE_MACHINE_AMD64) => vec![PE_MACHINE_AMD64, PE_MACHINE_I386],
+        Some(PE_MACHINE_I386) => vec![PE_MACHINE_I386],
+        _ => vec![PE_MACHINE_ARM64, PE_MACHINE_AMD64, PE_MACHINE_I386],
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn pe_machine(path: &Path) -> Option<u16> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut dos_header = [0u8; 64];
+    file.read_exact(&mut dos_header).ok()?;
+    if &dos_header[..2] != b"MZ" {
+        return None;
+    }
+    let pe_offset = u32::from_le_bytes(dos_header[0x3c..0x40].try_into().ok()?);
+    file.seek(SeekFrom::Start(u64::from(pe_offset))).ok()?;
+    let mut pe_header = [0u8; 6];
+    file.read_exact(&mut pe_header).ok()?;
+    if &pe_header[..4] != b"PE\0\0" {
+        return None;
+    }
+    Some(u16::from_le_bytes([pe_header[4], pe_header[5]]))
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_desktop_exe_for_machines(
+    release_dir: &Path,
+    runnable_machines: &[u16],
+) -> Option<PathBuf> {
+    let candidates = [
+        release_dir.join("win-unpacked").join("Hermes.exe"),
+        release_dir.join("win-ia32-unpacked").join("Hermes.exe"),
+        release_dir.join("win-arm64-unpacked").join("Hermes.exe"),
+    ];
+    let existing: Vec<PathBuf> = candidates
+        .into_iter()
+        .filter(|candidate| candidate.exists())
+        .collect();
+    let matching: Vec<PathBuf> = existing
+        .iter()
+        .filter(|candidate| {
+            pe_machine(candidate)
+                .map(|machine| runnable_machines.contains(&machine))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    let eligible = if matching.is_empty() {
+        existing
+    } else {
+        matching
+    };
+    eligible.into_iter().max_by_key(|candidate| {
+        candidate
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH)
+    })
 }
 
 pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
@@ -1001,8 +1115,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
@@ -1043,6 +1156,80 @@ mod tests {
             std::fs::write(&exe, b"stub").unwrap();
             exe
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn make_windows_pe(path: &Path, machine: u16) {
+        let mut bytes = vec![0u8; 512];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        bytes[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_resolver_prefers_fresh_arm64_over_stale_generic_when_both_run() {
+        let root = unique_tmp_dir("windows-resolver-arm64");
+        let release = root.join("apps").join("desktop").join("release");
+        let stale = release.join("win-unpacked").join("Hermes.exe");
+        let fresh = release.join("win-arm64-unpacked").join("Hermes.exe");
+        make_windows_pe(&stale, PE_MACHINE_AMD64);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        make_windows_pe(&fresh, PE_MACHINE_ARM64);
+
+        assert_eq!(
+            resolve_windows_desktop_exe_for_machines(
+                &release,
+                &[PE_MACHINE_ARM64, PE_MACHINE_AMD64, PE_MACHINE_I386],
+            ),
+            Some(fresh)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_resolver_includes_fresh_ia32_when_host_can_run_it() {
+        let root = unique_tmp_dir("windows-resolver-ia32");
+        let release = root.join("apps").join("desktop").join("release");
+        let stale = release.join("win-unpacked").join("Hermes.exe");
+        let fresh = release.join("win-ia32-unpacked").join("Hermes.exe");
+        make_windows_pe(&stale, PE_MACHINE_AMD64);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        make_windows_pe(&fresh, PE_MACHINE_I386);
+
+        assert_eq!(
+            resolve_windows_desktop_exe_for_machines(
+                &release,
+                &[PE_MACHINE_AMD64, PE_MACHINE_I386],
+            ),
+            Some(fresh)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_resolver_rejects_newer_non_runnable_architecture() {
+        let root = unique_tmp_dir("windows-resolver-wrong-arch");
+        let release = root.join("apps").join("desktop").join("release");
+        let runnable = release.join("win-unpacked").join("Hermes.exe");
+        let wrong_arch = release.join("win-arm64-unpacked").join("Hermes.exe");
+        make_windows_pe(&runnable, PE_MACHINE_AMD64);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        make_windows_pe(&wrong_arch, PE_MACHINE_ARM64);
+
+        assert_eq!(
+            resolve_windows_desktop_exe_for_machines(
+                &release,
+                &[PE_MACHINE_AMD64, PE_MACHINE_I386],
+            ),
+            Some(runnable)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The relaunch / install target is derived from the rebuilt desktop app.

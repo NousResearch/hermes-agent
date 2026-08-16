@@ -3086,8 +3086,11 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     return True, ""
 
 def _detect_venv_python_processes(
-    *, exclude_pids: set[int] | None = None
-) -> list[tuple[int, str, str]]:
+    *,
+    exclude_pids: set[int] | None = None,
+    include_force_drain_eligibility: bool = False,
+    strict: bool = False,
+) -> list[tuple[int, str, str] | tuple[int, str, str, bool]]:
     """Find live processes running from the project venv's interpreter.
 
     The hermes.exe shim guard misses the biggest lock-holder class on
@@ -3100,7 +3103,12 @@ def _detect_venv_python_processes(
     Killing them from here is pointless — the Desktop app supervises its
     backend and respawns it within seconds — so the caller should refuse and
     tell the user to close the app instead. Returns ``(pid, name, cmdline)``
-    tuples; empty off-Windows / without psutil / when nothing matches. The
+    tuples; when ``include_force_drain_eligibility`` is true, each tuple also
+    carries whether the process executable itself is under the target venv and
+    can therefore be force-drained safely. With ``strict``, process-table
+    enumeration or inspection failures raise so a caller can fail closed.
+    Empty off-Windows / without psutil /
+    when nothing matches. The
     calling process and its ancestors are always excluded (a CLI ``hermes
     update`` itself runs from the venv python). Never raises.
     """
@@ -3108,7 +3116,9 @@ def _detect_venv_python_processes(
         return []
     try:
         import psutil
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("could not import psutil for venv-holder scan") from exc
         return []
 
     venv_dir = _m().PROJECT_ROOT / "venv"
@@ -3129,15 +3139,19 @@ def _detect_venv_python_processes(
     except Exception:
         pass
 
-    matches: list[tuple[int, str, str]] = []
+    matches: list[tuple[int, str, str] | tuple[int, str, str, bool]] = []
     try:
         proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("could not enumerate process table") from exc
         return []
     for proc in proc_iter:
         try:
             info = proc.info
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise RuntimeError("could not inspect process table") from exc
             continue
         pid = info.get("pid")
         exe = info.get("exe")
@@ -3173,7 +3187,10 @@ def _detect_venv_python_processes(
         # the `-m hermes_cli.main gateway run` argv, so autostarted gateways
         # were misreported as blockers and the update dead-ended. Truncate
         # only at display time.
-        matches.append((int(pid), str(name), cmdline_raw))
+        if include_force_drain_eligibility:
+            matches.append((int(pid), str(name), cmdline_raw, exe_norm.startswith(venv_prefix)))
+        else:
+            matches.append((int(pid), str(name), cmdline_raw))
     return matches
 
 # Native-extension modules that pin files inside the venv once imported.  If

@@ -8,7 +8,8 @@
 //!      or repair bootstrap can race locked files),
 //!   2. run `hermes update --yes --gateway` (Python/repo update; this does NOT
 //!      rebuild apps/desktop by design — see cmd_update in hermes_cli/main.py),
-//!   3. run `hermes desktop --build-only` (the rebuild step update skips),
+//!   3. run `hermes desktop --build-only --force-build` (the rebuild step
+//!      update skips),
 //!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
 //!
 //! We reuse the `BootstrapEvent` channel + the existing progress UI by
@@ -485,7 +486,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // repo-root deps with --workspaces=false). This is the rebuild it skips.
     emit_stage(&app, "rebuild", StageState::Running, None, None);
     let started = Instant::now();
-    let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
+    let rebuild_args = desktop_rebuild_args();
     let mut rebuild = run_streamed(
         &app,
         &hermes,
@@ -498,9 +499,8 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     // Retry-once: the first `--build-only` can return nonzero on a still-settling
     // post-update tree or a network-blocked Electron fetch that our self-heal
-    // repaired mid-run. A second attempt then builds clean off the healed dist
-    // (the content-hash stamp makes it a near-no-op when the first actually
-    // succeeded). Without this the updater bails here and never reaches the
+    // repaired mid-run. A second attempt then builds clean off the healed
+    // dependency cache. Without this the updater bails here and never reaches the
     // relaunch below — the app updates but doesn't restart. Matches the
     // retry-once `hermes update` already does above, and `hermes update`'s own
     // desktop rebuild in cmd_update.
@@ -547,7 +547,49 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         return Err(anyhow!(msg));
     }
-    emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
+
+    if cfg!(target_os = "windows") {
+        let expected_commit = match verify_rebuilt_desktop_commit(&install_root).await {
+            Ok(commit) => commit,
+            Err(err) => {
+                let msg = format!(
+                    "Desktop rebuild verification failed: {err:#}. The old app will not be relaunched."
+                );
+                emit_stage(
+                    &app,
+                    "rebuild",
+                    StageState::Failed,
+                    Some(rebuild_ms),
+                    Some(msg.clone()),
+                );
+                emit(
+                    &app,
+                    BootstrapEvent::Failed {
+                        stage: Some("rebuild".into()),
+                        error: msg.clone(),
+                    },
+                );
+                return Err(anyhow!(msg));
+            }
+        };
+
+        emit_log(
+            &app,
+            Some("rebuild"),
+            LogStream::Stdout,
+            &format!(
+                "[rebuild] packaged desktop verified at checkout {}",
+                &expected_commit[..12]
+            ),
+        );
+    }
+    emit_stage(
+        &app,
+        "rebuild",
+        StageState::Succeeded,
+        Some(rebuild_ms),
+        None,
+    );
 
     let launch_target = if let Some(target_app) = target_app {
         let started = Instant::now();
@@ -713,8 +755,18 @@ fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
     let release = install_root.join("apps").join("desktop").join("release");
     if cfg!(target_os = "windows") {
         vec![
-            release.join("win-unpacked").join("resources").join("app.asar"),
-            release.join("win-arm64-unpacked").join("resources").join("app.asar"),
+            release
+                .join("win-unpacked")
+                .join("resources")
+                .join("app.asar"),
+            release
+                .join("win-ia32-unpacked")
+                .join("resources")
+                .join("app.asar"),
+            release
+                .join("win-arm64-unpacked")
+                .join("resources")
+                .join("app.asar"),
         ]
     } else if cfg!(target_os = "macos") {
         vec![
@@ -791,6 +843,76 @@ fn is_locked(path: &Path) -> bool {
 /// second run resolves.
 fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
     exit_code != Some(0)
+}
+
+fn desktop_rebuild_args() -> Vec<String> {
+    vec![
+        "desktop".into(),
+        "--build-only".into(),
+        "--force-build".into(),
+    ]
+}
+
+async fn checkout_head(install_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(install_root)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|err| anyhow!("running git rev-parse HEAD: {err}"))?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git rev-parse HEAD exited {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit.len() != 40 || !crate::install_script::is_valid_commit(&commit) {
+        return Err(anyhow!(
+            "git rev-parse HEAD returned an invalid commit: {commit:?}"
+        ));
+    }
+
+    Ok(commit)
+}
+
+async fn verify_rebuilt_desktop_commit(install_root: &Path) -> Result<String> {
+    let expected_commit = checkout_head(install_root)
+        .await
+        .map_err(|err| anyhow!("updated checkout commit could not be verified: {err:#}"))?;
+    verify_packaged_desktop_commit(install_root, &expected_commit)?;
+    Ok(expected_commit)
+}
+
+fn verify_packaged_desktop_commit(install_root: &Path, expected_commit: &str) -> Result<()> {
+    let executable = crate::bootstrap::resolve_hermes_desktop_exe(install_root)
+        .ok_or_else(|| anyhow!("no packaged Windows Hermes executable was produced"))?;
+    let package_root = executable
+        .parent()
+        .ok_or_else(|| anyhow!("packaged Hermes executable has no parent directory"))?;
+    let stamp_path = package_root.join("resources").join("install-stamp.json");
+    let stamp_text = std::fs::read_to_string(&stamp_path)
+        .map_err(|err| anyhow!("reading {}: {err}", stamp_path.display()))?;
+    let stamp: serde_json::Value = serde_json::from_str(&stamp_text)
+        .map_err(|err| anyhow!("parsing {}: {err}", stamp_path.display()))?;
+    let packaged_commit = stamp
+        .get("commit")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("{} has no commit field", stamp_path.display()))?;
+
+    if !packaged_commit.eq_ignore_ascii_case(expected_commit) {
+        return Err(anyhow!(
+            "packaged commit {} does not match updated checkout {}",
+            packaged_commit,
+            expected_commit
+        ));
+    }
+
+    Ok(())
 }
 
 /// Spawn `hermes <args>` from `cwd`, stream stdout/stderr as Log events on the
@@ -1536,6 +1658,79 @@ mod tests {
             rebuild_needs_retry(None),
             "a killed/signalled rebuild (no exit code) retries once"
         );
+    }
+
+    #[test]
+    fn updater_rebuild_forces_a_fresh_package() {
+        assert_eq!(
+            desktop_rebuild_args(),
+            vec!["desktop", "--build-only", "--force-build"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn packaged_desktop_commit_verification_accepts_the_updated_checkout() {
+        let root = unique_tmp_dir("package-commit-match");
+        let executable = root
+            .join("apps")
+            .join("desktop")
+            .join("release")
+            .join("win-unpacked")
+            .join("Hermes.exe");
+        let stamp = root
+            .join("apps")
+            .join("desktop")
+            .join("release")
+            .join("win-unpacked")
+            .join("resources")
+            .join("install-stamp.json");
+        std::fs::create_dir_all(stamp.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"").unwrap();
+        std::fs::write(
+            &stamp,
+            r#"{"schemaVersion":1,"commit":"bab1651082c77af61999b0827f871b013252667f"}"#,
+        )
+        .unwrap();
+
+        verify_packaged_desktop_commit(&root, "bab1651082c77af61999b0827f871b013252667f")
+            .expect("matching packaged commit must verify");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn packaged_desktop_commit_verification_rejects_a_stale_retry_package() {
+        let root = unique_tmp_dir("package-commit-stale");
+        let executable = root
+            .join("apps")
+            .join("desktop")
+            .join("release")
+            .join("win-unpacked")
+            .join("Hermes.exe");
+        let stamp = root
+            .join("apps")
+            .join("desktop")
+            .join("release")
+            .join("win-unpacked")
+            .join("resources")
+            .join("install-stamp.json");
+        std::fs::create_dir_all(stamp.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"").unwrap();
+        std::fs::write(
+            &stamp,
+            r#"{"schemaVersion":1,"commit":"644efbd500000000000000000000000000000000"}"#,
+        )
+        .unwrap();
+
+        let error =
+            verify_packaged_desktop_commit(&root, "bab1651082c77af61999b0827f871b013252667f")
+                .expect_err("a retry must not relaunch a package from the pre-update checkout");
+
+        assert!(error.to_string().contains("644efbd5"));
+        assert!(error.to_string().contains("bab165108"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

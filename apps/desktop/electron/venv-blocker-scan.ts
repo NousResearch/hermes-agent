@@ -22,6 +22,7 @@ export interface VenvBlockerProcess {
   pid: number
   name: string
   cmdline: string
+  forceDrainEligible: boolean
 }
 
 export interface VenvBlockerScanResult {
@@ -77,7 +78,7 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
       return { kind: 'probe-failure', error: 'process entry must be an object' }
     }
 
-    const { pid, name, cmdline } = entry
+    const { pid, name, cmdline, force_drain_eligible } = entry
 
     if (!Number.isInteger(pid) || pid <= 0) {
       return { kind: 'probe-failure', error: 'process pid must be a positive integer' }
@@ -91,7 +92,13 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
       return { kind: 'probe-failure', error: 'process cmdline must be a string' }
     }
 
-    processes.push({ pid, name, cmdline })
+    if (force_drain_eligible !== undefined && typeof force_drain_eligible !== 'boolean') {
+      return { kind: 'probe-failure', error: 'process force_drain_eligible must be a boolean' }
+    }
+
+    // Older installed scanners do not include this field. Keep them blocked
+    // but never use their process list as a destructive force-drain target.
+    processes.push({ pid, name, cmdline, forceDrainEligible: force_drain_eligible === true })
   }
 
   // Reject inconsistent combinations

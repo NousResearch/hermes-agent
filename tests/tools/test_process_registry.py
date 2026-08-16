@@ -573,6 +573,32 @@ class TestReaderLoopEofWhileAlive:
         result = registry.kill_process(session.id)
         assert result["status"] == "killed"
 
+    def test_real_exit_after_eof_is_reconciled(self, registry):
+        """After EOF-while-alive, poll()/wait() must still finish with the real rc."""
+        session = registry.spawn_local(
+            f"{sys.executable} -c "
+            "'import os, sys, time; os.close(1); os.close(2); time.sleep(8); raise SystemExit(7)'",
+            cwd="/tmp",
+        )
+
+        assert _wait_until(lambda: not session._reader_thread.is_alive(), timeout=10.0), (
+            "reader thread should reach EOF after the child closes stdout/stderr"
+        )
+        # Reader returned while the child is still in its sleep — the
+        # EOF-while-alive window this PR exists to keep open.
+        assert session.process.poll() is None
+        assert session.exited is False
+        assert session.id in registry._running
+
+        assert _wait_until(lambda: session.process.poll() is not None, timeout=10.0), (
+            "child should exit after the remaining sleep"
+        )
+        result = registry.poll(session.id)
+        assert result["status"] == "exited", result
+        assert result["exit_code"] == 7
+        assert session.id in registry._finished
+        assert session.id not in registry._running
+
 
 # =========================================================================
 # Read log

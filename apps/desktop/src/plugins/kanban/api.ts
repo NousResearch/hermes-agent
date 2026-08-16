@@ -11,6 +11,8 @@
 
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
 
+// P6B1 N2 — native completion notification (LOCAL_PATCH_UNTIL_UPSTREAM).
+import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
   BoardMeta,
   BoardsResponse,
@@ -52,7 +54,7 @@ const COLLAPSED_KEY = 'collapsedLanes'
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
 function onEventsFrame(slug: string, data: unknown): void {
-  const events = (data as { events?: Array<{ task_id?: string }> })?.events
+  const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
     return
@@ -65,6 +67,10 @@ function onEventsFrame(slug: string, data: unknown): void {
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
+
+  // P6B1 N2 — completion notification (after invalidation so notify failure
+  // never interferes with cache invalidation).
+  void onKanbanEventsFrame(slug, events).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -81,6 +87,7 @@ interface Persisted<T> {
  *  handshake, so a board switch closes + reopens it. */
 export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => void {
   rest = r
+  bindCompletionNotify(r)
   const unsubs: Array<() => void> = []
 
   // Hydrate an atom from storage and keep storage in sync with it.

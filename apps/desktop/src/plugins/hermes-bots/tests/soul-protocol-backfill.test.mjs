@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 function loadSoulHelpers({ serverInjects = false } = {}) {
-  const start = source.indexOf('function botHandle(name) {')
+  const start = source.indexOf('function botHandle(name')
   const end = source.indexOf('// ── human-readable row helpers', start)
   assert.notEqual(start, -1, 'botHandle is missing')
   assert.notEqual(end, -1, 'soul-helper section delimiter is missing')

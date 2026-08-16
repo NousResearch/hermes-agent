@@ -2015,12 +2015,29 @@ function useRoster() {
   return useQuery({
     queryKey: ROSTER_KEY,
     queryFn: async () => {
-      const res = await host.request('profiles.list', {})
+      // Rich rows (last_session, ui_meta, has_avatar) come from the ACTIVE
+      // gateway's profiles.list — unchanged single-source behavior.
+      const local = await host.request('profiles.list', {})
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
       // carry a second copy. Older gateways lack the flag: keep appending.
-      serverInjectsProtocol = Boolean(res?.bot_mode_protocol)
-      return res
+      serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+
+      // Multi-source desktops (hermes-agent #86875) also expose the union
+      // agent roster across every registered connection. Merge agents from
+      // OTHER sources in as additional rows. Feature-detected + best-effort:
+      // an older Desktop build (no host.agents) or a roster hiccup leaves
+      // the local list exactly as it was.
+      if (typeof host.agents === 'function') {
+        try {
+          const union = await host.agents()
+          return mergeMultiSourceRoster(local, union)
+        } catch {
+          /* older build or roster failure — single-source list stands */
+        }
+      }
+
+      return local
     },
     refetchInterval: 5000,
     staleTime: 5000,
@@ -2031,16 +2048,69 @@ function useRoster() {
   })
 }
 
-/** The @handle users tag a bot with. The primary profile's callable alias
- *  is 'hermes' — the mention middleware resolves it back to 'default' — so
- *  the word 'default' never surfaces in the UI. */
-function botHandle(name) {
+/** Merge the union agent roster (host.agents) over the active gateway's
+ *  profiles.list. Local-source rows are matched by profile name and only
+ *  ANNOTATED (handle, connectionId) — their rich fields stay authoritative.
+ *  Rows from other sources become new roster entries tagged with their
+ *  source label so BotRow can badge them and route open/warm through
+ *  ensureAgent/warmAgent. Pure — exercised directly by the tests. */
+function mergeMultiSourceRoster(local, union) {
+  const profiles = Array.isArray(local?.profiles) ? local.profiles.slice() : []
+  const agents = Array.isArray(union?.agents) ? union.agents : []
+
+  if (!agents.length) {
+    return { ...local, profiles }
+  }
+
+  const localByName = new Map(profiles.map(p => [p.name, p]))
+
+  for (const agent of agents) {
+    const isLocalSource = agent.connectionKind === 'local'
+    const row = isLocalSource ? localByName.get(agent.profile) : null
+
+    if (row) {
+      // Annotate in place: the @name-device handle only differs from the
+      // bare name when the profile exists on several sources.
+      row.handle = agent.handle
+      row.connectionId = agent.connectionId
+      continue
+    }
+
+    if (isLocalSource) {
+      // Union saw a local profile profiles.list didn't return (older
+      // backend mid-refresh) — skip rather than invent a thin row.
+      continue
+    }
+
+    profiles.push({
+      name: agent.profile,
+      handle: agent.handle,
+      connectionId: agent.connectionId,
+      connectionKind: agent.connectionKind,
+      connectionLabel: agent.connectionLabel,
+      remoteSource: true
+    })
+  }
+
+  return { ...local, profiles }
+}
+
+/** The @handle users tag a bot with. Multi-source rosters precompute the
+ *  handle (bare name, or name-device when the profile exists on several
+ *  registered sources) — prefer it when present. The primary profile's
+ *  callable alias is 'hermes' — the mention middleware resolves it back to
+ *  'default' — so the word 'default' never surfaces in the UI. */
+function botHandle(name, bot) {
+  if (bot?.handle && bot.handle !== name) {
+    return bot.handle
+  }
+
   return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
 }
 
-function showsHandle(name, meta) {
+function showsHandle(name, meta, bot) {
   const display = displayName({ name }, meta)
-  return Boolean(name && display.toLowerCase() !== botHandle(name).toLowerCase())
+  return Boolean(name && display.toLowerCase() !== botHandle(name, bot).toLowerCase())
 }
 
 // ── canonical bot chat ───────────────────────────────────────────────────────
@@ -2192,8 +2262,13 @@ function filterBots(roster, metaByName, query) {
   return roster.filter(bot => {
     const display = displayName(bot, metaByName[bot.name]).toLowerCase()
     const profile = (bot.name || '').toLowerCase()
-    const handle = botHandle(bot.name).toLowerCase()
-    return display.includes(needle) || profile.includes(needle) || handle.includes(needle)
+    const handle = botHandle(bot.name, bot).toLowerCase()
+    // Multi-source rows also match on their device name ("homelab" finds
+    // every bot living on the Homelab connection).
+    const sourceLabel = (bot.connectionLabel || '').toLowerCase()
+    return (
+      display.includes(needle) || profile.includes(needle) || handle.includes(needle) || sourceLabel.includes(needle)
+    )
   })
 }
 
@@ -2956,6 +3031,17 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     : last?.preview || bot.description || 'No conversations yet — say hi'
 
   const warm = () => {
+    // Multi-source row: pre-dial the agent's OWN source (feature-detected).
+    if (bot.remoteSource && typeof host.warmAgent === 'function') {
+      try {
+        host.warmAgent(bot.connectionId, bot.name)
+      } catch {
+        /* warm is best-effort */
+      }
+
+      return
+    }
+
     if (typeof host.warmProfile !== 'function') {
       return
     }
@@ -2975,6 +3061,29 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
       const next = { ...$botUnread.get() }
       delete next[bot.name]
       $botUnread.set(next)
+    }
+
+    // Multi-source row: activate the agent's source gateway FIRST so the
+    // canonical-chat RPCs (session.list / session.create / openSession)
+    // land on the backend that actually owns this bot's state.db. Same
+    // canonical-chat flow after that — one forever chat per bot, per source.
+    if (bot.remoteSource) {
+      if (typeof host.ensureAgent !== 'function') {
+        host.notifyError?.(
+          new Error('Update Hermes Desktop to chat with agents on other connections.'),
+          bot.connectionLabel || 'Remote source'
+        )
+
+        return
+      }
+
+      try {
+        await host.ensureAgent(bot.connectionId, bot.name)
+      } catch (error) {
+        host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the remote source'}`)
+
+        return
+      }
     }
 
     try {
@@ -3029,10 +3138,18 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
                     className: 'truncate text-[0.8125rem] font-medium',
                     children: displayName(bot, meta)
                   }),
-                  showsHandle(bot.name, meta)
+                  showsHandle(bot.name, meta, bot)
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
-                        children: `@${botHandle(bot.name)}`
+                        children: `@${botHandle(bot.name, bot)}`
+                      })
+                    : null,
+                  bot.remoteSource
+                    ? jsx('span', {
+                        className:
+                          'shrink-0 rounded bg-(--chrome-action-hover) px-1 font-mono text-[0.625rem] text-(--ui-text-tertiary)',
+                        title: `Lives on ${bot.connectionLabel}`,
+                        children: bot.connectionLabel
                       })
                     : null
                 ]

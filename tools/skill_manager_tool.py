@@ -982,7 +982,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         from tools.skill_provenance import is_background_review
         is_bg_review = is_background_review()
     except Exception:
-        pass
+        # Provenance probe failed: fail closed and treat as background-origin.
+        is_bg_review = True
 
     skill_dir = _resolve_skill_dir(name, category)
     skill_md = skill_dir / "SKILL.md"

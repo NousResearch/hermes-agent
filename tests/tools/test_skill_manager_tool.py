@@ -997,6 +997,16 @@ class TestBackgroundOriginCreateFailClosed:
         assert result["success"] is True
         assert (tmp_path / "bg-skill" / "SKILL.md").exists()
 
+    def test_create_fails_closed_when_provenance_probe_raises(self, tmp_path):
+        """If origin cannot be determined, do not take the lenient foreground path."""
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_provenance.is_background_review", side_effect=RuntimeError("boom")), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", False):
+            result = _create_skill("bg-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "scanner is not available" in result["error"]
+        assert not (tmp_path / "bg-skill" / "SKILL.md").exists()
+
     def test_foreground_create_succeeds_without_scanner(self, tmp_path):
         """Foreground create keeps existing behavior: no scan when guard is
         disabled (default), skill is published directly."""

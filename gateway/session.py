@@ -1048,12 +1048,16 @@ def build_channel_continuity_note(
 
 def effective_session_thread_id(source: SessionSource) -> Optional[str]:
     """Return the thread id used by session routing."""
-    return source.thread_id or source.prospective_thread_id
+    if source.thread_id:
+        return source.thread_id
+    if source.platform == Platform.DISCORD:
+        return source.prospective_thread_id
+    return None
 
 
 def effective_session_chat_type(source: SessionSource) -> str:
     """Return the chat type represented by the routed session key."""
-    if source.prospective_thread_id and not source.thread_id:
+    if effective_session_thread_id(source) and not source.thread_id:
         return "thread"
     return source.chat_type
 
@@ -4116,11 +4120,8 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
-    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
-    platform_extra = (
-        platform_cfg.extra
-        if platform_cfg and isinstance(getattr(platform_cfg, "extra", None), dict)
-        else {}
+    group_sessions_per_user, thread_sessions_per_user = resolve_session_isolation(
+        config, source
     )
     context = SessionContext(
         source=source,
@@ -4128,14 +4129,8 @@ def build_session_context(
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=platform_extra.get(
-                "group_sessions_per_user",
-                getattr(config, "group_sessions_per_user", True),
-            ),
-            thread_sessions_per_user=platform_extra.get(
-                "thread_sessions_per_user",
-                getattr(config, "thread_sessions_per_user", False),
-            ),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         ),
     )
     

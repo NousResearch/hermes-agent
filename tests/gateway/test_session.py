@@ -16,6 +16,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
 
@@ -964,6 +965,19 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(first) != build_session_key(second)
         assert build_session_key(first).endswith(":msg-100")
         assert build_session_key(second).endswith(":msg-200")
+
+    def test_non_discord_prospective_thread_metadata_does_not_change_routing(self):
+        """The prospective-thread signal is a Discord auto-thread contract only."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="group-1",
+            chat_type="group",
+            user_id="alice",
+            prospective_thread_id="future-thread",
+        )
+
+        assert build_session_key(source) == "agent:main:telegram:group:group-1:alice"
+        assert is_shared_multi_user_session(source) is False
 
     def test_real_thread_id_wins_over_prospective(self):
         """A real thread_id always takes precedence over prospective_thread_id

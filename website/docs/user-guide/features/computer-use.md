@@ -63,9 +63,11 @@ on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
 status` to verify the install.
 
 Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
-contract. During setup and toolset enablement, Hermes checks the local version
-and manifest. It repairs an old or incomplete standard installation through
-the upstream installer. A binary selected with `HERMES_CUA_DRIVER_CMD` stays
+contract. During setup, toolset enablement, `hermes update`, and the first
+`computer_use` call of a session, Hermes checks the local version and
+manifest. It repairs an old or incomplete standard installation through
+the upstream installer (at most once per session at runtime). A binary
+selected with `HERMES_CUA_DRIVER_CMD` stays
 under your control, so Hermes reports the incompatibility and leaves it
 unchanged.
 

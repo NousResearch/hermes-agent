@@ -3,7 +3,13 @@
 // the user's correction → post-steer continuation with its own tools) must
 // hydrate in that same order. A regression here re-creates "my steer shows
 // way above the output" on every reload, even when the live path is correct.
-// Row shape mirrors real state.db sequences (e.g. ids 731378-731389).
+//
+// Row shape mirrors what the client actually receives for a real steered turn
+// (state.db ids 731378-731389): row_id, reasoning, and
+// tool_calls entries carrying the provider's call_id/response_item_id
+// alongside id. The interrupt scaffolding lives in a server-only api_content
+// sidecar the client never sees, so the checkpoint row's content is already
+// clean here — that projection is pinned in chat-messages.test.ts.
 import { describe, expect, it } from 'vitest'
 
 import type { SessionMessage } from '@/types/hermes'
@@ -11,31 +17,60 @@ import type { SessionMessage } from '@/types/hermes'
 import { chatMessageText, toChatMessages } from './chat-messages'
 
 const steeredTurnRows: SessionMessage[] = [
-  { content: 'run the build', role: 'user', timestamp: 100 },
+  { content: 'run the build', role: 'user', row_id: 731378, timestamp: 100 },
   {
     content: 'Kicking off the build:',
+    reasoning: 'The build has to pass before docs are worth writing.',
     role: 'assistant',
+    row_id: 731379,
     timestamp: 101,
     tool_calls: [
-      { function: { arguments: '{"command":"make"}', name: 'terminal' }, id: 'call-1', type: 'function' }
+      {
+        call_id: 'call-1',
+        function: { arguments: '{"command":"make"}', name: 'terminal' },
+        id: 'call-1',
+        response_item_id: 'fc_call-1',
+        type: 'function'
+      }
     ]
   },
-  { content: '{"output":"done","exit_code":0}', role: 'tool', timestamp: 102, tool_call_id: 'call-1', tool_name: 'terminal' },
-  { content: 'Build is green. Now writing the docs section', role: 'assistant', timestamp: 103 },
+  {
+    content: '{"output":"done","exit_code":0}',
+    role: 'tool',
+    row_id: 731380,
+    timestamp: 102,
+    tool_call_id: 'call-1',
+    tool_name: 'terminal'
+  },
+  { content: 'Build is green. Now writing the docs section', role: 'assistant', row_id: 731381, timestamp: 103 },
   // Redirect checkpoint: content keeps the visible words; the provider
   // scaffolding rides api_content (never shipped to the client).
-  { content: 'Now the ladder in the resolver:', role: 'assistant', timestamp: 104 },
-  { content: 'actually skip docs, fix the tests instead', role: 'user', timestamp: 104.1 },
+  { content: 'Now the ladder in the resolver:', role: 'assistant', row_id: 731382, timestamp: 104 },
+  { content: 'actually skip docs, fix the tests instead', role: 'user', row_id: 731383, timestamp: 104.1 },
   {
     content: 'Got it — tests first.',
     role: 'assistant',
+    row_id: 731384,
     timestamp: 105,
     tool_calls: [
-      { function: { arguments: '{"command":"pytest"}', name: 'terminal' }, id: 'call-2', type: 'function' }
+      {
+        call_id: 'call-2',
+        function: { arguments: '{"command":"pytest"}', name: 'terminal' },
+        id: 'call-2',
+        response_item_id: 'fc_call-2',
+        type: 'function'
+      }
     ]
   },
-  { content: '{"output":"3 passed","exit_code":0}', role: 'tool', timestamp: 106, tool_call_id: 'call-2', tool_name: 'terminal' },
-  { content: 'Tests pass.', role: 'assistant', timestamp: 107 }
+  {
+    content: '{"output":"3 passed","exit_code":0}',
+    role: 'tool',
+    row_id: 731385,
+    timestamp: 106,
+    tool_call_id: 'call-2',
+    tool_name: 'terminal'
+  },
+  { content: 'Tests pass.', role: 'assistant', row_id: 731386, timestamp: 107 }
 ]
 
 describe('toChatMessages on a persisted steered turn', () => {

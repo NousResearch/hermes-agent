@@ -315,6 +315,129 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    def test_demote_all_categories_except_keep_full(
+        self, monkeypatch, tmp_path
+    ):
+        """demote_all_categories demotes everything except keep_full_categories."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name, desc in [
+            ("hermes", "hermes-core-customization", "Patch Hermes core safely"),
+            ("pixiv", "pixiv", "Search pixiv artworks"),
+        ]:
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+        out = build_skills_system_prompt(
+            demote_all_categories=True,
+            keep_full_categories=frozenset({"hermes"}),
+        )
+        # kept category: description survives
+        assert "Patch Hermes core safely" in out
+        # demoted category: name visible, description dropped
+        assert "pixiv" in out
+        assert "Search pixiv artworks" not in out
+        assert "[names only]" in out
+
+    def test_focus_only_demotion_keeps_legacy_note(self, monkeypatch, tmp_path):
+        """Golden: posture-driven demotion without operator pins must keep the
+        pre-existing note text byte-identical (prompt cache stability)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "pixiv" / "pixiv"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: pixiv\ndescription: Search pixiv artworks\n---\n"
+        )
+        out = build_skills_system_prompt(compact_categories=frozenset({"pixiv"}))
+        assert (
+            "(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        ) in out
+
+    def test_operator_pins_use_config_note(self, monkeypatch, tmp_path):
+        """Operator-pinned demotion explains the config, not the posture."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "pixiv" / "pixiv"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: pixiv\ndescription: Search pixiv artworks\n---\n"
+        )
+        out = build_skills_system_prompt(pinned_categories=frozenset({"pixiv"}))
+        assert "skills.compact_categories config" in out
+        assert "outside the current coding context" not in out
+
+    def test_keep_full_matches_nested_category_path(self, monkeypatch, tmp_path):
+        """keep_full 'social-media/twitter' keeps that nested category full
+        while its sibling under the same parent stays demoted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for rel, name, desc in [
+            ("social-media/twitter", "thread-writer", "Write threads"),
+            ("social-media", "pixiv-post", "Post to pixiv"),
+        ]:
+            d = tmp_path / "skills" / rel / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+        out = build_skills_system_prompt(
+            demote_all_categories=True,
+            keep_full_categories=frozenset({"social-media/twitter"}),
+        )
+        assert "Write threads" in out          # nested path kept full
+        assert "Post to pixiv" not in out      # sibling under demoted parent
+
+    def test_pinned_demotion_beats_keep_full(self, monkeypatch, tmp_path):
+        """An explicitly pinned category demotes even if also keep-full:
+        explicit names are deliberate; keep_full only guards the wildcard."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "pixiv" / "pixiv"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: pixiv\ndescription: Search pixiv artworks\n---\n"
+        )
+        out = build_skills_system_prompt(
+            pinned_categories=frozenset({"pixiv"}),
+            demote_all_categories=True,
+            keep_full_categories=frozenset({"pixiv"}),
+        )
+        assert "Search pixiv artworks" not in out
+
+    def test_keep_full_alone_keeps_legacy_focus_note(self, monkeypatch, tmp_path):
+        """keep_full without pins/"*" demotes nothing; a focus-mode demotion
+        in the same call must still render the legacy note byte-identical."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "pixiv" / "pixiv"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: pixiv\ndescription: Search pixiv artworks\n---\n"
+        )
+        out = build_skills_system_prompt(
+            compact_categories=frozenset({"pixiv"}),
+            keep_full_categories=frozenset({"hermes"}),
+        )
+        assert "outside the current coding context" in out
+        assert "skills.compact_categories config" not in out
+
+    def test_nested_path_pin_demotes_only_that_path(self, monkeypatch, tmp_path):
+        """A pin of 'social-media/twitter' demotes exactly that nested
+        category; the sibling directly under the parent stays full."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for rel, name, desc in [
+            ("social-media/twitter", "thread-writer", "Write threads"),
+            ("social-media", "pixiv-post", "Post to pixiv"),
+        ]:
+            d = tmp_path / "skills" / rel / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+        out = build_skills_system_prompt(
+            pinned_categories=frozenset({"social-media/twitter"}),
+        )
+        assert "Write threads" not in out      # nested pin demoted
+        assert "Post to pixiv" in out          # sibling unaffected
 
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):

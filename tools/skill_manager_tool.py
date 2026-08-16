@@ -35,6 +35,8 @@ from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
+_GUARD_AVAILABLE = True
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,6 +74,8 @@ def _security_scan_skill_strict(skill_dir: Path) -> Optional[str]:
 
     Returns an error string when the skill must not be published, else None.
     """
+    if not _GUARD_AVAILABLE:
+        return "Security scanner is not available; background-origin skill creation is denied."
     try:
         result = scan_skill(skill_dir, source="agent-created")
         allowed, reason = should_allow_install(result)
@@ -506,10 +510,16 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
     # with strict semantics, and only publish to the active root on success. No
     # active SKILL.md may remain on reject or scanner exception
     # (SECURITY-CLASS-6024d99228f118e5). Foreground keeps the existing
-    # write-then-optional-scan-with-rollback behavior.
+    # write-then-optional-scan-with-rollback behavior. A provenance probe
+    # failure is treated as background-origin so it cannot skip the strict scan.
+    try:
+        from tools.skill_provenance import is_background_review
+        is_bg_review = is_background_review()
+    except Exception:
+        is_bg_review = True
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
-    background = _is_background_review()
+    background = is_bg_review
     if background:
         import tempfile
         staging = Path(tempfile.mkdtemp(prefix="skill-stage-"))

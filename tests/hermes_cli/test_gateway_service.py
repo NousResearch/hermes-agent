@@ -409,6 +409,45 @@ class TestBundledResourceEnvPropagation:
 
         assert gateway_cli._bundled_resource_env_pairs() == []
 
+    def test_launchd_plist_xml_escapes_bundled_value(self, monkeypatch):
+        """A bundled prefix with XML-special chars (e.g. a ``Research & Dev``
+        directory) must not emit malformed plist XML that launchd refuses."""
+        self._clear(monkeypatch)
+        monkeypatch.setenv(
+            "HERMES_BUNDLED_PLUGINS", "/opt/Research & <Dev>/hermes/plugins"
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert (
+            "<string>/opt/Research &amp; &lt;Dev&gt;/hermes/plugins</string>"
+            in plist
+        )
+        # The raw ampersand/brackets must never reach the rendered XML.
+        assert "Research & <Dev>" not in plist
+        # And the document is still well-formed XML.
+        import xml.dom.minidom
+
+        xml.dom.minidom.parseString(plist)
+
+    def test_systemd_unit_escapes_percent_quote_and_backslash(self, monkeypatch):
+        """systemd expands ``%`` specifiers and treats ``"``/``\\`` specially in a
+        quoted ``Environment=`` value, so a bundled path with those characters
+        must be escaped or the unit value is truncated/rewritten."""
+        self._clear(monkeypatch)
+        monkeypatch.setenv(
+            "HERMES_BUNDLED_PLUGINS", r'/srv/100%/a"b\c/plugins'
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert (
+            r'Environment="HERMES_BUNDLED_PLUGINS=/srv/100%%/a\"b\\c/plugins"'
+            in unit
+        )
+        # No lone/literal specifier or unescaped quote leaks into the directive.
+        assert "100%/" not in unit
+
 
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only

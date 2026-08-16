@@ -1360,10 +1360,12 @@ def _try_dispatch_background_run(
     started_at = time.time()
     # Canonicalize with the scheduler's own normalizer so the summary states
     # the same target fire time will use: falsy ("", stored JSON null) reads
-    # "local", legacy list-form deliver flattens to its comma string.
+    # "local", legacy list-form deliver flattens to its comma string. Read
+    # from the claimed snapshot — the owner-bearing record the run actually
+    # executes — not the pre-claim `job` the tool loaded.
     from cron.scheduler import _normalize_deliver_value
 
-    deliver = _normalize_deliver_value(job.get("deliver", "local"))
+    deliver = _normalize_deliver_value(claimed_job.get("deliver", "local"))
 
     def _runner() -> Dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)

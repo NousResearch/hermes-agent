@@ -91,6 +91,19 @@ def _bound_session_key(key):
         _approval_session_key.reset(token)
 
 
+def _dispatch_diag(res) -> str:
+    """Failure renderer for the wiring tests' dispatch asserts: the result
+    dict plus the scheduler running set, so a broken assert names the return
+    path that was actually taken instead of a bare KeyError."""
+    try:
+        from cron.scheduler import get_running_job_ids
+
+        running = sorted(get_running_job_ids())
+    except Exception as e:  # pragma: no cover - diagnostic only
+        running = f"<unavailable: {e}>"
+    return f"dispatch result: {res!r}; running: {running}"
+
+
 def _drain_completion_event(delegation_id):
     """Wait (bounded) for this delegation's completion event; requeue others.
 
@@ -175,9 +188,13 @@ class TestRunnerSummaryWiring:
     def test_delivery_failure_surfaces_in_completion_summary(self):
         from tools.cronjob_tools import _try_dispatch_background_run
 
+        job = _job("job-dn-01", "telegram")
         with _bound_session_key("agent:main:telegram:dm:83993"):
             with (
-                patch("tools.cronjob_tools.claim_job_for_fire", return_value=True),
+                patch(
+                    "tools.cronjob_tools.claim_job_for_fire",
+                    return_value=job,  # claimed snapshot (return_job=True API)
+                ),
                 patch("cron.scheduler.run_one_job", return_value=True),
                 patch(
                     "tools.cronjob_tools.get_job",
@@ -188,8 +205,8 @@ class TestRunnerSummaryWiring:
                     },
                 ),
             ):
-                res = _try_dispatch_background_run(_job("job-dn-01", "telegram"))
-                assert res["dispatched"] is True
+                res = _try_dispatch_background_run(job)
+                assert res.get("dispatched") is True, _dispatch_diag(res)
                 evt = _drain_completion_event(res["delegation_id"])
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
@@ -204,17 +221,21 @@ class TestRunnerSummaryWiring:
         by a delivered-there claim."""
         from tools.cronjob_tools import _try_dispatch_background_run
 
+        job = _job("job-dn-03", "")
         with _bound_session_key("agent:main:telegram:dm:86622"):
             with (
-                patch("tools.cronjob_tools.claim_job_for_fire", return_value=True),
+                patch(
+                    "tools.cronjob_tools.claim_job_for_fire",
+                    return_value=job,  # claimed snapshot (return_job=True API)
+                ),
                 patch("cron.scheduler.run_one_job", return_value=True),
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={"last_status": "ok", "last_error": None},
                 ),
             ):
-                res = _try_dispatch_background_run(_job("job-dn-03", ""))
-                assert res["dispatched"] is True
+                res = _try_dispatch_background_run(job)
+                assert res.get("dispatched") is True, _dispatch_diag(res)
                 evt = _drain_completion_event(res["delegation_id"])
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
@@ -224,17 +245,21 @@ class TestRunnerSummaryWiring:
     def test_delivery_success_wording_unchanged_in_completion_summary(self):
         from tools.cronjob_tools import _try_dispatch_background_run
 
+        job = _job("job-dn-02", "telegram")
         with _bound_session_key("agent:main:telegram:dm:83994"):
             with (
-                patch("tools.cronjob_tools.claim_job_for_fire", return_value=True),
+                patch(
+                    "tools.cronjob_tools.claim_job_for_fire",
+                    return_value=job,  # claimed snapshot (return_job=True API)
+                ),
                 patch("cron.scheduler.run_one_job", return_value=True),
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={"last_status": "ok", "last_error": None},
                 ),
             ):
-                res = _try_dispatch_background_run(_job("job-dn-02", "telegram"))
-                assert res["dispatched"] is True
+                res = _try_dispatch_background_run(job)
+                assert res.get("dispatched") is True, _dispatch_diag(res)
                 evt = _drain_completion_event(res["delegation_id"])
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""

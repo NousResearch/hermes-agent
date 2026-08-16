@@ -264,6 +264,49 @@ class TestLiveConnectionSafety:
             holder.close()
 
 
+class TestUnreadableReason:
+    def test_missing_file_keeps_the_os_error_text(self, tmp_path):
+        reason = doctor._unreadable_reason(tmp_path / "gone.db")
+
+        assert "No such file or directory" in reason
+
+    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+    @pytest.mark.skipif(
+        # os.geteuid is POSIX-only, and a skipif condition is evaluated at
+        # collection time — calling it unguarded would raise AttributeError
+        # and take the whole module down on Windows.
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores file permissions",
+    )
+    def test_unreadable_file_is_reported_as_permission_denied(self, tmp_path):
+        db = tmp_path / "state.db"
+        _make_db(db)
+        os.chmod(db, 0o000)
+        try:
+            mode, error = doctor._read_journal_mode(db)
+        finally:
+            os.chmod(db, 0o644)
+
+        assert mode is None
+        assert "permission denied" in error.lower()
+
+    def test_reason_does_not_open_the_file(self, tmp_path, monkeypatch):
+        """_unreadable_reason must answer from metadata only.
+
+        It runs on database paths, so taking a descriptor would reintroduce
+        the very close() this module's guard exists to prevent.
+        """
+        db = tmp_path / "state.db"
+        _make_db(db)
+
+        def _fail(*args, **kwargs):
+            raise AssertionError("_unreadable_reason must not open the file")
+
+        monkeypatch.setattr("builtins.open", _fail)
+
+        assert doctor._unreadable_reason(db) == "file could not be read"
+
+
 class TestReportDatabaseJournalModes:
     def test_vulnerable_runtime_wal_db_is_exposed(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="WAL")

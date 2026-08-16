@@ -790,12 +790,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            response_text = self._handle_slash_command(user_text, state)
-            if response_text is not None:
-                if self._conn:
-                    await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
-                    await self._send_usage_update(state)
-                return PromptResponse(stop_reason="end_turn")
+            skill_message = self._build_skill_invocation(user_text, state)
+            if skill_message is not None:
+                user_content = skill_message
+            else:
+                response_text = self._handle_slash_command(user_text, state)
+                if response_text is not None:
+                    if self._conn:
+                        update = acp.update_agent_message_text(response_text)
+                        await self._conn.session_update(session_id, update)
+                        await self._send_usage_update(state)
+                    return PromptResponse(stop_reason="end_turn")
 
         absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
         if absorbed is not None:
@@ -924,9 +929,410 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         await self._send_usage_update(state)
         return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
 
-    # ---- Session settings (ACP protocol methods) -----------------------------
+    # ---- Slash commands (headless) -------------------------------------------
 
-    async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> SetSessionModelResponse | None:
+    @classmethod
+    def _available_commands(cls) -> list[AvailableCommand]:
+        commands: list[AvailableCommand] = []
+        seen: set[str] = set()
+        for spec in cls._ADVERTISED_COMMANDS:
+            input_hint = spec.get("input_hint")
+            commands.append(
+                AvailableCommand(
+                    name=spec["name"],
+                    description=spec["description"],
+                    input=UnstructuredCommandInput(hint=input_hint)
+                    if input_hint
+                    else None,
+                )
+            )
+            seen.add(spec["name"])
+
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            for command_key, skill_info in sorted(get_skill_commands().items()):
+                name = command_key.lstrip("/")
+                if not name or name in seen:
+                    continue
+                description = str(skill_info.get("description") or "").strip()
+                commands.append(
+                    AvailableCommand(
+                        name=name,
+                        description=description or f"Invoke the {name} skill",
+                        input=UnstructuredCommandInput(hint="instructions for the skill"),
+                    )
+                )
+                seen.add(name)
+        except Exception:
+            logger.warning("Failed to discover ACP skill slash commands", exc_info=True)
+        return commands
+
+    async def _send_available_commands_update(self, session_id: str) -> None:
+        """Advertise supported slash commands to the connected ACP client."""
+        if not self._conn:
+            return
+
+        try:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=AvailableCommandsUpdate(
+                    session_update="available_commands_update",
+                    available_commands=self._available_commands(),
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to advertise ACP slash commands for session %s",
+                session_id,
+                exc_info=True,
+            )
+
+    def _schedule_available_commands_update(self, session_id: str) -> None:
+        """Send the command advertisement after the session response is queued."""
+        if not self._conn:
+            return
+        loop = asyncio.get_running_loop()
+        loop.call_soon(
+            asyncio.create_task, self._send_available_commands_update(session_id)
+        )
+
+    def _build_skill_invocation(self, text: str, state: SessionState) -> str | None:
+        """Expand an installed skill slash command into the normal agent prompt."""
+        parts = text.split(maxsplit=1)
+        command = parts[0].lstrip("/").lower()
+        instruction = parts[1].strip() if len(parts) > 1 else ""
+        if command in self._SLASH_COMMANDS:
+            return None
+
+        try:
+            from agent.runtime_cwd import set_session_cwd
+            from agent.skill_commands import (
+                build_skill_invocation_message,
+                resolve_skill_command_key,
+            )
+
+            def _build() -> str | None:
+                set_session_cwd(state.cwd)
+                command_key = resolve_skill_command_key(command)
+                if command_key is None:
+                    return None
+                return build_skill_invocation_message(
+                    command_key,
+                    instruction,
+                    task_id=state.session_id,
+                )
+
+            return contextvars.copy_context().run(_build)
+        except Exception:
+            logger.error("Skill slash command /%s failed", command, exc_info=True)
+            return None
+
+    def _handle_slash_command(self, text: str, state: SessionState) -> str | None:
+        """Dispatch a slash command and return the response text.
+
+        Returns ``None`` for unrecognized commands so they fall through
+        to the LLM (the user may have typed ``/something`` as prose).
+        """
+        parts = text.split(maxsplit=1)
+        cmd = parts[0].lstrip("/").lower()
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        handler = {
+            "help": self._cmd_help,
+            "model": self._cmd_model,
+            "tools": self._cmd_tools,
+            "context": self._cmd_context,
+            "reset": self._cmd_reset,
+            "compress": self._cmd_compress,
+            "steer": self._cmd_steer,
+            "queue": self._cmd_queue,
+            "version": self._cmd_version,
+        }.get(cmd)
+
+        if handler is None:
+            return None  # not a known command — let the LLM handle it
+
+        # Slash handlers run on the event-loop thread, OUTSIDE the per-turn
+        # contextvars.copy_context() that pins the session cwd for the agent
+        # call. ``/compress`` and ``/model`` reach code that REBUILDS the
+        # system prompt (agent._build_system_prompt -> resolve_agent_cwd), so
+        # an unpinned handler bakes the Hermes install tree into the session's
+        # cached prompt — persisted, and therefore poisoning every later turn
+        # even though the turn itself is pinned. Pin inside a fresh context so
+        # the write can't leak into other concurrent ACP sessions and needs no
+        # teardown.
+        def _dispatch() -> str | None:
+            try:
+                from agent.runtime_cwd import set_session_cwd
+
+                set_session_cwd(state.cwd)
+            except Exception:
+                logger.debug("Could not pin ACP session cwd for slash command", exc_info=True)
+            return handler(args, state)
+
+        try:
+            return contextvars.copy_context().run(_dispatch)
+        except Exception as e:
+            logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
+            return f"Error executing /{cmd}: {e}"
+
+    def _cmd_help(self, args: str, state: SessionState) -> str:
+        lines = ["Available commands:", ""]
+        for command in self._available_commands():
+            lines.append(f"  /{command.name:10s}  {command.description}")
+        lines.append("")
+        lines.append("Unrecognized /commands are sent to the model as normal messages.")
+        return "\n".join(lines)
+
+    def _cmd_model(self, args: str, state: SessionState) -> str:
+        if not args:
+            model = state.model or getattr(state.agent, "model", "unknown")
+            provider = getattr(state.agent, "provider", None) or "auto"
+            return f"Current model: {model}\nProvider: {provider}"
+
+        current_provider = getattr(state.agent, "provider", None) or "openrouter"
+        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+
+        state.model = new_model
+        state.agent = self.session_manager._make_agent(
+            session_id=state.session_id,
+            cwd=state.cwd,
+            model=new_model,
+            requested_provider=target_provider,
+        )
+        self.session_manager.save_session(state.session_id)
+        provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
+        logger.info("Session %s: model switched to %s", state.session_id, new_model)
+        return f"Model switched to: {new_model}\nProvider: {provider_label}"
+
+    def _cmd_tools(self, args: str, state: SessionState) -> str:
+        try:
+            from model_tools import get_tool_definitions
+            from types import SimpleNamespace
+            from agent.memory_manager import inject_memory_provider_tools
+
+            toolsets = _expand_acp_enabled_toolsets(
+                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+            )
+            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            tool_view = SimpleNamespace(
+                tools=list(tools or []),
+                valid_tool_names={
+                    tool.get("function", {}).get("name")
+                    for tool in tools or []
+                    if isinstance(tool, dict)
+                },
+                enabled_toolsets=toolsets,
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
+            )
+            inject_memory_provider_tools(tool_view)
+            tools = tool_view.tools
+            if not tools:
+                return "No tools available."
+            lines = [f"Available tools ({len(tools)}):"]
+            for t in tools:
+                name = (t.get("function") or {}).get("name", "?")
+                desc = (t.get("function") or {}).get("description", "")
+                # Truncate long descriptions
+                if len(desc) > 80:
+                    desc = desc[:77] + "..."
+                lines.append(f"  {name}: {desc}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Could not list tools: {e}"
+
+    def _cmd_context(self, args: str, state: SessionState) -> str:
+        """Show ACP session context pressure and compression guidance."""
+        n_messages = len(state.history)
+
+        # Count by role.
+        roles: dict[str, int] = {}
+        for msg in state.history:
+            role = msg.get("role", "unknown")
+            roles[role] = roles.get(role, 0) + 1
+
+        agent = state.agent
+        model = state.model or getattr(agent, "model", "")
+        provider = getattr(agent, "provider", None) or "auto"
+        compressor = getattr(agent, "context_compressor", None)
+        context_length = int(getattr(compressor, "context_length", 0) or 0)
+        threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)
+
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+            tools = getattr(agent, "tools", None) or None
+            approx_tokens = estimate_request_tokens_rough(
+                state.history,
+                system_prompt=system_prompt,
+                tools=tools,
+            )
+        except Exception:
+            logger.debug("Could not estimate ACP context usage", exc_info=True)
+            approx_tokens = 0
+
+        if threshold_tokens <= 0 and context_length > 0:
+            threshold_tokens = int(context_length * 0.80)
+
+        lines = [
+            f"Conversation: {n_messages} messages"
+            if n_messages
+            else "Conversation is empty (no messages yet).",
+            f"  user: {roles.get('user', 0)}, assistant: {roles.get('assistant', 0)}, "
+            f"tool: {roles.get('tool', 0)}, system: {roles.get('system', 0)}",
+        ]
+        if model:
+            lines.append(f"Model: {model}")
+        lines.append(f"Provider: {provider}")
+
+        if approx_tokens > 0:
+            if context_length > 0:
+                usage_pct = (approx_tokens / context_length) * 100
+                lines.append(
+                    f"Context usage: ~{approx_tokens:,} / {context_length:,} tokens ({usage_pct:.1f}%)"
+                )
+            else:
+                lines.append(f"Context usage: ~{approx_tokens:,} tokens")
+
+        if threshold_tokens > 0:
+            if approx_tokens > 0:
+                threshold_pct = (threshold_tokens / context_length) * 100 if context_length > 0 else 0
+                remaining = max(threshold_tokens - approx_tokens, 0)
+                if approx_tokens >= threshold_tokens:
+                    lines.append(
+                        f"Compression: due now (threshold ~{threshold_tokens:,}"
+                        + (f", {threshold_pct:.0f}%" if threshold_pct else "")
+                        + "). Run /compress."
+                    )
+                else:
+                    lines.append(
+                        f"Compression: ~{remaining:,} tokens until threshold "
+                        f"(~{threshold_tokens:,}"
+                        + (f", {threshold_pct:.0f}%" if threshold_pct else "")
+                        + ")."
+                    )
+            else:
+                lines.append(f"Compression threshold: ~{threshold_tokens:,} tokens")
+
+        if getattr(agent, "compression_enabled", True) is False:
+            lines.append(
+                "Auto-compaction is disabled (compression.enabled: false); "
+                "/compress still compresses manually."
+            )
+        else:
+            lines.append("Tip: run /compress to compress manually before the threshold.")
+
+        return "\n".join(lines)
+
+    def _cmd_reset(self, args: str, state: SessionState) -> str:
+        state.history.clear()
+        reset_failed = False
+        try:
+            reset_session_state = getattr(state.agent, "reset_session_state", None)
+            if callable(reset_session_state):
+                reset_session_state()
+        except Exception:
+            reset_failed = True
+            logger.warning("ACP session state reset failed for %s", state.session_id, exc_info=True)
+        finally:
+            self.session_manager.save_session(state.session_id)
+        if reset_failed:
+            return "Conversation history cleared. Agent session state reset failed; see logs."
+        return "Conversation history cleared."
+
+    def _cmd_compress(self, args: str, state: SessionState) -> str:
+        if not state.history:
+            return "Nothing to compress — conversation is empty."
+        try:
+            agent = state.agent
+            # No compression_enabled gate: the flag disables *automatic*
+            # compaction only; manual /compress must keep working (matches
+            # the CLI /compress and gateway handlers).
+            if not hasattr(agent, "_compress_context"):
+                return "Context compression not available for this agent."
+
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            original_count = len(state.history)
+            # Include system prompt + tool schemas so the figure reflects real
+            # request pressure, not a transcript-only underestimate (#6217).
+            _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(agent, "tools", None) or None
+            approx_tokens = estimate_request_tokens_rough(
+                state.history, system_prompt=_sys_prompt, tools=_tools
+            )
+            original_session_db = getattr(agent, "_session_db", None)
+
+            try:
+                # ACP sessions must keep a stable session id, so avoid the
+                # SQLite session-splitting side effect inside _compress_context.
+                agent._session_db = None
+                compressed, _ = agent._compress_context(
+                    state.history,
+                    getattr(agent, "_cached_system_prompt", "") or "",
+                    approx_tokens=approx_tokens,
+                    task_id=state.session_id,
+                    force=True,
+                )
+            finally:
+                agent._session_db = original_session_db
+
+            state.history = compressed
+            self.session_manager.save_session(state.session_id)
+
+            new_count = len(state.history)
+            _sys_prompt_after = getattr(agent, "_cached_system_prompt", "") or _sys_prompt
+            _tools_after = getattr(agent, "tools", None) or _tools
+            new_tokens = estimate_request_tokens_rough(
+                state.history,
+                system_prompt=_sys_prompt_after,
+                tools=_tools_after,
+            )
+            return (
+                f"Context compressed: {original_count} -> {new_count} messages\n"
+                f"~{approx_tokens:,} -> ~{new_tokens:,} tokens"
+            )
+        except Exception as e:
+            return f"Compression failed: {e}"
+
+    def _cmd_steer(self, args: str, state: SessionState) -> str:
+        steer_text = args.strip()
+        if not steer_text:
+            return "Usage: /steer <guidance>"
+
+        if state.is_running and hasattr(state.agent, "steer"):
+            try:
+                if state.agent.steer(steer_text):
+                    preview = steer_text[:80] + ("..." if len(steer_text) > 80 else "")
+                    return f"⏩ Steer queued for the active turn: {preview}"
+            except Exception as exc:
+                logger.warning("ACP steer failed for session %s: %s", state.session_id, exc)
+                return f"⚠️ Steer failed: {exc}"
+
+        with state.runtime_lock:
+            state.queued_prompts.append(steer_text)
+            depth = len(state.queued_prompts)
+        return f"No active turn — queued for the next turn. ({depth} queued)"
+
+    def _cmd_queue(self, args: str, state: SessionState) -> str:
+        queued_text = args.strip()
+        if not queued_text:
+            return "Usage: /queue <prompt>"
+        with state.runtime_lock:
+            state.queued_prompts.append(queued_text)
+            depth = len(state.queued_prompts)
+        return f"Queued for the next turn. ({depth} queued)"
+
+    def _cmd_version(self, args: str, state: SessionState) -> str:
+        return f"Hermes Agent v{HERMES_VERSION}"
+
+    # ---- Model switching (ACP protocol method) -------------------------------
+
+    async def set_session_model(
+        self, model_id: str, session_id: str, **kwargs: Any
+    ) -> SetSessionModelResponse | None:
         """Switch the model for a session (called by ACP protocol)."""
         state = self.session_manager.get_session(session_id)
         if state:

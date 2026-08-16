@@ -27,13 +27,18 @@ from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
 @pytest.fixture(autouse=True)
 def _ensure_alias_installed():
     """Install the alias for each test, then restore ANSI_SEQUENCES to its
-    prior state so 294 mappings don't leak into sibling test files."""
+    prior state so the hundreds of installed mappings don't leak into
+    sibling test files."""
     from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES as _seq
     saved = dict(_seq)
     install_modify_other_keys_aliases()
     yield
     _seq.clear()
     _seq.update(saved)
+    # Drop the parser's prefix cache too — it was computed against the
+    # augmented table and would go stale after the restore above.
+    from prompt_toolkit.input.vt100_parser import _IS_PREFIX_OF_LONGER_MATCH_CACHE
+    _IS_PREFIX_OF_LONGER_MATCH_CACHE.clear()
 
 
 def _parse(byte_seq: str):
@@ -301,3 +306,130 @@ def test_plain_enter_remains_distinct():
     assert enter != alt_enter
     assert len(enter) == 1
     assert len(alt_enter) == 2
+
+
+# ---------------------------------------------------------------------------
+# Kitty keyboard protocol: the Esc KEY (disambiguate mode, #56684)
+# ---------------------------------------------------------------------------
+
+def test_kitty_plain_escape_key():
+    """The Esc key under kitty disambiguate mode (ESC[27u) must parse as
+    Keys.Escape, not leak '[27u' as literal text."""
+    assert _parse("\x1b[27u") == [Keys.Escape]
+
+
+@pytest.mark.parametrize("modifier", range(2, 9))
+def test_kitty_modified_escape_key(modifier):
+    """Modified Esc (Shift+Esc etc.) still behaves as Escape."""
+    assert _parse(f"\x1b[27;{modifier}u") == [Keys.Escape]
+
+
+# ---------------------------------------------------------------------------
+# Modified Enter / Tab / Backspace / Space
+# ---------------------------------------------------------------------------
+
+def test_alt_enter_produces_newline_tuple():
+    """Alt+Enter under either protocol must equal bare ESC+CR (newline)."""
+    alt_enter = _parse("\x1b\r")
+    assert _parse("\x1b[13;3u") == alt_enter
+    assert _parse("\x1b[27;3;13~") == alt_enter
+
+
+def test_shift_tab_produces_backtab():
+    """Shift+Tab must behave like the legacy ESC[Z (BackTab)."""
+    assert _parse("\x1b[9;2u") == [Keys.BackTab]
+    assert _parse("\x1b[27;2;9~") == [Keys.BackTab]
+
+
+def test_ctrl_backspace_produces_backward_kill_word():
+    """Ctrl+Backspace must produce the (Escape, ControlH) tuple that fires
+    prompt_toolkit's backward-kill-word — parity with the Ink TUI and
+    Desktop (#78285)."""
+    expected = [Keys.Escape, Keys.ControlH]
+    assert _parse("\x1b[127;5u") == expected
+    assert _parse("\x1b[27;5;127~") == expected
+
+
+def test_alt_backspace_produces_backward_kill_word():
+    """Alt+Backspace = ESC+DEL = backward-kill-word."""
+    assert _parse("\x1b[127;3u") == [Keys.Escape, Keys.ControlH]
+    assert _parse("\x1b[27;3;127~") == [Keys.Escape, Keys.ControlH]
+
+
+def test_shift_backspace_is_plain_backspace():
+    assert _parse("\x1b[127;2u") == _parse("\x7f")
+
+
+def test_shift_space_inserts_space():
+    """Shift+Space must insert a space, not leak escape text (#86866)."""
+    assert _parse("\x1b[32;2u") == [" "]
+    assert _parse("\x1b[27;2;32~") == [" "]
+
+
+# ---------------------------------------------------------------------------
+# Multi-modifier combos (Ctrl+Shift / Ctrl+Alt / Shift+Alt / Ctrl+Alt+Shift)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("letter", ["c", "r", "z"])
+def test_ctrl_shift_letter_behaves_as_ctrl(letter):
+    """Ctrl+Shift+<letter> (modifier 6) must fire the same key as
+    Ctrl+<letter> — both the unshifted and shifted codepoint variants."""
+    expected = _parse(chr(ord(letter) & 0x1F))
+    for cp in (ord(letter), ord(letter) - 32):
+        assert _parse(f"\x1b[{cp};6u") == expected
+        assert _parse(f"\x1b[27;6;{cp}~") == expected
+
+
+def test_ctrl_alt_letter_behaves_as_escape_ctrl():
+    """Ctrl+Alt+a (modifier 7) = Escape prefix + ControlA."""
+    assert _parse("\x1b[97;7u") == [Keys.Escape, Keys.ControlA]
+
+
+def test_ctrl_alt_shift_letter_behaves_as_escape_ctrl():
+    """Ctrl+Alt+Shift+a (modifier 8) = Escape prefix + ControlA."""
+    assert _parse("\x1b[97;8u") == [Keys.Escape, Keys.ControlA]
+
+
+def test_shift_alt_letter_behaves_as_escape_upper():
+    """Shift+Alt+f (modifier 4) = Escape prefix + 'F'."""
+    assert _parse("\x1b[102;4u") == [Keys.Escape, "F"]
+
+
+# ---------------------------------------------------------------------------
+# Kitty functional keys (Private Use Area codepoints)
+# ---------------------------------------------------------------------------
+
+def test_keypad_enter_behaves_as_enter():
+    assert _parse("\x1b[57414u") == _parse("\r")
+
+
+@pytest.mark.parametrize("digit", range(10))
+def test_keypad_digits_type_digits(digit):
+    assert _parse(f"\x1b[{57399 + digit}u") == [str(digit)]
+
+
+def test_keypad_navigation_maps_to_arrows():
+    assert _parse("\x1b[57417u") == [Keys.Left]
+    assert _parse("\x1b[57418u") == [Keys.Right]
+    assert _parse("\x1b[57419u") == [Keys.Up]
+    assert _parse("\x1b[57420u") == [Keys.Down]
+
+
+def test_f13_maps_to_f13():
+    assert _parse("\x1b[57376u") == [Keys.F13]
+
+
+@pytest.mark.parametrize("code", [57358, 57428, 57441, 57448])
+def test_lock_media_modifier_events_are_consumed(code):
+    """Caps Lock, media keys, and bare modifier press events must be
+    consumed (Keys.Ignore), never leak as literal text."""
+    result = _parse(f"\x1b[{code}u")
+    assert result == [Keys.Ignore], f"CSI {code}u leaked: {result!r}"
+
+
+def test_cmd_backspace_alias_not_clobbered():
+    """install_cmd_backspace_alias's super-modifier mappings must survive."""
+    from hermes_cli.pt_input_extras import install_cmd_backspace_alias
+    install_cmd_backspace_alias()
+    install_modify_other_keys_aliases()
+    assert _parse("\x1b[127;9u") == [Keys.ControlU]

@@ -12,6 +12,24 @@ can be unit-tested without importing the whole CLI runtime.
 from __future__ import annotations
 
 
+def _clear_vt100_prefix_cache() -> None:
+    """Drop prompt_toolkit's memoized "is this a prefix of a longer match?"
+    answers after mutating ``ANSI_SEQUENCES``.
+
+    The cache is module-global and populated lazily per distinct prefix, so
+    parsers created before an install (or primed by earlier tests) would
+    otherwise keep stale ``False`` answers and misparse newly registered
+    sequences. Call after any install that changed the table.
+    """
+    try:
+        from prompt_toolkit.input.vt100_parser import (
+            _IS_PREFIX_OF_LONGER_MATCH_CACHE,
+        )
+        _IS_PREFIX_OF_LONGER_MATCH_CACHE.clear()
+    except Exception:
+        pass
+
+
 def install_shift_enter_alias() -> int:
     """Map Shift+Enter byte sequences to the (Escape, ControlM) key tuple
     that Alt+Enter produces, so the existing Alt+Enter newline handler
@@ -48,6 +66,8 @@ def install_shift_enter_alias() -> int:
         if ANSI_SEQUENCES.get(seq) != alt_enter:
             ANSI_SEQUENCES[seq] = alt_enter
             changed += 1
+    if changed:
+        _clear_vt100_prefix_cache()
     return changed
 
 
@@ -80,6 +100,8 @@ def install_ctrl_enter_alias() -> int:
         if ANSI_SEQUENCES.get(seq) != alt_enter:
             ANSI_SEQUENCES[seq] = alt_enter
             changed += 1
+    if changed:
+        _clear_vt100_prefix_cache()
     return changed
 
 
@@ -123,6 +145,8 @@ def install_cmd_backspace_alias() -> int:
         if ANSI_SEQUENCES.get(seq) != key:
             ANSI_SEQUENCES[seq] = key
             changed += 1
+    if changed:
+        _clear_vt100_prefix_cache()
     return changed
 
 
@@ -140,7 +164,7 @@ def install_modify_other_keys_aliases() -> int:
     Stock prompt_toolkit 3.x only maps ``ESC[27;5;13~`` (Ctrl+Enter = Ctrl+M);
     all other Ctrl+letter combos are unmapped and leak as literal text or get
     swallowed — breaking Ctrl+A, Ctrl+C, Ctrl+D, Ctrl+E, Ctrl+K, Ctrl+R,
-    Ctrl+U, Ctrl+W, Ctrl+Z, etc. (#56684, #87711).
+    Ctrl+U, Ctrl+W, Ctrl+Z, etc. (#56684, #86866, #87390).
 
     This function populates ``ANSI_SEQUENCES`` for the full set:
 
@@ -152,6 +176,25 @@ def install_modify_other_keys_aliases() -> int:
     * **Alt+letter** (a–z, A–Z): ``ESC[27;3;<codepoint>~`` and
       ``ESC[<codepoint>;3u`` → ``(Keys.Escape, <letter>)`` — matching how
       prompt_toolkit handles a bare ``ESC`` followed by a character.
+    * **Shift+letter** (a–z): → the uppercase character.
+    * **Multi-modifier letters** (Shift+Alt=4, Ctrl+Shift=6, Ctrl+Alt=7,
+      Ctrl+Alt+Shift=8): normalized onto the same targets — Ctrl-bearing
+      combos behave as the Ctrl key (Alt adds an ``Escape`` prefix),
+      matching how dte/kakoune normalize these protocols.
+    * **Esc key**: ``ESC[27u`` / ``ESC[27;<mod>u`` (Kitty disambiguate mode
+      reports Esc this way, #56684) → ``Keys.Escape``.
+    * **Modified Enter/Tab/Backspace/Space**: Alt+Enter → the Alt+Enter
+      newline tuple; Shift+Tab → ``BackTab``; Ctrl+Tab → plain Tab;
+      Ctrl/Alt+Backspace → ``(Escape, ControlH)`` (backward-kill-word,
+      matching the Ink TUI and Desktop, #78285); Shift+Backspace → plain
+      backspace; Shift+Space → a plain space (#86866); Alt+Space →
+      ``(Escape, " ")``.
+    * **Kitty functional keys** (Private Use Area codepoints): keypad keys
+      → their non-keypad equivalents (KP_ENTER → Enter, KP_4 → '4',
+      KP_LEFT → Left, …); F13–F24 → ``Keys.F13``..``F24``; lock/media/
+      modifier-event keys → ``Keys.Ignore`` so they are consumed instead of
+      leaking as literal text. kitty emits these CSI-u forms even in legacy
+      mode for keys that have no legacy encoding.
 
     Existing mappings (including those installed by
     ``install_shift_enter_alias`` / ``install_ctrl_enter_alias``) are never
@@ -248,6 +291,101 @@ def install_modify_other_keys_aliases() -> int:
         shift_map[ch - 32] = upper_char
     _install_paired(2, shift_map)
 
+    # -- Multi-modifier letters: Shift+Alt (4), Ctrl+Shift (6),
+    # Ctrl+Alt (7), Ctrl+Alt+Shift (8) ----
+    # The Kitty protocol always reports the UNSHIFTED codepoint; some
+    # modifyOtherKeys emitters send the shifted one — map both cases.
+    # Ctrl-bearing combos normalize onto the Ctrl key (Alt adds an Escape
+    # prefix), Shift+Alt onto (Escape, UPPER) — the same normalization
+    # dte/kakoune apply to these protocols. Without these, Ctrl+Shift+R
+    # etc. leak as literal text under either protocol.
+    shift_alt_map: dict[int, tuple] = {}
+    ctrl_shift_map: dict[int, object] = {}
+    ctrl_alt_map: dict[int, tuple] = {}
+    for ch in range(ord('a'), ord('z') + 1):
+        upper_char = chr(ch - 32)
+        ctrl_key = ctrl_key_map.get(ch)
+        for cp in (ch, ch - 32):
+            shift_alt_map[cp] = (Keys.Escape, upper_char)
+            if ctrl_key is not None:
+                ctrl_shift_map[cp] = ctrl_key
+                ctrl_alt_map[cp] = (Keys.Escape, ctrl_key)
+    _install_paired(4, shift_alt_map)
+    _install_paired(6, ctrl_shift_map)
+    _install_paired(7, ctrl_alt_map)
+    _install_paired(8, ctrl_alt_map)  # Ctrl+Alt+Shift — same normalization
+
+    # -- The Esc KEY under Kitty disambiguate mode: ESC[27u (+ modifiers) --
+    # Disambiguate mode reports the Esc key as CSI-u so it is
+    # distinguishable from the ESC byte that starts escape sequences
+    # (#56684 — previously leaked "[27u" as literal text into the prompt).
+    # Modifiers run to 16 because kitty reports Cmd as the super bit
+    # (mod 9+) — same reason install_cmd_backspace_alias maps 9/10.
+    for seq in ["\x1b[27u"] + [f"\x1b[27;{m}u" for m in range(2, 17)]:
+        if seq not in ANSI_SEQUENCES:
+            ANSI_SEQUENCES[seq] = Keys.Escape
+            changed += 1
+
+    # -- Modified Enter / Tab / Backspace / Space ----
+    # Shift+Enter / Ctrl+Enter are installed by install_shift_enter_alias /
+    # install_ctrl_enter_alias (which run first and win via setdefault).
+    _install_paired(2, {
+        9: Keys.BackTab,        # Shift+Tab — same as the legacy ESC[Z
+        127: Keys.ControlH,     # Shift+Backspace — plain backspace
+        32: " ",                # Shift+Space — still a space (#86866)
+    })
+    _install_paired(3, {
+        13: (Keys.Escape, Keys.ControlM),   # Alt+Enter — newline tuple
+        127: (Keys.Escape, Keys.ControlH),  # Alt+Backspace — backward-kill-word
+        32: (Keys.Escape, " "),             # Alt+Space
+    })
+    _install_paired(5, {
+        9: Keys.ControlI,                   # Ctrl+Tab — degrade to Tab
+        127: (Keys.Escape, Keys.ControlH),  # Ctrl+Backspace — backward-kill-word,
+                                            # matching Ink TUI + Desktop (#78285)
+    })
+
+    # -- Kitty functional keys (Private Use Area codepoints) ----
+    # kitty emits these CSI-u encodings even in LEGACY mode for keys that
+    # have no legacy encoding, so unmapped they leak as literal text in any
+    # kitty session regardless of which modes were pushed.
+    functional_map: dict[int, object] = {}
+    for d in range(10):                       # KP_0..KP_9 → digits
+        functional_map[57399 + d] = str(d)
+    functional_map.update({                   # KP operators / punctuation
+        57409: ".", 57410: "/", 57411: "*", 57412: "-",
+        57413: "+", 57414: Keys.ControlM, 57415: "=", 57416: ",",
+    })
+    functional_map.update({                   # KP navigation → non-keypad keys
+        57417: Keys.Left, 57418: Keys.Right, 57419: Keys.Up,
+        57420: Keys.Down, 57421: Keys.PageUp, 57422: Keys.PageDown,
+        57423: Keys.Home, 57424: Keys.End, 57425: Keys.Insert,
+        57426: Keys.Delete,
+    })
+    for n in range(13, 25):                   # F13..F24
+        functional_map[57376 + (n - 13)] = getattr(Keys, f"F{n}")
+    # No prompt_toolkit equivalent (lock keys, PrintScreen, Menu, F25-F35,
+    # KP_BEGIN, media keys, bare modifier events): consume as Ignore
+    # instead of leaking literal text.
+    for code in (
+        list(range(57358, 57364))       # locks, PrintScreen, Pause, Menu
+        + list(range(57388, 57399))     # F25..F35
+        + [57427]                       # KP_BEGIN
+        + list(range(57428, 57455))     # media keys + modifier key events
+    ):
+        functional_map.setdefault(code, Keys.Ignore)
+    for code, key_val in functional_map.items():
+        seq = f"\x1b[{code}u"
+        if seq not in ANSI_SEQUENCES:
+            ANSI_SEQUENCES[seq] = key_val
+            changed += 1
+
+    # New longer sequences can flip "is this a prefix of a longer match?"
+    # answers the VT100 parser already cached — drop the cache so parsers
+    # created before this install (or in earlier tests) can't misparse.
+    if changed:
+        _clear_vt100_prefix_cache()
+
     return changed
 
 
@@ -285,4 +423,6 @@ def install_ignored_terminal_sequences() -> int:
         if seq not in ANSI_SEQUENCES:
             ANSI_SEQUENCES[seq] = Keys.Ignore
             changed += 1
+    if changed:
+        _clear_vt100_prefix_cache()
     return changed

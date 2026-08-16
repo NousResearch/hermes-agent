@@ -3899,7 +3899,7 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[0m"      # reset text attributes
     "\x1b[?25h"    # ensure cursor visible
 )
-_EXTENDED_ENTER_KEYS_SEQ = "\x1b[>4;2m"
+_EXTENDED_ENTER_KEYS_SEQ = "\x1b[>1u\x1b[>4;2m"
 
 
 _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
@@ -3932,25 +3932,29 @@ def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = No
 
 
 def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = None) -> bool:
-    """Ask allowlisted terminals to report Shift+Enter distinctly.
+    """Ask allowlisted terminals to report modified keys distinctly.
 
-    Writes xterm modifyOtherKeys level 2 (CSI >4;2m), mirroring the Ink TUI.
-    We do NOT push the Kitty keyboard protocol (CSI >1u) here because
-    prompt_toolkit 3.x cannot parse Kitty CSI-u sequences for control
-    characters — Ctrl+C arrives as ``\\x1b[99;5u`` instead of ``\\x03``,
-    which neither prompt_toolkit's key bindings nor the kernel's INTR
-    mechanism can match, leaving Ctrl+C completely dead (#56684).
+    Writes the Kitty keyboard protocol push (CSI >1u, disambiguate mode) AND
+    xterm modifyOtherKeys level 2 (CSI >4;2m), mirroring the Ink TUI —
+    terminals honor whichever protocol they implement.  Both are needed:
+    kitty-the-terminal removed modifyOtherKeys support entirely (it only
+    speaks its own protocol), while tmux/VS Code only accept modifyOtherKeys.
 
-    modifyOtherKeys=2 re-encodes ALL Ctrl+key combos as
-    ``ESC[27;5;<codepoint>~`` instead of raw control bytes.
+    Under either protocol the terminal re-encodes modified keys as escape
+    sequences — Kitty disambiguate mode as ``ESC[<codepoint>;<mod>u`` (plus
+    the Esc key as ``ESC[27u``), modifyOtherKeys=2 as
+    ``ESC[27;<mod>;<codepoint>~``.  Stock prompt_toolkit 3.x maps almost
+    none of these, which is why the CSI >1u push was temporarily removed in
+    #87074 (Ctrl+C arrived as ``ESC[99;5u`` and died, #56684).
     ``install_modify_other_keys_aliases()`` (called at CLI startup from
-    ``hermes_cli.pt_input_extras``) populates prompt_toolkit's
-    ``ANSI_SEQUENCES`` with the full Ctrl+letter / Ctrl+digit / Ctrl+symbol
-    and Alt+letter mappings under both the modifyOtherKeys and CSI-u formats,
-    so every existing key binding continues to fire (#87711).
+    ``hermes_cli.pt_input_extras``) now populates ``ANSI_SEQUENCES`` with the
+    full Ctrl/Alt/Shift/multi-modifier and functional-key tables under BOTH
+    formats, so every existing key binding continues to fire — including
+    Ctrl+C, which is handled by prompt_toolkit's ``c-c`` binding (raw mode
+    clears ISIG, so the kernel INTR path was never in play for the CLI).
 
-    The exit reset sequence already pops/resets both modes, so this is
-    safe across normal exits, Ctrl+C, and SIGTERM cleanup.
+    The exit reset sequence pops/resets both modes, so this is safe across
+    normal exits, Ctrl+C, and SIGTERM cleanup.
     """
     if not _terminal_supports_extended_enter_keys(env):
         return False
@@ -8563,6 +8567,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 sys.stdout.flush()
         except Exception:
             return
+
+        # The reset sequence above pops kitty keyboard mode and resets
+        # modifyOtherKeys too — re-request extended keys so Shift+Enter /
+        # modified-key reporting isn't silently dead for the rest of the
+        # session after a recovery (sibling of the startup push).
+        try:
+            if _cli_multiline_shortcuts_enabled(self.config or CLI_CONFIG):
+                _enable_extended_enter_keys(output)
+        except Exception:
+            pass
 
         logger.warning("Recovered terminal input modes after leak: %s", reason)
         if not self._input_mode_recovery_notice_shown:
@@ -19313,8 +19327,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # The app enables focus reporting + mouse tracking; record that
                 # so _run_cleanup resets them on exit (#36823). When multiline
                 # shortcuts are on, also ask supported terminals (e.g. iTerm2)
-                # to distinguish Shift+Enter from Enter; the same cleanup reset
-                # pops kitty keyboard mode and resets modifyOtherKeys.
+                # to report modified keys distinctly (kitty protocol +
+                # modifyOtherKeys); the cleanup reset pops both modes.
                 _mark_tui_input_modes_active()
                 if _multiline_shortcuts_enabled:
                     _enable_extended_enter_keys(app.output)

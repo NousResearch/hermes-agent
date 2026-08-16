@@ -6,6 +6,7 @@ import pytest
 
 from gateway.platform_registry import platform_registry
 from hermes_cli.tools_config import _get_platform_tools, tools_disable_enable_command
+from model_tools import get_tool_definitions
 from toolsets import resolve_toolset
 
 
@@ -21,6 +22,18 @@ class TestToolsDisableBuiltin:
             tools_disable_enable_command(Namespace(tools_action="disable", names=["web"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
+        assert "memory" in saved["platform_toolsets"]["cli"]
+
+    def test_disable_removes_search_toolset_from_platform(self):
+        config = {"platform_toolsets": {"cli": ["search", "memory"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["search"], platform="cli")
+            )
+
+        saved = mock_save.call_args[0][0]
+        assert "search" not in saved["platform_toolsets"]["cli"]
         assert "memory" in saved["platform_toolsets"]["cli"]
 
 
@@ -47,6 +60,18 @@ class TestToolsEnableBuiltin:
         tools = set().union(*(resolve_toolset(toolset) for toolset in enabled))
         assert "web_search" in tools
         assert "web_extract" not in tools
+
+    def test_search_and_web_resolve_web_search_once(self):
+        with patch("tools.registry._check_fn_cached", return_value=True):
+            definitions = get_tool_definitions(
+                enabled_toolsets=["search", "web"],
+                quiet_mode=False,
+                skip_tool_search_assembly=True,
+            )
+        names = [definition["function"]["name"] for definition in definitions]
+
+        assert names.count("web_search") == 1
+        assert "web_extract" in names
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────

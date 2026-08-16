@@ -609,6 +609,28 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
+    """Floor the rough pre-API pressure estimate at the last REAL prompt size.
+
+    The chars/4 rough estimate under-counts Cyrillic (and other non-ASCII
+    scripts) by up to ~2x, so a session can sit at the provider's real context
+    ceiling while the rough figure stays under the compaction threshold — on
+    silent-clip providers (ollama /v1) that is a truncation death spiral the
+    reactive overflow handler never sees (observed live: real prompts
+    64,842→64,995 against a 55,705 threshold). The provider's own last
+    reported prompt_tokens is authoritative; never let the pressure figure
+    fall below it. Skipped for exactly one turn after a compaction, when
+    last_real_prompt_tokens still holds the stale pre-compression value
+    (#36718's awaiting_real_usage_after_compression window).
+    """
+    last_real = int(getattr(compressor, "last_real_prompt_tokens", 0) or 0)
+    if last_real > rough_tokens and not getattr(
+        compressor, "awaiting_real_usage_after_compression", False
+    ):
+        return last_real
+    return rough_tokens
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -2882,6 +2904,9 @@ def run_conversation(
         )
         if _anchored_pressure is not None:
             request_pressure_tokens = _anchored_pressure
+        request_pressure_tokens = _pressure_with_real_floor(
+            agent.context_compressor, request_pressure_tokens
+        )
         total_chars = approx_tokens * 4
         # Stash this request's rough estimate so update_from_response() can
         # pair it with the provider's real prompt count — the (rough, real)

@@ -262,3 +262,33 @@ class TestCodexSparkShortSessionBoundary:
             f"This would cause the silent context wipe described in #48621."
         )
         assert comp.has_content_to_compress(messages) is True
+
+
+class TestPressureRealFloor:
+    """Regression: Cyrillic-heavy sessions under-count in the rough estimate,
+    letting real prompts ride the provider window (64,842→64,995 observed)
+    while the pre-API gate saw sub-threshold pressure."""
+
+    def _compressor(self, last_real, awaiting=False):
+        class _C:
+            last_real_prompt_tokens = last_real
+            awaiting_real_usage_after_compression = awaiting
+        return _C()
+
+    def test_real_floor_lifts_undercounted_rough(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        assert _pressure_with_real_floor(self._compressor(64_842), 45_000) == 64_842
+
+    def test_rough_wins_when_larger(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        assert _pressure_with_real_floor(self._compressor(30_000), 45_000) == 45_000
+
+    def test_stale_real_ignored_right_after_compaction(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        compressor = self._compressor(64_842, awaiting=True)
+        assert _pressure_with_real_floor(compressor, 20_000) == 20_000
+
+    def test_zero_and_missing_real_are_safe(self):
+        from agent.conversation_loop import _pressure_with_real_floor
+        assert _pressure_with_real_floor(self._compressor(0), 10_000) == 10_000
+        assert _pressure_with_real_floor(object(), 10_000) == 10_000

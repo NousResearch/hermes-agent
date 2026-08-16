@@ -140,6 +140,17 @@ Walk it in order:
    (it's a visible focus change) and is only appropriate when the user isn't
    actively working. Classic cases: Electron/Chromium consent dialogs (e.g.
    tldraw offline's "Run Script"), DirectInput games, raw-input canvases.
+6. **Keystrokes verified-lost on a KDE/Qt editor → use the app's own I/O.**
+   Some Qt text components (KTextEditor: Kate, KWrite, KDevelop) discard
+   SYNTHETIC X keystrokes entirely — foreground `type` reports ok
+   ("Typed N characters into the focused widget", `effect:"unverifiable"`)
+   but a fresh AX capture shows the text never arrived, and raw XTest fails
+   identically (proven live, Aug 2026 — it is the toolkit, not the driver;
+   the same foreground route works on kcalc/Chrome). After ONE such
+   verified-lost round trip, stop retrying input rungs: write the file with
+   terminal/file tools and let the editor reload it, or drive the app's
+   DBus/CLI interface. Never loop the ladder against a surface that
+   verifiably swallows synthetic input.
 
 ```
 computer_use(action="click", element=7)

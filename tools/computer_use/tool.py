@@ -124,6 +124,34 @@ def _canon_key_combo(keys: str) -> frozenset:
     return frozenset(parts)
 
 
+# Native input actions that deliver to the backend's sticky target. `app=`
+# on these calls is NOT a targeting parameter — see the mismatch guard in
+# _dispatch. Kept in sync with the dispatch branches below.
+_INPUT_ACTIONS = frozenset({
+    "click", "double_click", "right_click", "middle_click",
+    "drag", "scroll", "type", "key", "set_value",
+})
+
+
+def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
+    """Current sticky-target app when it clearly differs from *requested_app*.
+
+    Returns the CURRENT target's app name only for a provable mismatch:
+    both names known and neither a substring of the other (list_windows
+    app names are localized/variant — 'Google-chrome' vs 'chrome'). An
+    unknown current target returns None (fail open: legacy flows that
+    never pass app= on input keep working; wrong-window delivery there is
+    caught by the verify ladder instead).
+    """
+    current = (getattr(backend, "_last_app", None) or "").strip().lower()
+    wanted = requested_app.strip().lower()
+    if not current or not wanted:
+        return None
+    if wanted in current or current in wanted:
+        return None
+    return getattr(backend, "_last_app", None)
+
+
 # Dangerous text patterns for the `type` action. Same list as #4562.
 _BLOCKED_TYPE_PATTERNS = [
     re.compile(r"curl\s+[^|]*\|\s*bash", re.IGNORECASE),
@@ -724,6 +752,31 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     delivery_mode = args.get("delivery_mode")
     bring_to_front = bool(args.get("bring_to_front"))
 
+    # ── app= mismatch guard for input actions ──────────────────────────
+    # Input goes to the backend's sticky target (set by the last capture/
+    # focus_app). Models routinely pass app= on the input call itself —
+    # live QA (Aug 2026) proved `type(text=..., app="kate")` typed into
+    # kcalc while reporting ok:true, because the argument was silently
+    # dropped. Refuse the clear mismatch instead of delivering input to
+    # the wrong window; the fix instruction keeps the flow one call long.
+    if action in _INPUT_ACTIONS:
+        requested_app = args.get("app")
+        if isinstance(requested_app, str) and requested_app.strip():
+            mismatch = _input_target_mismatch(backend, requested_app)
+            if mismatch is not None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "input_target_mismatch",
+                    "error": (
+                        f"{action} would go to the current target "
+                        f"{mismatch!r}, not {requested_app.strip()!r} — input "
+                        "actions always hit the sticky target from the last "
+                        f"capture/focus_app. Call capture(app={requested_app.strip()!r}) "
+                        "or focus_app first, then retry."
+                    ),
+                })
+
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
         click_count = 1
@@ -794,6 +847,24 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.set_value(value=str(value), element=args.get("element"))
         return _maybe_follow_capture(backend, res, capture_after)
 
+    # Do NOT alias unknown actions (we never repair bad model output), but
+    # name the nearest real action: live QA showed a model emitting
+    # "hotkey"/"press_key" and getting zero guidance from the bare error.
+    _suggestions = {
+        "hotkey": "key", "press_key": "key", "keypress": "key",
+        "key_combo": "key", "shortcut": "key",
+        "type_text": "type", "input_text": "type",
+        "screenshot": "capture", "get_window_state": "capture",
+        "left_click": "click", "mouse_click": "click",
+    }
+    hint = _suggestions.get(str(action))
+    if hint:
+        return json.dumps({
+            "error": (
+                f"unknown action {action!r} — did you mean {hint!r}? "
+                "See the action enum in the tool schema."
+            )
+        })
     return json.dumps({"error": f"unknown action {action!r}"})
 
 

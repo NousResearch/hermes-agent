@@ -922,7 +922,12 @@ export const en: Translations = {
       deepLinkErrorConfig: 'The link\u2019s config is not valid base64-encoded JSON.',
       deepLinkErrorShape: 'The config must be a JSON object with a string `url` or `command` field.',
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
-      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
+      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.',
+      importButton: 'Import',
+      importPlaceholder: 'Paste an mcp.json snippet, npx/docker command, claude mcp add line, URL, or Cursor link…',
+      importNoMatch: 'No server config recognized in the pasted text.',
+      importConfirm: 'Add to mcp.json',
+      importConfirmMany: count => `Add ${count} servers to mcp.json`
     },
     model: {
       loading: 'Loading model configuration...',

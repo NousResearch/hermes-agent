@@ -10,8 +10,10 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { TextTab } from '@/components/ui/text-tab'
+import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import {
   authMcpServer,
@@ -32,6 +34,7 @@ import { compactNumber } from '@/lib/format'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { type McpImportEntry, parseMcpImport } from '@/lib/mcp-import'
 import { NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
@@ -925,6 +928,53 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     }
   }
 
+  // Paste-anything import: merge parsed entries into the draft exactly like
+  // addServer seeds its starter — dirty draft, unique keys, focus the first
+  // new block. Saving stays an explicit step, so the user can fix placeholder
+  // env values (YOUR_KEY, …) in the editor first.
+  const importServers = (entries: McpImportEntry[]) => {
+    if (profilePending || entries.length === 0) {
+      return
+    }
+
+    let base: McpServers
+
+    try {
+      base = parseServersDoc(draft)
+    } catch {
+      base = { ...servers }
+    }
+
+    let firstKey: null | string = null
+
+    for (const entry of entries) {
+      let key = entry.name
+
+      for (let i = 2; key in base; i++) {
+        key = `${entry.name}-${i}`
+      }
+
+      base = { ...base, [key]: entry.config }
+      firstKey ??= key
+    }
+
+    const nextDraft = wrapDoc(base)
+    setDraft(nextDraft)
+    setDirty(true)
+    setDocVersion(version => version + 1)
+
+    if (firstKey) {
+      const from = nextDraft.indexOf(`"${firstKey}"`)
+
+      if (from >= 0) {
+        requestAnimationFrame(() => {
+          editorApi.current?.setCursor(from + 1)
+          setCursor(from + 1)
+        })
+      }
+    }
+  }
+
   const saveDoc = async () => {
     if (profilePending) {
       return
@@ -1041,7 +1091,8 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                   lands on the exact line the sort link occupies in the
                   Skills/Tools views. */}
               <div className="mb-1 flex h-6 shrink-0 items-center pl-2 pr-1">
-                <span className="text-[0.72rem] font-medium text-(--ui-text-tertiary)">{m.tabServers}</span>
+                <span className="flex-1 text-[0.72rem] font-medium text-(--ui-text-tertiary)">{m.tabServers}</span>
+                <McpImportButton disabled={profilePending} onImport={importServers} />
               </div>
               {names.length === 0 ? (
                 <PanelEmpty
@@ -1395,6 +1446,92 @@ function ServerIconActions({
         </Button>
       </Tip>
     </span>
+  )
+}
+
+// Paste-anything import: a compact popover on the Servers header. Paste any
+// README shape — mcp.json snippet, npx/docker command line, `claude mcp add`,
+// a bare URL, or a Cursor deeplink — see the inferred name + config, then
+// merge it into the editor draft (unsaved, like the "+" starter entry).
+function McpImportButton({
+  disabled,
+  onImport
+}: {
+  disabled: boolean
+  onImport: (entries: McpImportEntry[]) => void
+}) {
+  const { t } = useI18n()
+  const m = t.settings.mcp
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+
+  const entries = useMemo(() => parseMcpImport(text), [text])
+
+  const reset = () => {
+    setText('')
+  }
+
+  const confirm = () => {
+    if (!entries) {
+      return
+    }
+
+    onImport(entries)
+    setOpen(false)
+    reset()
+  }
+
+  return (
+    <Popover
+      onOpenChange={next => {
+        setOpen(next)
+
+        if (!next) {
+          reset()
+        }
+      }}
+      open={open}
+    >
+      <PopoverTrigger asChild>
+        <Button className="h-5 px-1 text-[0.68rem]" disabled={disabled} size="xs" variant="text">
+          <Codicon name="clippy" size="0.75rem" />
+          {m.importButton}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80">
+        <div className="flex flex-col gap-2">
+          <Textarea
+            aria-label={m.importButton}
+            autoFocus
+            className="max-h-40 min-h-20 font-mono text-[0.68rem]"
+            onChange={event => setText(event.currentTarget.value)}
+            placeholder={m.importPlaceholder}
+            value={text}
+          />
+          {entries ? (
+            <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+              {entries.map((entry, index) => (
+                <div className="rounded-md bg-(--ui-bg-tertiary) px-2 py-1.5" key={`${entry.name}-${index}`}>
+                  <span className="block truncate text-[0.72rem] font-medium text-foreground/85">{entry.name}</span>
+                  <span className="block truncate font-mono text-[0.62rem] text-muted-foreground/60">
+                    {typeof entry.config.url === 'string'
+                      ? entry.config.url
+                      : [entry.config.command, ...((entry.config.args as string[]) ?? [])].join(' ')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            text.trim() && <p className="px-0.5 text-[0.62rem] text-muted-foreground/60">{m.importNoMatch}</p>
+          )}
+          <div className="flex justify-end">
+            <Button disabled={!entries} onClick={confirm} size="xs">
+              {entries && entries.length > 1 ? m.importConfirmMany(entries.length) : m.importConfirm}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 

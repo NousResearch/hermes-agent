@@ -374,6 +374,8 @@ class CuaTypedBrowserRoute:
         profile_mode: str,
         profile_name: Optional[str] = None,
         allow_launch: bool = False,
+        grant_existing_profile: bool = False,
+        permission_mode: str = "standard",
     ) -> Dict[str, Any]:
         """Run explicit setup through the driver's authoritative mode gate."""
         missing = self._require_tool("browser_prepare")
@@ -391,10 +393,25 @@ class CuaTypedBrowserRoute:
                     "browser_exact_target_required",
                     "Existing-profile attachment requires an exact positive pid and window_id pair.",
                 )
-            # The driver owns the immutable standard/bounded/unrestricted
-            # decision. Standard fails closed without a certified host;
-            # bounded mode uses its approved capability manifest and explicit
-            # Hermes YOLO owns a private unrestricted daemon.
+            # Host-side floor for the config grant.  The driver owns the
+            # immutable standard/bounded/unrestricted decision, but an
+            # unrestricted daemon answers every prepare — so relying on the
+            # driver alone let an approval bypass (`--yolo`, `-z`) silently
+            # nullify `computer_use.grant_existing_profile: false` and expose
+            # the live profile's pages, cookies, and storage over CDP.
+            # Approval bypass is consent to skip *prompts*, not consent to
+            # read an existing browser profile, so this key is enforced here
+            # regardless of permission mode.  bounded is exempt: its reviewed
+            # capability manifest is the authorization boundary.
+            if permission_mode != "bounded" and not grant_existing_profile:
+                return _refusal(
+                    "browser_existing_profile_not_granted",
+                    "Attaching to an existing browser profile requires the "
+                    "one-time opt-in `computer_use.grant_existing_profile: "
+                    "true` in config.yaml. Hermes cannot grant this at "
+                    "runtime, and an approval bypass does not substitute for "
+                    "it. Use profile_mode=isolated_new to browse without it.",
+                )
             self.state.clear()
             args: Dict[str, Any] = {
                 "pid": exact_pid,

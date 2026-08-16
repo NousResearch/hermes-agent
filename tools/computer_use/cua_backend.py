@@ -274,8 +274,14 @@ def _cua_grant_existing_profile() -> bool:
     ``--grant existing-profile`` when it launches the standard-mode runtime.
     On macOS it also selects a private socket so the newly configured
     CuaDriver.app runtime cannot collide with an already-running default
-    daemon. The setting never applies to bounded mode, where the manifest owns
-    authorization, or unrestricted mode, which already bypasses approvals.
+    daemon. The setting never applies to bounded mode, where the reviewed
+    capability manifest owns authorization.
+
+    It DOES apply to unrestricted mode. An approval bypass (``--yolo``,
+    ``-z``) is consent to skip prompts, not consent to read an existing
+    browser profile's live pages, cookies, and storage, so the host-side
+    floor in ``CuaTypedBrowserRoute.prepare`` enforces this key even when the
+    private unrestricted daemon would answer the prepare.
     """
     return bool(_computer_use_cfg().get("grant_existing_profile", False))
 
@@ -3497,8 +3503,18 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._browser_route().observe(**kwargs)
 
     def typed_browser_prepare(self, **kwargs: Any) -> Dict[str, Any]:
-        """Prepare an explicitly approved driver-owned browser profile."""
-        return self._browser_route().prepare(**kwargs)
+        """Prepare an explicitly approved driver-owned browser profile.
+
+        The authorization inputs are resolved here, from config and this
+        backend's immutable mode — never from model-supplied kwargs.
+        """
+        kwargs.pop("grant_existing_profile", None)
+        kwargs.pop("permission_mode", None)
+        return self._browser_route().prepare(
+            grant_existing_profile=_cua_grant_existing_profile(),
+            permission_mode=self.permission_mode,
+            **kwargs,
+        )
 
     def typed_browser_action(
         self,

@@ -53,6 +53,7 @@ def test_existing_profile_prepare_delegates_authorization_to_driver():
         pid=101,
         window_id=202,
         profile_mode="existing_profile",
+        grant_existing_profile=True,
     )
 
     assert result["status"] == "ok"
@@ -67,6 +68,152 @@ def test_existing_profile_prepare_delegates_authorization_to_driver():
             },
         )
     ]
+
+
+def test_existing_profile_prepare_refused_without_config_grant():
+    driver = _PrepareDriver()
+    result = _route(driver).prepare(
+        pid=101,
+        window_id=202,
+        profile_mode="existing_profile",
+    )
+
+    assert result["status"] == "refused"
+    assert result["code"] == "browser_existing_profile_not_granted"
+    assert "computer_use.grant_existing_profile" in result["message"]
+    # Never reached the driver: the host refuses before the transport.
+    assert driver.calls == []
+
+
+def test_existing_profile_prepare_refused_in_unrestricted_without_grant():
+    """An approval bypass must not stand in for the config grant.
+
+    ``--yolo`` / ``-z`` give the session a private unrestricted daemon that
+    answers every prepare, so without this host-side floor the documented
+    ``grant_existing_profile: false`` default silently stopped protecting the
+    live profile's pages, cookies, and storage.
+    """
+    driver = _PrepareDriver()
+    result = _route(driver).prepare(
+        pid=101,
+        window_id=202,
+        profile_mode="existing_profile",
+        grant_existing_profile=False,
+        permission_mode="unrestricted",
+    )
+
+    assert result["code"] == "browser_existing_profile_not_granted"
+    assert driver.calls == []
+
+
+def test_existing_profile_prepare_bounded_mode_exempt_from_grant():
+    """bounded's reviewed capability manifest is the authorization boundary."""
+    driver = _PrepareDriver()
+    result = _route(driver).prepare(
+        pid=101,
+        window_id=202,
+        profile_mode="existing_profile",
+        grant_existing_profile=False,
+        permission_mode="bounded",
+    )
+
+    assert result["status"] == "ok"
+    assert [name for name, _ in driver.calls] == ["browser_prepare"]
+
+
+def test_isolated_prepare_unaffected_by_the_grant():
+    """The floor is scoped to existing_profile; isolated launches still work."""
+    driver = _PrepareDriver()
+    result = _route(driver).prepare(
+        pid=101,
+        profile_mode="isolated_new",
+        allow_launch=True,
+        grant_existing_profile=False,
+    )
+
+    assert result["status"] == "ok"
+    assert [name for name, _ in driver.calls] == ["browser_prepare"]
+
+
+def test_backend_resolves_authorization_and_ignores_model_supplied_values(monkeypatch):
+    """pid/window_id come from the model; the grant never does."""
+    captured: Dict[str, Any] = {}
+
+    class _Route:
+        def prepare(self, **kwargs: Any) -> Dict[str, Any]:
+            captured.update(kwargs)
+            return {"status": "ok"}
+
+    backend = cb.CuaDriverBackend.__new__(cb.CuaDriverBackend)
+    backend.permission_mode = "unrestricted"
+    monkeypatch.setattr(cb, "_cua_grant_existing_profile", lambda: False)
+    monkeypatch.setattr(
+        cb.CuaDriverBackend, "_browser_route", lambda self: _Route()
+    )
+
+    backend.typed_browser_prepare(
+        pid=101,
+        window_id=202,
+        profile_mode="existing_profile",
+        # A model that tries to grant itself access must be ignored.
+        grant_existing_profile=True,
+        permission_mode="bounded",
+    )
+
+    assert captured["grant_existing_profile"] is False
+    assert captured["permission_mode"] == "unrestricted"
+
+
+# ── config grant stands in for the approval prompt ──────────────────────
+
+
+def _preauth(**cfg: Any):
+    from tools.computer_use import tool as cu_tool
+
+    return cu_tool._config_preauthorized
+
+
+def test_config_grant_preauthorizes_existing_profile_prepare(monkeypatch):
+    """The durable opt-in is the authorization; re-prompting is redundant.
+
+    It also made the documented opt-in unusable on non-interactive runs,
+    where the prompt has nobody to answer it and the call dies on approval
+    timeout rather than attaching.
+    """
+    monkeypatch.setattr(
+        cb, "_computer_use_cfg", lambda: {"grant_existing_profile": True}
+    )
+    assert _preauth()(
+        "cua_browser_prepare", {"profile_mode": "existing_profile"}
+    ) is True
+
+
+def test_no_preauthorization_without_the_grant(monkeypatch):
+    monkeypatch.setattr(cb, "_computer_use_cfg", dict)
+    assert _preauth()(
+        "cua_browser_prepare", {"profile_mode": "existing_profile"}
+    ) is False
+
+
+def test_preauthorization_scoped_to_existing_profile(monkeypatch):
+    """Isolated launches keep prompting even when the grant is on."""
+    monkeypatch.setattr(
+        cb, "_computer_use_cfg", lambda: {"grant_existing_profile": True}
+    )
+    assert _preauth()(
+        "cua_browser_prepare", {"profile_mode": "isolated_new"}
+    ) is False
+    assert _preauth()("click", {"profile_mode": "existing_profile"}) is False
+
+
+def test_preauthorization_fails_closed_on_config_error(monkeypatch):
+    def _boom():
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(cb, "_computer_use_cfg", _boom)
+    assert _preauth()(
+        "cua_browser_prepare", {"profile_mode": "existing_profile"}
+    ) is False
 
 
 def test_dispatch_does_not_forward_removed_approval_token():

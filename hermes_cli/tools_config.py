@@ -770,6 +770,23 @@ def _cua_driver_cmd() -> str:
     return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
 
 
+def _cua_version_summary(raw: str, *, limit: int = 120) -> str:
+    """Reduce a driver's ``--version`` output to one short status line.
+
+    A binary selected by ``HERMES_CUA_DRIVER_CMD`` is not obliged to answer
+    ``--version`` the way cua-driver does. Pointing the override at, say,
+    ``cmd.exe`` yields a multi-line banner plus a prompt, which used to be
+    interpolated verbatim into ``cua-driver: installed at ... (<version>)``
+    and shattered the one-line summary. Keep the first non-empty line and
+    bound its length.
+    """
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        if text:
+            return text[:limit]
+    return ""
+
+
 def _resolved_cua_driver_cmd() -> Optional[str]:
     """Resolve cua-driver exactly as the runtime and Desktop status do."""
     from tools.computer_use.cua_backend import resolve_cua_driver_cmd

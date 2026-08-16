@@ -234,6 +234,32 @@ def _cua_permission_mode(session_id: str) -> str:
         return "standard"
 
 
+def _config_preauthorized(action: str, args: Dict[str, Any]) -> bool:
+    """True when config already carries the authorization for this action.
+
+    ``computer_use.grant_existing_profile`` is a durable, file-backed opt-in
+    that the model can never set. When it is on, an extra runtime prompt for
+    the existing-profile prepare asks the user to re-authorize what they
+    already authorized — and it makes the documented opt-in unusable on any
+    non-interactive run, where the prompt has nobody to answer it and the
+    call dies on approval timeout instead of attaching.
+
+    Scope is deliberately narrow: only the existing-profile prepare, only
+    when the grant is present. Isolated-profile launches still prompt, and
+    any resolution failure falls closed to prompting.
+    """
+    if action != "cua_browser_prepare":
+        return False
+    if args.get("profile_mode") != "existing_profile":
+        return False
+    try:
+        from tools.computer_use.cua_backend import _cua_grant_existing_profile
+
+        return _cua_grant_existing_profile() is True
+    except Exception:
+        return False
+
+
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
     sid = str(session_id or "")
@@ -512,8 +538,9 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             "code": "bring_to_front_requires_foreground",
         })
 
-    # Approval gate (destructive actions only).
-    if action in _DESTRUCTIVE_ACTIONS:
+    # Approval gate (destructive actions only). A durable config grant is
+    # already the user's authorization, so it stands in for the prompt.
+    if action in _DESTRUCTIVE_ACTIONS and not _config_preauthorized(action, args):
         err = _request_approval(action, args, session_id)
         if err is not None:
             return err

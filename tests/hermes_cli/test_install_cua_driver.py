@@ -1244,3 +1244,42 @@ class TestWindowsAutostartRepair:
         assert "-ArgumentList @('autostart','enable')" in ps_command
         assert f"$exe = '{driver}'" in ps_command
         assert f"& {driver}" not in ps_command
+
+
+class TestCuaVersionSummary:
+    """`hermes computer-use status` prints one line, whatever the binary says.
+
+    A binary chosen by HERMES_CUA_DRIVER_CMD is under no obligation to answer
+    `--version` the way cua-driver does, and its output used to be spliced
+    verbatim into the status line.
+    """
+
+    @staticmethod
+    def _summary(raw, **kw):
+        from hermes_cli import tools_config
+
+        return tools_config._cua_version_summary(raw, **kw)
+
+    def test_plain_version_passes_through(self):
+        assert self._summary("cua-driver 0.20.0") == "cua-driver 0.20.0"
+
+    def test_multiline_banner_collapses_to_first_line(self):
+        banner = (
+            "Microsoft Windows [Version 10.0.26200.9168]\n"
+            "(c) Microsoft Corporation. All rights reserved.\n"
+            "\n"
+            "C:\\Users\\demo>"
+        )
+        summary = self._summary(banner)
+        assert summary == "Microsoft Windows [Version 10.0.26200.9168]"
+        assert "\n" not in summary
+
+    def test_leading_blank_lines_skipped(self):
+        assert self._summary("\n\n  cua-driver 0.20.0  ") == "cua-driver 0.20.0"
+
+    def test_long_line_is_bounded(self):
+        assert len(self._summary("x" * 500)) == 120
+
+    def test_empty_output_stays_empty(self):
+        assert self._summary("") == ""
+        assert self._summary("   \n  \n") == ""

@@ -6569,6 +6569,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         updated_summary = _redact_compaction_text(updated_summary)
         prev_summary = self._micro_compact_rolling_summary
         prev_cursor = self._micro_compact_cursor
+        prev_failures = self._micro_compact_consecutive_failures
+        prev_fail_cursor = self._micro_compact_last_failure_cursor
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
         self._micro_compact_consecutive_failures = 0
@@ -6580,6 +6582,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         if not self._sync_micro_compact_to_db(result):
             self._micro_compact_rolling_summary = prev_summary
             self._micro_compact_cursor = prev_cursor
+            if exchange_start == prev_fail_cursor:
+                self._micro_compact_consecutive_failures = prev_failures + 1
+            else:
+                self._micro_compact_consecutive_failures = 1
+            self._micro_compact_last_failure_cursor = exchange_start
+            if (
+                self._micro_compact_consecutive_failures
+                >= _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES
+            ):
+                self._micro_compact_cursor = exchange_end
+                self._micro_compact_consecutive_failures = 0
+                self._micro_compact_last_failure_cursor = -1
             self._emit_micro_compaction_telemetry(
                 outcome="persist_failed",
                 messages_before=_messages_before,

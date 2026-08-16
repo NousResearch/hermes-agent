@@ -781,6 +781,28 @@ class TestMicroCompaction:
         # Resolve may scan-advance the cursor; absorb must not keep the
         # new rolling summary when persist failed.
         assert cc._micro_compact_rolling_summary == prev_summary
+        # Persist failure is a strike: do not reset the skip-after-N guard.
+        assert cc._micro_compact_consecutive_failures == 1
+
+    def test_repeated_persist_failures_skip_the_stuck_exchange(self):
+        """A disk that keeps rejecting the splice must not retry forever."""
+        cc = _compressor()
+        cc._session_id = "sess-84723-persist-skip"
+
+        class _FailingDB:
+            def archive_and_compact(self, *_a, **_k):
+                raise RuntimeError("disk full")
+
+        cc._session_db = _FailingDB()
+        messages = _conversation(exchanges=8)
+        for _ in range(_MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES):
+            result = cc._micro_compact(list(messages))
+            assert result == messages or [m.get("content") for m in result] == [
+                m.get("content") for m in messages
+            ]
+
+        assert cc._micro_compact_cursor > 0
+        assert cc._micro_compact_consecutive_failures == 0
 
     def test_generated_micro_summary_is_redacted_before_publish(self):
         """Summarizer output is redacted before cursor/summary/list publish (#84723)."""

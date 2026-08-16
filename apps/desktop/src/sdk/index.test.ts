@@ -2,11 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
-import {
-  setActiveSessionId,
-  setAwaitingResponse,
-  setBusy
-} from '@/store/session'
+import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 describe('host.state turn flags', () => {

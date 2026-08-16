@@ -100,7 +100,6 @@ describe('submit in-flight TTL', () => {
   })
 })
 
-
 describe('isTargetSessionBusy', () => {
   it('reads the target session slice, not the leftover foreground flag', () => {
     expect(isTargetSessionBusy({ a: { busy: true }, b: { busy: false } }, 'b', true)).toBe(false)

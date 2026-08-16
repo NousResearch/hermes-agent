@@ -1453,13 +1453,7 @@ function ServerIconActions({
 // README shape — mcp.json snippet, npx/docker command line, `claude mcp add`,
 // a bare URL, or a Cursor deeplink — see the inferred name + config, then
 // merge it into the editor draft (unsaved, like the "+" starter entry).
-function McpImportButton({
-  disabled,
-  onImport
-}: {
-  disabled: boolean
-  onImport: (entries: McpImportEntry[]) => void
-}) {
+function McpImportButton({ disabled, onImport }: { disabled: boolean; onImport: (entries: McpImportEntry[]) => void }) {
   const { t } = useI18n()
   const m = t.settings.mcp
   const [open, setOpen] = useState(false)

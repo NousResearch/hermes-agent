@@ -107,6 +107,7 @@ async function sweep(): Promise<void> {
   }
 
   const raw = config.mcp_servers
+
   const servers =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, Record<string, unknown>>) : {}
 

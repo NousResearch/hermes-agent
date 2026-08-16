@@ -343,8 +343,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // backendScopeKey — untagged (local/primary) events keep the legacy
       // bare-profile behavior byte-identical.
       const fromActiveSource = (): boolean =>
-        (!event.profile ||
-          normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())) &&
+        (!event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())) &&
         backendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
           backendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
@@ -508,12 +507,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // gateway may reconcile the foreground cache. Requiring the renderer's
         // source tag prevents an event queued before a profile swap from being
         // attributed to the newly active profile.
-        if (
-          isActiveEvent &&
-          typeof payload?.approval_mode === 'string' &&
-          event.profile &&
-          fromActiveSource()
-        ) {
+        if (isActiveEvent && typeof payload?.approval_mode === 'string' && event.profile && fromActiveSource()) {
           reconcileApprovalModeForProfile(event.profile, payload.approval_mode)
         }
 

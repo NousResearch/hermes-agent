@@ -38,13 +38,7 @@ import {
   setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
-import {
-  $activeSessionId,
-  $currentCwd,
-  $currentModel,
-  $gatewayState,
-  $selectedStoredSessionId
-} from '@/store/session'
+import { $activeSessionId, $currentCwd, $currentModel, $gatewayState, $selectedStoredSessionId } from '@/store/session'
 import {
   $focusedRuntimeId,
   $focusedSessionState,

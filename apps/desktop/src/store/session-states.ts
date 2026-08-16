@@ -68,11 +68,7 @@ export const $sessionStates = atom<Record<string, ClientSessionState>>({})
 
 const sessionScopeByRuntimeId = new Map<string, string>()
 
-export function recordSessionEventScope(event: {
-  connectionId?: string
-  profile?: string
-  session_id?: string
-}): void {
+export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
   if (event.session_id && event.connectionId) {
     sessionScopeByRuntimeId.set(event.session_id, backendScopeKey(event.connectionId, event.profile))
   }

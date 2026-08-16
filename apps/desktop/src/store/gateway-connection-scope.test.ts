@@ -38,8 +38,13 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
-const { closeSecondaryGateways, configureGatewayRegistry, openGatewayForAgent, pruneSecondaryGateways, setPrimaryGateway } =
-  await import('./gateway')
+const {
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  openGatewayForAgent,
+  pruneSecondaryGateways,
+  setPrimaryGateway
+} = await import('./gateway')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {

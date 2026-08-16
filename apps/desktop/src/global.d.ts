@@ -147,9 +147,7 @@ declare global {
         // materially edited so the renderer can dispose (and re-dial) the
         // secondary gateways scoped to it. Optional: older Electron mains
         // don't emit it.
-        onChanged?: (
-          callback: (payload: { connectionId: string; reason: 'removed' | 'updated' }) => void
-        ) => () => void
+        onChanged?: (callback: (payload: { connectionId: string; reason: 'removed' | 'updated' }) => void) => () => void
       }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>

@@ -104,6 +104,15 @@ describe('Polish desktop catalog', () => {
     expect(pl.common.delete).toBe('Usuń')
     expect(pl.settings.nav.providers).toBe('Dostawcy')
     expect(pl.boot.ready).toBe('Hermes Desktop jest gotowy')
+    expect(pl.boot.steps.startingDesktopConnection).toBe('Nawiązywanie połączenia z aplikacją Hermes Desktop')
+    expect(pl.settings.searchPlaceholder.about).toBe('Informacje o aplikacji Hermes Desktop')
+    expect(pl.settings.gateway.sshErrUpdateRequired).toBe(
+      'Przed połączeniem z aplikacją Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.'
+    )
+    expect(pl.settings.gateway.cloudNeedsSignIn).toBe(
+      'Zaloguj się do usługi Hermes Cloud, aby wyszukać agentów na swoim koncie.'
+    )
+    expect(pl.settings.gateway.cloudSignInFailed).toBe('Nie udało się zalogować do usługi Hermes Cloud')
     expect(pl.commandCenter.commandCenter).toBe('Centrum poleceń')
     expect(pl.commandCenter.generatePet.hatch).toBe('Wykluj')
     expect(pl.assistant.approval.run).toBe('Uruchom')
@@ -120,9 +129,6 @@ describe('Polish desktop catalog', () => {
     expect(pl.settings.gateway.sshHermesPathTitle).toBe('Ścieżka Hermesa (opcjonalnie)')
     expect(pl.settings.gateway.sshReachable('host', 'linux')).toBe('Host osiągalny: host (linux) — znaleziono Hermesa')
     expect(pl.settings.gateway.sshErrNotInstalled).toContain('ustaw ścieżkę Hermesa.')
-    expect(pl.settings.gateway.sshErrUpdateRequired).toBe(
-      'Przed połączeniem z Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.'
-    )
     expect(pl.settings.providers.localEndpoint.description).toBe(
       'Połącz Hermesa z dowolnym endpointem zgodnym z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itd.).'
     )

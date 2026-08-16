@@ -40,6 +40,11 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('pl')
     expect(translateNow('common.save')).toBe('Zapisz')
     expect(translateNow('settings.nav.providers')).toBe('Dostawcy')
+    expect(translateNow('boot.desktopBootFailedWithMessage', 'brak połączenia')).toBe(
+      'Nie udało się uruchomić aplikacji Hermes Desktop: brak połączenia'
+    )
+    expect(translateNow('settings.gateway.cloudSignIn')).toBe('Zaloguj się do usługi Hermes Cloud')
+    expect(translateNow('settings.gateway.cloudSignedIn')).toBe('Zalogowano się w usłudze Hermes Cloud')
 
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')

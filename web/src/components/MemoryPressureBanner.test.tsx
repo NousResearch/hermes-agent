@@ -30,6 +30,7 @@ async function rerender(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   sessionStorage.clear();
 });
 
@@ -273,6 +274,19 @@ describe("MemoryPressureBanner", () => {
     );
     expect(banner()?.textContent).toContain("disk is almost full");
     expect(banner()?.textContent).toContain("(120 MB free)");
+  });
+
+  it("renders the disk free-space detail from the active Polish catalog", async () => {
+    localStorage.setItem("hermes-locale", "pl");
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "critical", free_mb: 120 })}
+      />,
+    );
+
+    expect(banner()?.textContent).toContain("Dysk agenta jest niemal pełny");
+    expect(banner()?.textContent).toContain("(pozostało 120 MB)");
+    expect(banner()?.textContent).not.toContain("MB free");
   });
 
   it("shows the disk-elevated warning", async () => {

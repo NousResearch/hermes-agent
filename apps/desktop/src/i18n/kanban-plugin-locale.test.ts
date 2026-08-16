@@ -94,6 +94,8 @@ describe('Polish Kanban plugin catalog', () => {
 
     expect(translatePlugin('kanban-polish-seam', 'pl', 'newTask', [])).toBe('Nowe zadanie')
     expect(translatePlugin('kanban-polish-seam', 'pl', 'col.ready.label', [])).toBe('Gotowe')
+    expect(translatePlugin('kanban-polish-seam', 'pl', 'allTenants', [])).toBe('Wszystkie przestrzenie')
+    expect(translatePlugin('kanban-polish-seam', 'pl', 'metaTenant', [])).toBe('Przestrzeń')
     expect(translatePlugin('kanban-polish-seam', 'pl', 'countTip', [2, 5])).toBe('Kanban — w toku: 2, gotowe: 5')
     expect(translatePlugin('kanban-polish-seam', 'pl', 'bulkFailed', [2, 7, 'brak połączenia'])).toBe(
       'Nie udało się: 2 z 7 — brak połączenia. Nieudane karty pozostają wybrane.'

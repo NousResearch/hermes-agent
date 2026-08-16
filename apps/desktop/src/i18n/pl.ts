@@ -63,22 +63,22 @@ const plTranslatedOverrides = {
 
   boot: {
     ready: 'Hermes Desktop jest gotowy',
-    desktopBootFailedWithMessage: message => `Nie udało się uruchomić Hermes Desktop: ${message}`,
+    desktopBootFailedWithMessage: message => `Nie udało się uruchomić aplikacji Hermes Desktop: ${message}`,
     steps: {
-      connectingGateway: 'Łączenie z bramą Hermes Desktop',
+      connectingGateway: 'Łączenie z bramą aplikacji Hermes Desktop',
       loadingSettings: 'Ładowanie ustawień Hermesa',
       loadingSessions: 'Ładowanie ostatnich sesji',
-      startingDesktopConnection: 'Nawiązywanie połączenia z Hermes Desktop',
-      startingHermesDesktop: 'Uruchamianie Hermes Desktop…'
+      startingDesktopConnection: 'Nawiązywanie połączenia z aplikacją Hermes Desktop',
+      startingHermesDesktop: 'Uruchamianie aplikacji Hermes Desktop…'
     },
     errors: {
       backgroundExited: 'Proces Hermesa w tle zakończył działanie.',
       backgroundExitedDuringStartup: 'Proces Hermesa w tle zakończył się podczas uruchamiania.',
       backendStopped: 'Backend zatrzymany',
-      desktopBootFailed: 'Nie udało się uruchomić Hermes Desktop',
+      desktopBootFailed: 'Nie udało się uruchomić aplikacji Hermes Desktop',
       gatewayConnectionLost: 'Utracono połączenie z bramą',
       gatewaySignInRequired: 'Wymagane logowanie do bramy',
-      ipcBridgeUnavailable: 'Most IPC Hermes Desktop jest niedostępny.'
+      ipcBridgeUnavailable: 'Most IPC aplikacji Hermes Desktop jest niedostępny.'
     },
     failure: {
       title: 'Nie udało się uruchomić Hermesa',
@@ -123,7 +123,7 @@ const plTranslatedOverrides = {
     copyDetailFailed: 'Nie udało się skopiować szczegółów powiadomienia',
     backendOutOfDateTitle: 'Backend jest nieaktualny',
     backendOutOfDateMessage:
-      'Backend Hermesa jest starszy niż ta wersja Hermes Desktop i może nie działać poprawnie. Zaktualizuj go, aby wersje były zgodne.',
+      'Backend Hermesa jest starszy niż ta wersja aplikacji Hermes Desktop i może nie działać poprawnie. Zaktualizuj go, aby wersje były zgodne.',
     installMethodUnsupportedTitle: 'Nieobsługiwana metoda instalacji',
     updateHermes: 'Zaktualizuj Hermesa',
     updateReadyTitle: 'Aktualizacja gotowa',
@@ -133,7 +133,7 @@ const plTranslatedOverrides = {
       elevenLabsNeedsKey: 'ElevenLabs STT wymaga ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs odrzuciło klucz API (401).',
       methodNotAllowed:
-        'Backend Hermes Desktop odrzucił to żądanie (405 Method Not Allowed). Spróbuj ponownie uruchomić Hermes Desktop.',
+        'Backend aplikacji Hermes Desktop odrzucił to żądanie (405 Method Not Allowed). Spróbuj ponownie uruchomić aplikację Hermes Desktop.',
       microphonePermission: 'Odmówiono dostępu do mikrofonu.',
       openaiRejectedApiKey: 'OpenAI odrzucił klucz API.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI odrzucił klucz API (${status} invalid_api_key).`,
@@ -192,7 +192,7 @@ const plTranslatedOverrides = {
     openSettings: 'Otwórz ustawienia',
     openStarmap: 'Otwórz graf pamięci',
     layoutEditor: 'Edytor układu',
-    layoutEditorTitle: 'Edytor układu — kliknięcie z ⌘ przywraca układ'
+    layoutEditorTitle: mod => `Edytor układu — kliknięcie z ${mod} przywraca układ`
   },
 
   keybinds: {
@@ -296,7 +296,7 @@ const plTranslatedOverrides = {
 
   language: {
     label: 'Język',
-    description: 'Wybierz język interfejsu Hermes Desktop.',
+    description: 'Wybierz język interfejsu aplikacji Hermes Desktop.',
     saving: 'Zapisywanie języka…',
     saveError: 'Aktualizacja języka nie powiodła się',
     switchTo: 'Zmień język',
@@ -330,7 +330,7 @@ const plTranslatedOverrides = {
       billing: 'Rozliczenia'
     },
     plugins: {
-      title: 'Wtyczki Hermes Desktop',
+      title: 'Wtyczki aplikacji Hermes Desktop',
       blurb:
         'Rozszerzenia interfejsu ładowane w tej aplikacji — dołączone do kompilacji lub umieszczone w folderze desktop-plugins (również te utworzone przez Hermesa). Wyłączenie odłącza wtyczkę od razu i zachowuje ten stan po ponownym uruchomieniu.',
       count: count => `Wtyczki: ${count}`,
@@ -340,7 +340,7 @@ const plTranslatedOverrides = {
       enable: 'Włącz',
       disable: 'Wyłącz',
       failed: 'nieudana',
-      empty: 'Nie zainstalowano jeszcze wtyczek Hermes Desktop.',
+      empty: 'Nie zainstalowano jeszcze wtyczek aplikacji Hermes Desktop.',
       kinds: {
         bundled: 'dołączona',
         disk: 'na dysku',
@@ -402,7 +402,7 @@ const plTranslatedOverrides = {
       advanced: 'Zaawansowane'
     },
     searchPlaceholder: {
-      about: 'Informacje o Hermes Desktop',
+      about: 'Informacje o aplikacji Hermes Desktop',
       config: 'Wyszukaj ustawienia…',
       gateway: 'Połączenie z bramą…',
       keys: 'Wyszukaj klucze API…',
@@ -446,7 +446,7 @@ const plTranslatedOverrides = {
       themeProfileNote: profile => `Zapisano dla profilu ${profile} — każdy profil ma własny motyw.`,
       installTitle: 'Zainstaluj z VS Code',
       installDesc:
-        'Wklej identyfikator rozszerzenia z Marketplace (np. dracula-theme.theme-dracula), aby przekształcić jego motyw kolorystyczny w paletę Hermes Desktop.',
+        'Wklej identyfikator rozszerzenia z Marketplace (np. dracula-theme.theme-dracula), aby przekształcić jego motyw kolorystyczny w paletę aplikacji Hermes Desktop.',
       installPlaceholder: 'publisher.extension',
       installButton: 'Zainstaluj',
       installing: 'Instaluję…',
@@ -812,7 +812,7 @@ const plTranslatedOverrides = {
     gateway: {
       loading: 'Ładowanie ustawień bramy…',
       unavailableTitle: 'Ustawienia bramy są niedostępne',
-      unavailableDesc: 'Most IPC Hermes Desktop nie udostępnia ustawień bramy.',
+      unavailableDesc: 'Most IPC aplikacji Hermes Desktop nie udostępnia ustawień bramy.',
       title: 'Połączenie z bramą',
       envOverride: 'nadpisane przez zmienne środowiskowe',
       intro:
@@ -822,7 +822,7 @@ const plTranslatedOverrides = {
       defaultConnection: 'Domyślne połączenie dla każdego profilu bez własnego ustawienia.',
       profileConnection: profile =>
         `Połączenie używane tylko wtedy, gdy aktywny jest profil „${profile}”. Wybierz tryb lokalny, aby odziedziczyć ustawienie domyślne.`,
-      envOverrideTitle: 'Tą sesją Hermes Desktop sterują zmienne środowiskowe.',
+      envOverrideTitle: 'Bieżącą sesją aplikacji Hermes Desktop sterują zmienne środowiskowe.',
       envOverrideDesc:
         'Usuń HERMES_DESKTOP_REMOTE_URL i HERMES_DESKTOP_REMOTE_TOKEN ze środowiska, aby użyć ustawienia zapisanego poniżej.',
       modeTitle: 'Tryb połączenia',
@@ -833,11 +833,11 @@ const plTranslatedOverrides = {
       remoteAuthHint:
         'Bramy hostowane przez dostawcę używają OAuth albo nazwy użytkownika i hasła; bramy hostowane samodzielnie mogą używać tokena sesji.',
       cloudTitle: 'Hermes Cloud',
-      cloudDesc: 'Zaloguj się raz do Hermes Cloud i wybierz agenta ze swojego konta — bez wklejania adresu URL.',
+      cloudDesc: 'Zaloguj się raz do usługi Hermes Cloud i wybierz agenta ze swojego konta — bez wklejania adresu URL.',
       cloudSignInTitle: 'Hermes Cloud',
-      cloudSignIn: 'Zaloguj się do Hermes Cloud',
-      cloudSignedIn: 'Zalogowano do Hermes Cloud',
-      cloudNeedsSignIn: 'Zaloguj się do Hermes Cloud, aby wyszukać agentów na swoim koncie.',
+      cloudSignIn: 'Zaloguj się do usługi Hermes Cloud',
+      cloudSignedIn: 'Zalogowano się w usłudze Hermes Cloud',
+      cloudNeedsSignIn: 'Zaloguj się do usługi Hermes Cloud, aby wyszukać agentów na swoim koncie.',
       cloudSignedInDesc: 'Jesteś zalogowany. Wybierz agenta poniżej; sesja odświeża się automatycznie.',
       cloudAgentsTitle: 'Twoi agenci',
       cloudOrgPickerTitle: 'Wybierz organizację',
@@ -853,11 +853,11 @@ const plTranslatedOverrides = {
       cloudRefresh: 'Odśwież',
       cloudConnect: 'Połącz',
       cloudConnecting: 'Łączenie…',
-      cloudDiscoverFailed: 'Nie udało się załadować agentów Hermes Cloud',
+      cloudDiscoverFailed: 'Nie udało się załadować agentów w usłudze Hermes Cloud',
       cloudConnectFailed: 'Nie udało się połączyć z tym agentem',
-      cloudSignInFailed: 'Nie udało się zalogować do Hermes Cloud',
-      cloudSignedOutTitle: 'Wylogowano z Hermes Cloud',
-      cloudSignedOutMessage: 'Usunięto sesję Hermes Cloud.',
+      cloudSignInFailed: 'Nie udało się zalogować do usługi Hermes Cloud',
+      cloudSignedOutTitle: 'Wylogowano z usługi Hermes Cloud',
+      cloudSignedOutMessage: 'Usunięto sesję usługi Hermes Cloud.',
       cloudConnectedTitle: 'Połączono',
       cloudConnectedPill: 'Połączono',
       cloudConnectedTo: name => `Połączono z ${name}.`,
@@ -948,9 +948,9 @@ const plTranslatedOverrides = {
       sshErrNotInstalled:
         'Hermes nie jest zainstalowany na zdalnym hoście. Zainstaluj go tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) albo ustaw ścieżkę Hermesa.',
       sshErrPlatform:
-        'Nieobsługiwana platforma zdalna. Tryb SSH Hermes Desktop obsługuje zdalne hosty Linux, macOS i Windows.',
+        'Nieobsługiwana platforma zdalna. Tryb SSH w aplikacji Hermes Desktop obsługuje zdalne hosty Linux, macOS i Windows.',
       sshErrTimeout: 'Przekroczono limit czasu połączenia SSH. Host może być nieosiągalny albo uśpiony.',
-      sshErrUpdateRequired: 'Przed połączeniem z Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.',
+      sshErrUpdateRequired: 'Przed połączeniem z aplikacją Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.',
       sshErrUnknown: 'Połączenie SSH nie powiodło się.'
     },
     keys: {
@@ -1202,7 +1202,6 @@ const plTranslatedOverrides = {
     tabSkills: 'Umiejętności',
     tabToolsets: 'Narzędzia',
     tabMcp: 'MCP',
-    tabHub: 'Przeglądaj centrum',
     all: 'Wszystko',
     searchSkills: 'Szukaj umiejętności…',
     searchToolsets: 'Szukaj zestawów narzędzi…',
@@ -1458,7 +1457,7 @@ const plTranslatedOverrides = {
     },
     nav: {
       newChat: { title: 'Nowa sesja', detail: 'Rozpocznij nową sesję' },
-      settings: { title: 'Ustawienia', detail: 'Skonfiguruj Hermes Desktop' },
+      settings: { title: 'Ustawienia', detail: 'Skonfiguruj aplikację Hermes Desktop' },
       skills: { title: 'Możliwości', detail: 'Umiejętności, narzędzia i serwery MCP' },
       messaging: { title: 'Wiadomości', detail: 'Skonfiguruj Telegram, Slack, Discord i inne platformy' },
       artifacts: { title: 'Artefakty', detail: 'Przeglądaj wygenerowane wyniki' }
@@ -2183,7 +2182,7 @@ const plTranslatedOverrides = {
     preparingAudio: 'Przygotowanie dźwięku',
     speakingResponse: 'Odtwarzanie odpowiedzi',
     readingAloud: 'Czytanie na głos',
-    themeSuggestions: 'Sugestie motywów Hermes Desktop',
+    themeSuggestions: 'Sugestie motywów dla aplikacji Hermes Desktop',
     noMatchingThemes: 'Brak pasujących motywów.',
     themeTryPre: 'Spróbuj ',
     themeTryPost: '.',
@@ -2261,7 +2260,7 @@ const plTranslatedOverrides = {
       scopeLastTurn: 'Ostatnia tura',
       commit: 'Utwórz commit',
       commitAndPush: 'Utwórz commit i wypchnij',
-      commitPlaceholder: 'Opis commita (⌘↵: utwórz commit)',
+      commitPlaceholder: shortcut => `Opis commita (${shortcut}: utwórz commit)`,
       generateCommitMessage: 'Wygeneruj opis commita',
       stopGenerating: 'Zatrzymaj generowanie',
       createPr: 'Utwórz PR',
@@ -2286,7 +2285,7 @@ const plTranslatedOverrides = {
       pull: 'Prawie na miejscu…',
       pydeps: 'Kończenie aktualizacji…',
       update: 'Aktualizowanie Hermesa…',
-      rebuild: 'Przebudowywanie Hermes Desktop…',
+      rebuild: 'Przebudowywanie aplikacji Hermes Desktop…',
       restart: 'Ponowne uruchamianie Hermesa…',
       done: 'Aktualizacja zakończona',
       manual: 'Zaktualizuj z terminala',
@@ -2317,7 +2316,7 @@ const plTranslatedOverrides = {
     manualPickedUp: 'Hermes pobierze nową wersję przy następnym uruchomieniu.',
     guiSkewTitle: 'Zaktualizuj aplikację komputerową',
     guiSkewBody:
-      'Backend został zaktualizowany, ale pakiet Hermes Desktop nie. Zaktualizuj lub zainstaluj ponownie Hermes Desktop (AppImage / .deb / .rpm), aby wersje były zgodne.',
+      'Backend został zaktualizowany, ale pakiet aplikacji Hermes Desktop nie. Zaktualizuj lub zainstaluj ponownie aplikację Hermes Desktop (AppImage / .deb / .rpm), aby wersje były zgodne.',
     copy: 'Kopiuj',
     copied: 'Skopiowano',
     done: 'Gotowe',
@@ -2360,7 +2359,7 @@ const plTranslatedOverrides = {
     settingUpTitle: 'Konfigurowanie Hermesa',
     finishingTitle: 'Kończenie konfiguracji',
     failedDesc:
-      'Jeden z etapów instalacji nie powiódł się. W systemie Windows może się to zdarzyć, jeśli działa inna instancja Hermes CLI lub Hermes Desktop. Zamknij wszystkie działające instancje Hermesa i spróbuj ponownie. Pełne informacje znajdziesz w szczegółach poniżej lub w logu Hermes Desktop.',
+      'Jeden z etapów instalacji nie powiódł się. W systemie Windows może się to zdarzyć, jeśli działa inna instancja aplikacji Hermes CLI lub Hermes Desktop. Zamknij wszystkie działające instancje Hermesa i spróbuj ponownie. Pełne informacje znajdziesz w szczegółach poniżej lub w logu aplikacji Hermes Desktop.',
     activeDesc:
       'Jest to konfiguracja jednorazowa. Instalator Hermesa pobiera zależności i konfiguruje Twój komputer. Kolejne uruchomienia pominą ten krok.',
     progress: (completed, total) => `Ukończone kroki: ${completed}/${total}`,
@@ -2377,7 +2376,7 @@ const plTranslatedOverrides = {
     copiedOutput: 'Skopiowano',
     copyOutput: 'Skopiuj dane wyjściowe',
     reloadRetry: 'Załaduj ponownie i spróbuj ponownie',
-    setupChoiceTitle: 'Skonfiguruj Hermes Desktop',
+    setupChoiceTitle: 'Skonfiguruj aplikację Hermes Desktop',
     setupChoiceDesc:
       'Połącz tę aplikację z działającą bramą Hermesa albo zainstaluj Hermesa lokalnie na tym komputerze.',
     connectExistingTitle: 'Połącz z istniejącą bramą Hermesa',
@@ -2387,7 +2386,7 @@ const plTranslatedOverrides = {
     installLocalTitle: 'Zainstaluj Hermesa lokalnie',
     installLocalDesc: 'Pobierz Hermesa, utwórz jego środowisko Python i uruchom backend na tym komputerze.',
     localStartUnavailable:
-      'Nie udało się rozpocząć instalacji lokalnej. Uruchom ponownie Hermes Desktop i spróbuj jeszcze raz.',
+      'Nie udało się rozpocząć instalacji lokalnej. Uruchom ponownie aplikację Hermes Desktop i spróbuj jeszcze raz.',
     remoteSetupTitle: 'Połącz z istniejącą bramą Hermesa',
     remoteSetupDesc:
       'Wprowadź URL bramy. Hermes Desktop wykryje, czy wymagany jest token, czy logowanie w przeglądarce.',
@@ -2576,7 +2575,7 @@ const plTranslatedOverrides = {
       update: 'aktualizacja',
       updateInProgress: 'Aktualizacja w toku',
       commitsBehind: (count, branch) => `Brakujące commity dla gałęzi ${branch}: ${count}`,
-      desktopVersion: version => `Wersja Hermes Desktop: ${version}`,
+      desktopVersion: version => `Wersja aplikacji Hermes Desktop: ${version}`,
       backendVersion: version => `Wersja backendu: ${version}`,
       clientLabel: version => `Klient: ${version}`,
       backendLabel: version => `Backend: ${version}`,
@@ -2637,7 +2636,7 @@ const plTranslatedOverrides = {
       connectionSsh: host => `SSH: ${host}`,
       connectionRemote: host => `Zdalnie: ${host}`,
       connectionCloud: host => `Chmura: ${host}`,
-      connectionCloudTooltip: host => `Połączono z Hermes Cloud pod adresem ${host} · kliknij, aby zarządzać`,
+      connectionCloudTooltip: host => `Połączono z usługą Hermes Cloud pod adresem ${host} · kliknij, aby zarządzać`,
       connectionSshTooltip: host => `Połączono przez SSH z ${host} · kliknij, aby zarządzać`,
       connectionRemoteTooltip: host => `Połączono ze zdalnym backendem ${host} · kliknij, aby zarządzać`,
       webhooks: 'Webhooki',
@@ -3007,7 +3006,7 @@ const plTranslatedOverrides = {
     promptFailed: 'Nie udało się wysłać promptu',
     providerCredentialRequired: 'Dodaj dane uwierzytelniające dostawcy przed wysłaniem pierwszej wiadomości.',
     emptySlashCommand: 'puste polecenie ukośnikowe',
-    desktopCommands: 'Polecenia Hermes Desktop',
+    desktopCommands: 'Polecenia aplikacji Hermes Desktop',
     skillCommandsAvailable: count => `Dostępne polecenia umiejętności: ${count}.`,
     warningLine: message => `ostrzeżenie: ${message}`,
     yoloArmed: 'Tryb YOLO jest aktywny w tym czacie',
@@ -3043,14 +3042,14 @@ const plTranslatedOverrides = {
     cwdChangeFailed: 'Zmiana katalogu roboczego nie powiodła się',
     cwdStagedTitle: 'Katalog roboczy ustawiony',
     cwdStagedMessage:
-      'Uruchom ponownie backend Hermes Desktop, aby zastosować zmianę katalogu roboczego w tej aktywnej sesji.',
+      'Uruchom ponownie backend aplikacji Hermes Desktop, aby zastosować zmianę katalogu roboczego w tej aktywnej sesji.',
     modelSwitchFailed: 'Zmiana modelu nie powiodła się',
     sessionExported: 'Sesja wyeksportowana',
     sessionExportFailed: 'Nie można wyeksportować sesji',
     imageSaved: 'Obraz został zapisany',
     downloadStarted: 'Pobieranie rozpoczęte',
-    restartToUseSaveImage: 'Uruchom ponownie Hermes Desktop, aby użyć opcji Zapisz obraz.',
-    restartToSaveImages: 'Uruchom ponownie Hermes Desktop, aby zapisać obrazy',
+    restartToUseSaveImage: 'Uruchom ponownie aplikację Hermes Desktop, aby użyć opcji Zapisz obraz.',
+    restartToSaveImages: 'Uruchom ponownie aplikację Hermes Desktop, aby zapisać obrazy',
     imageDownloadFailed: 'Pobieranie obrazu nie powiodło się',
     openImage: 'Otwórz obraz',
     downloadImage: 'Pobierz obraz',
@@ -3175,13 +3174,23 @@ const plTranslatedOverrides = {
 
 const plMissingOverrides = {
   notifications: {
+    updateReadyMessageUnknown: 'Dostępna jest nowa aktualizacja.',
     errors: { diskFull: 'Dysk jest pełny — zwolnij trochę miejsca, a następnie spróbuj ponownie.' },
-    voice: { sayStopToEnd: (phrase: string) => `Powiedz „${phrase}”, aby zakończyć rozmowę głosową.` }
+    voice: { sayStopToEnd: (phrase: string) => `Powiedz „${phrase}”, aby zakończyć rozmowę głosową.` },
+    mcp: {
+      needsAuthTitle: 'Serwer MCP wymaga ponownego uwierzytelnienia',
+      needsAuthMessage: (name: string) => `Serwer MCP ${name} wymaga ponownego uwierzytelnienia.`,
+      errorTitle: 'Serwer MCP jest nieosiągalny',
+      errorMessage: (name: string) => `Serwer MCP ${name} nie przeszedł kontroli stanu.`,
+      signIn: 'Zaloguj się',
+      view: 'Wyświetl'
+    }
   },
   titlebar: { enterHud: 'Tryb HUD', exitHud: 'Wyjdź z trybu HUD' },
   keybinds: {
     actions: {
       'workspace.openFolder': 'Otwórz folder jako projekt',
+      'session.archive': 'Zarchiwizuj bieżącą sesję',
       'view.toggleStatusbar': 'Przełącz pasek stanu',
       'view.toggleHud': 'Przełącz tryb HUD',
       'view.terminalCopy': 'Kopiuj zaznaczenie terminala',
@@ -3193,6 +3202,7 @@ const plMissingOverrides = {
   },
   findInPage: { next: 'Następne dopasowanie', previous: 'Poprzednie dopasowanie' },
   settings: {
+    nav: { connections: 'Połączenia' },
     plugins: {
       agent: {
         title: 'Wtyczki agenta',
@@ -3217,6 +3227,16 @@ const plMissingOverrides = {
       }
     },
     appearance: {
+      reasoningCollapsedTitle: 'Domyślnie zwijaj rozumowanie',
+      reasoningCollapsedDesc: 'Zachowaj strumieniowane rozumowanie bez rozwijania go, dopóki go nie otworzysz.',
+      sessionDensityTitle: 'Gęstość listy sesji',
+      sessionDensityDesc: 'Wybierz, ile kontekstu ma się pojawiać pod tytułami sesji na pasku bocznym.',
+      sessionDensityCompact: 'Kompaktowa',
+      sessionDensityComfortable: 'Wygodna',
+      sessionDensityDetailed: 'Szczegółowa',
+      composerPopoutTitle: 'Pływające pole wiadomości',
+      composerPopoutDesc:
+        'Zezwól na przeciąganie pola wiadomości poza dok. Wyłącz tę opcję, aby pozostało przypięte u dołu.',
       terminalFontTitle: 'Czcionka terminala',
       terminalFontDesc:
         'Wybierz zainstalowaną czcionkę dla terminali Desktop. Nerd Fonts wyświetlają Powerlevel10k i ikony powłoki; pozostaw puste, aby użyć dołączonej czcionki JetBrains Mono.',
@@ -3227,6 +3247,11 @@ const plMissingOverrides = {
       reactionsDesc: 'Reakcje emoji w stylu iMessage — reaguj na wiadomości, a Hermes może reagować na Twoje.'
     },
     config: {
+      toolsetsWipeConfirm:
+        'Usunąć wszystkie włączone zestawy narzędzi? Spowoduje to wyłączenie pamięci, terminala, wyszukiwania w sieci, delegowania i większości innych narzędzi do czasu ich ponownego włączenia.',
+      disableF12Title: 'Wyłącz otwieranie DevTools klawiszem F12',
+      disableF12Desc:
+        'Zablokuj otwieranie narzędzi deweloperskich klawiszem F12. Skrót Ctrl+Shift+I (lub Cmd+Opt+I na Macu) nadal działa.',
       searchPlaceholder: 'Szukaj…',
       noResults: 'Nie znaleziono wyników',
       systemDefault: 'Domyślne ustawienie systemu',
@@ -3235,6 +3260,52 @@ const plMissingOverrides = {
         'Maksymalny rozmiar lokalnego pliku w MB, który Desktop wczyta do podglądu lub jako załącznik obrazu. Domyślnie 16 MB. Zdalne załączniki inne niż obrazy mają osobny limit 256 MB. Bardzo wysoka wartość wczyta cały plik do pamięci i może zawiesić lub zamknąć aplikację.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maksymalny rozmiar podglądu / wczytywanego obrazu w megabajtach'
+    },
+    about: { updateReadyUnknown: 'Nowa aktualizacja jest gotowa.' },
+    connections: {
+      title: 'Połączenia',
+      intro:
+        'Zarejestruj wszystkie miejsca, w których działają Twoi agenci — to urządzenie, zdalne bramy w Twojej sieci i instancje w usłudze Hermes Cloud. Wszystkie są przechowywane tutaj.',
+      stagedNote:
+        'Czaty i lista agentów korzystają z wybranego źródła; backend tego okna, którym zarządza aplikacja, nadal wybierasz w Ustawienia → Brama.',
+      loadFailed: 'Nie udało się wczytać połączeń',
+      primaryPill: 'Główne',
+      managedPill: 'To urządzenie',
+      addConnection: 'Dodaj połączenie',
+      editConnection: 'Edytuj',
+      removeConnection: 'Usuń',
+      removeConfirmTitle: 'Usunąć to połączenie?',
+      removeConfirmDesc: (label: string) =>
+        `„${label}” zostanie usunięte z tej aplikacji. Sama instancja pozostanie bez zmian — w każdej chwili możesz dodać ją ponownie.`,
+      makePrimary: 'Ustaw jako główne',
+      testConnection: 'Testuj',
+      testOk: 'Osiągalne',
+      testFailed: 'Test połączenia nie powiódł się',
+      saveFailed: 'Nie udało się zapisać połączenia',
+      removeFailed: 'Nie udało się usunąć połączenia',
+      updateAll: 'Zaktualizuj wszystkie instancje',
+      updateAllRunning: 'Aktualizowanie wszystkich instancji…',
+      updateAllDone: 'Wysłano aktualizacje',
+      updateAllFailed: 'Nie udało się wysłać aktualizacji do wszystkich instancji',
+      updateSkippedCloud: 'Zarządzane przez usługę Hermes Cloud',
+      kindLocal: 'Lokalne',
+      kindRemote: 'Brama zdalna',
+      kindCloud: 'Hermes Cloud',
+      kindSsh: 'SSH',
+      kindLocalDesc: 'Środowisko uruchomieniowe Hermesa zarządzane przez tę aplikację.',
+      kindRemoteDesc: 'Brama Hermesa dostępna przez HTTP(S) — w sieci LAN, Tailscale lub internecie.',
+      kindCloudDesc: 'Hostowana instancja wykryta za pośrednictwem Twojego konta w usłudze Hermes Cloud.',
+      kindSshDesc: 'Instalacja Hermesa dostępna przez SSH.',
+      labelTitle: 'Nazwa',
+      labelDesc:
+        'Wymagana. Wyświetlana wszędzie tam, gdzie pojawia się ta instancja; musi być unikatowa (np. „Homelab”, „Laptop służbowy”).',
+      labelPlaceholder: 'Homelab',
+      urlTitle: 'URL bramy',
+      sshHostTitle: 'Host SSH',
+      save: 'Zapisz połączenie',
+      saving: 'Zapisywanie…',
+      cancel: 'Anuluj',
+      empty: 'Nie zarejestrowano jeszcze żadnych połączeń.'
     },
     quickEntry: {
       enabledTitle: 'Szybkie wprowadzanie',
@@ -3247,6 +3318,13 @@ const plMissingOverrides = {
       invalidShortcut: 'To nie jest prawidłowy skrót. Dodaj co najmniej jeden klawisz modyfikujący.'
     },
     gateway: {
+      plainTextConfirmTitle: 'Zapisać token bramy jako zwykły tekst?',
+      plainTextConfirmDesc:
+        'Na tym komputerze nie znaleziono usługi systemowego magazynu kluczy, więc token zostałby zapisany bez szyfrowania w pliku ustawień połączeń aplikacji. Każdy proces uruchomiony przez tego użytkownika mógłby go odczytać. Zainstaluj lub włącz GNOME Keyring albo KWallet, aby korzystać z szyfrowanego magazynu.',
+      plainTextConfirmAction: 'Zapisz jako zwykły tekst',
+      plainTextStoredTitle: 'Token zapisany jako zwykły tekst',
+      plainTextStoredDesc:
+        'Bezpieczny magazyn jest niedostępny, dlatego zapisany token znajduje się bez szyfrowania w pliku ustawień połączeń aplikacji na tym komputerze. Zainstaluj lub włącz GNOME Keyring albo KWallet, aby go zaszyfrować.',
       inheritTitle: 'Użyj domyślnej bramy',
       inheritDesc: 'Usuń zastąpienie dla tego profilu i użyj domyślnego połączenia.',
       sshRemoteProfileTitle: 'Zdalny profil (opcjonalnie)',
@@ -3256,6 +3334,42 @@ const plMissingOverrides = {
       activeBackend: 'Aktywny',
       activeBackendHint: 'To jest Twój aktywny backend',
       useBackend: 'Użyj tego backendu'
+    },
+    mcp: {
+      costTokens: (tokens: string) => `~${tokens} tokenów/wywołanie`,
+      usage30d: (uses: string) => `${uses} użyć/30 dni`,
+      unusedPill: 'nieużywany',
+      deepLinkTitle: 'Dodać serwer MCP?',
+      deepLinkDescription:
+        'To łącze zawiera prośbę o dodanie serwera MCP do Hermesa. Sprawdź poniższą dokładną konfigurację — pochodzi z łącza, a nie od Hermesa.',
+      deepLinkStdioWarning:
+        'Ten serwer uruchamia na Twoim komputerze lokalny proces za pomocą polecenia widocznego poniżej. Kontynuuj tylko wtedy, gdy ufasz jego źródłu.',
+      deepLinkConfirm: 'Dodaj serwer',
+      deepLinkNameInvalid: 'Nazwa może zawierać od 1 do 64 liter, cyfr, kropek, łączników lub podkreśleń.',
+      deepLinkNameConflict: (name: string) =>
+        `Serwer o nazwie ${name} już istnieje — wybierz inną nazwę albo anuluj.`,
+      deepLinkErrorTitle: 'Odrzucono łącze instalacyjne MCP',
+      deepLinkErrorName: 'W łączu brakuje nazwy serwera albo jest ona nieprawidłowa.',
+      deepLinkErrorConfig: 'Konfiguracja w łączu nie jest prawidłowym dokumentem JSON zakodowanym w formacie base64.',
+      deepLinkErrorShape: 'Konfiguracja musi być obiektem JSON z tekstowym polem `url` lub `command`.',
+      deepLinkErrorUrl: 'Dozwolone są wyłącznie adresy URL serwerów zaczynające się od http:// lub https://.',
+      deepLinkErrorTooLarge: 'Dane konfiguracji przekraczają limit 32 KB.',
+      importButton: 'Importuj',
+      importPlaceholder: 'Wklej fragment mcp.json, polecenie npx/docker, wiersz claude mcp add, URL lub łącze Cursor…',
+      importNoMatch: 'Nie rozpoznano konfiguracji serwera we wklejonym tekście.',
+      importConfirm: 'Dodaj do mcp.json',
+      importConfirmMany: (count: number) => `Dodaj serwery do mcp.json (${count})`
+    }
+  },
+  skills: {
+    configuringProfile: 'Konfigurowany profil:',
+    hub: {
+      alreadyInstalled: (name: string) => `„${name}” jest już zainstalowana`,
+      pickerTitle: 'Centrum umiejętności',
+      pickerBrowse: 'Przeglądaj całe centrum',
+      pickerHide: 'Ukryj przeglądarkę centrum',
+      pickerHint:
+        'Kliknij „+ Dodaj do tego agenta” przy dowolnej umiejętności — zostanie zainstalowana i pojawi się na powyższej liście.'
     }
   },
   commandCenter: {
@@ -3284,12 +3398,23 @@ const plMissingOverrides = {
     waitingSince: (minutes: number) => (minutes < 1 ? 'przed chwilą' : `${minutes} min temu`)
   },
   profiles: {
+    connectGateway: 'Połącz z inną bramą Hermesa…',
     importProfile: 'Importuj profil…',
     exportProfile: 'Eksportuj profil…',
     imported: 'Profil zaimportowany',
     exported: 'Profil wyeksportowany',
     failedImport: 'Nie udało się zaimportować profilu',
     failedExport: 'Nie udało się wyeksportować profilu'
+  },
+  cron: {
+    modelImpact: {
+      title: 'Zaplanowane zadania wymagają przeglądu',
+      message: (count: number) =>
+        `Liczba zaplanowanych zadań pomijanych do czasu przeglądu ustawień modelu: ${count}.`,
+      detailMore: (names: string, remaining: number) => `${names} i jeszcze ${remaining}`,
+      review: 'Przejrzyj zaplanowane zadania',
+      saveFailed: 'Hermes nie zapisał tej zmiany modelu.'
+    }
   },
   artifactCard: {
     kind: { code: 'Kod', html: 'Strona interaktywna', svg: 'Grafika' },
@@ -3310,6 +3435,10 @@ const plMissingOverrides = {
     missingBody: 'Ten artefakt nie jest już dostępny w lokalnym rejestrze.'
   },
   sidebar: {
+    nav: { cron: 'Zaplanowane zadania' },
+    messageCount: (count: number) => `Wiadomości: ${count}`,
+    toolCallCount: (count: number) => `Wywołania narzędzi: ${count}`,
+    markAllRead: 'Oznacz wszystkie jako przeczytane',
     noFilterMatches: 'Żadna sesja nie pasuje do tych filtrów',
     projects: {
       home: 'Strona główna',
@@ -3323,10 +3452,60 @@ const plMissingOverrides = {
       worktreeProjectNone: 'Brak projektów z folderem',
       branchTrackRemote: 'Śledź zdalną gałąź'
     },
-    row: { draftSession: 'Wersja robocza — nic jeszcze nie wysłano' },
+    row: {
+      draftSession: 'Wersja robocza — nic jeszcze nie wysłano',
+      markUnread: 'Oznacz jako nieprzeczytane',
+      markRead: 'Oznacz jako przeczytane',
+      unreadFailed: 'Nie udało się zaktualizować stanu przeczytania',
+      openInTerminal: 'Otwórz w terminalu',
+      deleteTitle: 'Usunąć sesję?',
+      deleteDesc: (title: string) => `Spowoduje to trwałe usunięcie „${title}”. Tej operacji nie można cofnąć.`,
+      deleting: 'Usuwanie…',
+      deleted: 'Sesja usunięta',
+      messageCount: (count: number) => `Wiadomości: ${count}`,
+      todoProgress: 'Ukończone zadania'
+    },
     statusDivider: { working: 'W toku', done: 'Gotowe' }
   },
   composer: {
+    queueSteer: 'Pokieruj — natychmiast zmień kierunek generowanej odpowiedzi',
+    mcpSuggestions: {
+      label: (server: string) => `Dodaj ${server}`,
+      tip: (keyword: string) => `Sugestia na podstawie wzmianki „${keyword}” — kliknij, aby połączyć`,
+      connecting: (server: string) => `Łączenie: ${server}…`,
+      cancelTip: 'Kliknij, aby anulować',
+      added: (server: string) => `Dodano ${server}`,
+      addedTip: 'Połączono — narzędzia serwera są gotowe w tym czacie',
+      connectFailed: (server: string) => `Nie udało się połączyć: ${server}`
+    },
+    skillSuggestions: {
+      label: (skill: string) => `Użyj umiejętności: ${skill}`,
+      tip: (skill: string) => `Wspomniano „${skill}” — kliknij, aby rozpocząć z tą umiejętnością`,
+      done: (skill: string) => `Dodano /${skill}`,
+      doneTip: 'Umiejętność zostanie wczytana po wysłaniu wiadomości'
+    },
+    githubSuggestions: {
+      label: 'Skonfiguruj GitHub',
+      tip: 'GitHub działa tutaj przez umiejętności korzystające z CLI gh — kliknij, aby połączyć konto',
+      done: 'Dodano /github-auth',
+      doneTip: 'Wyślij wiadomość, a agent przeprowadzi Cię przez logowanie do GitHuba'
+    },
+    repairSuggestions: {
+      label: (server: string) => `Połącz ponownie: ${server}`,
+      tip: (server: string) => `Wywołanie ${server} właśnie nie powiodło się z powodu błędu połączenia`,
+      working: (server: string) => `Ponowne łączenie: ${server}…`,
+      workingTip: 'Kliknij, aby anulować',
+      done: (server: string) => `Ponownie połączono: ${server}`,
+      doneTip: 'Nowe dane uwierzytelniające są aktywne w tym czacie',
+      failed: (server: string) => `Nie udało się ponownie połączyć: ${server}`
+    },
+    cronSuggestions: {
+      label: 'Zaplanuj',
+      tip: (phrase: string) => `„${phrase}” brzmi jak zadanie cykliczne — uruchamiaj je według harmonogramu`,
+      prefix: 'Skonfiguruj to jako zaplanowane zadanie:',
+      done: 'Oznaczono do zaplanowania',
+      doneTip: 'Wyślij wiadomość, a agent utworzy zadanie'
+    },
     openDirective: 'Otwórz dyrektywę',
     wakeWordListening: (phrase: string) => `Hasło wybudzające: „${phrase}” — nasłuchiwanie`,
     wakeWordOff: (phrase: string) => `Hasło wybudzające: „${phrase}” — wyłączone`,
@@ -3340,6 +3519,7 @@ const plMissingOverrides = {
   },
   shell: {
     statusbar: {
+      resetStatusbar: 'Przywróć ustawienia domyślne',
       customizeTitle: 'Dostosuj pasek stanu',
       hideStatusbar: 'Ukryj pasek stanu',
       toggleApprovalMode: 'Przełącz tryb zatwierdzania',
@@ -3356,6 +3536,7 @@ const plMissingOverrides = {
   zones: { reload: 'Wczytaj ponownie', tabCount: (count: number) => `${count} kart` },
   assistant: {
     thread: {
+      turnDuration: (duration: string) => `Czas tej tury: ${duration}`,
       thought: 'Myśl',
       thoughtBriefly: 'Krótko przemyślano',
       thoughtFor: (duration: string) => `Myślano przez ${duration}`,
@@ -3363,12 +3544,55 @@ const plMissingOverrides = {
       filesChanged: (count: number) => (count === 1 ? 'Zmieniono 1 plik' : `Zmieniono ${count} plików`),
       reviewChanges: 'Przejrzyj zmiany'
     },
+    mcpSetup: {
+      installTitle: (server: string) => `Dodać serwer MCP ${server}?`,
+      enableTitle: (server: string) => `Włączyć serwer MCP ${server}?`,
+      authorizeTitle: (server: string) => `Autoryzować serwer MCP ${server}?`,
+      installAction: 'Zainstaluj',
+      enableAction: 'Włącz',
+      authorizeAction: 'Autoryzuj',
+      decline: 'Nie teraz',
+      declined: 'Odrzucono',
+      installed: (server: string) => `Zainstalowano ${server}`,
+      enabled: (server: string) => `Włączono ${server}`,
+      authorized: (server: string) => `Autoryzowano ${server}`,
+      failed: (server: string) => `Nie udało się skonfigurować ${server}`,
+      unanswered: 'Brak odpowiedzi',
+      toolCount: (count: number) => `Narzędzia: ${count}`,
+      notInCatalog: (server: string) => `„${server}” nie znajduje się w katalogu MCP`,
+      catalogSource: 'Z katalogu zatwierdzonego przez Nous',
+      envRequired: 'Najpierw uzupełnij wymagane dane uwierzytelniające',
+      sendFailed: 'Nie udało się wysłać odpowiedzi konfiguracji MCP',
+      reloadFailed:
+        'Serwer zapisano, ale nie udało się ponownie wczytać narzędzi MCP — zostaną wczytane w następnej sesji',
+      gatewayDisconnected: 'Brama Hermesa nie jest połączona'
+    },
     tool: {
       memoryWriteNoted: 'Zapis do pamięci odnotowany',
       titles: {
         memory: { done: 'Zapisano do pamięci', pending: 'Zapisywanie do pamięci', pendingAction: 'Zapisywanie' }
       }
     }
+  },
+  updates: {
+    blockerTitle: 'Zamknąć lokalne podglądy, aby zaktualizować Hermesa?',
+    blockerBody:
+      'Przed aktualizacją Hermes musi zatrzymać te lokalne podglądy. Nie zmodyfikuje ani nie usunie Twoich plików.',
+    foreignBlockerTitle: 'Zamknij inne procesy, aby zaktualizować Hermesa',
+    foreignBlockerBody:
+      'Hermes nie może bezpiecznie zamknąć tych procesów automatycznie. Zamknij aplikacje, terminale lub usługi, które je uruchomiły, a następnie ponów aktualizację.',
+    mixedBlockerBody:
+      'Hermes może zamknąć wymienione poniżej lokalne podglądy. Przed kontynuowaniem aktualizacji pozostałe procesy trzeba zamknąć ręcznie.',
+    closePreviewsAndUpdate: 'Zamknij podglądy i zaktualizuj',
+    closePreviewsAndCheckAgain: 'Zamknij podglądy i sprawdź ponownie',
+    localPreview: 'Podgląd lokalny',
+    portLabel: (port: number) => `Port ${port}`,
+    pidLabel: (pid: number) => `PID ${pid}`,
+    technicalDetails: 'Szczegóły techniczne'
+  },
+  desktop: {
+    editTurnUnavailable:
+      'Ta tura nie znajduje się już w historii serwera (mogła zostać usunięta podczas kompresji).'
   }
 } satisfies TranslationOverrides
 

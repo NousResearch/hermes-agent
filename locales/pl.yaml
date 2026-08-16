@@ -169,6 +169,8 @@ gateway:
       status_default: "zmieniło stan"
       status_joiner: ", "
       message: "[kanban] Zadanie {task_id} {status}.\nTytuł: {title}\nWykonawca: @{assignee}\nTablica: {board}\n\nSprawdź wynik lub zdecyduj o kolejnym kroku."
+      handoff: "Wynik: {summary}"
+      guidance: "To jest automatyczne powiadomienie o stanie zadania, a nie prośba o ponowne rozbicie zadania. Przed utworzeniem kolejnych zadań sprawdź bieżącą tablicę; nie twórz ponownie zadań ani grafów, które już istnieją."
 
   personality:
     none_configured: "Nie skonfigurowano żadnych osobowości w `{path}/config.yaml`"

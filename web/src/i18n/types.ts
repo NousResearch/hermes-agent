@@ -123,6 +123,7 @@ export interface Translations {
     /** NS-656 disk-usage banner — optional, English fallback. */
     diskCriticalBanner?: string;
     diskElevatedBanner?: string;
+    diskFreeSpace?: (megabytes: number) => string;
     dismiss?: string;
   };
 

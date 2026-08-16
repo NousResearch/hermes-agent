@@ -102,6 +102,7 @@ describe('Polish dashboard localization', () => {
     expect(pl.common.gateway).toBe('Brama')
     expect(pl.common.tools).toBe('narz.')
     expect(pl.app.nav.sessions).toBe('Sesje')
+    expect(pl.app.diskFreeSpace?.(120)).toBe('(pozostało 120 MB)')
     expect(pl.models.toolCalls).toBe('wyw. narzędzi')
     expect(pl.config.resetDefaults).toBe('Przywróć domyślne')
     expect(pl.sessions.confirmDeleteMessage).toContain('trwałe usunięcie')

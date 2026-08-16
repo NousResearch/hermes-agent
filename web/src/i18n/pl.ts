@@ -94,7 +94,18 @@ export const pl: Translations = {
     managingProfile: 'Zarządzany profil',
     currentProfileOption: 'ten panel ({name})',
     managingProfileBanner:
-      'Zarządzasz profilem „{name}” — konfiguracja, klucze, umiejętności, MCP, model i nowe czaty dotyczą tego profilu.'
+      'Zarządzasz profilem „{name}” — konfiguracja, klucze, umiejętności, MCP, model i nowe czaty dotyczą tego profilu.',
+    memoryOomRestartBanner:
+      'Agent nieoczekiwanie uruchomił się ponownie, najprawdopodobniej z powodu braku pamięci. Długie sesje i wiele równoległych zadań zwiększają zużycie pamięci.',
+    memoryCriticalBanner:
+      'Agentowi niemal zabrakło pamięci i może uruchomić się ponownie. Rozważ zamknięcie nieaktywnych sesji lub zwiększenie ilości pamięci.',
+    memoryElevatedBanner: 'Agentowi zaczyna brakować pamięci.',
+    diskCriticalBanner:
+      'Dysk agenta jest niemal pełny. Zapisywanie nowych wiadomości, wspomnień i ustawień może się nie powieść.',
+    diskElevatedBanner:
+      'Dysk agenta się zapełnia. Rozważ usunięcie starych sesji lub zwiększenie przestrzeni dyskowej.',
+    diskFreeSpace: megabytes => `(pozostało ${megabytes} MB)`,
+    dismiss: 'Odrzuć'
   },
 
   status: {
@@ -793,6 +804,10 @@ export const pl: Translations = {
     confirmBlocked: 'Oznaczyć to zadanie jako zablokowane? Wykonawca zostanie zwolniony z zadania.',
     confirmScheduled:
       'Przenieść to zadanie do Zaplanowanych? Użyj tego dla znanych opóźnień czasowych zamiast blokad wymagających człowieka.',
+    confirmDoneMany:
+      'Oznaczyć {n} zadań jako ukończone? Wykonawcy zostaną zwolnieni z zadań, a zależne zadania podrzędne staną się gotowe.',
+    confirmArchiveMany: 'Zarchiwizować {n} zadań? Znikną z domyślnego widoku tablicy.',
+    confirmBlockedMany: 'Oznaczyć {n} zadań jako zablokowane? Wykonawcy zostaną zwolnieni z zadań.',
     completionSummary: 'Podsumowanie ukończenia — {label}. Zostanie zapisane jako wynik zadania.',
     completionSummaryRequired: 'Przed oznaczeniem zadania jako ukończone wymagane jest podsumowanie ukończenia.',
     triagePlaceholder: 'Zarys pomysłu — AI utworzy specyfikację…',
@@ -825,6 +840,10 @@ export const pl: Translations = {
     commentHint:
       'Komentarze dotrą do wykonawcy przy następnym uruchomieniu lub wywołaniu kanban_show() — nie trzeba najpierw blokować zadania.',
     commentHintTitle:
-      'Komentarze służą do rozmowy z wykonawcą zadania. Natychmiast trafiają do wątku — nie trzeba najpierw blokować zadania. Działający wykonawca odczyta wątek przy następnym kanban_show() lub ponownym uruchomieniu; blokuj zadanie tylko wtedy, gdy wykonawca ma się ZATRZYMAĆ i czekać na Twoje dane.'
+      'Komentarze służą do rozmowy z wykonawcą zadania. Natychmiast trafiają do wątku — nie trzeba najpierw blokować zadania. Działający wykonawca odczyta wątek przy następnym kanban_show() lub ponownym uruchomieniu; blokuj zadanie tylko wtedy, gdy wykonawca ma się ZATRZYMAĆ i czekać na Twoje dane.',
+    trash: {
+      confirmTitle: 'Usunąć zadanie?',
+      confirmManyTitle: 'Usunąć {n} zadań?'
+    }
   }
 }

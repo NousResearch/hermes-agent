@@ -1291,6 +1291,15 @@ def install_cua_driver(
 # headroom for the actual download/swap.
 _CUA_INSTALLER_TIMEOUT = 660
 
+# Grace period for draining the installer's pipes after a timeout kill. The
+# kill is best-effort (see _reap_after_timeout), so this drain has to be
+# bounded: a descendant that survived the kill still holds the inherited
+# stdout handle, and an unbounded read waits on an EOF that never comes,
+# which turns the ceiling above into no ceiling at all (issue #87703). A
+# successful kill closes the pipe immediately, so this costs nothing in the
+# normal case; it only caps how long a failed one can stall the update.
+_CUA_INSTALLER_DRAIN_GRACE = 15
+
 # Upstream installer's stale-lock threshold (LOCK_STALE_AFTER_SECONDS in
 # _install-rust.sh). Used by the pre-clear below to avoid yanking a lock
 # that a live-but-slow install still holds.
@@ -1701,6 +1710,44 @@ def _run_cua_driver_installer(
         except (OSError, ProcessLookupError):
             proc.kill()
 
+    def _reap_after_timeout(proc):
+        """Kill the installer tree, then drain its pipes under a deadline.
+
+        ``_kill_installer_tree`` is best-effort by construction: every
+        ``psutil.Error`` it can raise is logged at debug level and stepped
+        over, on the reasoning that a partly-killed tree beats none. The case
+        that matters is an ``install.ps1`` which self-elevated through
+        ``Start-Process -Verb RunAs``: that descendant runs at High integrity,
+        a medium-integrity kill gets ``AccessDenied``, and the survivor is
+        still holding the ``stdout=PIPE`` write handle it inherited.
+
+        Draining with no deadline then blocks on an EOF that only arrives when
+        someone kills that process by hand, so the ``_CUA_INSTALLER_TIMEOUT``
+        ceiling stops bounding anything and ``hermes update`` hangs past its
+        own timeout warning (#87703). Bound the drain instead: a kill that
+        landed closes the pipe at once, and one that did not costs
+        ``_CUA_INSTALLER_DRAIN_GRACE`` rather than forever. The caller
+        re-raises the original ``TimeoutExpired`` either way, so the manual
+        re-run hint still prints and the update unwinds. Losing the tail of a
+        timed-out installer's log is the cheaper half of that trade.
+        """
+        _kill_installer_tree(proc)
+        try:
+            proc.communicate(timeout=_CUA_INSTALLER_DRAIN_GRACE)
+        except subprocess.TimeoutExpired:
+            # Deliberately not closing proc.stdout here. communicate()'s
+            # reader threads are still blocked on that handle and closing it
+            # underneath them races; they are daemon threads, so abandoning
+            # them does not keep the interpreter alive.
+            logger.debug(
+                "cua-driver installer pipes still open %ss after the kill — "
+                "abandoning the drain, a surviving descendant holds the "
+                "inherited handle",
+                _CUA_INSTALLER_DRAIN_GRACE,
+            )
+        except (OSError, ValueError) as e:
+            logger.debug("cua-driver installer drain failed: %s", e)
+
     try:
         # When not verbose (e.g. `hermes update`'s refresh), capture the
         # installer's chatty "Next steps" wall instead of dumping it to the
@@ -1716,8 +1763,7 @@ def _run_cua_driver_installer(
             try:
                 proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
             except subprocess.TimeoutExpired:
-                _kill_installer_tree(proc)
-                proc.communicate()
+                _reap_after_timeout(proc)
                 raise
             result = subprocess.CompletedProcess(
                 install_cmd, proc.returncode, stdout=None, stderr=None
@@ -1734,8 +1780,7 @@ def _run_cua_driver_installer(
             try:
                 out, _ = proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
             except subprocess.TimeoutExpired:
-                _kill_installer_tree(proc)
-                proc.communicate()
+                _reap_after_timeout(proc)
                 raise
             result = subprocess.CompletedProcess(
                 install_cmd, proc.returncode, stdout=out, stderr=None

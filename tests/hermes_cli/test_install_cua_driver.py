@@ -1081,6 +1081,189 @@ class TestInstallerTimeoutKillsProcessGroup:
         assert fake_proc.communicate.call_count == 2
 
 
+class TestInstallerTimeoutDrainIsBounded:
+    """The drain that follows the timeout kill must carry its own deadline.
+
+    ``_kill_installer_tree`` is best-effort: every ``psutil.Error`` it can hit
+    is logged at debug level and stepped over, so the tree it leaves behind
+    can still contain a live process — on Windows, most concretely, an
+    ``install.ps1`` that self-elevated through ``Start-Process -Verb RunAs``
+    and cannot be killed from a medium-integrity parent. That survivor holds
+    the ``stdout=PIPE`` write handle it inherited, so reading to EOF is
+    reading for something that will not happen, and ``_CUA_INSTALLER_TIMEOUT``
+    stops being a ceiling (#87703).
+
+    Asserted through the ``timeout`` kwarg rather than by timing: a test that
+    proved the hang by hanging would be the same defect wearing a test's name.
+    """
+
+    def test_drain_grace_is_short_relative_to_the_run_ceiling(self):
+        from hermes_cli import tools_config
+
+        # This is a grace period for a pipe that a live process is holding
+        # open, not a second budget for the install itself — the install is
+        # already over by the time it is used.
+        assert 0 < tools_config._CUA_INSTALLER_DRAIN_GRACE
+        assert (
+            tools_config._CUA_INSTALLER_DRAIN_GRACE
+            < tools_config._CUA_INSTALLER_TIMEOUT / 10
+        )
+
+    @pytest.mark.linux_only
+    def test_post_kill_drain_passes_a_deadline(self):
+        """``linux_only``: reaches the timeout handler through the real POSIX
+        ``killpg`` branch, so the drain under test is the one this lane runs.
+        """
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="x", timeout=1),
+            ("", None),
+        ]
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(tools_config.os, "getpgid", return_value=99999, create=True), \
+             patch.object(tools_config.os, "killpg", create=True), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
+
+        assert ok is False
+        assert fake_proc.communicate.call_count == 2
+        drain_timeout = fake_proc.communicate.call_args_list[1].kwargs.get("timeout")
+        assert drain_timeout is not None, (
+            "the post-kill drain was issued without a deadline, so a survivor "
+            "of the kill can hold it open indefinitely"
+        )
+        assert drain_timeout == tools_config._CUA_INSTALLER_DRAIN_GRACE
+
+    @pytest.mark.linux_only
+    def test_verbose_path_drains_under_the_same_deadline(self):
+        """The streaming install has the same handler and had the same hole.
+
+        Its child inherits the console rather than a pipe, so the stall is
+        harder to hit there, but the two branches should not be allowed to
+        drift on a rule this small.
+        """
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="x", timeout=1),
+            ("", None),
+        ]
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(tools_config.os, "getpgid", return_value=99999, create=True), \
+             patch.object(tools_config.os, "killpg", create=True), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_print_success"):
+            ok = tools_config._run_cua_driver_installer(label="Installing", verbose=True)
+
+        assert ok is False
+        assert fake_proc.communicate.call_count == 2
+        drain_timeout = fake_proc.communicate.call_args_list[1].kwargs.get("timeout")
+        assert drain_timeout is not None, (
+            "the streaming path's drain was issued without a deadline"
+        )
+        assert drain_timeout == tools_config._CUA_INSTALLER_DRAIN_GRACE
+
+    @pytest.mark.windows_only
+    def test_unkillable_elevated_descendant_does_not_stall_the_drain(self):
+        """The reported scenario, with the kill refused exactly where it is.
+
+        ``install.ps1`` self-elevates, so the descendant is High-IL and
+        ``child.kill()`` raises ``AccessDenied`` — which the tree-kill catches
+        and logs, by design. The survivor is then still holding the pipe, and
+        the drain is the only thing standing between that and an indefinite
+        hang.
+        """
+        import psutil
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        child = MagicMock()
+        child.kill.side_effect = psutil.AccessDenied(pid=999)
+        parent = MagicMock()
+        parent.children.return_value = [child]
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="powershell", timeout=1),
+            ("", None),
+        ]
+
+        with patch("subprocess.Popen", return_value=fake_proc), \
+             patch("psutil.Process", return_value=parent), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False
+            )
+
+        assert ok is False
+        # The refused child kill must not abort the rest of the sweep.
+        parent.kill.assert_called_once_with()
+        drain_timeout = fake_proc.communicate.call_args_list[1].kwargs.get("timeout")
+        assert drain_timeout is not None, (
+            "a High-IL descendant survived the kill and the drain was issued "
+            "without a deadline, which is the reported hang"
+        )
+        assert drain_timeout == tools_config._CUA_INSTALLER_DRAIN_GRACE
+
+    @pytest.mark.windows_only
+    def test_drain_that_times_out_still_surfaces_the_run_timeout(self):
+        """A guardrail, not a regression test — it passes without the fix too.
+
+        What it pins is that the drain's own ``TimeoutExpired`` must not be
+        the one that escapes: the caller has to see the original run timeout
+        so the existing manual re-run hint prints and ``hermes update``
+        unwinds. That is the behaviour a future refactor of the drain is most
+        likely to break silently.
+        """
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        parent = MagicMock()
+        parent.children.return_value = []
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="powershell", timeout=660),
+            subprocess.TimeoutExpired(cmd="powershell", timeout=15),
+        ]
+
+        with patch("subprocess.Popen", return_value=fake_proc), \
+             patch("psutil.Process", return_value=parent), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning") as warn, \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False
+            )
+
+        assert ok is False
+        warned = " ".join(str(c.args[0]) for c in warn.call_args_list if c.args)
+        assert "timed out after" in warned
+
+
 @pytest.mark.linux_only
 class TestInstallerNoShell:
     """The POSIX installer path must not use shell=True or command

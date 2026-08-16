@@ -90,7 +90,10 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     if method == "docker":
         command = recommended_update_command_for_method(method)
         action = f"run `{command}`, then recreate all Hermes containers"
-    elif method in {"nix", "nixos", "apt"}:
+    elif method in {"nix", "nixos"}:
+        # The Nix helper is prose guidance, not a literal shell command.
+        action = recommended_update_command_for_method(method)
+    elif method == "apt":
         action = f"run `{recommended_update_command_for_method(method)}`"
     else:
         action = "run `hermes update`"

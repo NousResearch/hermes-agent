@@ -51,24 +51,62 @@ def _hermes_home() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _canonical_root() -> Path:
+    """Fleet-wide Hermes root, even when this process is a profile gateway.
+
+    Profile gateways launch with HERMES_HOME=~/.hermes/profiles/<name>.
+    ``hermes pause`` from an operator seat writes ~/.hermes/ESTOP. If we
+    only inspect the profile home, the emergency stop does not bind
+    (jarvis-os/t_7b65ff88: fleet-analyst kept dispatching through pause).
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+        return Path(get_default_hermes_root())
+    except Exception:
+        return Path(os.path.expanduser("~/.hermes"))
+
+
 def sentinel_path() -> Path:
-    """Path of the ESTOP sentinel under the active HERMES_HOME."""
+    """Path of the ESTOP sentinel this process would write on `hermes pause`."""
     return _hermes_home() / SENTINEL_NAME
 
 
-def is_engaged() -> bool:
-    """Cheap check (one stat): is the global emergency stop engaged?
-
-    Fail SAFE on stat errors: if we cannot determine whether the sentinel
-    exists (permission error, transient I/O failure on HERMES_HOME), report
-    engaged. The module contract is that the pause must hold even when the
-    sentinel is unreadable — a fail-open here would silently lift an
-    operator's emergency stop exactly when the filesystem is misbehaving.
-    """
+def _candidate_sentinel_paths() -> list:
+    """Profile home first, then the fleet root if it is a different directory."""
+    primary = sentinel_path()
+    paths = [primary]
     try:
-        return sentinel_path().exists()
-    except OSError:
-        return True
+        root = _canonical_root() / SENTINEL_NAME
+    except Exception:
+        return paths
+    if not isinstance(primary, Path):
+        # Test doubles (e.g. fail-safe stat fixture) are not Path objects.
+        paths.append(root)
+        return paths
+    try:
+        if root.resolve() != primary.resolve():
+            paths.append(root)
+    except Exception:
+        if root != primary:
+            paths.append(root)
+    return paths
+
+
+def is_engaged() -> bool:
+    """Cheap check: is the global emergency stop engaged?
+
+    Engaged if ANY candidate sentinel exists: the process HERMES_HOME
+    (profile-local) or the fleet canonical root (~/.hermes). Fail SAFE on
+    stat errors so an unreadable sentinel still holds the pause.
+    """
+    saw_stat_error = False
+    for path in _candidate_sentinel_paths():
+        try:
+            if path.exists():
+                return True
+        except OSError:
+            saw_stat_error = True
+    return saw_stat_error
 
 
 def engage(reason: Optional[str] = None) -> Path:
@@ -91,14 +129,22 @@ def engage(reason: Optional[str] = None) -> Path:
 
 
 def disengage() -> bool:
-    """Remove the ESTOP sentinel. Returns True if a pause was lifted."""
-    try:
-        sentinel_path().unlink()
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return False
+    """Remove ESTOP sentinels this process can see.
+
+    Lifts both the process-local sentinel and the fleet-root sentinel so
+    ``hermes resume`` from a profile gateway still clears an operator pause
+    written at ~/.hermes/ESTOP.
+    """
+    lifted = False
+    for path in _candidate_sentinel_paths():
+        try:
+            path.unlink()
+            lifted = True
+        except FileNotFoundError:
+            continue
+        except (OSError, AttributeError):
+            continue
+    return lifted
 
 
 def get_state() -> Optional[dict]:
@@ -107,18 +153,31 @@ def get_state() -> Optional[dict]:
     A sentinel with an unreadable/corrupt body still reports engaged, with
     both fields None — the pause is authoritative, the metadata is not.
     """
-    path = sentinel_path()
-    if not path.exists():
+    if not is_engaged():
         return None
     reason = None
     engaged_at = None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            reason = raw.get("reason") or None
-            engaged_at = raw.get("engaged_at") or None
-    except (OSError, ValueError):
-        pass
+    found = False
+    for path in _candidate_sentinel_paths():
+        try:
+            exists = path.exists()
+        except OSError:
+            return {"reason": None, "engaged_at": None}
+        except AttributeError:
+            continue
+        if not exists:
+            continue
+        found = True
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                reason = raw.get("reason") or None
+                engaged_at = raw.get("engaged_at") or None
+                break
+        except (OSError, ValueError, AttributeError):
+            continue
+    if not found:
+        return None
     return {"reason": reason, "engaged_at": engaged_at}
 
 

@@ -392,6 +392,16 @@ class _ToolTimeoutResult(str):
     """Marker for a synthesized sequential-tool timeout result."""
 
 
+class _ToolCancelledResult(str):
+    """Marker for a synthesized sequential-tool user-interrupt result.
+
+    Like ``_ToolTimeoutResult``, the executor already emitted the terminal
+    post_tool_call event for this call (status="cancelled"), so downstream
+    emission must be suppressed — an abandoned worker finishing late must not
+    report success for a call the user already cancelled.
+    """
+
+
 class _ConcurrentToolAuthorizationGate:
     """Serialize policy prompts and exclude human approval waits from batch deadlines.
 
@@ -735,6 +745,12 @@ def _run_agent_tool_execution_middleware(
     )
 
 
+# How often the sequential-tool wait loop wakes to check for a user
+# interrupt while the worker runs. Short enough that /stop or a redirect
+# lands within ~1s even when the tool itself never polls is_interrupted().
+_SEQUENTIAL_INTERRUPT_POLL_SECONDS = 1.0
+
+
 def _resolve_sequential_tool_timeout() -> float | None:
     """Deadline for one sequential tool call (#85125 Phase 2a).
 
@@ -788,7 +804,7 @@ def _run_sequential_tool_execution_middleware(
         "display_index": display_index,
         "middleware_trace": middleware_trace,
     }
-    if timeout_s is None or function_name in _NEVER_PARALLEL_TOOLS:
+    if function_name in _NEVER_PARALLEL_TOOLS:
         return _run_agent_tool_execution_middleware(agent, **kwargs)
 
     from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -815,26 +831,87 @@ def _run_sequential_tool_execution_middleware(
 
     executor = DaemonThreadPoolExecutor(max_workers=1)
     future = executor.submit(propagate_context_to_thread(_run))
-    deadline = time.monotonic() + timeout_s
+    # ``timeout_s`` disabled (None) still runs on the worker: the wait loop
+    # below is what makes a non-cooperative tool interruptible at all, so
+    # "no deadline" must not mean "no interrupt checks" (#86xxx class fix —
+    # sequential path previously blocked until the tool returned).
+    deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     started = time.monotonic()
     timed_out = False
+    interrupted = False
+    _last_heartbeat = 0
     try:
         while True:
-            remaining = (
-                deadline + authorization_gate.excluded_seconds() - time.monotonic()
-            )
-            if remaining <= 0:
-                timed_out = True
-                break
+            wait_slice = _SEQUENTIAL_INTERRUPT_POLL_SECONDS
+            if deadline is not None:
+                remaining = (
+                    deadline + authorization_gate.excluded_seconds() - time.monotonic()
+                )
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                wait_slice = min(wait_slice, remaining)
             try:
-                return future.result(timeout=min(5.0, remaining))
+                return future.result(timeout=wait_slice)
             except concurrent.futures.TimeoutError:
+                if agent._interrupt_requested:
+                    interrupted = True
+                    break
                 elapsed = int(time.monotonic() - started)
-                if elapsed > 0 and elapsed % 30 < 5:
+                if elapsed - _last_heartbeat >= 30:
+                    _last_heartbeat = elapsed
                     agent._touch_activity(
                         f"sequential tool running ({elapsed}s): {function_name}"
                     )
 
+        if interrupted:
+            # Belt-and-braces: interrupt() already fans out to tracked worker
+            # tids, but the worker may have registered after the fan-out ran.
+            for tid in worker_tid:
+                try:
+                    _ra()._set_interrupt(True, tid)
+                except Exception:
+                    pass
+            # Give a cooperative tool a moment to notice its per-thread
+            # interrupt bit and return a real result (mirrors the concurrent
+            # path's 3s grace).
+            concurrent.futures.wait([future], timeout=3.0)
+            if future.done() and not future.cancelled():
+                return future.result()
+            timed_out = True  # reuse the abandon-shutdown path in finally
+            future.cancel()
+            message = (
+                f"[Tool execution cancelled — {function_name} was abandoned "
+                "after user interrupt]"
+            )
+            logger.info(
+                "sequential tool %s abandoned after user interrupt (%.1fs elapsed)",
+                function_name, time.monotonic() - started,
+            )
+            trace = middleware_trace if middleware_trace is not None else []
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=message,
+                effective_task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                status="cancelled",
+                error_type="keyboard_interrupt",
+                error_message="Tool execution cancelled by user interrupt",
+                middleware_trace=list(trace),
+            )
+            return _ManagedToolResult(
+                result=_ToolCancelledResult(message),
+                args=function_args,
+                middleware_trace=trace,
+                blocked=False,
+                dispatched=True,
+            )
+
+        # Only reachable when a deadline exists (interrupted returns above).
+        assert timeout_s is not None
         message = (
             f"Error executing tool '{function_name}': "
             f"timed out after {timeout_s:.1f}s"
@@ -2420,7 +2497,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
-        _execution_timed_out = isinstance(function_result, _ToolTimeoutResult)
+        _execution_timed_out = isinstance(
+            function_result, (_ToolTimeoutResult, _ToolCancelledResult)
+        )
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result

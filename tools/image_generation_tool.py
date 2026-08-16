@@ -726,6 +726,46 @@ def _get_managed_fal_client(managed_gateway):
         return _managed_fal_client
 
 
+class ImageGenerationInterrupted(Exception):
+    """Raised when the user interrupts while a FAL job is in flight."""
+
+
+def _wait_fal_result(handler, *, poll_seconds: float = 0.5):
+    """Interrupt-aware replacement for a blind ``handler.get()``.
+
+    ``handler.get()`` blocks inside the FAL SDK until the remote job
+    finishes — a 30-60s window where a user interrupt was previously
+    invisible (the reported symptom: redirects queued behind a running
+    generation). Run the blocking get on a daemon worker and poll the
+    per-thread interrupt bit between join slices; on interrupt, abandon
+    the worker (daemon thread, remote job keeps running server-side but
+    we stop waiting) and raise ``ImageGenerationInterrupted``.
+    """
+    from tools.interrupt import is_interrupted
+
+    result_box: list = []
+    error_box: list = []
+
+    def _get():
+        try:
+            result_box.append(handler.get())
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller thread
+            error_box.append(exc)
+
+    worker = threading.Thread(target=_get, daemon=True, name="fal-result-wait")
+    worker.start()
+    while worker.is_alive():
+        if is_interrupted():
+            raise ImageGenerationInterrupted(
+                "Image generation interrupted by user — abandoned the "
+                "in-flight FAL job."
+            )
+        worker.join(timeout=poll_seconds)
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
+
+
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
     # Trigger the lazy import on first call. Idempotent.
@@ -938,7 +978,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
         }
 
         handler = _submit_fal_request(UPSCALER_MODEL, arguments=upscaler_arguments)
-        result = handler.get()
+        result = _wait_fal_result(handler)
 
         if result and "image" in result:
             upscaled_image = result["image"]
@@ -957,6 +997,10 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
         logger.error("Upscaler returned invalid response")
         return None
 
+    except ImageGenerationInterrupted:
+        # Propagate: the user interrupt must not degrade into a silent
+        # "upscale failed, use original" fallback that keeps the turn alive.
+        raise
     except Exception as e:
         logger.error("Error upscaling image: %s", e, exc_info=True)
         return None
@@ -1204,7 +1248,7 @@ def image_generate_tool(
             )
 
         handler = _submit_fal_request(endpoint, arguments=arguments)
-        result = handler.get()
+        result = _wait_fal_result(handler)
 
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
 

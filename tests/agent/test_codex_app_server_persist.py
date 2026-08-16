@@ -23,8 +23,6 @@ duplicate the user turn (#860 / #42039). This test locks in:
 3. The gateway resolution expression preserves standard-runtime behaviour.
 """
 
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -43,6 +41,8 @@ def _make_turn():
         tool_iterations=0,
         final_text="CODEX_ASSISTANT",
         should_retire=False,
+        error_code=None,
+        codex_error_info=None,
     )
 
 
@@ -58,6 +58,10 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent._session_db = session_db
     agent._session_db_created = True
     agent.session_id = session_id
+    agent.provider = "openai-codex"
+    agent.model = "gpt-5-codex"
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
     return agent
 
 
@@ -105,14 +109,255 @@ def test_codex_user_interrupt_is_reported_and_cleared():
     assert agent._interrupt_requested is False
 
 
-def test_codex_turn_persists_each_message_exactly_once():
+def test_codex_runtime_exception_emits_structured_timeout_failure():
+    agent = _make_agent(session_db=None)
+    agent._codex_session.run_turn.side_effect = TimeoutError(
+        "request to https://api.example.invalid timed out"
+    )
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "timeout"
+
+
+def test_codex_runtime_exception_classifies_dead_subprocess_failure():
+    agent = _make_agent(session_db=None)
+    agent._codex_session.run_turn.side_effect = RuntimeError(
+        "codex app-server subprocess exited unexpectedly"
+    )
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "server_error"
+
+
+def test_codex_runtime_generic_exception_stays_unknown():
+    agent = _make_agent(session_db=None)
+    agent._codex_session.run_turn.side_effect = RuntimeError(
+        "invalid app-server configuration"
+    )
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "unknown"
+
+
+def test_codex_protocol_internal_server_error_is_server_failure():
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = (
+        "turn ended status=failed: internal_error: "
+        "The server had an error processing your request"
+    )
+    turn.error_code = "internal_error"
+    turn.codex_error_info = "internalServerError"
+    agent._codex_session.run_turn.return_value = turn
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "server_error"
+
+
+def test_codex_top_level_internal_error_without_protocol_evidence_stays_unknown():
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = "turn ended status=failed: server overloaded"
+    turn.error_code = "internal_error"
+    turn.should_retire = True
+    agent._codex_session.run_turn.return_value = turn
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "unknown"
+
+
+def _run_codex_protocol_failure(codex_error_info, prose):
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = f"turn ended status=failed: {prose}"
+    turn.codex_error_info = codex_error_info
+    agent._codex_session.run_turn.return_value = turn
+    return run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+
+def test_codex_unknown_protocol_variant_overrides_transient_prose():
+    result = _run_codex_protocol_failure(
+        "other",
+        "server overloaded",
+    )
+
+    assert result["failure_reason"] == "unknown"
+
+
+def test_codex_protocol_status_matrix():
+    cases = [
+        (403, "auth"),
+        (402, "billing"),
+        (408, "timeout"),
+        (500, "server_error"),
+        (503, "server_error"),
+    ]
+    for status, expected in cases:
+        result = _run_codex_protocol_failure(
+            {"responseStreamDisconnected": {"httpStatusCode": status}},
+            "opaque provider prose",
+        )
+        assert result["failure_reason"] == expected
+
+
+def test_codex_protocol_401_overrides_timeout_prose():
+    result = _run_codex_protocol_failure(
+        {"httpConnectionFailed": {"httpStatusCode": 401}},
+        "request timed out",
+    )
+
+    assert result["failure_reason"] == "auth"
+
+
+def test_codex_protocol_429_overrides_overload_prose():
+    result = _run_codex_protocol_failure(
+        {"responseStreamConnectionFailed": {"httpStatusCode": 429}},
+        "server overloaded",
+    )
+
+    assert result["failure_reason"] == "rate_limit"
+
+
+def test_codex_protocol_400_overrides_transient_prose_and_retirement():
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = "turn ended status=failed: turn timed out after 30s"
+    turn.codex_error_info = {
+        "httpConnectionFailed": {"httpStatusCode": 400},
+    }
+    turn.should_retire = True
+    agent._codex_session.run_turn.return_value = turn
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failure_reason"] == "unknown"
+
+
+def test_codex_timeout_turn_result_emits_structured_failure():
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = "codex app-server turn timed out after 600s"
+    turn.interrupted = True
+    turn.should_retire = True
+    agent._codex_session.run_turn.return_value = turn
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "timeout"
+    assert result["interrupted"] is False
+
+
+def test_codex_retired_dead_subprocess_failure_becomes_server_error():
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = "codex app-server subprocess exited unexpectedly"
+    turn.should_retire = True
+    agent._codex_session.run_turn.return_value = turn
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "server_error"
+
+
+def test_codex_auth_failure_is_not_promoted_to_backend_outage():
+    agent = _make_agent(session_db=None)
+    turn = _make_turn()
+    turn.final_text = ""
+    turn.error = "Codex OAuth token expired; run codex login"
+    turn.should_retire = True
+    agent._codex_session.run_turn.return_value = turn
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="hello",
+        original_user_message="hello",
+        messages=[{"role": "user", "content": "hello"}],
+        effective_task_id="task-1",
+    )
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "auth"
+
+
+def test_codex_turn_persists_each_message_exactly_once(tmp_path):
     """The user turn (flushed at turn start) must not be duplicated; the
     projected assistant message must land once.  Uses a real SessionDB and the
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
-    tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    db = SessionDB(tmp_path / "state.db")
     try:
-        db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
         db.create_session(session_id=sid, source="telegram", model="codex")
 
@@ -161,9 +406,7 @@ def test_codex_turn_persists_each_message_exactly_once():
         hits = {r["session_id"] for r in db.search_messages("CODEX_ASSISTANT")}
         assert sid in hits
     finally:
-        import shutil
-
-        shutil.rmtree(tmp)
+        db.close()
 
 
 class TestGatewayPersistedResolution:

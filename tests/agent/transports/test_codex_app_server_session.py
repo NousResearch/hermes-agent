@@ -209,6 +209,32 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
+    def test_failed_turn_preserves_structured_provider_error_code(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={
+                "id": "tu1",
+                "status": "failed",
+                "error": {
+                    "code": "internal_error",
+                    "message": "The server had an error processing your request",
+                    "codexErrorInfo": {
+                        "httpConnectionFailed": {"httpStatusCode": 401}
+                    },
+                },
+            },
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=2.0)
+
+        assert result.error_code == "internal_error"
+        assert result.codex_error_info == {
+            "httpConnectionFailed": {"httpStatusCode": 401}
+        }
+        assert "internal_error" in (result.error or "")
+
 
 
     def test_foreign_completion_in_server_request_drain_is_ignored(self):

@@ -3189,6 +3189,30 @@ def run_conversation(
                     else:
                         _failure_hint = f"response time {api_duration:.1f}s"
 
+                    # Preserve the same machine-readable taxonomy used by the
+                    # exception path. Empty/invalid SDK responses can still
+                    # carry an authoritative provider status in
+                    # ``response.error.code``; chat gateways consume this
+                    # field to sanitize only genuine transient outages.
+                    if _resp_error_code in {504, 524}:
+                        _failure_reason = FailoverReason.timeout.value
+                    elif _resp_error_code in {503, 529}:
+                        _failure_reason = FailoverReason.overloaded.value
+                    elif _resp_error_code is not None and 500 <= _resp_error_code < 600:
+                        _failure_reason = FailoverReason.server_error.value
+                    elif _resp_error_code in {401, 403}:
+                        _failure_reason = FailoverReason.auth.value
+                    elif _resp_error_code == 402:
+                        _failure_reason = FailoverReason.billing.value
+                    elif _resp_error_code == 429:
+                        _failure_reason = FailoverReason.rate_limit.value
+                    elif _resp_error_code == 408:
+                        _failure_reason = FailoverReason.timeout.value
+                    elif _resp_error_code is not None and 400 <= _resp_error_code < 500:
+                        _failure_reason = FailoverReason.format_error.value
+                    else:
+                        _failure_reason = FailoverReason.unknown.value
+
                     agent._buffer_vprint(f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
                     agent._buffer_vprint(f"   🏢 Provider: {provider_name}")
                     cleaned_provider_error = agent._clean_error_message(error_msg)
@@ -3219,7 +3243,8 @@ def run_conversation(
                             "completed": False,
                             "api_calls": api_call_count,
                             "error": _final_response,
-                            "failed": True  # Mark as failure for filtering
+                            "failed": True,  # Mark as failure for filtering
+                            "failure_reason": _failure_reason,
                         }
                     
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
@@ -5966,6 +5991,7 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _nonretryable_summary,
+                        "failure_reason": classified.reason.value,
                     }
 
                 if retry_count >= max_retries:

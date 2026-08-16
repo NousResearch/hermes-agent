@@ -147,6 +147,20 @@ class GatewayAuthorizationMixin:
             # fail and suppress streamed delivery for those profiles.
             adapters = getattr(self, "adapters", None) or {}
             return adapters.get(Platform.RELAY)
+        # ``source.profile`` names the runtime selected by profile_routes, not
+        # necessarily the credential that received the message. build_source()
+        # stamps the transport owner's profile separately and does not serialize
+        # it. If the original weakref is stale after reconnect, resolve the new
+        # generation from that owner instead of an unrelated routed profile.
+        source_attrs = getattr(source, "__dict__", {})
+        if (
+            isinstance(source_attrs, dict)
+            and "_transport_profile" in source_attrs
+        ):
+            return self._authorization_adapter(
+                getattr(source, "platform", None),
+                source_attrs.get("_transport_profile"),
+            )
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
         return self._authorization_adapter(
@@ -189,6 +203,20 @@ class GatewayAuthorizationMixin:
             ).items():
                 if adapter is profile_adapters.get(platform):
                     return profile
+        source_attrs = getattr(source, "__dict__", {})
+        if (
+            isinstance(source_attrs, dict)
+            and "_transport_profile" in source_attrs
+        ):
+            transport_profile = source_attrs.get("_transport_profile")
+            transport_adapter = self._authorization_adapter(
+                platform, transport_profile
+            )
+            if transport_adapter is not None and transport_adapter is (
+                getattr(self, "adapters", None) or {}
+            ).get(platform):
+                return None
+            return transport_profile
         return getattr(source, "profile", None)
 
     def _adapter_authorization_is_upstream(

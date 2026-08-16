@@ -250,6 +250,118 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _is_transient_codex_runtime_failure(error: Exception | str) -> bool:
+    """Recognize a dead or wedged app-server transport, not local config bugs."""
+    if isinstance(error, (TimeoutError, ConnectionError, BrokenPipeError)):
+        return True
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "app-server subprocess exited unexpectedly",
+            "app-server process exited unexpectedly",
+            "codex went silent for",
+            "turn timed out after",
+            "turn/start timed out",
+        )
+    )
+
+
+def _codex_error_info_failure_reason(value: Any) -> str | None:
+    """Return the authoritative taxonomy reason for recognized protocol data.
+
+    App-server ``codexErrorInfo`` is structured provider metadata and must win
+    over rendered prose. In particular, an HTTP 401/429 cannot be promoted to
+    a backend outage merely because its message also says "timeout" or
+    "overloaded".
+    """
+    if isinstance(value, str):
+        if value == "serverOverloaded":
+            return "overloaded"
+        if value == "internalServerError":
+            return "server_error"
+        # A present but non-transient protocol variant is authoritative too.
+        return "unknown"
+    if isinstance(value, dict):
+        connection_variants = {
+            "httpConnectionFailed",
+            "responseStreamConnectionFailed",
+            "responseStreamDisconnected",
+            "responseTooManyFailedAttempts",
+        }
+        variant = next((key for key in connection_variants if key in value), None)
+        if variant is None:
+            return "unknown"
+        details = value.get(variant)
+        status = details.get("httpStatusCode") if isinstance(details, dict) else None
+        if status is None:
+            return "server_error"
+        if status in {401, 403}:
+            return "auth"
+        if status == 402:
+            return "billing"
+        if status == 408:
+            return "timeout"
+        if status == 429:
+            return "rate_limit"
+        if isinstance(status, int) and status >= 500:
+            return "server_error"
+        # Recognized protocol variant with a non-transient status. Keep it
+        # excluded even if rendered provider prose looks transient.
+        return "unknown"
+    return None
+
+
+def _codex_failure_fields(
+    agent,
+    error: Exception | str | None,
+    *,
+    retired: bool = False,
+    provider_error_code: str | None = None,
+    codex_error_info: Any = None,
+) -> dict[str, Any]:
+    """Classify Codex app-server failures with the shared agent taxonomy."""
+    if error is None:
+        return {}
+    from agent.error_classifier import classify_api_error
+
+    protocol_reason = _codex_error_info_failure_reason(codex_error_info)
+    normalized_code = str(provider_error_code or "").strip().lower()
+    if protocol_reason is not None:
+        reason = protocol_reason
+    else:
+        exception = error if isinstance(error, Exception) else RuntimeError(str(error))
+        classified = classify_api_error(
+            exception,
+            provider=getattr(agent, "provider", "") or "",
+            model=getattr(agent, "model", "") or "",
+        )
+        reason = classified.reason.value
+        if normalized_code:
+            # Top-level Responses error codes are also structured evidence.
+            # Only the explicit server variant is transient; generic
+            # ``internal_error`` and unknown codes remain unsuppressed.
+            reason = (
+                "server_error"
+                if normalized_code == "internal_server_error"
+                else "unknown"
+            )
+    if (
+        retired
+        and protocol_reason is None
+        and not normalized_code
+        and reason == "unknown"
+        and _is_transient_codex_runtime_failure(error)
+    ):
+        # Retirement alone can also mean deterministic local configuration or
+        # protocol failure. Promote only stable dead/wedged transport signals.
+        reason = "server_error"
+    return {
+        "failed": True,
+        "failure_reason": reason,
+    }
+
+
 def _record_codex_app_server_compaction(
     agent,
     turn,
@@ -790,6 +902,11 @@ def run_codex_app_server_turn(
                 else {}
             ),
             "error": str(exc),
+            **(
+                {}
+                if _user_interrupted
+                else _codex_failure_fields(agent, exc, retired=True)
+            ),
         }
 
     # This runtime bypasses the normal conversation-loop finalizer. Mirror its
@@ -921,6 +1038,7 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    _failed = bool(turn.error and not _user_interrupted)
     return {
         "final_response": turn.final_text,
         "messages": messages,
@@ -934,6 +1052,17 @@ def run_codex_app_server_turn(
             else {}
         ),
         "error": turn.error,
+        **(
+            _codex_failure_fields(
+                agent,
+                turn.error,
+                retired=bool(getattr(turn, "should_retire", False)),
+                provider_error_code=getattr(turn, "error_code", None),
+                codex_error_info=getattr(turn, "codex_error_info", None),
+            )
+            if _failed
+            else {}
+        ),
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
         # ourselves above (see the _flush_messages_to_session_db call after

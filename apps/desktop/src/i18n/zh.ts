@@ -127,6 +127,14 @@ export const zh: Translations = {
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
     updateReadyMessageUnknown: '有新更新可用。',
     seeWhatsNew: '查看更新内容',
+    mcp: {
+      needsAuthTitle: 'MCP 服务器需要重新认证',
+      needsAuthMessage: name => `${name} MCP 需要重新认证。`,
+      errorTitle: 'MCP 服务器无法连接',
+      errorMessage: name => `${name} MCP 健康检查失败。`,
+      signIn: '登录',
+      view: '查看'
+    },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',

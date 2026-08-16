@@ -32,6 +32,7 @@ import { compactNumber } from '@/lib/format'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -104,27 +105,9 @@ function getServers(config: HermesConfigRecord | null): McpServers {
 // agent's MCP loader read.
 const serverEnabled = (server: Record<string, unknown>) => server.enabled !== false
 
-const NEEDS_AUTH_RE = /\b(401|unauthorized|forbidden|invalid[_ ]?token|authentication|oauth)\b/i
-
 // Shared cache for the Nous-approved catalog — feeds both description enrichment
 // and the Catalog install view; invalidated after an install.
 const MCP_CATALOG_KEY = ['mcp-catalog'] as const
-
-// Probe results outlive the component: each probe is a REAL connect/disconnect
-// (stdio servers get spawned!), so re-entering the page must not re-probe the
-// fleet. Manual refresh / auth / toggle-on bypass the cache.
-const PROBE_TTL_MS = 5 * 60_000
-const probeCache = new Map<string, { at: number; result: McpTestResult }>()
-
-// A probe is only valid for one (profile, exact-config) pair. Keying the cache
-// by a fingerprint of the connection-relevant fields — plus the active profile
-// — means a same-name edit (url/command/env change) or a same-named server in
-// another profile MISSES the cache instead of showing a stale probe.
-const serverFingerprint = (server: Record<string, unknown>): string =>
-  JSON.stringify([server.url, server.command, server.args, server.env, server.headers, server.transport, server.auth])
-
-const probeKey = (name: string, server: Record<string, unknown> | undefined, profileKey: string): string =>
-  `${profileKey}::${name}::${serverFingerprint(server ?? {})}`
 
 type Probe = McpTestResult | 'probing'
 

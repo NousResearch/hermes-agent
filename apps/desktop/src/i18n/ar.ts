@@ -115,6 +115,14 @@ export const ar = defineLocale({
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
     updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
     seeWhatsNew: 'عرض الجديد',
+    mcp: {
+      needsAuthTitle: 'خادم MCP يحتاج إلى إعادة المصادقة',
+      needsAuthMessage: name => `يحتاج ${name} MCP إلى إعادة المصادقة.`,
+      errorTitle: 'تعذر الوصول إلى خادم MCP',
+      errorMessage: name => `فشل فحص سلامة ${name} MCP.`,
+      signIn: 'تسجيل الدخول',
+      view: 'عرض'
+    },
     errors: {
       elevenLabsNeedsKey: 'يتطلب ElevenLabs STT المفتاح ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'رفض ElevenLabs مفتاح API (401).',

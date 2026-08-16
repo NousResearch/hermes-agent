@@ -46,7 +46,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, is_email_send_only
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -560,8 +560,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
-        mode = str(extra.get("mode") or extra.get("delivery_mode") or "").strip().lower()
-        self._send_only = mode in {"send_only", "send-only", "smtp_only", "smtp-only", "outbound_only", "outbound-only"} or bool(extra.get("send_only", False))
+        self._send_only = is_email_send_only(extra)
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -1496,14 +1495,10 @@ async def _standalone_send(
 def _is_connected(config) -> bool:
     """Return whether Email has credentials for its resolved operating mode."""
     extra = getattr(config, "extra", {}) or {}
-    mode = str(extra.get("mode") or extra.get("delivery_mode") or "").strip().lower()
-    send_only = mode in {
-        "send_only", "send-only", "smtp_only", "smtp-only",
-        "outbound_only", "outbound-only",
-    } or bool(extra.get("send_only", False))
+    send_only = is_email_send_only(extra)
     import hermes_cli.gateway as gateway_mod
     address = str(extra.get("address") or gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip()
-    password = str(gateway_mod.get_env_value("EMAIL_PASSWORD") or "").strip()
+    password = str(extra.get("password") or gateway_mod.get_env_value("EMAIL_PASSWORD") or "").strip()
     smtp = str(extra.get("smtp_host") or gateway_mod.get_env_value("EMAIL_SMTP_HOST") or "").strip()
     imap = str(extra.get("imap_host") or gateway_mod.get_env_value("EMAIL_IMAP_HOST") or "").strip()
     return bool(address and password and smtp and (send_only or imap))

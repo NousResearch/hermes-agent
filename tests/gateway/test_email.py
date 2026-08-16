@@ -122,6 +122,27 @@ class TestCheckRequirements(unittest.TestCase):
             PlatformConfig(enabled=True, extra={"mode": "send_only"})
         ))
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_only_connection_accepts_config_only_credentials_and_aliases(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import _is_connected
+
+        credentials = {
+            "address": "a@b.com",
+            "password": "pw",
+            "smtp_host": "smtp.b.com",
+        }
+        for key, value in (
+            ("mode", "smtp-only"),
+            ("delivery_mode", "outbound_only"),
+            ("send_only", True),
+        ):
+            with self.subTest(key=key, value=value):
+                self.assertTrue(_is_connected(PlatformConfig(
+                    enabled=True,
+                    extra={**credentials, key: value},
+                )))
+
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "a@b.com",
     }, clear=True)

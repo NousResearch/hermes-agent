@@ -317,6 +317,29 @@ identical and skill capture near-identical to the main-model review.
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.
 
+### Cost controls (`enabled`, `max_iterations`, `prompt_file`)
+
+The review fork can burn a meaningful share of total tokens on busy hosts.
+Operators can bound or disable it without zeroing nudge intervals:
+
+```yaml
+auxiliary:
+  background_review:
+    enabled: true              # false = skip automatic post-turn forks
+    max_iterations: 16         # tool-calling budget per fork (clamped 1–64)
+    prompt_file: ""            # optional custom prompt (HERMES_HOME-relative)
+```
+
+| Key | Behaviour |
+|-----|-----------|
+| `enabled: false` | Automatic post-turn forks do not spawn. Manual `/refine` still works. |
+| `max_iterations` | Caps how many tool-calling iterations the fork may run (default `16`). |
+| `prompt_file` | When set to a readable Markdown/text file, replaces the built-in review prompt so you can make the reviewer conservative or redefine "worth saving." |
+
+Fork usage is persisted in `session_model_usage` with `task='background_review'`
+and a completion line is written to `agent.log`
+(`Background review complete: thread=bg-review calls=… in=… out=… result=…`).
+
 ## Controlling skill writes (`skills.write_approval`)
 
 Skills use the same on/off gate, but the review UX differs because a

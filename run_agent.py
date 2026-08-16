@@ -1829,6 +1829,17 @@ class AIAgent:
         # is a deliberate user request and still runs.
         if focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
+        # Explicit off-switch for automatic post-turn forks
+        # (``auxiliary.background_review.enabled: false``). Manual ``/refine``
+        # still works — same contract as zeroing the nudge intervals (#87250).
+        # Load the task block once here and pass it into the spawn path so
+        # prompt_file / max_iterations / aux routing do not re-read config.
+        task_cfg = None
+        if focus is None:
+            from agent.background_review import load_background_review_settings
+            enabled, task_cfg = load_background_review_settings()
+            if not enabled:
+                return
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
@@ -1837,6 +1848,7 @@ class AIAgent:
             review_memory=review_memory,
             review_skills=review_skills,
             focus=focus,
+            task_cfg=task_cfg,
         )
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).

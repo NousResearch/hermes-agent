@@ -779,6 +779,16 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#
+#   # Post-turn memory/skill self-improvement review fork. Runs after a turn
+#   # when the nudge intervals fire; writes skills/memories in a daemon thread.
+#   # Usage is recorded under session_model_usage task='background_review'.
+#   background_review:
+#     enabled: true            # false = skip automatic forks (/refine still works)
+#     provider: "auto"         # or pin a cheaper model (see memory.md)
+#     model: ""
+#     max_iterations: 16       # tool-calling budget per fork (clamped 1–64)
+#     prompt_file: ""          # optional custom review prompt (HERMES_HOME-relative)
 
 # =============================================================================
 # Persistent Memory

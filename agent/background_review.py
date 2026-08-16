@@ -22,6 +22,7 @@ import copy
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
@@ -43,8 +44,141 @@ logger = logging.getLogger(__name__)
 # digest. That's the whole policy.
 # ---------------------------------------------------------------------------
 
+# Historical hardcoded value — kept as the default so existing behavior is
+# unchanged when the config key is unset.
+_DEFAULT_REVIEW_MAX_ITERATIONS = 16
 
-def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
+
+def _background_review_task_config(
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return ``auxiliary.background_review`` (or ``{}`` on any failure).
+
+    Pass ``task_cfg`` when the caller already loaded the block once so spawn /
+    resolve / prompt paths do not re-read config on every turn.
+    """
+    if task_cfg is not None:
+        return task_cfg if isinstance(task_cfg, dict) else {}
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return {}
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    task = aux.get("background_review", {})
+    return task if isinstance(task, dict) else {}
+
+
+def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
+    """Single config read for the automatic-review gate + task block.
+
+    Returns ``(enabled, task_cfg)``. Fail-open on config errors (``enabled=True``)
+    so a broken config file does not silently disable reviews — but log at
+    WARNING so the cost-incurring path is visible.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from utils import is_truthy_value
+
+        cfg = load_config_readonly()
+        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+        task = aux.get("background_review", {})
+        task = task if isinstance(task, dict) else {}
+        return is_truthy_value(task.get("enabled"), default=True), task
+    except Exception:
+        logger.warning(
+            "Failed to read background_review.enabled; leaving automatic "
+            "review enabled (fail-open)",
+            exc_info=True,
+        )
+        return True, {}
+
+
+def is_background_review_enabled(
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether automatic post-turn background review may spawn.
+
+    Controlled by ``auxiliary.background_review.enabled`` (default ``true``).
+    Explicit ``/refine`` (``focus`` set) bypasses this gate — same contract as
+    zeroing the nudge intervals, which stops automatic forks but leaves manual
+    refine working (issue #87250).
+
+    Prefer :func:`load_background_review_settings` at the spawn call site so
+    the task block is not re-read for prompt / max_iterations on the same turn.
+    """
+    if task_cfg is not None:
+        try:
+            from utils import is_truthy_value
+
+            return is_truthy_value(task_cfg.get("enabled"), default=True)
+        except Exception:
+            logger.warning(
+                "Failed to interpret background_review.enabled; leaving "
+                "automatic review enabled (fail-open)",
+                exc_info=True,
+            )
+            return True
+    enabled, _ = load_background_review_settings()
+    return enabled
+
+
+def _resolve_review_max_iterations(
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Resolve the review fork's tool-calling iteration budget.
+
+    Default 16 (unchanged historical behavior). Configurable via
+    ``auxiliary.background_review.max_iterations`` so operators can bound the
+    worst-case cost of a review that never concludes "nothing to save".
+    Clamped to [1, 64]; any config-read or parse failure falls back to the
+    default.
+    """
+    try:
+        val = _background_review_task_config(task_cfg).get("max_iterations")
+        if val is None:
+            return _DEFAULT_REVIEW_MAX_ITERATIONS
+        return max(1, min(int(val), 64))
+    except Exception:
+        return _DEFAULT_REVIEW_MAX_ITERATIONS
+
+
+def _load_review_prompt_file(
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Load ``auxiliary.background_review.prompt_file`` if configured.
+
+    Returns the file contents (stripped) or ``None`` when unset / unreadable.
+    Relative paths resolve against ``HERMES_HOME`` (same pattern as TTS
+    ``persona_prompt_file``).
+    """
+    raw = _background_review_task_config(task_cfg).get("prompt_file")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    expanded = os.path.expandvars(raw.strip())
+    path = Path(expanded).expanduser()
+    if not path.is_absolute():
+        try:
+            from hermes_constants import get_hermes_home
+
+            path = get_hermes_home() / path
+        except Exception:
+            path = Path.cwd() / path
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning(
+            "background_review.prompt_file unavailable at %s: %s", path, exc
+        )
+        return None
+    return text or None
+
+
+def _resolve_review_runtime(
+    agent: Any,
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork.
 
     Default (auto / unset / same as parent): inherit the parent's live runtime
@@ -70,13 +204,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "args": list(getattr(agent, "acp_args", []) or []),
         "routed": False,
     }
-    try:
-        from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly()
-    except Exception:
-        return parent
-    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
+    task = _background_review_task_config(task_cfg)
     task_provider = (str(task.get("provider", "")).strip() or None)
     task_model = (str(task.get("model", "")).strip() or None)
     task_base_url = (str(task.get("base_url", "")).strip() or None)
@@ -651,10 +779,140 @@ def build_memory_write_metadata(
     return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
 
+def _snapshot_review_usage(review_agent: Any) -> Dict[str, Any]:
+    """Snapshot in-memory usage counters from a review fork (pre-close)."""
+    return {
+        "model": getattr(review_agent, "model", None),
+        "provider": getattr(review_agent, "provider", None),
+        "base_url": getattr(review_agent, "base_url", None),
+        "input_tokens": int(getattr(review_agent, "session_input_tokens", 0) or 0),
+        "output_tokens": int(getattr(review_agent, "session_output_tokens", 0) or 0),
+        "cache_read_tokens": int(
+            getattr(review_agent, "session_cache_read_tokens", 0) or 0
+        ),
+        "cache_write_tokens": int(
+            getattr(review_agent, "session_cache_write_tokens", 0) or 0
+        ),
+        "reasoning_tokens": int(
+            getattr(review_agent, "session_reasoning_tokens", 0) or 0
+        ),
+        "api_calls": int(getattr(review_agent, "session_api_calls", 0) or 0),
+        "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
+    }
+
+
+def _record_review_usage_to_parent(
+    parent_agent: Any,
+    usage: Dict[str, Any],
+) -> None:
+    """Record a background-review fork's usage against the parent session.
+
+    Background-review forks run with ``_session_db = None`` for persistence
+    isolation (see the PERSISTENCE ISOLATION comment in
+    :func:`_run_review_in_thread`): the fork must never write its harness turn
+    into the user's real session. A side effect of that isolation is that the
+    fork's API calls — which the provider bills — were never recorded in
+    ``session_model_usage``, because the accounting path in
+    ``conversation_loop`` is gated on the DB handle. This hides the
+    background-review volume from billing analytics (issue #87250).
+
+    The fork still accumulates the same in-memory counters the main loop does
+    (``session_input_tokens`` etc.) and shares the parent's ``session_id``, so
+    its usage can be attributed to the parent session through the
+    aux-accounting chokepoint, which writes only ``session_model_usage`` —
+    never the transcript or the ``sessions`` summary row.
+
+    Best-effort by contract: accounting must never fail the review.
+    """
+    try:
+        session_db = getattr(parent_agent, "_session_db", None)
+        session_id = getattr(parent_agent, "session_id", None)
+        if session_db is None or not session_id:
+            return
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cache_read = int(usage.get("cache_read_tokens") or 0)
+        cache_write = int(usage.get("cache_write_tokens") or 0)
+        reasoning = int(usage.get("reasoning_tokens") or 0)
+        api_calls = int(usage.get("api_calls") or 0)
+        if not (
+            input_tokens
+            or output_tokens
+            or cache_read
+            or cache_write
+            or reasoning
+            or api_calls
+        ):
+            return  # fork made no successful API calls (e.g. failed at spawn)
+        session_db.record_auxiliary_usage(
+            session_id,
+            task="background_review",
+            model=usage.get("model"),
+            billing_provider=usage.get("provider"),
+            billing_base_url=usage.get("base_url"),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            reasoning_tokens=reasoning,
+            estimated_cost_usd=usage.get("estimated_cost_usd"),
+            api_call_count=api_calls,
+        )
+    except Exception as e:
+        logger.debug(
+            "Background review usage recording failed (non-fatal): %s", e
+        )
+
+
+def _classify_review_result(actions: List[str]) -> str:
+    """Map a review action summary to ``none`` / ``skill`` / ``memory`` / both.
+
+    Matching is prefix-based on the formats
+    :func:`summarize_background_review_actions` emits
+    (``Skill …``, ``📝 Skill …``, ``Memory …``, ``User profile …``), not
+    free-text substring search — so a line like
+    ``Skipped: no skill worth saving`` stays ``none``.
+    """
+    if not actions:
+        return "none"
+    has_skill = False
+    has_memory = False
+    for action in actions:
+        text = str(action).lstrip()
+        if text.startswith("📝"):
+            text = text[1:].lstrip()
+        lower = text.lower()
+        if lower.startswith("skill"):
+            has_skill = True
+        elif lower.startswith("memory") or lower.startswith("user profile"):
+            has_memory = True
+    if has_skill and has_memory:
+        return "skill+memory"
+    if has_skill:
+        return "skill"
+    if has_memory:
+        return "memory"
+    return "none"
+
+
+def _log_review_completion(usage: Dict[str, Any], result: str) -> None:
+    """Emit a per-fork completion line so cost is visible where it is incurred."""
+    logger.info(
+        "Background review complete: thread=bg-review calls=%d in=%d out=%d "
+        "cache_read=%d result=%s",
+        int(usage.get("api_calls") or 0),
+        int(usage.get("input_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+        int(usage.get("cache_read_tokens") or 0),
+        result,
+    )
+
+
 def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    task_cfg: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -684,6 +942,7 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+    review_usage: Dict[str, Any] = {}
 
     def _unregister_review_agent(agent_ref) -> None:
         """Idempotent: clears the review fork from both tracking slots.
@@ -733,7 +992,7 @@ def _run_review_in_thread(
             # set auxiliary.background_review.{provider,model} to a different
             # model — that model's runtime (routed=True). The codex_app_server
             # -> codex_responses downgrade is applied inside the resolver.
-            _rt = _resolve_review_runtime(agent)
+            _rt = _resolve_review_runtime(agent, task_cfg)
             _routed = bool(_rt.get("routed"))
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
@@ -811,7 +1070,7 @@ def _run_review_in_thread(
                         _fork_kwargs[_pref_attr] = _pref_val
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
-                max_iterations=16,
+                max_iterations=_resolve_review_max_iterations(task_cfg),
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
@@ -983,6 +1242,14 @@ def _run_review_in_thread(
                 )
             finally:
                 clear_thread_tool_whitelist()
+                # Attribute the review fork's usage to the PARENT session.
+                # Snapshot BEFORE unregister/close so counters survive teardown.
+                # Placed in this finally so a fork that consumed tokens and THEN
+                # raised is still attributed (issue #87250). Best-effort: the
+                # recorder never raises into the review thread.
+                if review_agent is not None:
+                    review_usage.update(_snapshot_review_usage(review_agent))
+                    _record_review_usage_to_parent(agent, review_usage)
                 # Unregister as soon as run_conversation() itself has
                 # returned — that's the only phase making outbound API
                 # calls, i.e. the only phase that can race the parent's
@@ -1039,6 +1306,10 @@ def _run_review_in_thread(
             )
             actions = []
 
+        _log_review_completion(
+            review_usage, _classify_review_result(actions)
+        )
+
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
             agent._safe_print(
@@ -1055,6 +1326,8 @@ def _run_review_in_thread(
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
+        if review_usage:
+            _log_review_completion(review_usage, "error")
         agent._emit_auxiliary_failure("background review", e)
     finally:
         # Safety-net cleanup for the exception path.  Normal completion already
@@ -1096,6 +1369,7 @@ def spawn_background_review_thread(
     review_memory: bool = False,
     review_skills: bool = False,
     focus: Optional[str] = None,
+    task_cfg: Optional[Dict[str, Any]] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
@@ -1108,11 +1382,24 @@ def spawn_background_review_thread(
     the user asked for while keeping the same guardrails. Automatic
     post-turn reviews pass ``None`` — their prompts are byte-identical to
     before this parameter existed.
+
+    ``task_cfg`` is the already-loaded ``auxiliary.background_review`` block
+    from :func:`load_background_review_settings`. When omitted, config is
+    read once here and shared with the worker (prompt file, max_iterations,
+    aux routing) so a single turn does not re-parse the config file.
     """
+    if task_cfg is None:
+        task_cfg = _background_review_task_config()
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
     # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    if review_memory and review_skills:
+    # ``auxiliary.background_review.prompt_file`` replaces the built-in text
+    # when set — operators can make the reviewer conservative or redefine
+    # "worth saving" without patching core (issue #87250).
+    prompt_override = _load_review_prompt_file(task_cfg)
+    if prompt_override:
+        prompt = prompt_override
+    elif review_memory and review_skills:
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
@@ -1129,7 +1416,7 @@ def spawn_background_review_thread(
         )
 
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(agent, messages_snapshot, prompt, task_cfg)
 
     return _target, prompt
 
@@ -1138,6 +1425,8 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
+    "is_background_review_enabled",
+    "load_background_review_settings",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",

@@ -249,6 +249,7 @@ describe('SidebarSessionRow', () => {
 
     const label = screen.getByText(title)
     expect(label.className).toContain('line-clamp-2')
+    expect(label.className).toContain('leading-none')
     expect(label.className).not.toContain('truncate')
   })
 
@@ -264,9 +265,19 @@ describe('SidebarSessionRow', () => {
     /** The rendered title label (tooltip trigger is the label itself). */
     const label = () => screen.getByText(title).closest('[data-slot="tooltip-trigger"]') as HTMLElement
 
-    const setWidths = (el: HTMLElement, scrollWidth: number, clientWidth: number) => {
+    const setGeometry = (
+      el: HTMLElement,
+      { clientHeight = 20, clientWidth = 100, scrollHeight = clientHeight, scrollWidth = clientWidth }: {
+        clientHeight?: number
+        clientWidth?: number
+        scrollHeight?: number
+        scrollWidth?: number
+      }
+    ) => {
       Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
       Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight })
     }
 
     it('wraps the title in a tooltip trigger', () => {
@@ -280,7 +291,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 300, 100)
+      setGeometry(el, { clientWidth: 100, scrollWidth: 300 })
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -295,7 +306,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 100, 100)
+      setGeometry(el, {})
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -310,7 +321,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 300, 100)
+      setGeometry(el, { clientWidth: 100, scrollWidth: 300 })
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -320,6 +331,21 @@ describe('SidebarSessionRow', () => {
       })
 
       expect(screen.queryByRole('tooltip')).toBeNull()
+    })
+
+    it('opens for a title clamped vertically after two lines', () => {
+      vi.useFakeTimers()
+      renderRow(makeSession({ title }))
+
+      const el = label()
+      setGeometry(el, { clientHeight: 26, scrollHeight: 39 })
+
+      act(() => {
+        fireEvent.pointerEnter(el)
+        vi.advanceTimersByTime(700)
+      })
+
+      expect(screen.getByRole('tooltip').textContent).toContain(title)
     })
   })
 

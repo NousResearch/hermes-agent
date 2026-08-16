@@ -479,7 +479,7 @@ function SidebarSessionRowImpl({
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title}>
                       <SidebarRowLabel
-                        className="line-clamp-2 break-words font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                        className="line-clamp-2 break-words font-normal leading-none group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                       >
                         {title}
                       </SidebarRowLabel>

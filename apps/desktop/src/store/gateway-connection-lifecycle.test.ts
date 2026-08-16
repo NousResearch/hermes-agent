@@ -59,6 +59,16 @@ const {
   setPrimaryGateway
 } = await import('./gateway')
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 function installDesktop(stub: Record<string, unknown>): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
 }
@@ -155,6 +165,36 @@ describe('disposeSecondariesForConnection', () => {
     // Old socket closed, fresh descriptor fetched (would carry the new URL).
     expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
     expect(getConnectionFor).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not let a deferred active redial retarget a newer agent activation', async () => {
+    const redialLookup = deferred<ReturnType<typeof descriptorFor>>()
+    let homelabLookups = 0
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => {
+      if (connectionId === 'homelab' && ++homelabLookups === 2) {
+        return redialLookup.promise
+      }
+
+      return descriptorFor(connectionId, profile)
+    })
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    disposeSecondariesForConnection('homelab', { redial: true })
+    await vi.waitFor(() => expect(homelabLookups).toBe(2))
+
+    await ensureGatewayForAgent('office', 'work')
+    const newerTarget = activeGateway()
+
+    expect(newerTarget).toBe(gatewayMocks.instances[2])
+
+    redialLookup.resolve(descriptorFor('homelab', 'default'))
+    await vi.waitFor(() => expect(gatewayMocks.instances[1].connectionState).toBe('open'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(activeGateway()).toBe(newerTarget)
   })
 
   it('is a no-op for blank or unknown connection ids', async () => {

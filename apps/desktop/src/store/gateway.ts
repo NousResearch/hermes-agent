@@ -100,6 +100,8 @@ interface GatewayRegistryState {
   primaryGateway: HermesGateway | null
   primaryProfile: string
   primaryGeneration: number
+  /** Monotonic ownership token for async foreground activation intent. */
+  activationGeneration: number
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
@@ -122,6 +124,7 @@ function createRegistryState(): GatewayRegistryState {
     primaryGateway: null,
     primaryProfile: 'default',
     primaryGeneration: 0,
+    activationGeneration: 0,
     activeKey: 'default',
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
@@ -164,6 +167,7 @@ const g = gatewayState()
 // Keep HMR-surviving entries compatible when this module's registry shape grows.
 g.primaryReconnect ??= null
 g.primaryGeneration ??= 0
+g.activationGeneration ??= 0
 g.keptProfiles ??= new Set<string>()
 
 for (const entry of g.secondaries.values()) {
@@ -341,6 +345,61 @@ function publishActiveConnection(connection: HermesConnection): void {
   } else {
     setConnection(connection)
   }
+}
+
+function claimActivation(): number {
+  g.activationGeneration += 1
+
+  return g.activationGeneration
+}
+
+function setActiveIfOwned(profile: string, activation: number): boolean {
+  // Opening/reconnecting the physical transport is still useful after the user
+  // selects another agent, but its late completion no longer owns the global UI
+  // pointer. Request leases (including captured slash/branch work) stay pinned
+  // to their concrete transport and are intentionally independent of this token.
+  if (g.activationGeneration !== activation) {
+    return false
+  }
+
+  setActive(profile)
+
+  return true
+}
+
+type SecondaryLeaseKind = 'command' | 'request'
+
+function secondaryIsKept(entry: Secondary): boolean {
+  return g.keptProfiles.has(entry.scope) || (!entry.connectionId && g.keptProfiles.has(entry.profile))
+}
+
+function releaseSecondaryLease(entry: Secondary, kind: SecondaryLeaseKind): void {
+  if (kind === 'command') {
+    entry.commandLeases = Math.max(0, entry.commandLeases - 1)
+  } else {
+    entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+  }
+
+  if (entry.commandLeases > 0 || entry.activeRequests > 0 || !entry.prunePending) {
+    return
+  }
+
+  // Consume the deferred decision once when the final owner releases. A newer
+  // activation/keep decision cancels that old prune; an unregistered or already
+  // disposed entry must not be closed again by its stale async completion.
+  entry.prunePending = false
+
+  if (
+    !entry.wantOpen ||
+    g.secondaries.get(entry.scope) !== entry ||
+    entry.scope === g.activeKey ||
+    secondaryIsKept(entry)
+  ) {
+    return
+  }
+
+  disposeSecondary(entry)
+  g.secondaries.delete(entry.scope)
 }
 
 function clearTimer(entry: Secondary): void {
@@ -618,9 +677,14 @@ async function gatewayForProfile(
   const release = () => {
     if (!released && leaseRequest) {
       released = true
-      entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+      releaseSecondaryLease(entry, 'request')
 
-      if (entry.activeRequests === 0 && !entry.retained && g.activeKey !== entry.scope) {
+      if (
+        g.secondaries.get(entry.scope) === entry &&
+        entry.activeRequests === 0 &&
+        !entry.retained &&
+        g.activeKey !== entry.scope
+      ) {
         disposeSecondary(entry)
 
         if (g.secondaries.get(entry.scope) === entry) {
@@ -718,9 +782,14 @@ export async function requestGatewayForAgent<T>(
 
     return await entry.gateway.request<T>(method, params)
   } finally {
-    entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+    releaseSecondaryLease(entry, 'request')
 
-    if (entry.activeRequests === 0 && !entry.retained && g.activeKey !== entry.scope) {
+    if (
+      g.secondaries.get(entry.scope) === entry &&
+      entry.activeRequests === 0 &&
+      !entry.retained &&
+      g.activeKey !== entry.scope
+    ) {
       disposeSecondary(entry)
 
       if (g.secondaries.get(entry.scope) === entry) {
@@ -767,20 +836,20 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
   }
 }
 
-export async function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+async function activateGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  activation: number
+): Promise<boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
-    await ensureGatewayForProfile(profile)
-
-    return true
+    return activateGatewayForProfile(profile, activation)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
     throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
   }
-
-  const activationEpoch = beginGatewayActivation()
 
   let entry = g.secondaries.get(scope)
 
@@ -818,7 +887,7 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
       entry.wantOpen &&
       g.secondaries.get(scope) === entry &&
       Boolean(entry.connection) &&
-      applyActive(scope, activationEpoch)
+      setActiveIfOwned(scope, activation)
 
     if (activated && entry.connection) {
       publishActiveConnection(entry.connection)
@@ -827,20 +896,21 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
     return activated
   } finally {
     entry.activationLeaseUntil = 0
-    entry.commandLeases = Math.max(0, entry.commandLeases - 1)
+    releaseSecondaryLease(entry, 'command')
   }
+}
+
+export function ensureGatewayForAgent(connectionId: null | string, profile: string): Promise<boolean> {
+  return activateGatewayForAgent(connectionId, profile, claimActivation())
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+async function activateGatewayForProfile(profile: string, activation: number): Promise<boolean> {
   const key = normKey(profile)
-  const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    applyActive(key, activationEpoch)
-
-    return
+    return setActiveIfOwned(key, activation)
   }
 
   let entry = g.secondaries.get(key)
@@ -851,9 +921,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     // when there is no already-owned pooled entry: awaiting this lookup before
     // claiming an existing prewarm lets pruning dispose that entry mid-activate.
     if (await sharedPrimaryRoute(key)) {
-      applyActive(g.primaryProfile, activationEpoch)
-
-      return
+      return setActiveIfOwned(g.primaryProfile, activation)
     }
 
     entry = g.secondaries.get(key) ?? createSecondary(key)
@@ -881,19 +949,26 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
       }
     }
 
-    if (
+    const activated =
       entry.wantOpen &&
       g.secondaries.get(key) === entry &&
-      applyActive(key, activationEpoch) &&
-      entry.connection
-    ) {
+      Boolean(entry.connection) &&
+      setActiveIfOwned(key, activation)
+
+    if (activated && entry.connection) {
       publishActiveConnection(entry.connection)
     }
+
+    return activated
   } finally {
     // The activation is settling either way — release both prune guards.
     entry.activationLeaseUntil = 0
-    entry.commandLeases = Math.max(0, entry.commandLeases - 1)
+    releaseSecondaryLease(entry, 'command')
   }
+}
+
+export async function ensureGatewayForProfile(profile: string): Promise<void> {
+  await activateGatewayForProfile(profile, claimActivation())
 }
 
 // Reconnect the active gateway after a transient request failure. Primary
@@ -1136,21 +1211,7 @@ export function acquireGatewayRequestLease(gateway: HermesGateway, profile: stri
       released = true
 
       if (secondary) {
-        secondary.commandLeases = Math.max(0, secondary.commandLeases - 1)
-
-        if (
-          secondary.commandLeases === 0 &&
-          secondary.prunePending &&
-          secondary.wantOpen &&
-          g.secondaries.get(secondary.scope) === secondary &&
-          secondary.scope !== g.activeKey &&
-          !g.keptProfiles.has(secondary.scope) &&
-          (secondary.connectionId !== null || !g.keptProfiles.has(secondary.profile))
-        ) {
-          disposeSecondary(secondary)
-          g.secondaries.delete(secondary.scope)
-          restoreActiveToPrimaryIfEvicted()
-        }
+        releaseSecondaryLease(secondary, 'command')
       }
     }
   }
@@ -1218,9 +1279,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
   for (const [key, entry] of [...g.secondaries]) {
     if (
       key === g.activeKey ||
-      g.keptProfiles.has(key) ||
-      (!entry.connectionId && g.keptProfiles.has(entry.profile)) ||
-      entry.activeRequests > 0 ||
+      secondaryIsKept(entry) ||
       // Mid-dial activation target: the profile being switched TO is not yet
       // active and has no live work, so without this lease any recompute
       // during its cold spawn disposed the entry and the click died silently
@@ -1233,7 +1292,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       continue
     }
 
-    if (entry.commandLeases > 0) {
+    if (entry.commandLeases > 0 || entry.activeRequests > 0) {
       entry.prunePending = true
 
       continue

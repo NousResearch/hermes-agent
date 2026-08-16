@@ -206,6 +206,7 @@ describe('profile-scoped gateway request leases', () => {
     expect(source.request.mock.calls[1]).toEqual(['session.branch', params, 1234, signal])
 
     lease.release()
+    lease.release()
 
     expect(source.close).toHaveBeenCalledOnce()
     await expect(lease.request('session.branch', params)).rejects.toThrow('Hermes source gateway unavailable')
@@ -473,6 +474,117 @@ describe('profile-scoped gateway request leases', () => {
 })
 
 describe('profile activation ownership', () => {
+  it('keeps a newer profile active when an earlier deferred activation finishes last', async () => {
+    const slowLookup = deferred<ReturnType<typeof connection>>()
+    let slowLookups = 0
+
+    getConnection.mockImplementation(async profile => {
+      const key = profile ?? 'default'
+
+      if (key === 'slow' && ++slowLookups === 2) {
+        return slowLookup.promise
+      }
+
+      return connection(key)
+    })
+
+    const slowActivation = ensureGatewayForProfile('slow')
+    await vi.waitFor(() => expect(slowLookups).toBe(2))
+
+    await ensureGatewayForProfile('newer')
+    const newerTarget = activeGateway()
+
+    slowLookup.resolve(connection('slow'))
+    await slowActivation
+
+    expect(activeGateway()).toBe(newerTarget)
+  })
+
+  it('does not let a stale shared-primary lookup overwrite a newer profile activation', async () => {
+    const sharedLookup = deferred<ReturnType<typeof connection>>()
+
+    getConnection.mockImplementation(async profile => {
+      const key = profile ?? 'default'
+
+      return key === 'shared' ? sharedLookup.promise : connection(key)
+    })
+
+    const sharedActivation = ensureGatewayForProfile('shared')
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('shared'))
+
+    await ensureGatewayForProfile('newer')
+    const newerTarget = activeGateway()
+
+    sharedLookup.resolve({ ...connection('shared'), sharedPrimary: true })
+    await sharedActivation
+
+    expect(activeGateway()).toBe(newerTarget)
+  })
+
+  it('prunes a stale pooled-profile activation exactly once after a newer profile wins', async () => {
+    const staleLookup = deferred<ReturnType<typeof connection>>()
+    let staleLookups = 0
+
+    getConnection.mockImplementation(async profile => {
+      const key = profile ?? 'default'
+
+      if (key === 'stale' && ++staleLookups === 2) {
+        return staleLookup.promise
+      }
+
+      return connection(key)
+    })
+
+    const staleActivation = ensureGatewayForProfile('stale')
+    await vi.waitFor(() => expect(staleLookups).toBe(2))
+    const staleGateway = latestGateway()
+
+    pruneSecondaryGateways(new Set())
+    await ensureGatewayForProfile('newer')
+    const newerTarget = activeGateway()
+
+    staleLookup.resolve(connection('stale'))
+    await staleActivation
+
+    expect(activeGateway()).toBe(newerTarget)
+    expect(staleGateway.close).toHaveBeenCalledOnce()
+
+    pruneSecondaryGateways(new Set())
+    closeSecondaryGateways()
+    expect(staleGateway.close).toHaveBeenCalledOnce()
+  })
+
+  it('prunes a stale registry-agent activation exactly once after a newer agent wins', async () => {
+    const staleLookup = deferred<ReturnType<typeof connection>>()
+
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId?: null | string; profile?: null | string }) =>
+        connectionId === 'remote-a' ? staleLookup.promise : connection(profile ?? 'default')
+    )
+
+    const desktop = window.hermesDesktop!
+
+    desktop.getConnectionFor = getConnectionFor
+
+    const staleActivation = ensureGatewayForAgent('remote-a', 'work')
+    await vi.waitFor(() => expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'remote-a', profile: 'work' }))
+    const staleGateway = latestGateway()
+
+    pruneSecondaryGateways(new Set())
+    await ensureGatewayForAgent('remote-b', 'work')
+    const newerTarget = activeGateway()
+
+    staleLookup.resolve(connection('work'))
+    await staleActivation
+
+    expect(activeGateway()).toBe(newerTarget)
+    expect(staleGateway.close).toHaveBeenCalledOnce()
+
+    pruneSecondaryGateways(new Set())
+    closeSecondaryGateways()
+    expect(staleGateway.close).toHaveBeenCalledOnce()
+  })
+
   it('keeps an activating profile registered while it joins a deferred prewarm', async () => {
     const lookup = deferred<ReturnType<typeof connection>>()
     // First lookup classifies the profile route; the second is the actual

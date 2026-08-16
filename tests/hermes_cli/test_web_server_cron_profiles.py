@@ -1,7 +1,9 @@
 """Regression tests for dashboard cron job profile routing."""
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import threading
@@ -130,8 +132,10 @@ def test_create_registers_scheduler_inside_target_profile(
 
 def test_cron_run_outputs_are_read_from_the_owning_profile(
     isolated_profiles,
+    monkeypatch,
 ):
     """Desktop run detail must use the durable markdown output, not a chat row."""
+    from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
     worker_home = isolated_profiles["worker_alpha"]
@@ -147,8 +151,13 @@ def test_cron_run_outputs_are_read_from_the_owning_profile(
     output_dir.mkdir(parents=True)
     older = output_dir / "2026-08-10_09-00-00.md"
     newer = output_dir / "2026-08-11_09-00-00.md"
+    invalid = output_dir / "9999-99-99_99-99-99.md"
     older.write_text("# Older\n", encoding="utf-8")
     newer.write_text("# Report\n\n| Name | Value |\n| --- | --- |\n| ok | 1 |\n", encoding="utf-8")
+    invalid.write_text("must not shadow a valid output", encoding="utf-8")
+    os.utime(newer, (1, 1))
+    monkeypatch.setattr(cron_jobs, "_get_hermes_timezone", lambda: timezone.utc)
+    expected_created_at = datetime(2026, 8, 11, 9, tzinfo=timezone.utc).timestamp()
 
     listed = web_server._list_cron_job_outputs_sync(job["id"], limit=1)
 
@@ -158,13 +167,14 @@ def test_cron_run_outputs_are_read_from_the_owning_profile(
             "id": "2026-08-11_09-00-00",
             "filename": newer.name,
             "byte_size": newer.stat().st_size,
-            "created_at": newer.stat().st_mtime,
+            "created_at": expected_created_at,
         }
     ]
     detail = web_server._get_cron_job_output_sync(
         job["id"], "2026-08-11_09-00-00"
     )
     assert detail["profile"] == "worker_alpha"
+    assert detail["created_at"] == expected_created_at
     assert detail["content"].startswith("# Report")
     assert "| ok | 1 |" in detail["content"]
 
@@ -174,6 +184,13 @@ def test_cron_run_output_rejects_path_escape(isolated_profiles):
 
     with pytest.raises(HTTPException) as exc_info:
         web_server._get_cron_job_output_sync("missing", "../jobs")
+
+    assert exc_info.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._get_cron_job_output_sync(
+            "missing", "2026-99-99_99-99-99"
+        )
 
     assert exc_info.value.status_code == 400
 
@@ -345,6 +362,39 @@ def test_cron_run_output_rejects_symlinked_job_directory(
         )
 
     assert exc_info.value.status_code == 404
+
+
+def test_cron_run_output_path_fallback_detects_persistent_parent_swap(
+    isolated_profiles,
+    monkeypatch,
+):
+    """The path-only fallback rechecks directory identity after an operation."""
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(
+        cron_jobs.os,
+        "supports_dir_fd",
+        frozenset(cron_jobs.os.supports_dir_fd - {cron_jobs.os.open}),
+    )
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="parent-swap-report",
+    )
+    assert isinstance(job, dict)
+    job_dir = worker_home / "cron" / "output" / job["id"]
+    job_dir.mkdir(parents=True)
+    displaced_job_dir = job_dir.with_name(f"{job['id']}-displaced")
+
+    with cron_jobs.use_cron_store(worker_home):
+        with pytest.raises(FileNotFoundError):
+            with cron_jobs._open_job_output_directory(job["id"]):
+                job_dir.rename(displaced_job_dir)
+                job_dir.mkdir()
 
 
 def test_cron_run_output_listing_surfaces_storage_errors(

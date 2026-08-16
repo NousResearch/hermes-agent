@@ -53,6 +53,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
 
 export async function getCronJobOutputs(jobId: string, limit = 20, profile?: string): Promise<CronJobOutput[]> {
   const owner = profile ? `&profile=${encodeURIComponent(profile)}` : ''
+
   const { outputs } = await hermesApi<{ outputs: CronJobOutput[] }>({
     ...profileScoped(),
     ...connectionScoped(),

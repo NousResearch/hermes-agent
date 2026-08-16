@@ -1921,6 +1921,7 @@ export const en: Translations = {
     last: 'Last:',
     next: 'Next:',
     noRuns: 'No runs yet',
+    outputUnavailable: outputId => `Run output “${outputId}.md” is no longer available.`,
     manage: 'Manage',
     showRuns: 'Show runs',
     hideRuns: 'Hide runs',

@@ -58,4 +58,36 @@ describe('CronJobRuns', () => {
     expect(await screen.findByText(TRANSLATIONS.en.cron.failedLoad)).toBeTruthy()
     expect(screen.queryByText(TRANSLATIONS.en.cron.noRuns)).toBeNull()
   })
+
+  it('reports and consumes a focus target whose retained output is gone', async () => {
+    vi.mocked(getCronJobOutputs).mockResolvedValue([])
+    $cronFocus.set({
+      jobId: 'report-job',
+      outputId: '2026-08-10_09-00-00',
+      profile: 'worker_alpha'
+    })
+
+    render(<CronJobRuns c={TRANSLATIONS.en.cron} jobId="report-job" profile="worker_alpha" />)
+
+    expect((await screen.findByRole('status')).textContent).toContain('2026-08-10_09-00-00.md')
+    expect(getCronJobOutput).not.toHaveBeenCalled()
+    await waitFor(() => expect($cronFocus.get()).toBeNull())
+  })
+
+  it('keeps an output focus target when the run listing fails transiently', async () => {
+    const focusTarget = {
+      jobId: 'report-job',
+      outputId: '2026-08-10_09-00-00',
+      profile: 'worker_alpha'
+    }
+
+    vi.mocked(getCronJobOutputs).mockRejectedValue(new Error('profile backend unavailable'))
+    $cronFocus.set(focusTarget)
+
+    render(<CronJobRuns c={TRANSLATIONS.en.cron} jobId="report-job" profile="worker_alpha" />)
+
+    expect(await screen.findByText(TRANSLATIONS.en.cron.failedLoad)).toBeTruthy()
+    expect($cronFocus.get()).toEqual(focusTarget)
+    expect(screen.queryByRole('status')).toBeNull()
+  })
 })

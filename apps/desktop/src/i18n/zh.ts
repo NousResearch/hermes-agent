@@ -2107,6 +2107,7 @@ export const zh: Translations = {
     last: '上次：',
     next: '下次：',
     noRuns: '尚无运行',
+    outputUnavailable: outputId => `运行输出“${outputId}.md”已不可用。`,
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',

@@ -9,7 +9,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
-import { type CronJobOutput, deleteCronJob, getCronJobOutputs, pauseCronJob, resumeCronJob } from '@/hermes'
+import { deleteCronJob, getCronJobOutputs, getCronJobRuns, pauseCronJob, resumeCronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -17,6 +17,7 @@ import { confirm } from '@/store/confirm'
 import { updateCronJobs } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
+import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
@@ -65,12 +66,20 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
 }
 
+interface CronSidebarRun {
+  createdAt?: null | number
+  id: string
+  kind: 'output' | 'session'
+}
+
 interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
   max?: number
-  // Open the full Cron page focused on this durable output.
-  onOpenRun: (jobId: string, outputId: string, profile?: string) => void
+  // Open a durable no-agent output in the full Cron page.
+  onOpenOutput: (jobId: string, outputId: string, profile?: string) => void
+  // Agent-backed jobs retain their real conversation-session navigation.
+  onOpenSession: (sessionId: string) => void
   // Open the full Cron page focused on this job (manage / full history).
   onManageJob: (jobId: string) => void
   // Fire the job now.
@@ -84,7 +93,8 @@ export function SidebarCronJobsSection({
   label,
   max = 50,
   onManageJob,
-  onOpenRun,
+  onOpenOutput,
+  onOpenSession,
   onTriggerJob,
   onToggle,
   open
@@ -200,7 +210,8 @@ export function SidebarCronJobsSection({
               key={job.id}
               nowMs={nowMs}
               onManage={() => onManageJob(job.id)}
-              onOpenRun={onOpenRun}
+              onOpenOutput={onOpenOutput}
+              onOpenSession={onOpenSession}
               onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
               onTrigger={() => triggerJob(job.id)}
             />
@@ -223,7 +234,8 @@ function CronJobSidebarRow({
   job,
   nowMs,
   onManage,
-  onOpenRun,
+  onOpenOutput,
+  onOpenSession,
   onTogglePeek,
   onTrigger
 }: {
@@ -232,7 +244,8 @@ function CronJobSidebarRow({
   job: CronJob
   nowMs: number
   onManage: () => void
-  onOpenRun: (jobId: string, outputId: string, profile?: string) => void
+  onOpenOutput: (jobId: string, outputId: string, profile?: string) => void
+  onOpenSession: (sessionId: string) => void
   onTogglePeek: () => void
   onTrigger: () => void
 }) {
@@ -376,26 +389,39 @@ function CronJobSidebarRow({
           </Tip>
         </SidebarRowShell>
       </ActionsContextMenu>
-      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} profile={job.profile} />}
+      {expanded && (
+        <CronJobSidebarRuns
+          jobId={job.id}
+          noAgent={Boolean(job.no_agent)}
+          onOpenOutput={onOpenOutput}
+          onOpenSession={onOpenSession}
+          profile={job.profile}
+        />
+      )}
     </div>
   )
 }
 
 export function CronJobSidebarRuns({
   jobId,
-  onOpenRun,
+  noAgent,
+  onOpenOutput,
+  onOpenSession,
   profile
 }: {
   jobId: string
-  onOpenRun: (jobId: string, outputId: string, profile?: string) => void
+  noAgent: boolean
+  onOpenOutput: (jobId: string, outputId: string, profile?: string) => void
+  onOpenSession: (sessionId: string) => void
   profile?: string
 }) {
   const { t } = useI18n()
   const c = t.cron
 
+  const selectedSessionId = useStore($selectedStoredSessionId)
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
-  const [runs, setRuns] = useState<null | CronJobOutput[]>(null)
+  const [runs, setRuns] = useState<null | CronSidebarRun[]>(null)
   const [runsError, setRunsError] = useState(false)
   const visible = usePaneVisible()
 
@@ -406,7 +432,24 @@ export function CronJobSidebarRuns({
     const load = () => {
       const requestId = ++latestRequestId
 
-      return getCronJobOutputs(jobId, PEEK_RUN_LIMIT, profile)
+      const loadOutputs = (): Promise<CronSidebarRun[]> =>
+        getCronJobOutputs(jobId, PEEK_RUN_LIMIT, profile).then(outputs =>
+          outputs.map(output => ({ createdAt: output.created_at, id: output.id, kind: 'output' }))
+        )
+
+      const request = noAgent
+        ? loadOutputs()
+        : getCronJobRuns(jobId, PEEK_RUN_LIMIT).then<CronSidebarRun[]>(sessions =>
+            sessions.length > 0
+              ? sessions.map(session => ({
+                  createdAt: session.last_active || session.started_at,
+                  id: session.id,
+                  kind: 'session'
+                }))
+              : loadOutputs()
+          )
+
+      return request
         .then(result => {
           if (!cancelled && requestId === latestRequestId) {
             setRunsError(false)
@@ -446,7 +489,7 @@ export function CronJobSidebarRuns({
       window.clearInterval(intervalId)
     }
     // cronChangeTick: a fired run reloads the peek immediately.
-  }, [changeEventsAvailable, cronChangeTick, jobId, profile, visible])
+  }, [changeEventsAvailable, cronChangeTick, jobId, noAgent, profile, visible])
 
   return (
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
@@ -462,12 +505,19 @@ export function CronJobSidebarRuns({
         <>
           {runs.map(run => (
             <button
-              className="truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] text-(--ui-text-secondary) tabular-nums hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className={cn(
+                'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                run.kind === 'session' && run.id === selectedSessionId
+                  ? 'bg-(--ui-row-active-background) text-foreground'
+                  : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+              )}
               key={run.id}
-              onClick={() => onOpenRun(jobId, run.id, profile)}
+              onClick={() =>
+                run.kind === 'output' ? onOpenOutput(jobId, run.id, profile) : onOpenSession(run.id)
+              }
               type="button"
             >
-              {formatRunTime(run.created_at)}
+              {formatRunTime(run.createdAt)}
             </button>
           ))}
         </>

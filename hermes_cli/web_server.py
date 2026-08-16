@@ -12855,7 +12855,12 @@ def _get_cron_job_output_sync(
     """Return one cron output document from its owning profile."""
     # Reject malformed ids before profile/job discovery so path-like input is
     # always a client error and never reaches filesystem construction.
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", str(output_id or "")):
+    output_id = str(output_id or "")
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", output_id):
+            raise ValueError
+        datetime.strptime(output_id, "%Y-%m-%d_%H-%M-%S")
+    except ValueError:
         raise HTTPException(status_code=400, detail="Invalid cron output id")
 
     selected = profile or _find_cron_job_profile(job_id)

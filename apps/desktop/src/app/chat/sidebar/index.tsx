@@ -1877,7 +1877,8 @@ export function ChatSidebar({
                 jobs={cronJobs}
                 label={s.cronJobs}
                 onManageJob={onManageCronJob}
-                onOpenRun={onOpenCronRun}
+                onOpenOutput={onOpenCronRun}
+                onOpenSession={onResumeSession}
                 onToggle={() => setSidebarCronOpen(!cronOpen)}
                 onTriggerJob={onTriggerCronJob}
                 open={cronOpen}

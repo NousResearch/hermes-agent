@@ -875,6 +875,7 @@ export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jo
   const [output, setOutput] = useState<null | string>(null)
   const [outputError, setOutputError] = useState(false)
   const [outputLoading, setOutputLoading] = useState(false)
+  const [focusUnavailable, setFocusUnavailable] = useState<null | string>(null)
   const outputRequestRef = useRef(0)
   const focusTarget = useStore($cronFocus)
   const changeEventsAvailable = useStore($changeEventsAvailable)
@@ -884,6 +885,7 @@ export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jo
     async (outputId: string) => {
       const requestId = ++outputRequestRef.current
 
+      setFocusUnavailable(null)
       setSelectedOutputId(outputId)
       setOutput(null)
       setOutputError(false)
@@ -960,6 +962,7 @@ export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jo
   useEffect(() => {
     if (
       runs === null ||
+      runsError ||
       focusTarget?.jobId !== jobId ||
       (focusTarget.profile && focusTarget.profile !== profile) ||
       !focusTarget.outputId
@@ -969,10 +972,17 @@ export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jo
 
     if (runs.some(run => run.id === focusTarget.outputId)) {
       void openOutput(focusTarget.outputId)
+    } else {
+      ++outputRequestRef.current
+      setSelectedOutputId(null)
+      setOutput(null)
+      setOutputError(false)
+      setOutputLoading(false)
+      setFocusUnavailable(focusTarget.outputId)
     }
 
     setCronFocusJobId(null)
-  }, [focusTarget, jobId, openOutput, profile, runs])
+  }, [focusTarget, jobId, openOutput, profile, runs, runsError])
 
   return (
     <div>
@@ -1009,6 +1019,11 @@ export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jo
           ))}
         </div>
       )}
+      {focusUnavailable ? (
+        <p className="mt-2 text-xs text-muted-foreground" role="status">
+          {c.outputUnavailable(focusUnavailable)}
+        </p>
+      ) : null}
       {selectedOutputId ? (
         <div className="mt-3 min-h-16 rounded-md border border-(--ui-stroke-tertiary) bg-background p-3">
           {outputLoading ? (

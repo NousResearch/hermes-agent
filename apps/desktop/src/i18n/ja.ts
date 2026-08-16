@@ -1632,6 +1632,7 @@ export const ja = defineLocale({
     last: '前回',
     next: '次回',
     noRuns: 'まだ実行されていません',
+    outputUnavailable: outputId => `実行出力「${outputId}.md」は利用できなくなりました。`,
     manage: '管理',
     showRuns: '実行履歴を表示',
     hideRuns: '実行履歴を隠す',

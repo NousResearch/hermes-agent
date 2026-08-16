@@ -5,6 +5,10 @@
   "version": "0.17.0",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NousResearch/hermes-agent.git"
+  },
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {

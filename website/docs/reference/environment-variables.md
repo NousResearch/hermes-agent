@@ -329,7 +329,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT` | HTTP write timeout in seconds (default: `20.0`). File uploads use a separate 60s media-write budget. |
 | `HERMES_TELEGRAM_INIT_TIMEOUT` | Seconds to wait for `getMe`/webhook bootstrap before declaring startup failure (default: `30.0`). Lower it to fail fast on misconfigured networks. |
 | `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS` | When `true`, do not fall back to hardcoded Telegram API IP ranges if DNS resolution fails (default: `false`). |
-| `TELEGRAM_ALLOW_BOTS` | Allow messages from other bots to be processed (default: `false`). Equivalent to `telegram.allow_bots`. |
+| `TELEGRAM_ALLOW_BOTS` | Allow messages from other bots to be processed (`none` = reject all bot messages, `mentions` = allow only when the bot is @mentioned, `all` = allow all bot messages; default: `none`). Equivalent to `telegram.allow_bots`. |
 | `TELEGRAM_GUEST_MODE` | Guest mode: read group messages without being a member, where Telegram permits (default: `false`). Equivalent to `telegram.guest_mode`. |
 | `TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | Passively observe unmentioned group messages into shared session context (default: `false`). Equivalent to `telegram.observe_unmentioned_group_messages`. |
 | `TELEGRAM_REACTIONS` | Enable emoji reactions on messages during processing (default: `false`) |

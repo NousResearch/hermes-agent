@@ -51,15 +51,33 @@ interface NodeSpec {
 
 const buildMutationTree = (spec: NodeSpec) => {
   const all: Node[] = []
+
   const makeNode = (value: NodeSpec): Node => {
     const node = Yoga.Node.create()
 
-    if (value.w !== undefined) node.setWidth(value.w)
-    if (value.h !== undefined) node.setHeight(value.h)
-    if (value.pad !== undefined) node.setPadding(1, value.pad)
-    if (value.mar !== undefined) node.setMargin(1, value.mar)
-    if (value.row) node.setFlexDirection(FlexDirection.Row)
-    if (value.grow !== undefined) node.setFlexGrow(value.grow)
+    if (value.w !== undefined) {
+      node.setWidth(value.w)
+    }
+
+    if (value.h !== undefined) {
+      node.setHeight(value.h)
+    }
+
+    if (value.pad !== undefined) {
+      node.setPadding(1, value.pad)
+    }
+
+    if (value.mar !== undefined) {
+      node.setMargin(1, value.mar)
+    }
+
+    if (value.row) {
+      node.setFlexDirection(FlexDirection.Row)
+    }
+
+    if (value.grow !== undefined) {
+      node.setFlexGrow(value.grow)
+    }
 
     all.push(node)
     value.kids.forEach((child, index) => node.insertChild(makeNode(child), index))
@@ -255,6 +273,7 @@ describe('incremental layout rounding', () => {
         }
       ]
     }
+
     const mutations = [
       { index: 10, kind: 'height', value: 2.823024 },
       { index: 6, kind: 'margin', value: 0.858021 },
@@ -267,14 +286,21 @@ describe('incremental layout rounding', () => {
       { index: 1, kind: 'height', value: 2.709275 },
       { index: 1, kind: 'margin', value: 2.411063 }
     ] as const
+
     const applyMutation = (all: Node[], mutation: (typeof mutations)[number]) => {
       const node = all[mutation.index]!
 
-      if (mutation.kind === 'width') node.setWidth(mutation.value)
-      else if (mutation.kind === 'height') node.setHeight(mutation.value)
-      else if (mutation.kind === 'margin') node.setMargin(1, mutation.value)
-      else node.setFlexGrow(mutation.value)
+      if (mutation.kind === 'width') {
+        node.setWidth(mutation.value)
+      } else if (mutation.kind === 'height') {
+        node.setHeight(mutation.value)
+      } else if (mutation.kind === 'margin') {
+        node.setMargin(1, mutation.value)
+      } else {
+        node.setFlexGrow(mutation.value)
+      }
     }
+
     const incremental = buildMutationTree(spec)
     incremental.root.calculateLayout(96, 5)
 

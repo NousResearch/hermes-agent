@@ -1244,10 +1244,10 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
 # progressively extended forward across single spaces — bounded, stopping at newline / the next ``MEDIA:``
 # keyword — and the first extension that validates on disk wins.
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
-    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''[`"'*_]{0,3}''' + _MEDIA_TAG_KEYWORD + r'''\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
-    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
+    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|''' + _MEDIA_TAG_KEYWORD + r'''|$)'''
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE)
 
@@ -1271,9 +1271,8 @@ def _match_extensionless_path(scan_text: str, match: re.Match) -> Optional[tuple
         return safe, match.end("path")
     start = match.start("path")
     segment = scan_text[start:].split("\n", 1)[0]
-    nxt = segment.find("MEDIA:", 1)
-    if nxt != -1:
-        segment = segment[:nxt]
+    if nxt := _MEDIA_TAG_KEYWORD_RE.search(segment, 1):
+        segment = segment[:nxt.start()]
     pos = match.end("path") - start
     for _ in range(8):
         token = re.match(r"[ \t]*[^ \t]+", segment[pos:])

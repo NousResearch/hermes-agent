@@ -4282,7 +4282,7 @@ class BasePlatformAdapter(ABC):
             that override this should render inline buttons (one per choice
             plus a final "Other" / free-text option).  Button callbacks
             MUST resolve via
-            ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``
+            ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response, session_key=...)``
             with the chosen string.  Picking the "Other" button calls
             ``mark_awaiting_text(clarify_id)`` so the next message in the
             session is captured as the response.

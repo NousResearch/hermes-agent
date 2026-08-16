@@ -147,7 +147,9 @@ async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
         "Pick a UI variant",
         ["buttons", "dropdown"],
     )
-    assert cm.resolve_gateway_clarify("cl-button-race", "buttons") is True
+    assert cm.resolve_gateway_clarify(
+        "cl-button-race", "buttons", session_key=SESSION_KEY
+    ) is True
 
     with pytest.raises(_FellThroughIntercept):
         await _dispatch(runner, _event("one more unrelated thought"))

@@ -3010,7 +3010,7 @@ class RelayAdapter(BasePlatformAdapter):
                     except ValueError:
                         idx = -1
                     if 0 <= idx < len(choices):
-                        resolve_gateway_clarify(clarify_id, str(choices[idx]))
+                        resolve_gateway_clarify(clarify_id, str(choices[idx]), session_key=session_key)
                         self._send_lifecycle_ack(
                             chat_id,
                             f"✅ {choices[idx]}",

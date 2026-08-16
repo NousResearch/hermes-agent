@@ -1782,7 +1782,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # persist that. Fall back to passing the index; the agent
             # has the prompt in context and can interpret it.
             response_text = str(inner.get("title") or str(idx + 1))
-            resolved = resolve_gateway_clarify(clarify_id, response_text)
+            resolved = resolve_gateway_clarify(clarify_id, response_text, session_key=session_key)
             if not resolved:
                 # Resolver couldn't find a waiter (e.g. agent already
                 # timed out). Fall through to text dispatch.

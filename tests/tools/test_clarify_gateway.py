@@ -36,7 +36,7 @@ class TestClarifyPrimitive:
 
         def resolver():
             time.sleep(0.05)
-            cm.resolve_gateway_clarify("id1", "B")
+            cm.resolve_gateway_clarify("id1", "B", session_key="sk1")
 
         threading.Thread(target=resolver).start()
         result = cm.wait_for_response("id1", timeout=10.0)
@@ -48,9 +48,21 @@ class TestClarifyPrimitive:
 
         entry = cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
 
-        assert cm.resolve_gateway_clarify("id-race", "A") is True
-        assert cm.resolve_gateway_clarify("id-race", "") is False
+        assert cm.resolve_gateway_clarify("id-race", "A", session_key="sk-race") is True
+        assert cm.resolve_gateway_clarify("id-race", "", session_key="sk-race") is False
         assert entry.response == "A"
+
+    def test_resolve_requires_matching_session_key(self):
+        """Foreign or missing session_key must not resolve another session's clarify (#87780)."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("cid-B", "sB", "Pick", ["A", "B"])
+        assert cm.resolve_gateway_clarify("cid-B", "FORGED") is False
+        assert cm.resolve_gateway_clarify("cid-B", "FORGED", session_key="sA") is False
+        assert entry.response is None
+        assert entry.event.is_set() is False
+        assert cm.resolve_gateway_clarify("cid-B", "OK", session_key="sB") is True
+        assert entry.response == "OK"
 
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
@@ -121,7 +133,7 @@ class TestClarifyPrimitive:
             fut = pool.submit(waiter)
             time.sleep(0.05)
             # Button wins the race first...
-            assert cm.resolve_gateway_clarify("id-race", "B") is True
+            assert cm.resolve_gateway_clarify("id-race", "B", session_key="sk-race") is True
             # ...then session cleanup runs before the waiter wakes.
             cancelled = cm.clear_session("sk-race")
             assert cancelled == 0
@@ -307,7 +319,7 @@ class TestUnlimitedWait:
         assert t.is_alive()
 
         # Once resolved, the unlimited wait returns the real answer.
-        cm.resolve_gateway_clarify("u1", "B")
+        cm.resolve_gateway_clarify("u1", "B", session_key="sk")
         t.join(timeout=5.0)
         assert not t.is_alive()
         assert result_box["r"] == "B"

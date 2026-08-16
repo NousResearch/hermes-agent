@@ -112,6 +112,20 @@ class TestFleetRestartTimeoutIsolation:
 
         assert seen == ["hermes-serve", "hermes-serve-work", "hermes-gateway"]
 
+    def test_hermes_server_near_prefix_is_rejected(self):
+        # Review on #83595: a bare ``startswith("hermes-serve")`` gate also
+        # accepts the unrelated ``hermes-server.service``. Only the exact
+        # base unit or the hyphenated profile family should pass.
+        seen: list[str] = []
+
+        _for_each_systemd_gateway_unit(
+            _list_units_stdout(["hermes-server"]),
+            process_unit=seen.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+        )
+
+        assert seen == []
+
 
 class TestGracefulSigusr1Eligibility:
     def test_gateway_units_are_eligible(self):

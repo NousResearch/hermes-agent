@@ -296,6 +296,7 @@ def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
     *,
     restart_managed: bool = False,
+    already_restarted_units: "set[str] | None" = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes.
 
@@ -319,6 +320,14 @@ def _kill_stale_dashboard_processes(
     e.g. a remote backend's ``hermes-serve.service``) has its owning unit
     restarted after the kill, because systemd treats our SIGTERM as a clean
     stop and ``Restart=on-failure`` would never fire (#68934).
+
+    *already_restarted_units* names units (no ``.service`` suffix) the
+    caller already restarted directly — e.g. ``hermes update``'s systemd
+    fleet-restart loop, which restarts ``hermes-serve*`` units before this
+    function runs. Without excluding them, a Serve-only install's freshly
+    restarted process is found again here and restarted a second time for
+    no benefit (review on #83595). PIDs owned by one of these units are
+    left untouched.
     """
     if restart_managed and _m()._restart_managed_dashboard_service(reason):
         return {"matched": [], "killed": [], "failed": []}
@@ -347,9 +356,6 @@ def _kill_stale_dashboard_processes(
     if not pids:
         return {"matched": [], "killed": [], "failed": []}
 
-    print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
-
     # Before killing, snapshot systemd cgroup info for each PID so we can
     # restart supervised services after the kill (the cgroup disappears
     # along with the process).  Only meaningful on Linux, and only when the
@@ -373,6 +379,22 @@ def _kill_stale_dashboard_processes(
                 if cmdline:
                     pid_cmdline[pid] = cmdline
                     pid_home[pid] = _hermes_home_for_pid(pid)
+
+        if already_restarted_units:
+            # Already handled directly by the caller (e.g. hermes update's
+            # systemd fleet-restart loop) — leave these alone instead of
+            # killing and re-restarting a process that's already fresh.
+            pids = [
+                pid
+                for pid in pids
+                if (pid_service.get(pid) or "").removesuffix(".service")
+                not in already_restarted_units
+            ]
+            if not pids:
+                return {"matched": [], "killed": [], "failed": []}
+
+    print()
+    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []

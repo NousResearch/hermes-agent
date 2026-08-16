@@ -338,6 +338,30 @@ class TestSupervisedBackendRestart:
         # Supervised restart succeeded — no manual hint.
         assert "when you're ready" not in out
 
+    def test_already_restarted_unit_is_left_untouched(self):
+        """Review on #83595: hermes update's systemd fleet-restart loop may
+        already have restarted this PID's owning unit directly (e.g. a
+        Serve-only install). Passing it via already_restarted_units must
+        skip killing/restarting it again here."""
+        live = self._live()
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_get_pid_cgroup_path",
+                          return_value="/system.slice/hermes-serve.service"), \
+             patch.object(live, "_get_systemd_service_for_pid",
+                          return_value="hermes-serve.service"), \
+             patch.object(live, "_try_restart_systemd_service") as restart, \
+             patch("os.kill") as kill, \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True, already_restarted_units={"hermes-serve"}
+            )
+
+        kill.assert_not_called()
+        restart.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
+
 
 class TestManualBackendRespawn:
     """Manually-started dashboards/serves have their argv captured before the

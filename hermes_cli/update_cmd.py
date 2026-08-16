@@ -669,8 +669,16 @@ def _reload_process_scan_modules() -> None:
                 )
 
 
-def _finish_dashboard_update_cleanup(node_failures: list[str]) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update."""
+def _finish_dashboard_update_cleanup(
+    node_failures: list[str], already_restarted_units: "set[str] | None" = None
+) -> None:
+    """Refresh managed dashboards or stop stale manual ones after an update.
+
+    *already_restarted_units* forwards the systemd unit names (no
+    ``.service`` suffix) that the fleet-restart loop already restarted
+    directly, so a Serve-only install's freshly restarted process isn't
+    found and restarted a second time here (review on #83595).
+    """
     if node_failures:
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
@@ -681,7 +689,9 @@ def _finish_dashboard_update_cleanup(node_failures: list[str]) -> None:
     # both modules reflect the freshly-updated source before touching them.
     _reload_process_scan_modules()
 
-    stop_result = _m()._kill_stale_dashboard_processes(restart_managed=True)
+    stop_result = _m()._kill_stale_dashboard_processes(
+        restart_managed=True, already_restarted_units=already_restarted_units
+    )
     if not stop_result.get("unrecovered"):
         return
 
@@ -3883,7 +3893,14 @@ def _for_each_systemd_gateway_unit(
             continue
         # list-units is already pattern-filtered, but keep the name gate so a
         # stray non-gateway/serve line cannot enter the restart path.
-        if not (unit.startswith("hermes-gateway") or unit.startswith("hermes-serve")):
+        # ``unit.startswith("hermes-serve")`` alone would also accept the
+        # unrelated ``hermes-server.service`` — require the exact base unit
+        # or the hyphenated profile family instead (review on #83595).
+        if not (
+            unit.startswith("hermes-gateway")
+            or unit == "hermes-serve.service"
+            or unit.startswith("hermes-serve-")
+        ):
             continue
         svc_name = unit.removesuffix(".service")
         try:
@@ -5679,6 +5696,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # discovered gateway lets the handler fail closed on an empty survivor
         # probe rather than reporting a clean update (#78574).
         _pre_restart_gateway_pids: list | None = []
+        # Declared outside the restart try/except below (and never reset
+        # to None) so it's always safe to read afterwards even if that
+        # block raises before reaching its own restart bookkeeping —
+        # needed to forward already-restarted units to
+        # ``_finish_dashboard_update_cleanup`` (review on #83595).
+        restarted_services: list = []
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -5852,7 +5875,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except Exception:
                 _drain_budget = 45.0
 
-            restarted_services = []
             failed_or_stale_units = []
             killed_pids = set()
             relaunched_profiles = []
@@ -6466,7 +6488,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
         # Preserve the safety rule above: a failed Node refresh leaves the
         # currently running dashboard untouched.
-        _finish_dashboard_update_cleanup(node_failures)
+        #
+        # Forward the systemd units restarted above (includes hermes-serve*,
+        # #83438) so a Serve-only install's freshly restarted process isn't
+        # found and restarted again below (review on #83595).
+        _finish_dashboard_update_cleanup(
+            node_failures, already_restarted_units=set(restarted_services)
+        )
 
         print()
         print("Tip: You can now select a provider and model:")

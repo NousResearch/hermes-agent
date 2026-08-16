@@ -1689,6 +1689,7 @@ class TestMatrixSyncLoop:
         adapter._require_mention = True
         adapter._text_batch_delay_seconds = 0
         adapter._background_read_receipt = MagicMock()
+        adapter._allowed_user_ids = {"@alice:example.org"}
 
         captured = []
 
@@ -1704,7 +1705,22 @@ class TestMatrixSyncLoop:
             sync_count += 1
             if sync_count == 1:
                 return {
-                    "rooms": {"invite": {"!room:example.org": {}}},
+                    "rooms": {
+                        "invite": {
+                            "!room:example.org": {
+                                "invite_state": {
+                                    "events": [
+                                        {
+                                            "type": "m.room.member",
+                                            "state_key": "@bot:example.org",
+                                            "sender": "@alice:example.org",
+                                            "content": {"membership": "invite"},
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
                     "next_batch": "s1",
                 }
             adapter._closing = True

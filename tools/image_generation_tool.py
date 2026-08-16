@@ -662,6 +662,40 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "xai/grok-imagine-image/v2.0/text-to-image": {
+        "display": "Grok Imagine Image 2.0",
+        "speed": "~5s",
+        "strengths": "xAI. Design-grade typography/layout, instruction following",
+        "price": "$0.06/image (1K medium)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            # 1k + medium is the cheapest sensible tier ($0.06/image);
+            # 2k roughly +33% per image.
+            "resolution": "1k",
+            "quality": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "resolution", "quality", "sync_mode",
+        },
+        "upscale": True,   # 1k native is sub-2MP
+        # Edit endpoint takes `image_urls` (max 3) + the same knobs;
+        # aspect_ratio defaults to "auto" (follows the first input image),
+        # so we don't send it on edits.
+        "edit_endpoint": "xai/grok-imagine-image/v2.0/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "num_images", "output_format",
+            "resolution", "quality", "sync_mode",
+        },
+        "max_reference_images": 3,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.

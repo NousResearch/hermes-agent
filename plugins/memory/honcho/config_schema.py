@@ -121,5 +121,14 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # — Observation —
         _field("observationMode", "Observation mode", KIND_SELECT, "Per-peer observation preset. Directional observes all directions; unified shares one view.",
                default="directional", options=_opts(("directional", "Directional"), ("unified", "Unified")), group="Observation"),
+        _field(
+            "observationOptOutPhrases",
+            "Observation opt-out phrases",
+            KIND_JSON,
+            "User-message substrings (case-insensitive) that mark a turn no_observe: "
+            "still stored/searchable, excluded from Honcho's reasoning pipeline (no representation/conclusion updates).",
+            placeholder='["don\'t remember this", "off the record"]',
+            group="Observation",
+        ),
     ),
 )

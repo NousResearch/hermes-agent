@@ -17,6 +17,8 @@ Delegate coding tasks to [Codex](https://github.com/openai/codex) via the Hermes
 
 ## When to use
 
+- **Shell hygiene (Windows):** Hermes drives Codex through the bundled Git Bash (POSIX), *not* cmd.exe. Always use POSIX null redirection (`2>/dev/null`, `>/dev/null`). Never emit `2>nul` / `>nul` — bash treats `nul` as a real filename (a Windows reserved name, e.g. `NUL, CON, PRN, AUX, COM1-9, LPT1-9`) and creates debris that breaks backups. cmd.exe syntax (`>nul`, `2>nul`) is valid only inside a confirmed `.bat`/cmd.exe script.
+
 - Building features
 - Refactoring
 - PR reviews

@@ -17,6 +17,8 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 
 ## Prerequisites
 
+- **Shell hygiene (Windows):** Hermes drives Claude Code through the bundled Git Bash (POSIX), *not* cmd.exe. Always use POSIX null redirection (`2>/dev/null`, `>/dev/null`). Never emit `2>nul` / `>nul` — bash treats `nul` as a real filename (a Windows reserved name, e.g. `NUL, CON, PRN, AUX, COM1-9, LPT1-9`) and creates debris that breaks backups. cmd.exe syntax (`>nul`, `2>nul`) is valid only inside a confirmed `.bat`/cmd.exe script.
+
 - **Install:** `npm install -g @anthropic-ai/claude-code`
 - **Auth:** run `claude` once to log in (browser OAuth for Pro/Max, or set `ANTHROPIC_API_KEY`)
 - **Console auth:** `claude auth login --console` for API key billing

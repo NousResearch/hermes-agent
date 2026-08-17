@@ -17,6 +17,8 @@ Use [OpenCode](https://opencode.ai) as an autonomous coding worker orchestrated 
 
 ## When to Use
 
+- **Shell hygiene (Windows):** Hermes drives OpenCode through the bundled Git Bash (POSIX), *not* cmd.exe. Always use POSIX null redirection (`2>/dev/null`, `>/dev/null`). Never emit `2>nul` / `>nul` — bash treats `nul` as a real filename (a Windows reserved name, e.g. `NUL, CON, PRN, AUX, COM1-9, LPT1-9`) and creates debris that breaks backups. cmd.exe syntax (`>nul`, `2>nul`) is valid only inside a confirmed `.bat`/cmd.exe script.
+
 - User explicitly asks to use OpenCode
 - You want an external coding agent to implement/refactor/review code
 - You need long-running coding sessions with progress checks

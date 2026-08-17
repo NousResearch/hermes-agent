@@ -56,3 +56,27 @@ POSIX-newline files to CRLF.
 every Hermes tool and most Windows APIs. Prefer forward slashes in code
 and logs — avoids shell-escaping backslashes in bash.
 
+### Shell redirection & Windows reserved names
+
+Hermes runs shell commands through the bundled **git-bash / MSYS** (POSIX)
+shell on native Windows — NOT cmd.exe. Null-device redirection is
+**not portable between shells**:
+
+| Shell | Correct null redirection |
+|-------|--------------------------|
+| bash / git-bash / MSYS / POSIX | `>/dev/null`, `2>/dev/null` |
+| cmd.exe (only inside `.bat`/cmd) | `>nul`, `2>nul` |
+| PowerShell | `>$null`, `2>$null` |
+
+**Never emit `2>nul`, `>nul`, or `1>nul` from an agent when running under
+bash/git-bash/MSYS.** Bash parses `nul` as an ordinary relative filename and
+writes a real file literally named `nul` — a Windows reserved device name.
+That debris has broken unattended backups (CopyFileEx →
+`ERROR_INVALID_PARAMETER` → modal hang → blocked system suspend). Use
+`2>/dev/null` instead. cmd.exe syntax is valid *only* when you are certain
+the command executes under cmd.exe; never copy it blindly between shells.
+
+Never intentionally create files or directories named Windows reserved
+device names: **NUL, CON, PRN, AUX, COM1–COM9, LPT1–LPT9** — they are
+uncreatable/undeletable through normal filesystem APIs and break tools.
+

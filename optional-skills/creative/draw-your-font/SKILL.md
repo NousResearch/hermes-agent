@@ -1,6 +1,6 @@
 ---
 name: draw-your-font
-description: "Turn a photo of handwriting into an installable font (TTF/WOFF)."
+description: "Turn a handwriting photo into an installable TTF font."
 version: 0.1.0
 author: Danilo Znamerovszkij (https://github.com/danilo-znamerovszkij/draw-your-font), ported by Hermes Agent
 license: MIT

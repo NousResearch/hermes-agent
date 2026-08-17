@@ -110,6 +110,75 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    def test_make_agent_forwards_isolation_env(self, monkeypatch):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "acp_adapter.session.load_config",
+            lambda: {"model": {"default": "fake-model"}, "mcp_servers": {}},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"default": "fake-model"}, "mcp_servers": {}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "codex_app_server",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.kwargs["skip_context_files"] is True
+        assert state.agent.kwargs["skip_memory"] is True
+
+    def test_make_agent_defaults_isolation_off(self, monkeypatch):
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "acp_adapter.session.load_config",
+            lambda: {"model": {"default": "fake-model"}, "mcp_servers": {}},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"default": "fake-model"}, "mcp_servers": {}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "codex_app_server",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.kwargs["skip_context_files"] is False
+        assert state.agent.kwargs["skip_memory"] is False
+
 
 
 

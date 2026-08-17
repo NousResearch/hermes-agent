@@ -2,15 +2,20 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { ProfileGlyph } from '@/components/ui/profile-glyph'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tip } from '@/components/ui/tooltip'
+import { Codicon } from '@/components/ui/codicon'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import type { DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Loader2 } from '@/lib/icons'
-import { profileColor } from '@/lib/profile-color'
-import { cn } from '@/lib/utils'
+import { Cloud, Loader2, Monitor, Network, Terminal } from '@/lib/icons'
 import {
   $activeConnectionId,
   $connectionsRegistry,
@@ -20,12 +25,7 @@ import {
 } from '@/store/connections'
 import { notifyError } from '@/store/notifications'
 
-// Direct glyphs are faster for the common local + a few remote machines. At
-// larger fleet sizes, one stable-width select prevents sources from crowding
-// profiles and the create/manage actions out of the sidebar foot.
-const CONNECTION_DROPDOWN_THRESHOLD = 5
-
-export function ConnectionSwitcher() {
+export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
@@ -49,6 +49,8 @@ export function ConnectionSwitcher() {
     return null
   }
 
+  const activeConnection = connections.find(connection => connection.id === activeConnectionId)
+
   const choose = (connectionId: string) => {
     triggerHaptic('selection')
     const connection = connections.find(candidate => candidate.id === connectionId)
@@ -58,108 +60,84 @@ export function ConnectionSwitcher() {
     )
   }
 
-  if (connections.length > CONNECTION_DROPDOWN_THRESHOLD) {
-    return (
-      <div
-        aria-busy={pendingConnectionId !== null}
-        aria-label={t.settings.connections.title}
-        className="min-w-0 shrink"
-        role="group"
-      >
-        <Select onValueChange={choose} value={activeConnectionId ?? ''}>
-          <SelectTrigger aria-label={t.settings.connections.title} className="w-28 max-w-full" size="xs">
-            <span className="flex min-w-0 items-center gap-1.5">
-              {pendingConnectionId && <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin" />}
-              <SelectValue placeholder={t.settings.connections.title} />
-            </span>
-          </SelectTrigger>
-          <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
-            {connections.map(connection => (
-              <SelectItem key={connection.id} value={connection.id}>
-                <ConnectionLabel connection={connection} />
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    )
-  }
-
   return (
     <div
+      aria-busy={pendingConnectionId !== null}
       aria-label={t.settings.connections.title}
-      className="flex shrink-0 items-center gap-1"
+      className="min-w-20 max-w-[46%] shrink overflow-hidden"
       data-slot="connection-switcher"
       role="group"
     >
-      {connections.map(connection => (
-        <ConnectionButton
-          active={connection.id === activeConnectionId}
-          connection={connection}
-          key={connection.id}
-          onSelect={() => choose(connection.id)}
-          pending={connection.id === pendingConnectionId}
-        />
-      ))}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label={
+              activeConnection
+                ? `${t.settings.connections.title}: ${activeConnection.label}`
+                : t.settings.connections.title
+            }
+            className="w-full min-w-0 justify-between overflow-hidden px-1 text-(--ui-text-secondary) data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground"
+            size="xs"
+            type="button"
+            variant="ghost"
+          >
+            <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+              {pendingConnectionId && <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin" />}
+              {activeConnection ? (
+                <ConnectionLabel connection={activeConnection} />
+              ) : (
+                <span className="truncate">{t.settings.connections.title}</span>
+              )}
+            </span>
+            <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-52 max-w-72" collisionPadding={8} side="top">
+          <DropdownMenuItem onSelect={onConnect}>
+            <span className="flex min-w-0 items-center gap-1.5 text-(--ui-text-secondary)">
+              <Codicon aria-hidden="true" name="plug" size="0.875rem" />
+              <span className="truncate">{t.profiles.connectGateway}</span>
+            </span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuRadioGroup onValueChange={choose} value={activeConnectionId ?? ''}>
+            {connections.map(connection => (
+              <DropdownMenuRadioItem className="min-w-0" key={connection.id} value={connection.id}>
+                <ConnectionLabel connection={connection} />
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }
 
-function ConnectionButton({
-  active,
-  connection,
-  onSelect,
-  pending
-}: {
-  active: boolean
-  connection: DesktopRegistryConnection
-  onSelect: () => void
-  pending: boolean
-}) {
-  const { t } = useI18n()
-  const label = t.profiles.switchToConnection(connection.label)
-
-  return (
-    <Tip label={label}>
-      <Button
-        aria-busy={pending}
-        aria-label={label}
-        aria-pressed={active}
-        className={cn(
-          'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
-          active && 'bg-(--ui-control-active-background) text-foreground'
-        )}
-        onClick={onSelect}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        {pending ? (
-          <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-        ) : (
-          <ConnectionGlyph connection={connection} />
-        )}
-      </Button>
-    </Tip>
-  )
-}
-
 function ConnectionGlyph({ connection }: { connection: DesktopRegistryConnection }) {
-  const local = connection.kind === 'local'
+  const Icon =
+    connection.kind === 'local'
+      ? Monitor
+      : connection.kind === 'cloud'
+        ? Cloud
+        : connection.kind === 'ssh'
+          ? Terminal
+          : Network
 
   return (
-    <ProfileGlyph
+    <span
       aria-hidden="true"
-      color={local ? null : profileColor(`connection:${connection.id}`)}
-      isDefault={local}
-      name={connection.label}
-    />
+      className="grid size-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)"
+      data-connection-kind={connection.kind}
+      data-slot="connection-glyph"
+    >
+      <Icon className="size-3" />
+    </span>
   )
 }
 
 function ConnectionLabel({ connection }: { connection: DesktopRegistryConnection }) {
   return (
-    <span className="flex min-w-0 items-center gap-1.5">
+    <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
       <ConnectionGlyph connection={connection} />
       <span className="truncate">{connection.label}</span>
     </span>

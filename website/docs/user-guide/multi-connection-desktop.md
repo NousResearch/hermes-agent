@@ -161,13 +161,18 @@ that live on one source.
 
 - With one registered source, no source control is added. Local-only Desktop
   keeps the same profile rail and keyboard flow as before.
-- With up to five sources, the sidebar shows direct source glyphs: a home for
-  **This device**, then stable initials for named sources. Larger registries
-  collapse into one source menu so profiles and actions are not crowded out.
+- With several sources, the sidebar shows one named source selector. Its device,
+  cloud, network, or terminal icon identifies the connection type; profile
+  avatars remain a separate control after the divider. The same selector scales
+  from two sources to a larger fleet without turning backends into profile-like
+  glyphs or crowding profile actions out of the rail.
 - Selecting a source restores the last profile used there. The profile rail
   then shows only that source's profiles; the home pill returns to its default
   profile and the layers pill shows **All profiles on this source**.
   **Cmd/Ctrl+1–9** continue to switch profiles within the active source.
+- With more than thirteen profiles on the active source, their avatar strip
+  condenses into a named profile selector. Large source and profile sets can
+  therefore coexist without changing the **source → profile → sessions** model.
 - **This device** remains a first-class source even when a remote connection is
   Primary. It can keep local sessions available during a remote outage, but the
   app does not call it "offline mode": the selected model or tools may still

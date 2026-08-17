@@ -6,6 +6,11 @@ import type { DesktopConnectionsRegistry } from '@/global'
 
 import { ConnectionSwitcher } from './connection-switcher'
 
+// Radix menus use pointer capture; jsdom does not implement it.
+Element.prototype.hasPointerCapture ??= () => false
+Element.prototype.setPointerCapture ??= () => undefined
+Element.prototype.releasePointerCapture ??= () => undefined
+
 vi.mock('@/store/connections', () => ({
   $activeConnectionId: atom<null | string>('local'),
   $connectionsRegistry: atom<DesktopConnectionsRegistry | null>(null),
@@ -19,7 +24,8 @@ vi.mock('@/i18n', () => ({
     t: {
       profiles: {
         switchConnectionFailed: (name: string) => `Could not connect to ${name}`,
-        switchToConnection: (name: string) => `Switch to ${name}`
+        switchToConnection: (name: string) => `Switch to ${name}`,
+        connectGateway: 'Connect another Hermes gateway…'
       },
       settings: { connections: { title: 'Connections' } }
     }
@@ -31,6 +37,7 @@ const $activeConnectionId = connectionStore.$activeConnectionId as ReturnType<ty
 const $connectionsRegistry = connectionStore.$connectionsRegistry
 const $pendingConnectionId = connectionStore.$pendingConnectionId
 const selectConnection = vi.mocked(connectionStore.selectConnection)
+const onConnect = vi.fn()
 
 const connection = (id: string, label: string, kind: 'local' | 'remote' = 'remote') => ({
   id,
@@ -58,12 +65,12 @@ afterEach(() => {
 describe('ConnectionSwitcher', () => {
   it('adds no source chrome for a local-only setup', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local')]))
-    render(<ConnectionSwitcher />)
+    render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.queryByRole('group', { name: 'Connections' })).toBeNull()
   })
 
-  it('shows direct local and remote source controls for a small registry', () => {
+  it('shows a named source selector instead of profile-like gateway glyphs', () => {
     $connectionsRegistry.set(
       registry([
         connection('local', 'This device', 'local'),
@@ -71,33 +78,44 @@ describe('ConnectionSwitcher', () => {
         connection('work-vps', 'Work VPS')
       ])
     )
-    render(<ConnectionSwitcher />)
+    render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.getByRole('button', { name: 'Switch to This device' }).getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(screen.getByRole('button', { name: 'Switch to Homelab' }))
+    const trigger = screen.getByRole('button', { name: 'Connections: This device' })
+
+    expect(trigger.textContent).toContain('This device')
+    expect(trigger.getAttribute('data-variant')).toBe('ghost')
+    expect(trigger.querySelector('[data-connection-kind="local"] svg')).toBeTruthy()
+    expect(trigger.querySelector('.codicon-home')).toBeNull()
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Homelab' }))
     expect(selectConnection).toHaveBeenCalledWith('homelab')
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Connect another Hermes gateway…' }))
+    expect(onConnect).toHaveBeenCalledTimes(1)
+    expect(selectConnection).toHaveBeenCalledTimes(1)
   })
 
   it('keeps source controls stable while a remote is opening', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
     $pendingConnectionId.set('homelab')
-    render(<ConnectionSwitcher />)
+    render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.getByRole('button', { name: 'Switch to Homelab' }).getAttribute('aria-busy')).toBe('true')
-    expect(screen.getByRole('button', { name: 'Switch to This device' }).getAttribute('aria-busy')).toBe('false')
+    expect(screen.getByRole('group', { name: 'Connections' }).getAttribute('aria-busy')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Connections: This device' }).querySelector('.animate-spin')).toBeTruthy()
   })
 
-  it('collapses a larger registry into one compact source select', () => {
+  it.each([2, 20])('uses the same stable source selector for %i registered backends', count => {
     $connectionsRegistry.set(
       registry([
         connection('local', 'This device', 'local'),
-        ...Array.from({ length: 6 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
+        ...Array.from({ length: count - 1 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
       ])
     )
-    render(<ConnectionSwitcher />)
+    render(<ConnectionSwitcher onConnect={onConnect} />)
 
-    expect(screen.getByRole('combobox', { name: 'Connections' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Switch to Homelab' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Connections: This device' })).toBeTruthy()
   })
 
   it('announces a pending switch in the compact source menu', () => {
@@ -108,7 +126,7 @@ describe('ConnectionSwitcher', () => {
       ])
     )
     $pendingConnectionId.set('remote-3')
-    render(<ConnectionSwitcher />)
+    render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.getByRole('group', { name: 'Connections' }).getAttribute('aria-busy')).toBe('true')
   })

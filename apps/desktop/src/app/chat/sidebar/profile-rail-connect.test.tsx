@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProfileRail } from './profile-switcher'
 
-afterEach(cleanup)
-
 // The rail's discoverability pills are navigation, not identity — assert the
 // multi-gateway entry point deep-links to Settings → Connections instead of
 // relying on someone finding the pane three levels into Settings (the exact
@@ -84,6 +82,14 @@ vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: ()
 
 const { $hasMultipleConnections } = await import('@/store/connections')
 const hasMultipleConnections = $hasMultipleConnections as ReturnType<typeof atom<boolean>>
+const { $profiles } = await import('@/store/profile')
+const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
+
+afterEach(() => {
+  cleanup()
+  hasMultipleConnections.set(false)
+  profiles.set([{ is_default: true, name: 'default' }])
+})
 
 describe('ProfileRail multi-gateway entry point', () => {
   it('deep-links to the unified Settings → Gateways page from the rail', () => {
@@ -109,6 +115,39 @@ describe('ProfileRail multi-gateway entry point', () => {
     render(<ProfileRail />)
 
     expect(screen.queryByRole('button', { name: 'default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Connect another Hermes gateway…' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
+  })
+
+  it('keeps thirteen profiles direct and condenses the fourteenth', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 12 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
+    ])
+    const { unmount } = render(<ProfileRail />)
+
+    expect(screen.queryByRole('button', { name: 'Profiles' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Profile 12' })).toBeTruthy()
+    unmount()
+
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
+    ])
+    render(<ProfileRail />)
+
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
+  })
+
+  it('stays shrinkable when source and condensed profile controls coexist', () => {
+    hasMultipleConnections.set(true)
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 13 }, (_, index) => ({ is_default: false, name: `Profile ${index + 1}` }))
+    ])
+    render(<ProfileRail />)
+
+    expect(screen.getByRole('group', { name: 'Profiles' }).className).toContain('min-w-0')
+    expect(screen.getByRole('button', { name: 'Profiles' })).toBeTruthy()
   })
 })

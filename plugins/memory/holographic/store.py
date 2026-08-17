@@ -671,7 +671,14 @@ class MemoryStore:
                 try:
                     entry["conn"].close()
                 finally:
-                    MemoryStore._shared.pop(self._key, None)
+                    # Pop only OUR entry. After release_all_under() force-
+                    # closed this entry (profile delete, #88347) a same-path
+                    # store may have re-registered a FRESH entry under the
+                    # same key; a stale holder's late close() must not evict
+                    # it — that would silently reintroduce the multi-writer
+                    # contention this registry exists to prevent.
+                    if MemoryStore._shared.get(self._key) is entry:
+                        MemoryStore._shared.pop(self._key, None)
             self._entry = None
 
     def __enter__(self) -> "MemoryStore":

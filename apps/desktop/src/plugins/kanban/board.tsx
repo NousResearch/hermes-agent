@@ -81,6 +81,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
+import { useKanbanViewportGeometry } from './responsive'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
@@ -337,6 +338,7 @@ function Column({
   collapsed,
   column,
   columns,
+  laneWidth,
   onAdd,
   onDelete,
   onDropTask,
@@ -349,6 +351,7 @@ function Column({
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  laneWidth: number
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -446,6 +449,7 @@ function Column({
         'group/col flex h-full w-[calc(100vw-2rem)] max-w-full shrink-0 snap-start snap-always flex-col rounded-lg p-2 transition-colors md:w-64 md:[scroll-snap-align:none]',
         wash
       )}
+      style={{ width: laneWidth }}
     >
       <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
@@ -1084,6 +1088,7 @@ function SelectionBar({
 
 export function KanbanBoardPage() {
   const k = useKanban()
+  const viewport = useKanbanViewportGeometry()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
@@ -1330,7 +1335,10 @@ export function KanbanBoardPage() {
         <BoardSwitcher />
       </Contribute>
 
-      <header className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 py-2 md:flex md:flex-wrap">
+      <header
+        className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-4 py-2 md:flex md:flex-wrap"
+        data-kanban-layout={viewport.desktop ? 'desktop' : 'mobile'}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <h1 className="truncate text-sm font-semibold text-foreground">{k.title}</h1>
           <span className="shrink-0 rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
@@ -1417,6 +1425,7 @@ export function KanbanBoardPage() {
                 column={col}
                 columns={columnNames}
                 key={col.name}
+                laneWidth={viewport.laneWidth}
                 onAdd={setAddStatus}
                 onDelete={id => deleteMut.mutate(id)}
                 onDropTask={onMove}

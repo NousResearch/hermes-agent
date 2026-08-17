@@ -46,6 +46,7 @@ import {
   uploadAttachment
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
+import { useKanbanViewportGeometry } from './responsive'
 import {
   type Diagnostic,
   type DiagnosticAction,
@@ -549,6 +550,7 @@ export function TaskDrawer({
   onOpen: (id: string) => void
 }) {
   const k = useKanban()
+  const viewport = useKanbanViewportGeometry()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
 
@@ -674,7 +676,11 @@ export function TaskDrawer({
   }
 
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-full max-w-full flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out motion-reduce:duration-0 motion-reduce:animate-none animate-in fade-in slide-in-from-right-4 md:w-[26rem]">
+    <div
+      className="absolute inset-y-0 right-0 z-20 flex w-full max-w-full flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out motion-reduce:duration-0 motion-reduce:animate-none animate-in fade-in slide-in-from-right-4 md:w-[26rem]"
+      data-kanban-layout={viewport.desktop ? 'desktop' : 'mobile'}
+      style={{ width: viewport.drawerWidth }}
+    >
       <header className="flex flex-col gap-2 pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] pt-[max(0.875rem,env(safe-area-inset-top))] pb-3 md:px-4 md:pt-3.5">
         <div className="flex items-center gap-2">
           {task ? (

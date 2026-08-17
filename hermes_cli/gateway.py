@@ -3629,13 +3629,53 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _same_volume(a: Path, b: Path) -> bool:
+    """True when both paths resolve onto the same filesystem volume.
+
+    launchd rejects WorkingDirectory / log paths that resolve onto an
+    external volume when HERMES_HOME is a symlink to one (EX_CONFIG, exit
+    code 78, before any Hermes log exists — #88267). Fail open on any
+    OSError: a path we cannot stat should keep the current behavior rather
+    than silently relocate the service.
+    """
+    try:
+        return a.resolve().stat().st_dev == b.resolve().stat().st_dev
+    except OSError:
+        return True
+
+
+def _launchd_log_dir() -> Path:
+    """Where launchd StandardOut/ErrPath should live.
+
+    Normally HERMES_HOME/logs; when HERMES_HOME resolves onto a different
+    volume than the user's home (external-SSD symlink), launchd cannot open
+    the log paths at spawn and fails with EX_CONFIG (#88267). Fall back to
+    ~/Library/Logs/<label> so the service can start and Hermes' own logging
+    still lands somewhere the user can find.
+    """
+    home = Path.home()
+    log_dir = get_hermes_home() / "logs"
+    if not _same_volume(log_dir, home):
+        fallback = Path.home() / "Library" / "Logs" / get_launchd_label()
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
 def generate_launchd_plist() -> str:
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = _launchd_log_dir()
     label = get_launchd_label()
+    # An external-volume HERMES_HOME (symlink to an SSD) must not pin
+    # WorkingDirectory there: launchd fails the spawn with EX_CONFIG before
+    # Hermes logs anything (#88267). Fall back to the user's home on the
+    # boot volume; HERMES_HOME itself stays pointed at the real home.
+    home_anchor = Path.home()
+    if not _same_volume(Path(working_dir), home_anchor):
+        working_dir = str(home_anchor)
     venv_dir = _service_venv_dir()
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.

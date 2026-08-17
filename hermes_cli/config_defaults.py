@@ -3832,6 +3832,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "COMMANDCODE_API_KEY": {
+        "description": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
+        "prompt": "CommandCode API key",
+        "url": "https://commandcode.ai/studio/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENCODE_ZEN_BASE_URL": {
         "description": "OpenCode Zen base URL override",
         "prompt": "OpenCode Zen base URL (leave empty for default)",

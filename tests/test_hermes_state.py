@@ -104,6 +104,17 @@ def _no_fts_rebuild_throttle(monkeypatch):
 
 
 class TestConnectionLifecycle:
+    def test_context_manager_closes_connection(self, tmp_path):
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "context-managed.db"
+        with SessionDB(db_path=db_path) as managed:
+            managed.create_session("s-context", source="test")
+            assert has_live_connection(db_path) is True
+
+        assert managed._conn is None
+        assert has_live_connection(db_path) is False
+
     def test_failed_writable_open_does_not_leak_tracked_connection(
         self, tmp_path, monkeypatch
     ):

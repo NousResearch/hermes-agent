@@ -102,6 +102,11 @@ export const en: Translations = {
         `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
       signOutAndSignIn: 'Sign out & sign in',
       remoteFailureHint: 'Check the gateway URL and sign-in under Gateway settings, or switch to the local gateway.',
+      cloudDownTitle: 'Nous Cloud agent is down',
+      cloudDownDescription:
+        'The Nous-managed cloud agent this gateway connects to is returning a server error. It cannot be restarted from here — check its status, switch to the local gateway, or get support.',
+      cloudDownHint:
+        'Check https://portal.nousresearch.com for backend status, use the local gateway below, or reach out on Discord (discord.gg/NousResearch).',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
       signedInTitle: 'Signed in',

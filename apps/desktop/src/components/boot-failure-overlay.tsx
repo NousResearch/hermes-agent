@@ -247,6 +247,11 @@ export function BootFailureOverlay() {
 
   let actions: RecoveryAction[]
   let hint: string
+  // The electron boot path flags a Nous Cloud backend-down (502/503/504) with
+  // the structured isCloudBackendDown/statusCode it carries through boot
+  // progress. When set, the recovery screen leads with the cloud-specific
+  // guidance instead of the generic remote-failure copy (#85335).
+  const cloudDown = Boolean(boot.isCloudBackendDown)
 
   if (remoteReauth) {
     actions = [
@@ -261,6 +266,12 @@ export function BootFailureOverlay() {
       localAction
     ]
     hint = copy.remoteSignInHint(label)
+  } else if (cloudDown) {
+    // A Nous Cloud agent is down — the user cannot restart the managed
+    // instance and Repair is local-only, so the actionable paths are Gateway
+    // settings (switch host / use local), a secondary Retry, and open logs.
+    actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
+    hint = copy.cloudDownHint
   } else if (remoteFailure) {
     actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
     hint = copy.remoteFailureHint
@@ -323,10 +334,10 @@ export function BootFailureOverlay() {
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : copy.title}
+              {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : copy.description}
+              {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
             </p>
           </div>
         </div>

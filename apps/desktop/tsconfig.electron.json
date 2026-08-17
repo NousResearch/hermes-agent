@@ -13,8 +13,9 @@
     "ignoreDeprecations": "6.0",
     "composite": true,
     "declaration": true,
+    "rootDir": "..",
     "outDir": "build/electron-types"
   },
-  "include": ["electron"],
+  "include": ["electron", "../shared/src/translucency.ts"],
   "exclude": ["src"]
 }

@@ -785,6 +785,59 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
+    """slash.exec must resolve get_skill_commands() against the session's own
+    profile_home rather than the gateway process's ambient HERMES_HOME
+    (#88023). A Desktop session that switches profiles mid-session shares
+    the same gateway process, so a skill declared only under the new
+    profile's skills.external_dirs must still be recognized here — else the
+    command falls through to the slash-worker dead path instead of routing
+    to command.dispatch.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    sid = "test-session-profile-b"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile_b),
+    }
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "b-only", "session_id": sid},
+        })
+
+    # The gateway's own HERMES_HOME (the test-isolation tempdir, no
+    # skills.external_dirs) has no "b-only" skill — the only way this
+    # resolves is by scoping the lookup to the session's profile_home.
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

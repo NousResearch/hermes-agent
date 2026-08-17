@@ -1178,12 +1178,26 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import get_skill_commands
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        _cmd_key = f"/{_cmd_base}"
-        if _cmd_key in get_skill_commands():
-            return _err(
-                rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
-            )
+        # Re-bind HERMES_HOME to the session's profile so get_skill_commands()
+        # sees that profile's skills.external_dirs rather than whatever the
+        # process-level env happens to carry (#88023): dispatch() runs this
+        # handler on the pool with a copied context, and nothing upstream of
+        # here binds the override for slash.exec.
+        _profile_home = session.get("profile_home")
+        _home_token = (
+            set_hermes_home_override(_profile_home) if _profile_home else None
+        )
+        try:
+            _cmd_key = f"/{_cmd_base}"
+            if _cmd_key in get_skill_commands():
+                return _err(
+                    rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
+                )
+        finally:
+            if _home_token is not None:
+                reset_hermes_home_override(_home_token)
     except Exception:
         pass
 

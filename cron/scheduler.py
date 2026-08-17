@@ -1355,6 +1355,12 @@ def _is_lock_contention_errno(err: OSError) -> bool:
     return False
 
 
+def _is_fd_exhaustion_text(text: str) -> bool:
+    """Text-level half of :func:`_is_fd_exhaustion` (shared with the CLI hint)."""
+    lowered = text.lower()
+    return "too many open files" in lowered or "emfile" in lowered
+
+
 def _is_fd_exhaustion(exc: BaseException) -> bool:
     """Return True when *exc* indicates file-descriptor exhaustion.
 
@@ -1364,8 +1370,7 @@ def _is_fd_exhaustion(exc: BaseException) -> bool:
     """
     if isinstance(exc, OSError) and exc.errno in (errno.EMFILE, errno.ENFILE):
         return True
-    text = str(exc).lower()
-    return "too many open files" in text or "emfile" in text
+    return _is_fd_exhaustion_text(str(exc))
 
 
 def _reclaim_fds_best_effort() -> None:

@@ -46,6 +46,24 @@ def _backoff_wait_seconds(interval: float, consecutive_failures: int) -> float:
     )
 
 
+def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
+    """Classify one failed tick and return the updated failure counter.
+
+    Shared by both ticker loops (#87644): on fd exhaustion, attempt
+    reclamation (gc.collect + raise the soft nofile limit) so the NEXT tick
+    can succeed, and bump the counter so ``_backoff_wait_seconds`` backs off
+    exponentially while the process has no chance of making progress.  Any
+    other failure resets the counter — backoff is reserved for the
+    self-inflicted EMFILE storm, not transient errors.
+    """
+    from cron.scheduler import _is_fd_exhaustion, _reclaim_fds_best_effort
+
+    if _is_fd_exhaustion(exc):
+        _reclaim_fds_best_effort()
+        return consecutive_failures + 1
+    return 0
+
+
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
 
@@ -369,10 +387,6 @@ class InProcessCronScheduler(CronScheduler):
     ):
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.scheduler import (
-            _is_fd_exhaustion,
-            _reclaim_fds_best_effort,
-        )
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -446,16 +460,10 @@ class InProcessCronScheduler(CronScheduler):
                 # uid went unnoticed for ~14h with the reason buried in the
                 # gateway log (#68483).
                 record_ticker_error(f"{type(e).__name__}: {e}")
-                if _is_fd_exhaustion(e):
-                    # EMFILE: try to free descriptors (gc.collect + raise the
-                    # soft nofile limit) so the NEXT tick can succeed; back off
-                    # exponentially so the exhausted process stops hammering
-                    # the store while it has no chance of making progress
-                    # (#87644).
-                    _reclaim_fds_best_effort()
-                    consecutive_failures += 1
-                else:
-                    consecutive_failures = 0
+                # EMFILE: reclaim fds + back off exponentially so the
+                # exhausted process stops hammering the store while it has no
+                # chance of making progress (#87644).
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
@@ -485,10 +493,6 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.scheduler import (
-            _is_fd_exhaustion,
-            _reclaim_fds_best_effort,
-        )
         from cron.jobs import (
             clear_ticker_error,
             record_ticker_error,
@@ -547,13 +551,8 @@ class InProcessCronScheduler(CronScheduler):
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"
-                if _is_fd_exhaustion(e):
-                    # EMFILE: attempt fd reclamation so the next tick can
-                    # succeed, and back off exponentially (#87644).
-                    _reclaim_fds_best_effort()
-                    consecutive_failures += 1
-                else:
-                    consecutive_failures = 0
+                # EMFILE: reclaim fds + exponential backoff (#87644).
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
             else:
                 _tick_error = None
             # Record per-profile heartbeat after each tick cycle.

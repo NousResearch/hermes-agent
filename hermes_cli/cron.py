@@ -281,6 +281,7 @@ def cron_status():
             get_ticker_success_age,
             TICKER_INTERVAL_SECONDS,
         )
+        from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
 
         # Allow ~3 missed ticker iterations (+ a little slack) before declaring
         # trouble. Derived from the shared interval constant so this threshold
@@ -323,7 +324,7 @@ def cron_status():
                         "gateway user, and prefer `docker exec -u <uid>:<gid>`.",
                         Colors.YELLOW,
                     ))
-                elif "Too many open files" in last_error or "EMFILE" in last_error:
+                elif _cron_is_fd_exhaustion_text(last_error):
                     print(color(
                         "  Hint: the ticker hit file-descriptor exhaustion "
                         "(EMFILE). The scheduler now retries with backoff and "

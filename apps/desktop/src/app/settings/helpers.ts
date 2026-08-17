@@ -224,6 +224,7 @@ const BUILTIN_STT_PROVIDERS = new Set([
   'mistral',
   'xai',
   'elevenlabs',
+  'gladia',
   'deepinfra'
 ])
 

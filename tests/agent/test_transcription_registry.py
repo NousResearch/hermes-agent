@@ -85,6 +85,7 @@ class TestRegistration:
             "mistral",
             "xai",
             "elevenlabs",
+            "gladia",
             "deepinfra",
         ],
     )

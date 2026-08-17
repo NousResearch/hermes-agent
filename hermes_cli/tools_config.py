@@ -470,6 +470,15 @@ TOOL_CATEGORIES = {
                 ],
                 "stt_provider": "elevenlabs",
             },
+            {
+                "name": "Gladia",
+                "badge": "paid",
+                "tag": "solaria — pre-recorded STT via gladiaio-sdk",
+                "env_vars": [
+                    {"key": "GLADIA_API_KEY", "prompt": "Gladia API key", "url": "https://app.gladia.io/"},
+                ],
+                "stt_provider": "gladia",
+            },
             # Mistral Voxtral STT intentionally omitted — mistralai PyPI
             # package quarantined (malicious 2.4.6 release, 2026-05-12).
             # Restore alongside the dashboard stt.provider option.
@@ -4282,6 +4291,7 @@ STT_MODEL_CATALOG = {
     "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
     "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
     "elevenlabs": ["scribe_v2", "scribe_v1"],
+    "gladia": ["solaria-1", "solaria-3"],
 }
 
 # ElevenLabs historically uses ``model_id`` instead of ``model``.
@@ -4293,6 +4303,7 @@ def _configure_stt_model(stt_provider: str, config: dict) -> None:
 
     Providers without a static catalog (xai, deepinfra) skip the prompt —
     xAI has a single model and DeepInfra resolves from its live catalog.
+    Gladia uses the static ``solaria-*`` catalog below.
     """
     catalog = STT_MODEL_CATALOG.get(stt_provider)
     if not catalog:

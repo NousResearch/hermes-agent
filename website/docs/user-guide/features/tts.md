@@ -448,6 +448,7 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 |----------|---------|------|---------| 
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
+| **Gladia** | Good–Best | Free tier | `GLADIA_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
 
 :::info Zero Config
@@ -459,7 +460,7 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
+  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "gladia" | "deepinfra"
   language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
   local:
     model: "base"             # tiny, base, small, medium, large-v3
@@ -473,6 +474,12 @@ stt:
   xai:
     model: "grok-stt"         # xAI Grok STT
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else "en"
+  gladia:
+    model: "solaria-1"        # solaria-1, solaria-3
+    language: ""              # optional ISO-639-1 hint; blank = use stt.language
+    diarization: false        # speaker identification (pre-recorded)
+    code_switching: false     # only with a non-empty languages list (prefer 3–5 codes)
+    languages: []             # multi-lang / code-switch list; empty = use language / stt.language
 ```
 
 ### Provider Details
@@ -494,6 +501,8 @@ stt:
 **Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"`.
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
+
+**Gladia** — Requires `GLADIA_API_KEY` ([app.gladia.io](https://app.gladia.io/)). Uses the official [`gladiaio-sdk`](https://pypi.org/project/gladiaio-sdk/) pre-recorded API (`prerecorded().transcribe()`), which uploads and polls in one call. The SDK is lazy-installed on first use. Set `stt.gladia.language` (or global `stt.language`) so Gladia receives an explicit `language_config.languages` list when the language is known. Enable `stt.gladia.code_switching` only together with a non-empty `stt.gladia.languages` list of expected codes (prefer 3–5) — Gladia rejects empty-list code switching. Optional `stt.gladia.diarization` turns on speaker identification.
 
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Hermes tokenizes the rendered template into an argument list and executes it without a shell, so operators such as `|`, `>`, `&&`, and `;` are passed as literal arguments. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 
@@ -610,7 +619,7 @@ The shell command runs under the same user as Hermes with full filesystem access
 
 ### Python plugin providers (STT)
 
-For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 8 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`, `elevenlabs`, `deepinfra`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
+For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 9 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`, `elevenlabs`, `gladia`, `deepinfra`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
 
 #### When to pick which (STT)
 

@@ -13,7 +13,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `interface` (cli/tui), `language`, `show_reasoning`, `show_cost`, `pet` |
 | `approvals` | `mode` (smart/manual/off), `timeout`, `cron_mode` |
-| `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/deepinfra) |
+| `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/gladia/deepinfra) |
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
 | `security` | `redact_secrets`, `tirith_enabled`, `website_blocklist` |
@@ -67,12 +67,15 @@ Voice messages from messaging platforms are auto-transcribed.
 ```yaml
 stt:
   enabled: true
-  provider: local   # local (faster-whisper, free) | groq | openai | mistral | elevenlabs | deepinfra
+  provider: local   # local (faster-whisper, free) | groq | openai | mistral | elevenlabs | gladia | deepinfra
   local:
     model: base     # tiny, base, small, medium, large-v3
+  gladia:
+    model: solaria-1
+    diarization: false
 ```
 
-Auto-detect priority: local faster-whisper (`pip install faster-whisper`) → Groq (`GROQ_API_KEY`, free tier) → OpenAI (`VOICE_TOOLS_OPENAI_KEY`) → Mistral Voxtral (`MISTRAL_API_KEY`).
+Auto-detect priority: local faster-whisper (`pip install faster-whisper`) → Groq (`GROQ_API_KEY`, free tier) → OpenAI (`VOICE_TOOLS_OPENAI_KEY`) → Mistral Voxtral (`MISTRAL_API_KEY`) → … → Gladia (`GLADIA_API_KEY`).
 
 ### TTS (Text → Voice)
 

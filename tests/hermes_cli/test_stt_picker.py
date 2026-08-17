@@ -55,11 +55,11 @@ class TestSttCategory:
 
 
 class TestConfigWrites:
-    def test_write_provider_config_sets_stt_provider(self):
+    def test_write_provider_config_sets_gladia(self):
         config = {}
-        prov = _stt_provider_named("Groq")
+        prov = _stt_provider_named("Gladia")
         _write_provider_config(prov, config, managed_feature=None)
-        assert config["stt"]["provider"] == "groq"
+        assert config["stt"]["provider"] == "gladia"
         assert config["stt"]["use_gateway"] is False
 
 
@@ -93,8 +93,20 @@ class TestModelPicker:
         assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS
 
+    def test_gladia_catalog_has_solaria_models(self):
+        assert "gladia" in STT_MODEL_CATALOG
+        assert "solaria-1" in STT_MODEL_CATALOG["gladia"]
+        assert "solaria-3" in STT_MODEL_CATALOG["gladia"]
 
-
+    def test_configure_stt_model_writes_gladia_model(self):
+        config = {"stt": {"gladia": {"model": "solaria-1"}}}
+        with patch(
+            "hermes_cli.tools_config._prompt_choice", return_value=1
+        ) as pc:
+            _configure_stt_model("gladia", config)
+        assert config["stt"]["gladia"]["model"] == "solaria-3"
+        args = pc.call_args[0]
+        assert args[2] == STT_MODEL_CATALOG["gladia"].index("solaria-1")
 
     def test_configure_stt_model_defaults_to_current(self):
         config = {"stt": {"openai": {"model": "gpt-transcribe"}}}

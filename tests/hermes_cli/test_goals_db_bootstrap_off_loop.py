@@ -53,9 +53,10 @@ def _patch_sessiondb(monkeypatch):
     monkeypatch.setattr(hermes_state, "SessionDB", _RecordingDB)
 
 
-def test_loop_thread_cache_miss_returns_none_without_constructing(monkeypatch):
-    """On the event-loop thread with a cold cache: no inline construction,
-    immediate None, background population."""
+def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
+    """On the event-loop thread with a cold cache: construction happens on a
+    background thread (never the loop thread). A fast init is returned via
+    the grace window; either way the loop thread never runs SessionDB()."""
     _patch_sessiondb(monkeypatch)
     loop_thread_id = None
     inline_result = "UNSET"
@@ -67,9 +68,10 @@ def test_loop_thread_cache_miss_returns_none_without_constructing(monkeypatch):
 
     asyncio.run(main())
 
-    # The loop-thread call must not have blocked on construction.
-    assert inline_result is None
-    # Background thread eventually populates the cache, OFF the loop thread.
+    # Fast init: the grace window returns the real instance (no silent
+    # feature loss on the first call).
+    assert isinstance(inline_result, _RecordingDB)
+    # Cache populated for subsequent calls.
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not goals._DB_CACHE:
         time.sleep(0.02)
@@ -108,7 +110,8 @@ def test_worker_thread_constructs_inline(monkeypatch):
 
 def test_slow_construction_does_not_block_the_loop(monkeypatch):
     """A SessionDB whose init blocks (locked-DB migration) must not stall
-    the event loop past the watchdog probe window."""
+    the event loop past the watchdog probe window: bounded grace wait,
+    then degrade to None."""
     import hermes_state
 
     class _BlockingDB:
@@ -120,14 +123,16 @@ def test_slow_construction_does_not_block_the_loop(monkeypatch):
 
     monkeypatch.setattr(hermes_state, "SessionDB", _BlockingDB)
     elapsed = None
+    result = "UNSET"
 
     async def main():
-        nonlocal elapsed
+        nonlocal elapsed, result
         t0 = time.monotonic()
-        goals._get_session_db()
+        result = goals._get_session_db()
         elapsed = time.monotonic() - t0
 
     asyncio.run(main())
-    assert elapsed is not None and elapsed < 0.5, (
+    assert result is None, "contended init must degrade to None"
+    assert elapsed is not None and elapsed < 1.0, (
         f"loop-thread call blocked for {elapsed:.2f}s — watchdog territory"
     )

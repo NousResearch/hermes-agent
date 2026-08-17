@@ -664,10 +664,17 @@ def _meta_key(session_id: str) -> str:
 
 _DB_CACHE: Dict[str, Any] = {}
 _DB_BOOTSTRAP_LOCK = threading.Lock()
-_DB_BOOTSTRAP_INFLIGHT: set = set()
+_DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
+
+# How long a loop-thread caller waits for the background bootstrap before
+# degrading to None. Normal SessionDB init is ~10-100ms, so the common case
+# still returns a real DB (no silently dropped goal writes); a contended
+# init (locked state.db mid-migration) blows past this and the caller
+# degrades, with the loop stalled far under the watchdog's probe window.
+_DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
 
 
-def _bootstrap_session_db(home: str) -> None:
+def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     """Construct SessionDB off-loop and populate the cache (worker thread)."""
     try:
         from hermes_state import SessionDB
@@ -679,7 +686,8 @@ def _bootstrap_session_db(home: str) -> None:
     with _DB_BOOTSTRAP_LOCK:
         if db is not None and home not in _DB_CACHE:
             _DB_CACHE[home] = db
-        _DB_BOOTSTRAP_INFLIGHT.discard(home)
+        _DB_BOOTSTRAP_INFLIGHT.pop(home, None)
+    done.set()
 
 
 def _get_session_db() -> Optional[Any]:
@@ -727,15 +735,23 @@ def _get_session_db() -> Optional[Any]:
             cached = _DB_CACHE.get(home)
             if cached is not None:
                 return cached
-            if home not in _DB_BOOTSTRAP_INFLIGHT:
-                _DB_BOOTSTRAP_INFLIGHT.add(home)
+            done = _DB_BOOTSTRAP_INFLIGHT.get(home)
+            if done is None:
+                done = threading.Event()
+                _DB_BOOTSTRAP_INFLIGHT[home] = done
                 threading.Thread(
                     target=_bootstrap_session_db,
-                    args=(home,),
+                    args=(home, done),
                     name="goals-sessiondb-bootstrap",
                     daemon=True,
                 ).start()
-        return None
+        # Grace window: a healthy init finishes in tens of ms, so waiting
+        # briefly keeps goal/heartbeat persistence working on the very first
+        # loop-thread call instead of silently dropping it. A contended init
+        # (the crash-loop scenario) exceeds the window and we degrade to
+        # None — a bounded stall far below the watchdog's probe timeout.
+        done.wait(_DB_BOOTSTRAP_LOOP_WAIT_S)
+        return _DB_CACHE.get(home)
 
     try:
         db = SessionDB()

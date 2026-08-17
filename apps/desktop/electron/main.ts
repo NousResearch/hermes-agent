@@ -13893,7 +13893,11 @@ function terminalShellEnv() {
   delete env.COLORFGBG
 
   env.COLORTERM = 'truecolor'
-  env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
+  // Fix: 'UTF-8' is not a valid locale name (setlocale fails, bash prints
+  // "setlocale: LC_CTYPE: 无法改变区域设置 (UTF-8)" on every shell start).
+  // Inherit the parent's LANG instead; only fall back to a locale name that
+  // actually exists on glibc systems.
+  env.LC_CTYPE = env.LC_CTYPE || env.LANG || 'C.UTF-8'
   env.TERM = 'xterm-256color'
   env.TERM_PROGRAM = 'Hermes'
   env.TERM_PROGRAM_VERSION = app.getVersion()

@@ -481,6 +481,10 @@ export interface ProfileRouteOptions {
   globalRemote?: boolean
   primaryProfile?: null | string
   profileRemoteOverride?: boolean
+  /** The primary profile's own backend resolves to a remote host. */
+  primaryRemoteActive?: boolean
+  /** A stored per-profile entry exists for this profile (local or remote). */
+  ownEntry?: boolean
 }
 
 export interface ProfileBackendRoute {
@@ -525,6 +529,14 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   }
 
   if (opts.globalRemote) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  if (opts.primaryRemoteActive && !opts.ownEntry) {
+    // The primary profile's own backend is a remote gateway (per-profile
+    // override or env) and this sub-profile has no stored entry of its own.
+    // Route through that gateway with profile scoping instead of spawning a
+    // fresh local backend that shares nothing but the name (#88296).
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
   }
 

@@ -7568,7 +7568,7 @@ def run_conversation(
                         or getattr(assistant_message, "reasoning_details", None)
                         or _has_inline_thinking
                     )
-                    if _has_structured and agent._thinking_prefill_retries < 5:
+                    if _has_structured and agent._thinking_prefill_retries < 2:
                         agent._thinking_prefill_retries += 1
                         logger.info(
                             "Thinking-only response (no visible content) — "

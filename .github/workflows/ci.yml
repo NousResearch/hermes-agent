@@ -1,4 +1,3 @@
-# ci: cache-bust re-parse (Actions internal error on prior blob)
 name: CI
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally

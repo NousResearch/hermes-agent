@@ -52,6 +52,8 @@ def app_fixture(tmp_path: Path) -> Path:
                 _task("running-alpha", status, assignee="alpha"),
                 _task("running-beta", status, assignee="beta"),
             ]
+        if status == "review":
+            tasks = [_task("review-beta-other", status, assignee="beta", tenant="other")]
         columns.append({"name": status, "tasks": tasks})
     board = {
         "columns": columns,
@@ -156,6 +158,18 @@ def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict
     Reflect.apply(setter, input, ['']); input.dispatchEvent(new Event('input', {bubbles:true}));
   });
   await page.waitForTimeout(50);
+  const tenant = page.locator('.hermes-kanban-toolbar-filter').filter({hasText:'Tenant'}).locator('select');
+  await tenant.selectOption('other');
+  await page.waitForTimeout(50);
+  const tenantFilteredCounts = await page.locator('.hermes-kanban-column-nav-count').allTextContents();
+  const assignee = page.locator('.hermes-kanban-toolbar-filter').filter({hasText:'Assignee'}).locator('select');
+  await assignee.selectOption('beta');
+  await page.waitForTimeout(50);
+  const tenantAssigneeFilteredCounts = await page.locator('.hermes-kanban-column-nav-count').allTextContents();
+  await page.getByRole('button', {name:'Clear filters'}).click();
+  await page.waitForTimeout(50);
+  const clearedCounts = await page.locator('.hermes-kanban-column-nav-count').allTextContents();
+  const clearedFilterValues = {tenant: await tenant.inputValue(), assignee: await assignee.inputValue()};
   console.error('step: filters');
   const groupedBefore = await page.locator('[data-kanban-column="running"] .hermes-kanban-lane').count();
   await page.evaluate(() => [...document.querySelectorAll('.hermes-kanban-toolbar-toggle')]
@@ -166,7 +180,8 @@ def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict
   const laneWidth = await page.locator('.hermes-kanban-column').first().evaluate(el => el.getBoundingClientRect().width);
   const navHeight = await page.locator('.hermes-kanban-column-nav').evaluate(el => el.getBoundingClientRect().height);
   if (process.argv[5]) await page.screenshot({path:process.argv[5], fullPage:true});
-  process.stdout.write(JSON.stringify({labels,visits,empty,filteredCounts,groupedBefore,groupedAfter,navTargets,laneWidth,navHeight,
+  process.stdout.write(JSON.stringify({labels,visits,empty,filteredCounts,tenantFilteredCounts,tenantAssigneeFilteredCounts,
+    clearedCounts,clearedFilterValues,groupedBefore,groupedAfter,navTargets,laneWidth,navHeight,
     bodyWidth:await page.evaluate(() => document.body.scrollWidth), viewport:await page.evaluate(() => innerWidth)}));
   await browser.close();
 })().catch(e => {console.error(e);process.exit(1)});""",
@@ -183,13 +198,17 @@ def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict
 
 @pytest.mark.parametrize("width", [320, 360, 390, 430])
 def test_real_app_exposes_and_activates_every_mobile_lane(app_fixture: Path, width: int):
-    screenshot_dir = os.environ.get("HERMES_KANBAN_SCREENSHOT_DIR")
+    screenshot_dir = os.environ.get("KANBAN_SCREENSHOT_DIR")
     screenshot = Path(screenshot_dir) / f"kanban-mobile-{width}.png" if screenshot_dir else None
     measured = _run_browser(app_fixture, width, screenshot)
     assert measured["labels"] == ["Triage20", "Todo0", "Ready1", "In Progress2", "Blocked1", "Review1", "Done1", "scheduled1"]
     assert all(visit["current"] == "true" and visit["visible"] for visit in measured["visits"]), measured["visits"]
     assert measured["empty"] == "— no tasks —"
     assert measured["filteredCounts"] == ["0", "0", "0", "1", "0", "0", "0", "0"]
+    assert measured["tenantFilteredCounts"] == ["0", "0", "0", "0", "0", "1", "0", "0"]
+    assert measured["tenantAssigneeFilteredCounts"] == ["0", "0", "0", "0", "0", "1", "0", "0"]
+    assert measured["clearedCounts"] == ["20", "0", "1", "2", "1", "1", "1", "1"]
+    assert measured["clearedFilterValues"] == {"tenant": "", "assignee": ""}
     assert measured["groupedBefore"] == 2
     assert measured["groupedAfter"] == 0
     assert all(height >= 44 for height in measured["navTargets"])

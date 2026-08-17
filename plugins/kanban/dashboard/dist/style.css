@@ -98,15 +98,60 @@
 /* Mobile contract adapted from fangliquanflq's Desktop PR #87244: one
    viewport-width lane at a time, with intentional horizontal snapping. */
 @media (max-width: 767px) {
+  .hermes-kanban {
+    min-width: 0;
+    overflow-x: clip;
+  }
+  .hermes-kanban-toolbar {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end;
+    gap: 0.5rem !important;
+    width: 100%;
+  }
+  .hermes-kanban-toolbar-search {
+    grid-column: 1 / -1;
+  }
+  .hermes-kanban-toolbar-search,
+  .hermes-kanban-toolbar-filter {
+    min-width: 0;
+  }
+  .hermes-kanban-toolbar-search > label,
+  .hermes-kanban-toolbar-filter > label,
+  .hermes-kanban-toolbar-toggle {
+    white-space: nowrap;
+  }
+  .hermes-kanban-toolbar input:not([type="checkbox"]),
+  .hermes-kanban-toolbar select,
+  .hermes-kanban-toolbar button {
+    width: 100% !important;
+    min-width: 0;
+    min-height: 44px !important;
+    border: 1px solid var(--color-border);
+    border-radius: 0 !important;
+    background: var(--color-card);
+    color: var(--color-foreground);
+    font: inherit;
+  }
+  .hermes-kanban-toolbar-toggle {
+    min-height: 44px;
+  }
+  .hermes-kanban-toolbar > .flex-1 {
+    display: none;
+  }
   .hermes-kanban-column-nav {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 1px;
     margin-bottom: 0.5rem;
     border: 1px solid var(--color-border);
     background: var(--color-border);
   }
   .hermes-kanban-column-nav-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.35rem;
     appearance: none;
     min-width: 0;
     min-height: 44px;
@@ -116,7 +161,10 @@
     background: var(--color-card);
     color: var(--color-muted-foreground);
     font: inherit;
-    font-size: 0.68rem;
+    font-size: 0.75rem;
+    line-height: 1.1;
+    text-align: left;
+    white-space: nowrap;
     cursor: pointer;
   }
   .hermes-kanban-column-nav-item--active {
@@ -131,9 +179,9 @@
     outline-offset: -2px;
   }
   .hermes-kanban-column-nav-count {
-    display: block;
     font-variant-numeric: tabular-nums;
-    font-size: 0.72rem;
+    font-size: 0.75rem;
+    text-align: right;
   }
   .hermes-kanban-columns {
     overscroll-behavior-x: contain;
@@ -141,6 +189,8 @@
   }
   .hermes-kanban-column {
     flex-basis: calc(100vw - 2rem);
+    min-width: calc(100vw - 2rem);
+    max-width: calc(100vw - 2rem);
     scroll-snap-align: start;
     scroll-snap-stop: always;
   }

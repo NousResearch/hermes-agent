@@ -48,3 +48,37 @@ def test_raw_html_stripped_keeps_media():
 def test_raw_html_strip_noop_when_clean():
     resp = "Summary line\n\nMEDIA:/tmp/x.html"
     assert _simulate_raw_html_strip(resp) == resp
+
+
+def test_recovers_recent_configured_artifact_when_model_returns_only_verification(tmp_path):
+    """A written report must still be delivered when the model drops its MEDIA line."""
+    report = tmp_path / "research-paper-synthesis-20260817.html"
+    report.write_text("<html><body>report</body></html>", encoding="utf-8")
+    job = {
+        "name": "research-paper-synthesis-daily",
+        "delivery_artifact_glob": str(tmp_path / "research-paper-synthesis-*.html"),
+        "delivery_artifact_summary": "📄 Research Paper Synthesis — {date}\nReport attached.",
+    }
+
+    recovered = S._recover_configured_artifact_delivery(job, "")
+
+    assert recovered is not None
+    assert "📄 Research Paper Synthesis" in recovered
+    assert "MEDIA:" + str(report) in recovered
+
+
+def test_does_not_recover_stale_configured_artifact(tmp_path):
+    """A stale report must not be attached to a later failed/empty run."""
+    import os
+    import time
+
+    report = tmp_path / "research-paper-synthesis-20260801.html"
+    report.write_text("<html><body>old</body></html>", encoding="utf-8")
+    stale = time.time() - 901
+    os.utime(report, (stale, stale))
+    job = {
+        "delivery_artifact_glob": str(tmp_path / "research-paper-synthesis-*.html"),
+        "delivery_artifact_max_age_seconds": 900,
+    }
+
+    assert S._recover_configured_artifact_delivery(job, "") is None

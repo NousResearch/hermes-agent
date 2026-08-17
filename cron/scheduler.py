@@ -223,7 +223,12 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             reason = "weekly usage limit"
         elif "quota" in lower:
             reason = "quota limit"
-        return t("gateway.cron_failure_rate_limit", job_name=job_name, reason=reason)
+        return t(
+            "gateway.cron_failure_rate_limit",
+            job_name=job_name,
+            reason=reason,
+            fallback_chain=_fallback_chain_phrase(),
+        )
 
     # The scheduler's own inactivity watchdog (see the TimeoutError raised
     # above at "Cron job '{job_name}' idle for {secs}s (limit {limit}s) —
@@ -266,7 +271,11 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if provider_reachable and (
         "readtimeout" in lower or "timed out" in lower or "timeout" in lower
     ):
-        return t("gateway.cron_failure_timeout", job_name=job_name)
+        return t(
+            "gateway.cron_failure_timeout",
+            job_name=job_name,
+            fallback_chain=_fallback_chain_phrase(),
+        )
 
     # Match authentication/authorization wording at a word boundary and the
     # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do

@@ -812,8 +812,8 @@ gateway:
 
 
     To stop or manage this job, send me a new message (e.g. "stop reminder '
-  cron_failure_rate_limit: '⚠️ Cron ''{job_name}'' failed: provider {reason}. Fallback chain was exhausted or unavailable. Full details saved in cron output.'
-  cron_failure_timeout: '⚠️ Cron ''{job_name}'' failed: provider timeout. Fallback chain was exhausted or unavailable. Full details saved in cron output.'
+  cron_failure_rate_limit: '⚠️ Cron ''{job_name}'' failed: provider {reason}. {fallback_chain} Full details saved in cron output.'
+  cron_failure_timeout: '⚠️ Cron ''{job_name}'' failed: provider timeout. {fallback_chain} Full details saved in cron output.'
   cron_failure_auth: '⚠️ Cron ''{job_name}'' failed: provider authentication error. Full details saved in cron output.'
   cron_failure_generic: '⚠️ Cron ''{job_name}'' failed: {cleaned}'
   cron_watchdog_failed: '⚠ Cron watchdog ''{job_name}'' script failed

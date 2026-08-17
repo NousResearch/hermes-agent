@@ -46,6 +46,7 @@ def _make_agent_openrouter():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
+    setattr(agent, "_model_explicitly_selected", False)
 
     return agent
 
@@ -73,6 +74,7 @@ def _make_agent_anthropic():
     agent._fallback_chain = []
     agent._fallback_model = None
     agent._config_context_length = None
+    setattr(agent, "_model_explicitly_selected", False)
 
     return agent
 
@@ -108,11 +110,13 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.api_key == "or-key-original"
     assert agent.client is original_client
     assert agent._client_kwargs == original_kwargs
+    assert getattr(agent, "_model_explicitly_selected") is False
 
 
 def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
     """When build_anthropic_client raises, every mutated field must restore."""
     agent = _make_agent_anthropic()
+    setattr(agent, "_model_explicitly_selected", True)
 
     original_anthropic_client = agent._anthropic_client
     original_anthropic_key = agent._anthropic_api_key
@@ -150,6 +154,7 @@ def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.base_url == "https://api.anthropic.com"
     assert agent.api_mode == "anthropic_messages"
     assert agent.api_key == "sk-ant-original"
+    assert getattr(agent, "_model_explicitly_selected") is True
 
 
 def test_cross_branch_anthropic_to_openai_rebuild_failure_rolls_back():
@@ -202,3 +207,4 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+    assert getattr(agent, "_model_explicitly_selected") is True

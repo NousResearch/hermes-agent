@@ -9503,6 +9503,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _model_config = CLI_CONFIG.get("model", {})
         _raw_default2 = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _config_model, _ = _split_model_config_default(_raw_default2)
+        # /new always returns ownership to config/default routing. Clear the
+        # explicit-selection lock even when the configured model is already
+        # active and no runtime client swap is required.
+        if self.agent:
+            self.agent._model_explicitly_selected = False
         if _config_model and _config_model != getattr(self, "model", None):
             _config_provider = (
                 _model_config.get("provider", "")

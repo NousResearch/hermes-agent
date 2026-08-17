@@ -2644,6 +2644,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "model",
             "provider",
             "requested_provider",
+            "_model_explicitly_selected",
             "base_url",
             "api_mode",
             "api_key",
@@ -2686,6 +2687,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         agent.model = new_model
         agent.provider = new_provider
         agent.requested_provider = new_provider
+        agent._model_explicitly_selected = True
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
         # (old provider's) URL — that silently pairs the new provider label

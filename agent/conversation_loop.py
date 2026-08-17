@@ -1049,6 +1049,38 @@ _THINKING_ONLY_VISIBLE_ANSWER_NUDGE = (
 )
 
 
+def _explicit_turbohaul_local_lock(agent) -> bool:
+    """Return whether empty-response fallback is locked to an explicit local pick."""
+    if not getattr(agent, "_model_explicitly_selected", False):
+        return False
+
+    def _slug(value) -> str:
+        text = str(value or "").strip().lower()
+        if text.startswith("custom:"):
+            text = text.split(":", 1)[1]
+        return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+
+    identities = {
+        _slug(getattr(agent, "provider", "")),
+        _slug(getattr(agent, "requested_provider", "")),
+    }
+    if "turbohaul-local" in identities:
+        return True
+
+    # Runtime resolution can collapse a named custom provider to ``custom``.
+    # Reverse-resolve the exact configured endpoint; never substring-match URLs.
+    try:
+        from hermes_cli.runtime_provider import canonical_custom_identity
+
+        canonical = canonical_custom_identity(
+            base_url=getattr(agent, "base_url", None),
+            model=getattr(agent, "model", None),
+        )
+    except Exception:
+        canonical = None
+    return _slug(canonical) == "turbohaul-local"
+
+
 # Re-prompt sent after a Codex/Responses turn ends with an acknowledgment-only
 # reply (no tool calls, no final answer) — named so
 # agent.context_compressor's _is_synthetic_compression_user_turn can
@@ -7678,7 +7710,12 @@ def run_conversation(
                     # chain.  This covers the case where a model
                     # (e.g. GLM-4.5-Air) consistently returns empty
                     # due to context degradation or provider issues.
-                    if _truly_empty and agent._fallback_chain:
+                    _lock_explicit_turbohaul = _explicit_turbohaul_local_lock(agent)
+                    if (
+                        _truly_empty
+                        and agent._fallback_chain
+                        and not _lock_explicit_turbohaul
+                    ):
                         logger.warning(
                             "Empty response after %d retries — "
                             "attempting fallback (model=%s, provider=%s)",
@@ -7769,7 +7806,14 @@ def run_conversation(
                     # returning nothing, is showing the model's own reasoning
                     # (clearly labeled as such) strictly more useful.
                     # Idea credit: PR #48795 (@ligl0325).
-                    if reasoning_text:
+                    if _lock_explicit_turbohaul:
+                        final_response = (
+                            "❌ The explicitly selected local model "
+                            f"{agent.model} (turbohaul-local) returned no visible "
+                            "response after all local retries. Cloud fallback was "
+                            "not activated; the selected model and provider remain active."
+                        )
+                    elif reasoning_text:
                         final_response = (
                             "⚠️ The model produced only internal reasoning and "
                             "no final answer, despite retries"

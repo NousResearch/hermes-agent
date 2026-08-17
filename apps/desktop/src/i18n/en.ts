@@ -703,11 +703,11 @@ export const en: Translations = {
     connections: {
       title: 'Connections',
       intro:
-        'Register every place your agents live — this device, remote gateways on your network, and Hermes Cloud instances. All of them are stored here.',
+        'Manage this device, remote gateways, SSH hosts, and Hermes Cloud sources.',
       stagedNote:
-        'Switch sources from the Sessions sidebar. Profiles, chats, messaging, and cron stay scoped to that source; Primary is the registry default and does not switch your current workspace.',
+        'Switch sources from Sessions. Profiles, chats, messaging, and cron jobs stay with their source; work on other sources keeps running.',
       launchModeTitle: 'Open on launch',
-      launchModeDesc: 'Always open the Primary source, or resume the last source that connected successfully.',
+      launchModeDesc: 'Choose whether Hermes opens your primary source or the last source that connected successfully.',
       launchPrimary: 'Primary source',
       launchLastUsed: 'Last used',
       loadFailed: 'Could not load connections',

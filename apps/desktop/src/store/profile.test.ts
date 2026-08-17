@@ -6,7 +6,11 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const activateGateway = vi.fn()
+// Returns true: both prepare seams hand back a thunk reporting whether the
+// activation was ACCEPTED, and a caller publishes its companion state only on
+// true. A bare vi.fn() returns undefined, which now reads as "superseded" and
+// would silently suppress every publication these tests assert on.
+const activateGateway = vi.fn(() => true)
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const prepareGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => activateGateway)
 const prepareGatewayForProfile = vi.fn(async (_profile: string) => activateGateway)

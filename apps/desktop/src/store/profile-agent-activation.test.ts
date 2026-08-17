@@ -42,6 +42,8 @@ const activateAgent = vi.fn(() => {
 
 const activateProfile = vi.fn(() => {
   $gateway.set(PROFILE_GATEWAY)
+
+  return true
 })
 
 // Annotated with the SEAM's thunk types, not the spies' own. Inferred, the
@@ -51,7 +53,7 @@ const prepareGatewayForAgent = vi.fn(
   async (_connectionId: null | string, _profile: string): Promise<() => boolean> => activateAgent
 )
 
-const prepareGatewayForProfile = vi.fn(async (_profile: string): Promise<() => void> => activateProfile)
+const prepareGatewayForProfile = vi.fn(async (_profile: string): Promise<() => boolean> => activateProfile)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>(INITIAL_GATEWAY)
 const resetStarmapGraph = vi.fn()
@@ -249,6 +251,55 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     expect(activateAgent).toHaveBeenCalledTimes(1)
     expect($activeGatewayProfile.get()).toBe('research')
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('ensureGatewayProfile publishes under the same activation guard', () => {
+  it('publishes nothing when the profile activation is superseded', async () => {
+    // The profile-door mirror of "does not republish a registry identity
+    // invalidated during activation". applyActive() returns false when its
+    // captured epoch has been superseded — a newer switch or a teardown
+    // landed while this preparation was awaiting its route or socket.
+    //
+    // Discarding that boolean does not produce a torn publication; batch()
+    // makes the writes observer-atomic either way. It produces something
+    // subtler and worse: ONE complete, internally inconsistent tuple, the
+    // CURRENT gateway paired with the stale target's profile pointer and
+    // descriptor. Atomicity cannot make a rejected activation correct, so the
+    // caller has to decline to publish at all.
+    getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
+    prepareGatewayForProfile.mockResolvedValueOnce(() => false)
+
+    const seen: unknown[] = []
+    const stop = $gateway.listen(gateway => seen.push(gateway))
+
+    try {
+      await ensureGatewayProfile('worker')
+    } finally {
+      stop()
+    }
+
+    // All three still describe the complete route that was already active.
+    expect($gateway.get()).toBe(INITIAL_GATEWAY)
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.profile).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+    // And no subscriber was handed a tuple to disagree about.
+    expect(seen).toEqual([])
+  })
+
+  it('publishes the companions when the profile activation is accepted', async () => {
+    // The other half: the guard must not swallow a legitimate switch. Without
+    // this, returning a constant false from every thunk would pass the test
+    // above and break the feature.
+    getConnection.mockResolvedValue(localConn({ profile: 'worker' }))
+
+    await ensureGatewayProfile('worker')
+
+    expect(activateProfile).toHaveBeenCalledTimes(1)
+    expect($gateway.get()).toBe(PROFILE_GATEWAY)
+    expect($activeGatewayProfile.get()).toBe('worker')
+    expect($connection.get()?.profile).toBe('worker')
   })
 })
 

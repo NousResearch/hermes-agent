@@ -680,14 +680,12 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
 export async function prepareGatewayForAgent(connectionId: null | string, profile: string): Promise<() => boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
+  // Genuinely-local scope: the profile door owns this route, so hand back ITS
+  // thunk unchanged. Wrapping it to return an unconditional `true` would have
+  // reported a rejected activation as a successful one and let the agent
+  // caller publish companion state for a switch that never happened.
   if (scope === normKey(profile)) {
-    const activate = await prepareGatewayForProfile(profile)
-
-    return () => {
-      activate()
-
-      return true
-    }
+    return prepareGatewayForProfile(profile)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -746,14 +744,12 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 // pointer, connection descriptor), so no subscriber can observe the active
 // gateway pointing at one backend while companion state still describes
 // another. Nothing is published until the thunk runs.
-export async function prepareGatewayForProfile(profile: string): Promise<() => void> {
+export async function prepareGatewayForProfile(profile: string): Promise<() => boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    return () => {
-      applyActive(key, activationEpoch)
-    }
+    return () => applyActive(key, activationEpoch)
   }
 
   // Global-remote share (routing case 3): one remote host serves every
@@ -765,9 +761,7 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => v
   // entry, and returned as a thunk like every other path here so this
   // switch publishes as atomically as a dedicated-socket one.
   if (await sharedPrimaryRoute(key)) {
-    return () => {
-      applyActive(g.primaryProfile, activationEpoch)
-    }
+    return () => applyActive(g.primaryProfile, activationEpoch)
   }
 
   let entry = g.secondaries.get(key)
@@ -797,15 +791,20 @@ export async function prepareGatewayForProfile(profile: string): Promise<() => v
   // compares against this exact entry.
   const prepared = entry
 
+  // Reports whether the ACTIVATION was accepted, which is a different question
+  // from whether a descriptor was published: an accepted activation with no
+  // cached connection still moved the gateway, so the caller must still move
+  // its companion state. Only a rejected activation (disposed entry, or an
+  // epoch superseded by a newer switch while this one was dialing) must leave
+  // every companion store alone.
   return () => {
-    if (
-      prepared.wantOpen &&
-      g.secondaries.get(key) === prepared &&
-      applyActive(key, activationEpoch) &&
-      prepared.connection
-    ) {
+    const activated = prepared.wantOpen && g.secondaries.get(key) === prepared && applyActive(key, activationEpoch)
+
+    if (activated && prepared.connection) {
       publishActiveConnection(prepared.connection)
     }
+
+    return activated
   }
 }
 

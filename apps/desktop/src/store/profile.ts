@@ -344,7 +344,17 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // .set() calls that each drain their listeners synchronously, and a
     // $gateway listener runs while the other two still name the old backend.
     batch(() => {
-      activate()
+      // A rejected activation publishes NOTHING, exactly like the agent path.
+      // applyActive() returns false when its captured epoch was superseded --
+      // a newer switch (or a teardown) landed while this one was awaiting its
+      // route or socket. Publishing the companions anyway would leave the
+      // CURRENT gateway paired with the stale profile pointer and descriptor,
+      // and batch() cannot rescue that: it would make the mismatched tuple
+      // atomically observable rather than prevent it.
+      if (!activate()) {
+        return
+      }
+
       $activeGatewayProfile.set(target)
 
       if (connection) {

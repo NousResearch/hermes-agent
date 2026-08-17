@@ -4,10 +4,13 @@ Inspired by Muse Code's --subagent-worktree-isolation (clean-room
 implementation from documented behavior).
 """
 
+import ast
+import inspect
 import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import shutil
 import unittest
 from pathlib import Path
@@ -34,6 +37,14 @@ def _make_repo(root: Path) -> Path:
     _git(["add", "-A"], repo)
     _git(["commit", "-q", "-m", "seed"], repo)
     return repo
+
+
+def _break_git_index(wt: Path) -> None:
+    """Corrupt a worktree's index so the real git probes exit non-zero."""
+    git_dir = Path(_git(["rev-parse", "--git-dir"], wt).stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = (wt / git_dir).resolve()
+    (git_dir / "index").write_bytes(b"not-a-valid-git-index\n")
 
 
 class SubagentWorktreeTests(unittest.TestCase):
@@ -166,19 +177,22 @@ class SubagentWorktreeTests(unittest.TestCase):
         # The parent agent only ever sees this payload (it cannot read logs),
         # so the uncertainty must travel in the dict — otherwise "0 commits,
         # clean" reads as "the child produced nothing" and the work we just
-        # preserved never gets looked at.
+        # preserved never gets looked at. Assert the actionable invariants
+        # (flag set; note names the worktree + branch), not the prose.
         self.assertTrue(payload["inspection_failed"])
-        self.assertIn("UNKNOWN", payload["note"])
         self.assertIn(info["path"], payload["note"])
+        self.assertIn(info["branch"], payload["note"])
 
     def test_finalize_flags_unproven_state_distinguishably(self):
         """#88113 follow-up: a failed inspection must not look like "no work".
 
         Without an explicit flag, "inspection failed, uncommitted work
-        preserved" and "inspected fine, child left nothing" serialize to the
-        byte-identical dict {commits: 0, dirty: False, pruned: False} — so the
-        parent agent's rational reading of the failure case is the exact wrong
-        conclusion.
+        preserved" and "inspected fine, child left nothing" are
+        indistinguishable to the parent agent — so its rational reading of the
+        failure case is the exact wrong conclusion. The contract asserted here
+        is *distinguishability*, not the specific field values (a future
+        change emitting ``commits: None`` for "unknown" would be strictly
+        better and must not break this test).
         """
         repo = _make_repo(self.tmp)
 
@@ -192,19 +206,22 @@ class SubagentWorktreeTests(unittest.TestCase):
         assert bad_info is not None
         bad_wt = Path(bad_info["path"])
         (bad_wt / "WIP.txt").write_text("real work\n", encoding="utf-8")
-        git_dir = Path(_git(["rev-parse", "--git-dir"], bad_wt).stdout.strip())
-        if not git_dir.is_absolute():
-            git_dir = (bad_wt / git_dir).resolve()
-        (git_dir / "index").write_bytes(b"not-a-valid-git-index\n")
+        _break_git_index(bad_wt)
         bad_payload = sw.finalize_subagent_worktree(bad_info)
 
-        # The three state fields are identical — that is exactly the ambiguity.
-        for key in ("commits", "dirty", "pruned"):
-            self.assertEqual(ok_payload[key], bad_payload[key])
-        # Only the flag separates them.
-        self.assertNotIn("inspection_failed", ok_payload)
-        self.assertNotIn("note", ok_payload)
+        # Both keep the worktree, so "pruned" alone cannot separate them...
+        self.assertFalse(ok_payload["pruned"])
+        self.assertFalse(bad_payload["pruned"])
+        self.assertTrue(os.path.isdir(bad_info["path"]))
+        self.assertTrue((bad_wt / "WIP.txt").exists())
+        # ...the flag must. Tolerant of an always-present-but-False refactor.
+        self.assertFalse(ok_payload.get("inspection_failed", False))
         self.assertTrue(bad_payload["inspection_failed"])
+        self.assertNotEqual(
+            bool(ok_payload.get("inspection_failed")),
+            bool(bad_payload.get("inspection_failed")),
+        )
+        self.assertFalse((ok_payload.get("note") or "").strip())
 
     def test_finalize_flags_unproven_state_when_inspection_raises(self):
         """A raising probe is the same unknown state as a non-zero exit."""
@@ -215,13 +232,18 @@ class SubagentWorktreeTests(unittest.TestCase):
         def _boom(*_a, **_k):
             raise subprocess.TimeoutExpired(cmd="git", timeout=30)
 
-        with mock.patch.object(sw, "_run_git", side_effect=_boom):
+        with mock.patch.object(sw, "_run_git", side_effect=_boom) as m:
             payload = sw.finalize_subagent_worktree(info)
 
+        # Prove the patched seam was actually exercised.
+        self.assertGreaterEqual(m.call_count, 1)
         self.assertFalse(payload["pruned"])
         self.assertTrue(payload["inspection_failed"])
-        self.assertIn("UNKNOWN", payload["note"])
+        self.assertIn(info["path"], payload["note"])
+        self.assertIn(info["branch"], payload["note"])
         self.assertTrue(os.path.isdir(info["path"]))
+        branches = _git(["branch", "--list", info["branch"]], repo).stdout
+        self.assertNotEqual(branches.strip(), "")
 
     def test_finalize_missing_path_reports_pruned(self):
         payload = sw.finalize_subagent_worktree(
@@ -255,6 +277,68 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertIn("/x/wt", note)
         self.assertIn("hermes-subagent/subagent-1", note)
         self.assertIn("WORKTREE ISOLATION", note)
+
+
+class WorktreePayloadSchemaTests(unittest.TestCase):
+    """The parent agent reads ONE schema under ``entry["worktree"]``.
+
+    Two producers write it: ``finalize_subagent_worktree`` and
+    ``delegate_tool``'s fallback for when finalize itself raises. Compare the
+    fallback against the REAL finalize output (not a hardcoded key list) so
+    the two can never drift apart.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-sw-schema-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_fallback_matches_finalize_schema(self):
+        from tools import delegate_tool
+
+        repo = _make_repo(self.tmp)
+        info = sw.create_subagent_worktree(str(repo), "schema")
+        assert info is not None
+        happy = sw.finalize_subagent_worktree(info, prune=False)
+
+        # Read the fallback's ACTUAL keys out of the source (not a hardcoded
+        # copy), so drift in delegate_tool is what fails this test.
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(delegate_tool._run_single_child))
+        )
+        fallback_keys = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not isinstance(
+                node.value, ast.Dict
+            ):
+                continue
+            target = node.targets[0]
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "worktree"
+            ):
+                fallback_keys = {
+                    k.value
+                    for k in node.value.keys
+                    if isinstance(k, ast.Constant)
+                }
+                break
+
+        self.assertIsNotNone(
+            fallback_keys,
+            "delegate_tool no longer assigns a dict literal to "
+            'entry_dict["worktree"] — update this schema guard',
+        )
+        assert fallback_keys is not None  # narrow for type checkers
+        # Fallback must be a superset: every happy-path key plus the two
+        # unproven-state keys, and nothing invented. The pre-fix version
+        # emitted repo_root/base_commit and omitted commits/dirty/pruned.
+        self.assertTrue(set(happy).issubset(fallback_keys))
+        self.assertEqual(
+            fallback_keys - set(happy), {"inspection_failed", "note"}
+        )
+        for leaked in ("repo_root", "base_commit"):
+            self.assertNotIn(leaked, fallback_keys)
 
 
 class DelegationConfigGateTests(unittest.TestCase):

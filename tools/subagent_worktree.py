@@ -28,7 +28,7 @@ Contract (mirrors Muse Code's documented semantics):
   clean tree is removed automatically after the child finishes; anything
   holding work is kept and reported. Pruning requires affirmative proof:
   if a git inspection probe fails the state is unknown, so the worktree is
-  kept and the result entry is flagged ``inspection_failed`` (#88113).
+  kept and the result entry carries ``inspection_failed`` + ``note`` (#88113).
 
 Only the local terminal backend is supported: on docker/ssh/modal/etc. the
 worktree created on the host would not be visible inside the sandbox, so

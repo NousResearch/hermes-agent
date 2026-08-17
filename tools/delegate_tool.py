@@ -2520,8 +2520,10 @@ def _run_single_child(
                 "pruned": False,
                 "inspection_failed": True,
                 "note": (
-                    "worktree finalize raised; state unknown — inspect "
-                    f"{_worktree_info.get('path', '')} manually before "
+                    "worktree finalize raised: 'commits' and 'dirty' are "
+                    "UNKNOWN, not zero/clean. The worktree and branch were "
+                    f"preserved — inspect {_worktree_info.get('path', '')} "
+                    f"(branch {_worktree_info.get('branch', '')}) before "
                     "assuming no work."
                 ),
             }

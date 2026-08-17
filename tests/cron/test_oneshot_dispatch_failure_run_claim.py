@@ -129,3 +129,15 @@ class TestDispatchFailurePathsClearClaim:
              patch.object(sched, "clear_run_claim", side_effect=OSError(24, "Too many open files")):
             n = self._tick_one(job)  # must not raise
         assert n == 0
+
+    def test_recurring_dispatch_failure_skips_claim_io(self, cron_store):
+        """Recurring jobs carry no run_claim, so the dispatch-failure paths
+        must not pay clear_run_claim's lock acquisition + full jobs-file read
+        for a guaranteed no-op — the failure paths fire exactly when the
+        process can least afford pointless I/O (shutdown, EMFILE)."""
+        from cron import scheduler as sched
+        job = jobs_mod.create_job(prompt="hourly", schedule="every 1h")
+        with patch.object(sched, "_interpreter_shutting_down", return_value=True), \
+             patch.object(sched, "clear_run_claim") as mock_clear:
+            self._tick_one(job)
+        mock_clear.assert_not_called()

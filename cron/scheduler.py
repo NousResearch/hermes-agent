@@ -6857,12 +6857,20 @@ def tick(
             def _clear_run_claim_best_effort() -> None:
                 """Best-effort claim cleanup on the dispatch-failure paths.
 
-                clear_run_claim does load_jobs/save_jobs file I/O; on the
-                interpreter-shutdown path (or with a corrupt store) it can
-                itself raise, and these early-exit paths exist precisely to
-                skip cleanly — a stale claim expiring at the TTL is a better
-                outcome than crashing the tick (#86522).
+                Only one-shot jobs carry a ``run_claim`` (stamped by
+                get_due_jobs, #59229), so recurring jobs skip the call
+                entirely — clear_run_claim acquires _jobs_lock (blocking
+                cross-process flock) and does a full load_jobs read, and the
+                dispatch-failure paths fire exactly when the process can
+                least afford N pointless lock/read round-trips (interpreter
+                shutdown, EMFILE).  clear_run_claim itself does
+                load_jobs/save_jobs file I/O; on those degraded paths it can
+                raise, and these early-exits exist precisely to skip cleanly
+                — a stale claim expiring at the TTL is a better outcome than
+                crashing the tick (#86522).
                 """
+                if (job.get("schedule") or {}).get("kind") != "once":
+                    return
                 try:
                     clear_run_claim(job_id)
                 except Exception as claim_err:

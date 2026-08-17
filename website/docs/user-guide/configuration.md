@@ -1565,7 +1565,7 @@ unreachable or a model isn't listed, Hermes falls back to its built-in
 model-family list and passes your effort through unchanged.
 :::
 
-### OpenAI Codex output verbosity
+### OpenAI Responses text verbosity
 
 Reasoning effort controls how much the model thinks; output verbosity separately
 controls how detailed its final response is. For supported GPT-5 Responses

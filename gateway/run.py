@@ -61,6 +61,7 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
+from agent.text_verbosity import parse_text_verbosity
 from agent.turn_context import (
     compression_made_progress,
 )
@@ -25495,7 +25496,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "proactive_prune_min_result_chars"),
         ("compression", "proactive_prune_min_reclaim_tokens"),
         ("compression", "min_tail_user_messages"),
-        ("agent", "output_verbosity"),
+        ("agent", "text_verbosity"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
         ("checkpoints", "enabled"),
@@ -25570,7 +25571,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # toggle must still rebuild the cached agent.
                 out[f"{section}.{key}"] = section_val if key == "enabled" else None
             elif isinstance(section_val, dict):
-                out[f"{section}.{key}"] = section_val.get(key)
+                value = section_val.get(key)
+                if section == "agent" and key == "text_verbosity":
+                    value = parse_text_verbosity(value)
+                out[f"{section}.{key}"] = value
             else:
                 out[f"{section}.{key}"] = None
         try:

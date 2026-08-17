@@ -29,6 +29,7 @@ def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+from agent.text_verbosity import parse_text_verbosity
 
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
@@ -362,9 +363,9 @@ class ResponsesApiTransport(ProviderTransport):
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
             github_reasoning_extra: dict | None — Copilot reasoning params
-            output_verbosity: str | None — OpenAI Responses output detail
+            text_verbosity: str | None — OpenAI Responses output detail
                 (low, medium, or high)
-            supports_output_verbosity: bool — resolved GPT-5 OpenAI capability
+            supports_text_verbosity: bool — resolved GPT-5 OpenAI capability
         """
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
@@ -587,11 +588,9 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
-        output_verbosity = params.get("output_verbosity")
-        if output_verbosity and params.get("supports_output_verbosity") is True:
-            from agent.output_verbosity import parse_output_verbosity
-
-            verbosity = parse_output_verbosity(output_verbosity)
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and params.get("supports_text_verbosity") is True:
+            verbosity = parse_text_verbosity(text_verbosity)
             if verbosity:
                 override_text = kwargs.get("text")
                 if override_text is None:

@@ -5,7 +5,7 @@ import pytest
 from types import SimpleNamespace
 
 from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-from agent.output_verbosity import supports_openai_output_verbosity
+from agent.text_verbosity import supports_openai_text_verbosity
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
 
@@ -582,14 +582,14 @@ class TestCodexBuildKwargs:
         assert kw["extra_body"]["prompt_cache_key"] == "caller-top-level"
 
     @pytest.mark.parametrize("verbosity", ["low", "medium", "high"])
-    def test_codex_backend_sets_output_verbosity(self, transport, verbosity):
+    def test_codex_backend_sets_text_verbosity(self, transport, verbosity):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_output_verbosity=True,
-            output_verbosity=verbosity,
+            supports_text_verbosity=True,
+            text_verbosity=verbosity,
         )
 
         assert kw["text"] == {"verbosity": verbosity}
@@ -597,36 +597,37 @@ class TestCodexBuildKwargs:
         preflight = transport.preflight_kwargs(kw)
         assert preflight["text"] == {"verbosity": verbosity}
 
-    def test_non_codex_responses_omit_output_verbosity(self, transport):
+    def test_non_codex_responses_omit_text_verbosity(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
-            output_verbosity="low",
+            text_verbosity="low",
         )
 
         assert "text" not in kw
 
-    def test_codex_backend_omits_invalid_output_verbosity(self, transport):
+    def test_codex_backend_omits_invalid_text_verbosity(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            output_verbosity="extra-short",
+            supports_text_verbosity=True,
+            text_verbosity="extra-short",
         )
 
         assert "text" not in kw
 
-    def test_output_verbosity_merges_with_request_override_text(self, transport):
+    def test_text_verbosity_merges_with_request_override_text(self, transport):
         request_overrides = {"text": {"format": {"type": "text"}}}
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_output_verbosity=True,
-            output_verbosity="low",
+            supports_text_verbosity=True,
+            text_verbosity="low",
             request_overrides=request_overrides,
         )
 
@@ -636,41 +637,73 @@ class TestCodexBuildKwargs:
         }
         assert request_overrides == {"text": {"format": {"type": "text"}}}
 
-    def test_output_verbosity_explicit_request_override_wins(self, transport):
+    def test_text_verbosity_explicit_request_override_wins(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            output_verbosity="low",
+            supports_text_verbosity=True,
+            text_verbosity="low",
             request_overrides={"text": {"verbosity": "high"}},
         )
 
         assert kw["text"] == {"verbosity": "high"}
 
+    def test_text_verbosity_preserves_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            supports_text_verbosity=True,
+            text_verbosity="low",
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw["text"] == {"verbosity": "low"}
+        assert kw["service_tier"] == "priority"
+
     @pytest.mark.parametrize(
-        ("model", "hostname", "is_codex_backend", "expected"),
+        (
+            "model",
+            "hostname",
+            "is_canonical_codex_route",
+            "is_xai_responses",
+            "is_github_responses",
+            "expected",
+        ),
         [
-            ("gpt-5.6-sol", "", True, True),
-            ("gpt-5.5", "api.openai.com", False, True),
-            ("gpt-4.1", "", True, False),
-            ("gpt-5.5", "proxy.example", False, False),
-            ("gpt-5.5", "api.x.ai", False, False),
+            ("gpt-5.6-sol", "", True, False, False, True),
+            ("gpt-5.5", "api.openai.com", False, False, False, True),
+            ("gpt-4.1", "", True, False, False, False),
+            ("gpt-5.5", "proxy.example", False, False, False, False),
+            ("gpt-5.5", "api.x.ai", False, True, False, False),
+            ("gpt-5.5", "api.x.ai", True, True, False, False),
+            ("gpt-5.5", "models.github.ai", True, False, True, False),
         ],
     )
-    def test_output_verbosity_capability_boundary(
-        self, model, hostname, is_codex_backend, expected
+    def test_text_verbosity_capability_boundary(
+        self,
+        model,
+        hostname,
+        is_canonical_codex_route,
+        is_xai_responses,
+        is_github_responses,
+        expected,
     ):
         assert (
-            supports_openai_output_verbosity(
+            supports_openai_text_verbosity(
                 model,
                 base_url_hostname=hostname,
-                is_codex_backend=is_codex_backend,
+                is_canonical_codex_route=is_canonical_codex_route,
+                is_xai_responses=is_xai_responses,
+                is_github_responses=is_github_responses,
             )
             is expected
         )
 
-    def test_preflight_allows_output_verbosity_with_text_format(self):
+    def test_preflight_allows_text_verbosity_with_text_format(self):
         payload = _preflight_codex_api_kwargs(
             {
                 "model": "gpt-5.5",
@@ -685,6 +718,22 @@ class TestCodexBuildKwargs:
             "verbosity": "high",
             "format": {"type": "text"},
         }
+
+    @pytest.mark.parametrize("verbosity", ["extra-short", 42, [], {}])
+    def test_preflight_rejects_invalid_text_verbosity(self, verbosity):
+        with pytest.raises(
+            ValueError,
+            match="text.verbosity.*must be low, medium, or high",
+        ):
+            _preflight_codex_api_kwargs(
+                {
+                    "model": "gpt-5.5",
+                    "instructions": "system",
+                    "input": [{"role": "user", "content": "hi"}],
+                    "store": False,
+                    "text": {"verbosity": verbosity},
+                }
+            )
 
     @pytest.mark.parametrize("length", [64, 65])
     def test_codex_cache_scope_boundary(self, transport, length):

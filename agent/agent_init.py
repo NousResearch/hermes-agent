@@ -42,6 +42,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.text_verbosity import parse_text_verbosity
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
@@ -1869,14 +1870,18 @@ def init_agent(
     _agent_section = _agent_cfg.get("agent", {})
     if not isinstance(_agent_section, dict):
         _agent_section = {}
-    _output_verbosity = _agent_section.get("output_verbosity")
-    if isinstance(_output_verbosity, str):
-        _output_verbosity = _output_verbosity.strip().lower()
-    agent.output_verbosity = (
-        _output_verbosity
-        if _output_verbosity in {"low", "medium", "high"}
-        else None
-    )
+    _config_text_verbosity = _agent_section.get("text_verbosity")
+    agent.text_verbosity = parse_text_verbosity(_config_text_verbosity)
+    if (
+        _config_text_verbosity is not None
+        and (not isinstance(_config_text_verbosity, str) or _config_text_verbosity.strip())
+        and agent.text_verbosity is None
+    ):
+        logger.warning(
+            "Invalid agent.text_verbosity in config.yaml: %r; "
+            "must be low, medium, high, or empty. Falling back to provider default.",
+            _config_text_verbosity,
+        )
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
     # Empty-response retry guard config (NS-503): additive

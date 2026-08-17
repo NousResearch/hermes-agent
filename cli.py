@@ -479,7 +479,7 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
-            "output_verbosity": "",
+            "text_verbosity": "",
             "service_tier": "",
             # Built-in personalities live in hermes_cli.personality
             # (BUILTIN_PERSONALITIES) — the single owner. Entries here are

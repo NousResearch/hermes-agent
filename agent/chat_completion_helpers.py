@@ -45,6 +45,7 @@ from agent.message_sanitization import (
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.text_verbosity import supports_openai_text_verbosity
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -1882,20 +1883,18 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             base_url_host_matches(agent.base_url, "models.github.ai")
             or base_url_host_matches(agent.base_url, "githubcopilot.com")
         )
-        is_codex_backend = (
-            agent.provider == "openai-codex"
-            or (
-                agent._base_url_hostname == "chatgpt.com"
-                and "/backend-api/codex" in agent._base_url_lower
-            )
+        is_canonical_codex_route = (
+            agent._base_url_hostname == "chatgpt.com"
+            and "/backend-api/codex" in agent._base_url_lower
         )
+        is_codex_backend = agent.provider == "openai-codex" or is_canonical_codex_route
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
-        from agent.output_verbosity import supports_openai_output_verbosity
-
-        supports_output_verbosity = supports_openai_output_verbosity(
+        supports_text_verbosity = supports_openai_text_verbosity(
             agent.model,
             base_url_hostname=agent._base_url_hostname,
-            is_codex_backend=is_codex_backend,
+            is_canonical_codex_route=is_canonical_codex_route,
+            is_xai_responses=is_xai_responses,
+            is_github_responses=is_github_responses,
         )
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
@@ -1947,8 +1946,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             messages=_msgs_for_codex,
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
-            output_verbosity=getattr(agent, "output_verbosity", None),
-            supports_output_verbosity=supports_output_verbosity,
+            text_verbosity=getattr(agent, "text_verbosity", None),
+            supports_text_verbosity=supports_text_verbosity,
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
             base_url=agent.base_url,

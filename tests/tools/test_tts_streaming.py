@@ -1134,6 +1134,7 @@ def test_speaker_output_stream_opens_at_rate_learned_from_first_chunk(monkeypatc
     from tools.tts_tool_speaker import stream_tts_to_speaker
 
     class _Learns(ts.StreamingTTSProvider):
+
         sample_rate = 24000
 
         @staticmethod
@@ -1225,3 +1226,68 @@ def test_flush_drops_unterminated_think_tail(tag):
     chunker = SentenceChunker()
     assert chunker.feed(f"The spoken part. {tag}half-formed reas") == []
     assert chunker.flush() == ["The spoken part."]
+
+
+# ── Local MLX streamer serializes prefetch (2026-08 resource guard, PR #85071) ──
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
+def test_local_mlx_streamer_serializes_prefetch():
+    """A local MLX streamer (carrying ``_VENV``) must serialize prefetch to one
+    concurrent worker: each spawned worker holds 2-3GB RAM + GPU, so a 3-way
+    prefetch multiplies memory pressure and slows every worker down. Cloud
+    streamers keep the 3-way prefetch (network-bound, no local resource cost).
+    """
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    class _Local(ts.StreamingTTSProvider):
+        sample_rate = 24000
+        _VENV = "/opt/mlx-venv/bin/python3"  # local MLX marker
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            yield b"\x01\x00" * 50
+
+    class _Cloud(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            yield b"\x01\x00" * 50
+
+    def _run(provider_cls):
+        sem_values = []
+        real_sem = threading.Semaphore
+
+        def _capture(n=1):
+            sem_values.append(n)
+            return real_sem(n)
+
+        sd, out = _sd_mock()
+        q = _drain_queue(["A complete sentence for testing."])
+        stop, done = threading.Event(), threading.Event()
+        with patch("tools.tts_streaming.resolve_streaming_provider",
+                   return_value=provider_cls({}, {})), \
+             patch.object(tts_tool, "_import_sounddevice", return_value=sd), \
+             patch.object(threading, "Semaphore", side_effect=_capture):
+            stream_tts_to_speaker(q, stop, done)
+        return sem_values
+
+    local_sems = _run(_Local)
+    cloud_sems = _run(_Cloud)
+    # Only the prefetch semaphore is constructed inside the pipeline.
+    assert 1 in local_sems, f"local MLX streamer must serialize prefetch, got {local_sems}"
+    assert 3 in cloud_sems, f"cloud streamer keeps 3-way prefetch, got {cloud_sems}"
+    assert 3 not in local_sems
+    assert 1 not in cloud_sems
+

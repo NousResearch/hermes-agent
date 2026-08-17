@@ -189,3 +189,23 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   const text = textOf(tree)
   assert.match(text, /Fresh bot/)
 })
+
+test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {
+  // hermes-agent#88200: the row opens the pinned chat on click, so the
+  // preview must describe that same session — not the profile's most recent
+  // (but unrelated) activity.
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      last_session: { id: 'scratch9', title: 'Scratch', preview: 'unrelated scratch content', last_active: 1_800_000_000 },
+      preferred_session: { id: 'pinned1', resolved_id: 'pinned1', title: 'Bot Chat', preview: 'pinned chat content', started_at: 1, last_active: 1_700_000_000, message_count: 5 }
+    },
+    onEdit: () => undefined
+  })
+  const text = textOf(tree)
+  assert.match(text, /pinned chat content/)
+  assert.doesNotMatch(text, /unrelated scratch content/)
+})

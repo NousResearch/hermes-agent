@@ -60,6 +60,74 @@ def _(rid, params: dict) -> dict:
             return text[:80] + "..."
         return text
 
+    def _preferred_session_row(profile_path, session_id):
+        """Precise summary for ONE caller-pinned session id, or None.
+
+        Complements ``last_session``: that field answers "what is the newest
+        conversation", this answers "what about THIS conversation". Callers
+        that open a specific session on click (e.g. a roster whose rows open
+        a pinned chat) pass their pins via ``preferred_session_ids`` so the
+        preview and the click target describe the same session
+        (hermes-agent#88200).
+
+        Exact-lookup semantics, deliberately different from the listing:
+        hidden rows still resolve (a hidden-from-sidebar session EXISTS),
+        compression lineages resolve to the live tip with the same resolver
+        ``session.resume`` uses, and denied internal sources (tool/kanban)
+        count as absent. The reported ``id`` stays the caller's durable pin
+        while ``resolved_id`` names the live tip. Best-effort: any failure
+        degrades to None rather than failing the whole profiles.list call.
+        """
+        try:
+            from pathlib import Path
+
+            db_path = Path(profile_path) / "state.db"
+            if not db_path.exists():
+                return None
+            from hermes_state import SessionDB
+
+            deny = frozenset({"kanban", "tool"})
+            db = SessionDB(db_path=db_path)
+            try:
+                row = db.get_session(session_id)
+                if not row:
+                    return None
+                if (row.get("source") or "").strip().lower() in deny:
+                    return None
+                if row.get("archived"):
+                    return None
+                try:
+                    tip = db.resolve_resume_session_id(session_id) or session_id
+                except Exception:
+                    tip = session_id
+                tip_row = db.get_session(tip) or row
+                preview = ""
+                try:
+                    preview = _latest_message_preview(db, tip)
+                except Exception:
+                    pass
+                return {
+                    "id": session_id,
+                    "resolved_id": tip,
+                    "title": tip_row.get("title") or "",
+                    "preview": preview,
+                    "started_at": tip_row.get("started_at") or row.get("started_at") or 0,
+                    "last_active": (
+                        tip_row.get("last_activity_at")
+                        or tip_row.get("started_at")
+                        or row.get("started_at")
+                        or 0
+                    ),
+                    "message_count": tip_row.get("message_count") or 0,
+                }
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+        except Exception:
+            return None
+
     def _latest_profile_session_row(profile_path):
         """Most recent human-facing session in a profile's state.db, or None.
 
@@ -116,6 +184,13 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.profiles import list_profiles
 
         include_sessions = is_truthy_value(params.get("include_sessions", True))
+        # Optional precise lookups: {profile_name: session_id} from callers
+        # that open a specific session per row (pinned-chat rosters). Only
+        # resolved when include_sessions is on; each named profile row gains
+        # a ``preferred_session`` summary (None when the id is gone).
+        preferred_ids = params.get("preferred_session_ids")
+        if not isinstance(preferred_ids, dict):
+            preferred_ids = {}
         out = []
         for p in list_profiles():
             row = {
@@ -129,6 +204,9 @@ def _(rid, params: dict) -> dict:
             }
             if include_sessions:
                 row["last_session"] = _latest_profile_session_row(p.path)
+                pin = preferred_ids.get(p.name)
+                if isinstance(pin, str) and pin.strip():
+                    row["preferred_session"] = _preferred_session_row(p.path, pin.strip())
 
             # Client-agnostic UI metadata (avatars, accent colors, pinned
             # order, …) — stored server-side in profile.yaml so every

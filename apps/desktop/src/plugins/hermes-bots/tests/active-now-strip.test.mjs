@@ -94,5 +94,5 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
   assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
   assert.match(source, /let pinnedChat = botRosterMeta\(bot, allMeta\)\?\.chat/)
   assert.match(source, /await prepareBotSource\(bot, pinnedChat\)/)
-  assert.match(source, /openBotCanonicalChat\(bot\.name, pinnedChat\)/)
+  assert.match(source, /openBotCanonicalChat\(bot\.name, pinnedChat, bot\.last_session\)/)
 })

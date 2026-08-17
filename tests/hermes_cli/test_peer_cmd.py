@@ -116,7 +116,9 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         if self.path == "/api/sessions":
             type(self).sessions.append("bc_1")
-            return self._json({"id": "bc_1", "title": body.get("title")}, 201)
+            # REAL api_server create shape: the row is wrapped under "session"
+            # (verified live Aug 2026 — a flat fake hid a parser bug).
+            return self._json({"object": "hermes.session", "session": {"id": "bc_1", "title": body.get("title")}}, 201)
 
         if self.path.startswith("/api/sessions/") and self.path.endswith("/chat"):
             type(self).chats.append(body.get("message"))

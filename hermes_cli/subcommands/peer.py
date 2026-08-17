@@ -126,7 +126,9 @@ def _ensure_bot_chat(base: str, key: str) -> str:
         method="POST",
         body={"title": BOT_CHAT_TITLE, "source": "bot_peer_dm"},
     )
-    session_id = str(created.get("id") or created.get("session_id") or "")
+    # Real api_server wraps the row: {"object": "hermes.session", "session": {...}}.
+    session = created.get("session") if isinstance(created.get("session"), dict) else created
+    session_id = str(session.get("id") or session.get("session_id") or "")
     if not session_id:
         raise RuntimeError("Peer did not return a session id for the new Bot Chat")
     return session_id

@@ -2320,6 +2320,21 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
         return self._model_routes.get(model_alias)
 
+    def _stored_session_model(self, session: Any) -> Optional[str]:
+        """The model persisted on a session row, minus the virtual alias.
+
+        The advertised virtual model (usually ``hermes-agent``) means "use
+        the gateway default". Session creation persists it when the client
+        sent no model, and replaying it upstream as a raw provider model id
+        400s ("hermes-agent is not a valid model ID") — the same filter
+        ``_request_agent_overrides`` applies to per-request bodies. One
+        resolver for both session-chat sites (sync + stream).
+        """
+        stored = session.get("model") if isinstance(session, dict) else None
+        if not stored or stored == self._model_name:
+            return None
+        return stored
+
     @staticmethod
     def _clean_runtime_id(value: Any, *, max_len: int = 200) -> str:
         if value is None:
@@ -3740,7 +3755,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
@@ -3850,7 +3865,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = session.get("model") if isinstance(session, dict) else None
+            stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None

@@ -35,6 +35,10 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   EmptyState,
   GlyphSpinner,
   haptic,
@@ -6020,6 +6024,169 @@ function GroupDialog({ bot, onClose }) {
   })
 }
 
+/** Discord-style group chat creation: pick 2+ bots via checkboxes (with
+ *  search), name the group, create. Assignment is the existing per-bot
+ *  `group` meta field, so the room appears in the roster and syncs
+ *  cross-machine via ui_meta exactly like Move-to-group. */
+function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
+  const allMeta = useValue($botMeta)
+  const [query, setQuery] = useState('')
+  const [checked, setChecked] = useState({})
+  const [name, setName] = useState('')
+
+  // Reset per open so a cancelled draft doesn't leak into the next one.
+  useEffect(() => {
+    if (open) {
+      setQuery('')
+      setChecked({})
+      setName('')
+    }
+  }, [open])
+
+  const selected = roster.filter(bot => checked[bot.name])
+  const visible = filterBots(roster, allMeta, query)
+  const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+  const placeholder = selected.length
+    ? selected.map(bot => displayName(bot, allMeta[bot.name])).join(', ')
+    : 'Group name'
+  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+
+  const create = () => {
+    const groupName = (name.trim() || placeholder).slice(0, 64)
+
+    if (selected.length < 2 || !groupName) {
+      return
+    }
+
+    for (const bot of selected) {
+      void saveBotMeta(bot.name, { group: groupName })
+    }
+
+    host.notify({ kind: 'info', message: `“${groupName}” created with ${selected.length} bots` })
+    onClose()
+    onCreated?.(groupName)
+  }
+
+  return jsx(Dialog, {
+    open,
+    onOpenChange: value => {
+      if (!value) {
+        onClose()
+      }
+    },
+    children: jsxs(DialogContent, {
+      className: 'max-w-md',
+      children: [
+        jsxs(DialogHeader, {
+          children: [
+            jsx(DialogTitle, { children: 'New Group Chat' }),
+            jsx(DialogDescription, {
+              children: `Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. The room lives in the Bots roster and syncs to every machine.`
+            })
+          ]
+        }),
+        jsx(SearchField, {
+          'aria-label': 'Search bots to add',
+          autoFocus: true,
+          containerClassName: 'w-full',
+          inputClassName: 'w-full',
+          placeholder: 'Search bots to add…',
+          value: query,
+          onChange: setQuery
+        }),
+        selected.length
+          ? jsx('div', {
+              className: 'flex flex-wrap gap-1',
+              children: selected.map(bot =>
+                jsxs('button', {
+                  type: 'button',
+                  className:
+                    'flex items-center gap-1 rounded-full bg-(--chrome-action-hover) py-0.5 pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground',
+                  title: 'Remove from selection',
+                  onClick: () => setChecked(prev => ({ ...prev, [bot.name]: false })),
+                  children: [displayName(bot, allMeta[bot.name]), jsx(Codicon, { name: 'close', className: 'text-[0.6rem]' })]
+                }, bot.name)
+              )
+            })
+          : null,
+        jsx(ScrollArea, {
+          className: 'max-h-64 min-h-0',
+          children: jsx('div', {
+            className: 'grid gap-0.5 pr-2',
+            children: visible.length
+              ? visible.map(bot => {
+                  const meta = allMeta[bot.name]
+                  const { shape, color, image } = botAppearance(bot.name, meta)
+                  const isChecked = Boolean(checked[bot.name])
+                  const disabled = !isChecked && atCap
+                  const currentGroup = (meta?.group || '').trim()
+
+                  return jsxs('label', {
+                    className: cn(
+                      'flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-(--chrome-action-hover)',
+                      disabled && 'cursor-not-allowed opacity-50'
+                    ),
+                    children: [
+                      jsx(BotFace, {
+                        shape,
+                        color,
+                        image: image && !isBackfilledFacePng(image) ? image : null,
+                        size: 24,
+                        name: bot.name
+                      }),
+                      jsxs('div', {
+                        className: 'min-w-0 flex-1',
+                        children: [
+                          jsx('div', { className: 'truncate text-xs text-foreground', children: displayName(bot, meta) }),
+                          jsx('div', {
+                            className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                            children: currentGroup ? `@${bot.name} · in “${currentGroup}”` : `@${bot.name}`
+                          })
+                        ]
+                      }),
+                      jsx(Checkbox, {
+                        checked: isChecked,
+                        disabled,
+                        onCheckedChange: value => setChecked(prev => ({ ...prev, [bot.name]: Boolean(value) }))
+                      })
+                    ]
+                  }, bot.name)
+                })
+              : jsx('div', {
+                  className: 'px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)',
+                  children: query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create agents first.'
+                })
+          })
+        }),
+        jsx('form', {
+          onSubmit: event => {
+            event.preventDefault()
+            create()
+          },
+          children: jsx(Input, {
+            'aria-label': 'Group name',
+            maxLength: 64,
+            placeholder,
+            value: name,
+            onChange: event => setName(event.target.value)
+          })
+        }),
+        jsxs(DialogFooter, {
+          children: [
+            jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Cancel' }),
+            jsx(Button, {
+              disabled: !canCreate,
+              title: selected.length < 2 ? 'Pick at least 2 bots' : undefined,
+              onClick: create,
+              children: `Create Group${selected.length ? ` (${selected.length})` : ''}`
+            })
+          ]
+        })
+      ]
+    })
+  })
+}
+
 /** Merged room view for one group: shared timeline with per-member
  *  attribution, a composer that drives the round-robin, and a working
  *  indicator while member turns run. */
@@ -6148,6 +6315,7 @@ function BotsPane() {
   const gatewayUp = gatewayState === 'open'
   const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
   const [createOpen, setCreateOpen] = useState(false)
+  const [groupCreateOpen, setGroupCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [grouping, setGrouping] = useState(null)
@@ -6256,15 +6424,36 @@ function BotsPane() {
                   children: jsx(Codicon, { name: hideBotChats ? 'eye-closed' : 'eye' })
                 })
               }),
-              jsx(Tip, {
-                label: 'New Agent',
-                children: jsx('button', {
-                  type: 'button',
-                  className:
-                    'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-                  onClick: () => setCreateOpen(true),
-                  children: jsx(Codicon, { name: 'add' })
-                })
+              jsxs(DropdownMenu, {
+                children: [
+                  jsx(Tip, {
+                    label: 'New…',
+                    children: jsx(DropdownMenuTrigger, {
+                      asChild: true,
+                      children: jsx('button', {
+                        type: 'button',
+                        'aria-label': 'New agent or group chat',
+                        className:
+                          'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                        children: jsx(Codicon, { name: 'add' })
+                      })
+                    })
+                  }),
+                  jsxs(DropdownMenuContent, {
+                    align: 'end',
+                    children: [
+                      jsxs(DropdownMenuItem, {
+                        onSelect: () => setCreateOpen(true),
+                        children: [jsx(Codicon, { name: 'hubot', className: 'mr-1.5' }), 'New Agent']
+                      }),
+                      jsxs(DropdownMenuItem, {
+                        disabled: roster.length < 2,
+                        onSelect: () => setGroupCreateOpen(true),
+                        children: [jsx(Codicon, { name: 'organization', className: 'mr-1.5' }), 'New Group Chat']
+                      })
+                    ]
+                  })
+                ]
               })
             ]
           })
@@ -6409,6 +6598,12 @@ function BotsPane() {
           void refetch()
         },
         roster
+      }),
+      jsx(CreateGroupChatDialog, {
+        open: groupCreateOpen,
+        roster,
+        onClose: () => setGroupCreateOpen(false),
+        onCreated: groupName => $groupChatWorkspace.set(groupName)
       }),
       jsx(EditProfileDialog, {
         bot: editing,

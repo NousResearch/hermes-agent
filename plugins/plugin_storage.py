@@ -21,8 +21,12 @@ Usage::
 
     state_file = plugin_data_dir("my-plugin") / "state.json"
 
-    with plugin_db("my-plugin") as conn:      # <data dir>/data.db
+    conn = plugin_db("my-plugin")             # <data dir>/data.db
+    try:
         conn.execute("CREATE TABLE IF NOT EXISTS ...")
+        conn.commit()
+    finally:
+        conn.close()
 """
 
 from __future__ import annotations

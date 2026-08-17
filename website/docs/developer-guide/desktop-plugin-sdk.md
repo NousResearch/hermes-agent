@@ -383,11 +383,16 @@ Rules the host enforces so the surface stays safe:
 
 Core ships one directive as the reference consumer: `::preview{file="…"}`
 renders the workspace HTML file **live inside the message** — a sandboxed
-`srcdoc` iframe with an opaque origin (scripts run; no reach into the app,
-its storage, or the bridge), optional `height="480"`, with the classic
-preview card below it as the rail escape hatch. Non-HTML targets and remote
-gateways fall back to the card alone. Tell the agent about your directive in
-a skill (that's how it learns to emit it).
+`srcdoc` iframe with an opaque origin (scripts run and the widget is fully
+interactive; no reach into the app, its storage, or the bridge). The frame
+sizes itself to the content (height live, width adopted from the content's
+intrinsic span, flush left in the message flow), and a theme prelude hands
+the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
+`--accent`, `--border`, `--card`), the app font, and a transparent
+background — so widget-shaped HTML reads as native while a full page keeps
+its own design. Non-HTML targets and remote gateways fall back to the
+classic preview card. Tell the agent about your directive in a skill (that's
+how it learns to emit it).
 
 ### Mount-scoped chrome (`Contribute`)
 

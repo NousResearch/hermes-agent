@@ -173,15 +173,20 @@ def create_subagent_worktree(
 
 
 def mark_worktree_payload_unproven(
-    payload: Dict[str, Any], reason: str
+    payload: Dict[str, Any], reason: str, *, unmeasured: str = "commits/dirty"
 ) -> Dict[str, Any]:
     """Flag a worktree result payload as un-inspected, in place (#88113).
 
-    A failed probe proves nothing about the tree, so ``commits``/``dirty`` keep
-    their defaults. The parent agent only ever sees this dict — it cannot read
-    logs — so the uncertainty has to travel *in the payload*, or "0 commits,
-    clean" reads as "the child produced nothing" and the work we just preserved
-    is never looked at.
+    A failed probe proves nothing about the tree, so the fields it would have
+    filled keep their defaults. The parent agent only ever sees this dict — it
+    cannot read logs — so the uncertainty has to travel *in the payload*, or
+    "0 commits, clean" reads as "the child produced nothing" and the work we
+    just preserved is never looked at.
+
+    *unmeasured* names only the fields this failure actually left unproven: one
+    probe can succeed while the other fails (a bad ``base_commit`` fails
+    ``rev-list`` while ``status`` still reports a real ``dirty``), and claiming
+    a measured value is UNKNOWN would be its own kind of misreport.
 
     Shared by ``finalize_subagent_worktree`` and ``delegate_tool``'s
     finalize-raised fallback so the two producers of this schema cannot drift.
@@ -190,8 +195,8 @@ def mark_worktree_payload_unproven(
     branch = payload.get("branch", "")
     payload["inspection_failed"] = True
     payload["note"] = (
-        f"git inspection failed ({reason}): 'commits' and 'dirty' are "
-        "UNKNOWN, not zero/clean. The worktree and branch were preserved "
+        f"git inspection failed ({reason}): {unmeasured} UNKNOWN — not "
+        "proven zero/clean. The worktree and branch were preserved "
         f"— inspect {path} (branch {branch}) before assuming no work."
     )
     logger.warning(
@@ -259,17 +264,25 @@ def finalize_subagent_worktree(
         payload["pruned"] = True  # nothing on disk to review
         return payload
 
-    def _unproven(reason: str) -> Dict[str, Any]:
-        return mark_worktree_payload_unproven(payload, reason)
+    def _unproven(
+        reason: str, *, unmeasured: str = "commits/dirty"
+    ) -> Dict[str, Any]:
+        return mark_worktree_payload_unproven(
+            payload, reason, unmeasured=unmeasured
+        )
 
     # A worktree whose commit count was never measured must not be pruned
     # either: the prune condition reads payload["commits"], and without a base
     # commit that value is an unproven default, exactly the class of bug
     # #88113 is about.
     if not base_commit:
-        return _unproven("no base_commit recorded — commit count unmeasurable")
+        return _unproven(
+            "no base_commit recorded — commit count unmeasurable",
+            unmeasured="commits",
+        )
 
     failed: list = []
+    unmeasured: list = []
     try:
         counted = _run_git(
             ["rev-list", "--count", f"{base_commit}..HEAD"], cwd=path
@@ -281,6 +294,7 @@ def finalize_subagent_worktree(
                 f"rev-list exit {counted.returncode}: "
                 f"{counted.stderr.strip()[:200]}"
             )
+            unmeasured.append("commits")
         status = _run_git(["status", "--porcelain"], cwd=path)
         if status.returncode == 0:
             payload["dirty"] = bool(status.stdout.strip())
@@ -289,16 +303,20 @@ def finalize_subagent_worktree(
                 f"status exit {status.returncode}: "
                 f"{status.stderr.strip()[:200]}"
             )
+            unmeasured.append("dirty")
     except Exception as exc:
         # Same unknown state as a non-zero exit (timeout, OSError, or a
         # non-numeric rev-list stdout) — keep the worktree rather than risk
-        # deleting work, and tell the caller the numbers are unproven.
+        # deleting work, and tell the caller the numbers are unproven. Which
+        # probe raised is unknowable here, so neither value is trustworthy.
         return _unproven(f"inspection raised: {exc}")
 
     if failed:
         # Fail-safe (#88113): a destructive cleanup requires affirmative proof
         # of "zero commits + clean tree"; the defaults prove nothing.
-        return _unproven("; ".join(failed))
+        return _unproven(
+            "; ".join(failed), unmeasured="/".join(unmeasured)
+        )
 
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         try:

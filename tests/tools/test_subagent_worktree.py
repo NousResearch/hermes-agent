@@ -239,6 +239,33 @@ class SubagentWorktreeTests(unittest.TestCase):
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertNotEqual(branches.strip(), "")
 
+    def test_finalize_note_disclaims_only_the_unmeasured_field(self):
+        """A partial failure must not claim a MEASURED value is unknown.
+
+        A bad base_commit fails `rev-list` while `status` still succeeds, so
+        ``dirty`` is a real measurement — the note should disclaim ``commits``
+        only, or it misreports in the other direction.
+        """
+        repo = _make_repo(self.tmp)
+        info = sw.create_subagent_worktree(str(repo), "partial")
+        assert info is not None
+        wt = Path(info["path"])
+        (wt / "UNTRACKED.txt").write_text("dirty!\n", encoding="utf-8")
+
+        payload = sw.finalize_subagent_worktree(
+            {**info, "base_commit": "deadbeef" * 5}
+        )
+
+        # status succeeded, so dirty is trustworthy and reported as such.
+        self.assertTrue(payload["dirty"])
+        self.assertTrue(payload["inspection_failed"])
+        self.assertFalse(payload["pruned"])
+        # The note names ONLY the unmeasured field.
+        self.assertIn("commits UNKNOWN", payload["note"])
+        self.assertNotIn("dirty UNKNOWN", payload["note"])
+        self.assertNotIn("commits/dirty", payload["note"])
+        self.assertTrue((wt / "UNTRACKED.txt").exists())
+
     def test_finalize_keeps_worktree_when_base_commit_missing(self):
         """An unmeasurable commit count must not authorize deletion.
 

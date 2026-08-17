@@ -171,15 +171,20 @@ publish() { # terminal event -- the page must render it before teardown
 
 find_browser() {
   local c
+  # No Microsoft Edge, on purpose: Edge's OS-level Microsoft-account
+  # integration signs a fresh throwaway profile into the user's MSA and
+  # renders its own "syncing your data" notification — MSA email included —
+  # inside this window that is titled "Hermes" (#88410). The throwaway
+  # --user-data-dir below cannot block it; the other Chromium-family
+  # browsers carry no OS account integration into a fresh profile.
   if [ "$(uname)" = "Darwin" ]; then
     for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
              "/Applications/Chromium.app/Contents/MacOS/Chromium" \
              "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"; do
       [ -x "$c" ] && { echo "$c"; return; }
     done
   else
-    for c in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge brave-browser; do
+    for c in google-chrome google-chrome-stable chromium chromium-browser brave-browser; do
       command -v "$c" 2>/dev/null && return
     done
   fi

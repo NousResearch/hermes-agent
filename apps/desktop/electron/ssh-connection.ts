@@ -44,6 +44,12 @@ const CONTROL_PERSIST_SECONDS = 300
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
 
+// Hostname / IPv4 shape: letters, digits, dots, hyphens, underscores.
+const _HOSTNAME_RE = /^[A-Za-z0-9._-]+$/
+// IPv6 shape (optionally with a %zone). Loose on purpose — ssh does the real
+// parse; this only has to separate "plausible address" from pasted garbage.
+const _IPV6_RE = /^[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?$/
+
 function validateSshTarget(host, user, port) {
   if (!host || typeof host !== 'string') {
     throw new Error('Unsafe SSH target: host is required.')
@@ -57,12 +63,45 @@ function validateSshTarget(host, user, port) {
     throw new Error('Unsafe SSH target: host contains control characters.')
   }
 
+  if (/\s/.test(host)) {
+    throw new Error(
+      'Invalid SSH host: contains whitespace. Enter only the destination (user@host or host) — no "ssh " prefix or extra options.'
+    )
+  }
+
+  if (host.includes(',')) {
+    throw new Error(`Invalid SSH host "${host}": commas are not valid in a hostname or IP (use dots, e.g. 192.168.1.10).`)
+  }
+
+  if (host.includes(':')) {
+    // Only a bare IPv6 address may contain colons here — ports are parsed off
+    // upstream. A single-colon host is almost always "host:port" that failed
+    // to parse, or worse, a pasted credential.
+    const colons = (host.match(/:/g) || []).length
+
+    if (colons < 2 || !_IPV6_RE.test(host)) {
+      // Never echo the suspect segment — it may be a pasted credential.
+      throw new Error(
+        `Invalid SSH host "${host.split(':')[0]}:<hidden>": unexpected ":" segment. ` +
+          'Use host or host:port — and never put a password in the host field; Desktop SSH authenticates with keys.'
+      )
+    }
+  } else if (!_HOSTNAME_RE.test(host)) {
+    throw new Error(`Invalid SSH host "${redactSecrets(host)}": not a valid hostname or IP address.`)
+  }
+
   if (user && _CONTROL_CHAR_RE.test(user)) {
     throw new Error('Unsafe SSH target: user contains control characters.')
   }
 
   if (user && user.startsWith('-')) {
     throw new Error(`Unsafe SSH target: user must not start with a dash ("${user}").`)
+  }
+
+  if (user && /[\s@]/.test(user)) {
+    throw new Error(
+      `Invalid SSH user "${user}": contains whitespace or "@". Enter only the destination (user@host) — no "ssh " prefix.`
+    )
   }
 
   const p = Number(port)
@@ -92,7 +131,11 @@ const _REDACTIONS: Array<[RegExp, string]> = [
   [/(HERMES_DASHBOARD_SESSION_TOKEN=)(\S+)/g, '$1<redacted>'],
   [/(X-Hermes-Session-Token["']?\s*[:=]\s*["']?)([^\s"'&]+)/gi, '$1<redacted>'],
   [/(Authorization["']?\s*:\s*Bearer\s+)(\S+)/gi, '$1<redacted>'],
-  [/([?&](?:token|ticket)=)([^\s&"']+)/gi, '$1<redacted>']
+  [/([?&](?:token|ticket)=)([^\s&"']+)/gi, '$1<redacted>'],
+  // SSH target with a non-numeric segment where a port belongs
+  // (user@host:SECRET or user@host:SECRET:22). A mistyped password in the
+  // host field must never reach logs / debug shares verbatim.
+  [/(\S+@[^\s:]+):(?!\d+\b)[^\s:]+/g, '$1:<redacted>']
 ]
 
 function redactSecrets(text) {

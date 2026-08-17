@@ -265,6 +265,27 @@ test('normalizeSshConfig handles IPv6 and strict port bounds', () => {
   })
 })
 
+test('normalizeSshConfig strips a pasted "ssh " command prefix', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'ssh root@box' }), {
+    mode: 'ssh',
+    host: 'box',
+    user: 'root'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'SSH root@box:2222' }), {
+    mode: 'ssh',
+    host: 'box',
+    user: 'root',
+    port: 2222
+  })
+  // "ssh " with no destination trims to a bare "ssh" host — same as the
+  // legitimately-named case below; the strip only fires on "ssh <dest>".
+  // A host legitimately named "ssh" (no space) is untouched.
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'ssh' }), {
+    mode: 'ssh',
+    host: 'ssh'
+  })
+})
+
 test('localProfileEntry preserves inactive SSH drafts but drops Cloud state', () => {
   const ssh = { mode: 'ssh', host: 'box', user: 'alice', remoteHermesPath: '/hermes' }
   assert.deepEqual(localProfileEntry(ssh), { mode: 'local', savedSsh: ssh })

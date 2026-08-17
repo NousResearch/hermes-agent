@@ -314,6 +314,9 @@ function normalizeSshConfig(entry) {
 
   let host = String(entry.host || '').trim()
 
+  // Tolerate a pasted command: "ssh root@box" → "root@box".
+  host = host.replace(/^ssh\s+/i, '').trim()
+
   if (!host) {
     return null
   }

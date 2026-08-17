@@ -2348,12 +2348,17 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 }
 
 # Codex OAuth advertises 272K via /backend-api/codex/models for these
-# families, but the backend actually ACCEPTS more (verified live Aug 16 2026
-# against chatgpt.com/backend-api/codex/responses: ~371K input tokens
-# completed OK for gpt-5.6-sol/terra/luna and gpt-5.4; ~382K+ rejected with
-# ``context_length_exceeded``; gpt-5.5 rejected 360K, so its 272K
-# advertisement is real and it is NOT listed). 350K keeps ~22K margin under
-# the observed ~372K enforcement.
+# families, but the backend actually ACCEPTS far more. OpenAI enabled the
+# large-context window for ChatGPT-subscription Codex accounts on
+# Aug 16 2026 (announced by @thsottiaux; previously API-key-only).
+# Verified live against chatgpt.com/backend-api/codex/responses the same
+# day: 911,276 input tokens completed OK on gpt-5.6-sol; ~925K+ rejected
+# with ``context_length_exceeded`` (the 1.05M window minus reserved output
+# headroom). gpt-5.6-terra, gpt-5.6-luna, and gpt-5.4 all completed 900,026
+# tokens OK. gpt-5.5 and gpt-5.4-mini still rejected >272K, so their
+# advertisement is real enforcement and they are NOT listed. 900K keeps
+# ≥11K margin under the observed ceiling and matches the compaction point
+# Codex's own client config documents for the 1M window.
 #
 # Applied ONLY when the resolved value (live probe or fallback table) is
 # exactly the known-stale 272,000 advertisement — if OpenAI moves the
@@ -2362,13 +2367,13 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # this table is inert. ``gpt-5.6`` is a FAMILY PREFIX (sol/terra/luna and
 # dated snapshots; ``-pro`` slugs are not routable on Codex OAuth — the
 # backend 400s them — so over-matching there is moot). ``gpt-5.4`` is EXACT:
-# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 360K), so
+# gpt-5.4-mini was probed and genuinely enforces 272K (rejected 500K), so
 # prefix-matching the 5.4 family would over-report for mini.
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
-    "gpt-5.6": 350_000,   # sol / terra / luna — all three verified live
+    "gpt-5.6": 900_000,   # sol / terra / luna — all three verified live at 900K
 }
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
-    "gpt-5.4": 350_000,   # verified live; gpt-5.4-mini rejected 360K — excluded
+    "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
 }
 
 # The advertised value the verified-above table is allowed to override.

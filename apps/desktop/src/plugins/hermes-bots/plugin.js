@@ -2518,6 +2518,46 @@ function botRosterKey(bot) {
   return `${bot?.connectionId || 'legacy'}::${bot?.name || 'default'}`
 }
 
+// ── cross-connection routing ─────────────────────────────────────────────────
+// A bot from another registered connection (remoteSource rows) is reached
+// through host.requestProfile with a route descriptor; local bots keep the
+// active-gateway door. Feature-detected: older desktops without
+// requestProfile simply have no remote routes (callers fall back / disable).
+
+/** Route descriptor for a bot on another connection, or null for the local /
+ *  active source (or when the desktop can't route). */
+function botConnectionRoute(bot) {
+  const id = String(bot?.connectionId || '').trim()
+
+  if (!bot?.remoteSource || !id || id === 'local' || typeof host.requestProfile !== 'function') {
+    return null
+  }
+
+  const profile = String(bot?.name || '').trim() || 'default'
+
+  return { connectionId: id, mode: 'remote', profile, targetProfile: profile }
+}
+
+/** Gateway RPC on the bot's OWN source: requestProfile for remote rows,
+ *  the active gateway for local ones. Never activates/foregrounds. */
+async function requestForBot(bot, method, params = {}) {
+  const route = botConnectionRoute(bot)
+
+  if (route) {
+    return host.requestProfile(route, method, params)
+  }
+
+  return host.request(method, params)
+}
+
+/** Stable per-member identity inside a group room. Local members keep their
+ *  bare name (compat with rooms persisted before cross-connection groups);
+ *  remote members get the source-qualified key so `dixie` on the Mini and a
+ *  local `dixie` never share watermarks or sessions. */
+function groupMemberKey(member) {
+  return member?.remoteSource ? botRosterKey(member) : member?.name
+}
+
 // Bot metadata is scoped to the active gateway until the server exposes a
 // union of rich profile rows. Never paint that metadata onto a thin row from
 // another source: two `default` agents must not borrow each other's title,
@@ -2842,9 +2882,14 @@ function parseGroupChatMentions(text, members) {
 
   for (const member of members) {
     const title = String(member.title || '').trim()
+    // Cross-connection members are also addressable by their @name-device
+    // handle (the roster's disambiguated form) — same-named agents on two
+    // machines resolve to the right one.
+    const handle = String(member.handle || '').trim()
     const forms = new Set([
       member.name.toLowerCase(),
       member.name.toLowerCase().replace(/[\s_-]+/g, ''),
+      ...(handle ? [handle.toLowerCase(), handle.toLowerCase().replace(/[\s_-]+/g, '')] : []),
       ...(title
         ? [title.toLowerCase(), title.toLowerCase().replace(/[\s_-]+/g, ''), title.split(/\s+/)[0].toLowerCase()]
         : [])
@@ -2852,7 +2897,7 @@ function parseGroupChatMentions(text, members) {
 
     for (const form of forms) {
       if (form) {
-        handles.set(form, member.name)
+        handles.set(form, groupMemberKey(member))
       }
     }
   }
@@ -2912,7 +2957,7 @@ function resolveGroupResponders(log, members) {
     return members
   }
 
-  return members.filter(member => mentioned.has(member.name))
+  return members.filter(member => mentioned.has(groupMemberKey(member)))
 }
 
 /** Rotate the roster so a different member leads each round. */
@@ -2934,16 +2979,25 @@ function formatGroupChatLine(entry, viewerName) {
   }
 
   const suffix = entry.from.name === viewerName ? ' (you)' : ''
+  // Cross-connection speakers carry their device so same-named agents on
+  // two machines stay tellable apart in every member's transcript.
+  const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${entry.from.name}${suffix}: ${entry.text}`
+  return `${entry.from.name}${suffix}${source}: ${entry.text}`
 }
 
 /** The full per-turn payload for one member: participation rules + the room
  *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
  *  can join a group chat without a profile migration. */
 function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }) {
-  const peers = members.filter(m => m.name !== viewer.name)
-  const peerNames = peers.map(m => (m.title ? `${m.title} (@${m.name})` : `@${m.name}`)).join(', ')
+  const viewerKey = groupMemberKey(viewer)
+  const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
+  const peerNames = peers
+    .map(m => {
+      const handle = m.title ? `${m.title} (@${m.name})` : `@${m.name}`
+      return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
+    })
+    .join(', ')
 
   return [
     `[Group chat: "${groupName}"] You are @${viewer.name}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
@@ -2992,7 +3046,14 @@ function updateGroupChat(group, mutate) {
     const durable = {}
 
     for (const [name, room] of Object.entries(all)) {
-      durable[name] = { log: room.log, watermarks: room.watermarks, sessions: room.sessions || {} }
+      durable[name] = {
+        log: room.log,
+        watermarks: room.watermarks,
+        sessions: room.sessions || {},
+        // Cross-connection member descriptors — remote bots can't ride
+        // bot-meta, so the room record carries who they are.
+        members: Array.isArray(room.members) ? room.members : []
+      }
     }
 
     Promise.resolve(pluginCtx?.storage?.set?.('group-chats', durable)).catch(() => undefined)
@@ -3078,11 +3139,13 @@ function appendGroupChatEntry(group, from, text) {
  *  session id for it. Gateway-native: session.create mints the session
  *  (lazy until its first message), session.resume by stored id — or by
  *  title, which also covers rehydrated rooms whose sid was lost — reopens
- *  it after restarts. */
-async function ensureGroupChatSession(group, memberName) {
+ *  it after restarts. Cross-connection members route to their OWN source
+ *  via requestForBot; the window's gateway never switches. */
+async function ensureGroupChatSession(group, member) {
   const title = `Group: ${group}`
   const room = $groupChats.get()[group] || {}
-  const known = room.sessions && room.sessions[memberName]
+  const key = groupMemberKey(member)
+  const known = room.sessions && room.sessions[key]
 
   // Try resuming what we know (stored sid first, then title lookup).
   for (const target of [known, title]) {
@@ -3091,9 +3154,9 @@ async function ensureGroupChatSession(group, memberName) {
     }
 
     try {
-      const res = await host.request('session.resume', {
+      const res = await requestForBot(member, 'session.resume', {
         session_id: target,
-        profile: memberName,
+        profile: member.name,
         omit_messages: true
       })
 
@@ -3105,8 +3168,8 @@ async function ensureGroupChatSession(group, memberName) {
     }
   }
 
-  const created = await host.request('session.create', {
-    profile: memberName,
+  const created = await requestForBot(member, 'session.create', {
+    profile: member.name,
     title,
     ...($hideBotChats.get() ? { hidden: true } : {})
   })
@@ -3114,7 +3177,7 @@ async function ensureGroupChatSession(group, memberName) {
 
   if (stored) {
     updateGroupChat(group, r => {
-      r.sessions = { ...(r.sessions || {}), [memberName]: stored }
+      r.sessions = { ...(r.sessions || {}), [key]: stored }
       return r
     })
   }
@@ -3129,7 +3192,7 @@ const GROUP_TURN_POLL_MS = 2000
  *  the member's per-group session, then poll the session until a NEW
  *  assistant message lands (or timeout → pass). No shell composition. */
 async function runGroupChatMemberTurn(group, member, prompt) {
-  const { runtime, stored } = await ensureGroupChatSession(group, member.name)
+  const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
     return null
@@ -3139,7 +3202,7 @@ async function runGroupChatMemberTurn(group, member, prompt) {
   let before = 0
 
   try {
-    const pre = await host.request('session.resume', {
+    const pre = await requestForBot(member, 'session.resume', {
       session_id: stored || runtime,
       profile: member.name
     })
@@ -3148,7 +3211,7 @@ async function runGroupChatMemberTurn(group, member, prompt) {
     /* lazy session — zero messages */
   }
 
-  await host.request('prompt.submit', { session_id: runtime, text: prompt })
+  await requestForBot(member, 'prompt.submit', { session_id: runtime, text: prompt })
 
   const deadline = Date.now() + GROUP_TURN_TIMEOUT_MS
 
@@ -3158,7 +3221,7 @@ async function runGroupChatMemberTurn(group, member, prompt) {
     let state = null
 
     try {
-      state = await host.request('session.resume', {
+      state = await requestForBot(member, 'session.resume', {
         session_id: stored || runtime,
         profile: member.name
       })
@@ -3211,7 +3274,8 @@ async function runGroupChatRounds(group, members) {
         }
 
         const room = $groupChats.get()[group] || { log: [], watermarks: {} }
-        const seen = room.watermarks[member.name] || 0
+        const memberKey = groupMemberKey(member)
+        const seen = room.watermarks[memberKey] || 0
         const delta = room.log.slice(seen)
 
         if (!delta.length) {
@@ -3235,15 +3299,19 @@ async function runGroupChatRounds(group, members) {
 
         // The member has now seen everything up to the pre-reply log length.
         updateGroupChat(group, r => {
-          r.watermarks[member.name] = r.log.length
+          r.watermarks[memberKey] = r.log.length
           return r
         })
 
         if (reply !== null && !isGroupPassText(reply)) {
-          appendGroupChatEntry(group, { kind: 'member', name: member.name }, reply)
+          appendGroupChatEntry(
+            group,
+            { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
+            reply
+          )
           // Its own message counts as seen too.
           updateGroupChat(group, r => {
-            r.watermarks[member.name] = r.log.length
+            r.watermarks[memberKey] = r.log.length
             return r
           })
           posted += 1
@@ -4832,6 +4900,43 @@ function CreateAgentDialog({ open, onClose, roster }) {
   const [noSkills, setNoSkills] = useState(false)
   const [shareAuth, setShareAuth] = useState(true)
   const [advTab, setAdvTab] = useState('general')
+  // Where the profile is created: '' = the active gateway (unchanged default),
+  // else a registry connection id — the profiles.create lands on THAT
+  // machine's backend via host.requestProfile, no gateway switch. Only
+  // rendered when the desktop has a multi-connection registry.
+  const [targetConnection, setTargetConnection] = useState('')
+  const [connections, setConnections] = useState(null)
+
+  useEffect(() => {
+    if (!open || connections !== null || typeof host.connections !== 'function' || typeof host.requestProfile !== 'function') {
+      return
+    }
+
+    host
+      .connections()
+      .then(value => setConnections(Array.isArray(value) ? value : []))
+      .catch(() => setConnections([]))
+  }, [open, connections])
+
+  const activeConnectionId = String(host.state?.connectionId?.get?.() || '').trim()
+  // Remote target = an explicitly picked registry connection that is not the
+  // one this window is already on.
+  const remoteTarget = Boolean(targetConnection) && targetConnection !== (activeConnectionId || 'local')
+  const targetLabel = remoteTarget
+    ? (connections || []).find(c => c.id === targetConnection)?.label || targetConnection
+    : ''
+
+  /** Gateway RPC on the create target: the picked connection's default
+   *  backend for remote targets, the active gateway otherwise. */
+  const requestForTarget = (method, params = {}) =>
+    remoteTarget
+      ? host.requestProfile(
+          { connectionId: targetConnection, mode: 'remote', profile: 'default', targetProfile: 'default' },
+          method,
+          params
+        )
+      : host.request(method, params)
+
   // Set once ensureAgentCreated() materializes the profile for the live
   // Capabilities tab (SkillsView needs a real backend to point at). State —
   // not just createdRef — because the render must flip when it lands.
@@ -4847,7 +4952,12 @@ function CreateAgentDialog({ open, onClose, roster }) {
   const valid = slug.length > 0 && NAME_RE.test(slug)
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
   // shows up in the roster — its OWN slug must not read as "taken".
-  const taken = roster.some(b => b.name === slug && b.name !== createdRef.current)
+  // A remote-target create is gated by the TARGET machine's roster: a local
+  // name clash is fine there, and the remote's own duplicate check rejects
+  // real collisions at profiles.create time.
+  const taken = remoteTarget
+    ? roster.some(b => b.remoteSource && b.connectionId === targetConnection && b.name === slug && b.name !== createdRef.current)
+    : roster.some(b => !b.remoteSource && b.name === slug && b.name !== createdRef.current)
 
   // Draft semantics for the lazily-created profile: opening the Capabilities
   // tab (or running MCP setup) materializes the profile so the LIVE config
@@ -4864,7 +4974,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
 
     createdRef.current = null
     flightRef.current = null
-    void deleteBot({ name: draft })
+    const discard = remoteTarget
+      ? requestForTarget('cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
+      : deleteBot({ name: draft })
+    void Promise.resolve(discard)
       .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
       .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
   }
@@ -4892,6 +5005,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setCapsFailed(false)
     setDirtyCaps({ skills: false, toolsets: false, mcp: false })
     setCapFilter('')
+    setTargetConnection('')
     setBusy(false)
     setError(null)
     createdRef.current = null
@@ -4907,8 +5021,8 @@ function CreateAgentDialog({ open, onClose, roster }) {
     }
 
     Promise.all([
-      host.request('profiles.describe', { name: capSource }),
-      host.request('mcp.catalog', {}).catch(() => null)
+      requestForTarget('profiles.describe', { name: remoteTarget ? 'default' : capSource }),
+      requestForTarget('mcp.catalog', {}).catch(() => null)
     ])
       .then(([res, cat]) => {
         // Full MCP menu = the profile's configured servers + the bundled
@@ -4972,10 +5086,14 @@ function CreateAgentDialog({ open, onClose, roster }) {
 
       const descriptionText = [title, description].filter(Boolean).join(' — ')
 
-      await host.request('profiles.create', {
+      await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
-        clone_from: cloneFrom === '__none__' ? null : cloneFrom,
+        // Clone sources are profiles of the TARGET backend. The picker's
+        // roster is the local one, so a remote create always starts from the
+        // remote machine's default (or fresh) — never a local profile name
+        // the remote box doesn't have.
+        clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
         no_skills: noSkills,
         // Shared (not copied) auth keeps ONE OAuth/token pool with the main
         // profile, so refreshes can't invalidate each other. Older gateways
@@ -5004,13 +5122,39 @@ function CreateAgentDialog({ open, onClose, roster }) {
           capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
         }
         if (Object.keys(capPayload).length) {
-          await host.request('profiles.configure', { name: slug, ...capPayload })
+          await requestForTarget('profiles.configure', { name: slug, ...capPayload })
         }
       } catch {
         /* capability application is best-effort */
       }
 
-      saveBotMeta(slug, { shape, color, image, imageKind: image ? 'photo' : 'shape', title: title.trim(), created: Date.now() })
+      if (remoteTarget) {
+        // The bot lives on ANOTHER machine — local bot-meta is scoped to the
+        // active gateway, so write appearance/title into the remote
+        // profile's ui_meta (and asset store) directly. Best-effort: the
+        // profile exists either way.
+        const { image: avatarImage, ...look } = {
+          shape,
+          color,
+          image,
+          imageKind: image ? 'photo' : 'shape',
+          title: title.trim(),
+          created: Date.now()
+        }
+
+        try {
+          void requestForTarget('profiles.configure', { name: slug, ui_meta: { 'hermes-bots': look } }).catch(() => undefined)
+
+          if (avatarImage) {
+            void requestForTarget('profiles.set_asset', { name: slug, asset: 'avatar', data: avatarImage }).catch(() => undefined)
+          }
+        } catch {
+          /* older remote gateway */
+        }
+      } else {
+        saveBotMeta(slug, { shape, color, image, imageKind: image ? 'photo' : 'shape', title: title.trim(), created: Date.now() })
+      }
+
       queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
       return slug
     })
@@ -5034,9 +5178,24 @@ function CreateAgentDialog({ open, onClose, roster }) {
         return
       }
 
-      host.notify({ kind: 'success', message: `Agent "${displayName({ name: slug, title })}" created` })
+      host.notify({
+        kind: 'success',
+        message: remoteTarget
+          ? `Agent "${displayName({ name: slug, title })}" created on ${targetLabel}`
+          : `Agent "${displayName({ name: slug, title })}" created`
+      })
+      const wasRemote = remoteTarget
       reset()
       onClose()
+
+      if (wasRemote) {
+        // The bot lives on another machine: it appears in the roster via the
+        // union enumeration; chat routes through its own source. No local
+        // canonical chat to birth here.
+        queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+        return
+      }
+
       $selectedBot.set(slug)
 
       // Birth the bot's forever chat right away: it introduces itself as
@@ -5115,7 +5274,56 @@ function CreateAgentDialog({ open, onClose, roster }) {
             taken
               ? jsx('div', {
                   className: 'text-xs text-(--ui-accent)',
-                  children: `An agent named "${slug}" already exists.`
+                  children: remoteTarget
+                    ? `An agent named "${slug}" already exists on ${targetLabel}.`
+                    : `An agent named "${slug}" already exists.`
+                })
+              : null,
+            // Multi-connection desktops choose WHERE the agent lives. Hidden
+            // on single-connection setups — the active gateway is the only
+            // possible home, exactly the old behavior.
+            Array.isArray(connections) && connections.length > 1
+              ? labeled(
+                  'Create on',
+                  jsxs(Select, {
+                    value: targetConnection || activeConnectionId || 'local',
+                    onValueChange: value => {
+                      setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
+                      // The capability catalog and clone list belong to the
+                      // target backend — refetch for the new home. The live
+                      // Capabilities tab only exists for the active gateway.
+                      setCaps(null)
+                      setCapsFailed(false)
+                      setAdvTab('general')
+                    },
+                    children: [
+                      jsx(SelectTrigger, {
+                        className: 'h-8 rounded-md',
+                        children: jsx(SelectValue, {})
+                      }),
+                      jsx(SelectContent, {
+                        children: connections.map(connection =>
+                          jsx(
+                            SelectItem,
+                            {
+                              value: connection.id,
+                              children:
+                                connection.id === (activeConnectionId || 'local')
+                                  ? `${connection.label || connection.id} (current)`
+                                  : connection.label || connection.id
+                            },
+                            connection.id
+                          )
+                        )
+                      })
+                    ]
+                  })
+                )
+              : null,
+            remoteTarget
+              ? jsx('div', {
+                  className: 'text-[0.7rem] leading-5 text-(--ui-text-tertiary)',
+                  children: `The agent is created on ${targetLabel} and appears in the roster as a Connections bot. Chat routes to that machine.`
                 })
               : null,
             labeled(
@@ -5160,7 +5368,11 @@ function CreateAgentDialog({ open, onClose, roster }) {
                       className: 'flex gap-1',
                       // Newer desktops export the whole Capabilities surface —
                       // one live tab replaces the three staged checklists.
-                      children: (SkillsView
+                      // The live Capabilities surface (SkillsView) binds to
+                      // the ACTIVE gateway's backend — a remote-target draft
+                      // lives elsewhere, so it keeps the staged checklists
+                      // (their catalog reads already route to the target).
+                      children: (SkillsView && !remoteTarget
                         ? [
                             ['general', 'General'],
                             ['capabilities', 'Capabilities']
@@ -5207,9 +5419,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
                           className: 'grid gap-3.5',
                           children: [
                             labeled(
-                              'Clone from profile',
+                              remoteTarget ? `Clone from profile (on ${targetLabel})` : 'Clone from profile',
                               jsxs(Select, {
-                                value: cloneFrom,
+                                disabled: remoteTarget,
+                                value: remoteTarget ? 'default' : cloneFrom,
                                 onValueChange: value => {
                                   setCloneFrom(value)
                                   setCaps(null)
@@ -6557,11 +6770,11 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     }
   }, [open])
 
-  const selected = roster.filter(bot => checked[bot.name])
+  const selected = roster.filter(bot => checked[botRosterKey(bot)])
   const visible = filterBots(roster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
   const placeholder = selected.length
-    ? selected.map(bot => displayName(bot, allMeta[bot.name])).join(', ')
+    ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : 'Group name'
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
@@ -6573,7 +6786,31 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     }
 
     for (const bot of selected) {
-      void saveBotMeta(bot.name, { group: groupName })
+      if (!bot.remoteSource) {
+        void saveBotMeta(bot.name, { group: groupName })
+      }
+    }
+
+    // Members from OTHER connections can't ride bot-meta (it is scoped to
+    // the active gateway and name-keyed). Their descriptors live on the room
+    // record instead, so the roster merge can seat them every refresh.
+    const remoteMembers = selected
+      .filter(bot => bot.remoteSource)
+      .map(bot => ({
+        name: bot.name,
+        handle: bot.handle || bot.name,
+        connectionId: bot.connectionId,
+        connectionKind: bot.connectionKind,
+        connectionLabel: bot.connectionLabel,
+        remoteSource: true,
+        sourceScoped: true
+      }))
+
+    if (remoteMembers.length) {
+      updateGroupChat(groupName, room => {
+        room.members = remoteMembers
+        return room
+      })
     }
 
     host.notify({ kind: 'info', message: `“${groupName}” created with ${selected.length} bots` })
@@ -6617,8 +6854,8 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                   className:
                     'flex items-center gap-1 rounded-full bg-(--chrome-action-hover) py-0.5 pl-2 pr-1.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:text-foreground',
                   title: 'Remove from selection',
-                  onClick: () => setChecked(prev => ({ ...prev, [bot.name]: false })),
-                  children: [displayName(bot, allMeta[bot.name]), jsx(Codicon, { name: 'close', className: 'text-[0.6rem]' })]
+                  onClick: () => setChecked(prev => ({ ...prev, [botRosterKey(bot)]: false })),
+                  children: [displayName(bot, botRosterMeta(bot, allMeta)), jsx(Codicon, { name: 'close', className: 'text-[0.6rem]' })]
                 }, botRosterKey(bot))
               )
             })
@@ -6629,9 +6866,9 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
             className: 'grid gap-0.5 pr-2',
             children: visible.length
               ? visible.map(bot => {
-                  const meta = allMeta[bot.name]
+                  const meta = botRosterMeta(bot, allMeta)
                   const { shape, color, image } = botAppearance(bot.name, meta)
-                  const isChecked = Boolean(checked[bot.name])
+                  const isChecked = Boolean(checked[botRosterKey(bot)])
                   const disabled = !isChecked && atCap
                   const currentGroup = (meta?.group || '').trim()
 
@@ -6654,14 +6891,19 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                           jsx('div', { className: 'truncate text-xs text-foreground', children: displayName(bot, meta) }),
                           jsx('div', {
                             className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)',
-                            children: currentGroup ? `@${bot.name} · in “${currentGroup}”` : `@${bot.name}`
+                            children: [
+                              currentGroup
+                                ? `@${botHandle(bot.name, bot)} · in “${currentGroup}”`
+                                : `@${botHandle(bot.name, bot)}`,
+                              bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''
+                            ].join('')
                           })
                         ]
                       }),
                       jsx(Checkbox, {
                         checked: isChecked,
                         disabled,
-                        onCheckedChange: value => setChecked(prev => ({ ...prev, [bot.name]: Boolean(value) }))
+                        onCheckedChange: value => setChecked(prev => ({ ...prev, [botRosterKey(bot)]: Boolean(value) }))
                       })
                     ]
                   }, botRosterKey(bot))
@@ -6747,7 +6989,16 @@ function GroupChatWorkspace({ group, members }) {
     }
 
     setDraft('')
-    sendToGroupChat(group, members.map(b => ({ name: b.name, title: allMeta[b.name]?.title || '' })), text)
+    // Full descriptors ride into the turn loop: remote members keep their
+    // connection fields so their turns route to their own machines.
+    sendToGroupChat(
+      group,
+      members.map(b => ({
+        ...b,
+        title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
+      })),
+      text
+    )
   }
 
   return jsxs('div', {
@@ -6762,12 +7013,13 @@ function GroupChatWorkspace({ group, members }) {
             ...(room.log.length
               ? room.log.map((entry, index) => {
                   const isUser = entry.from.kind === 'user'
-                  const meta = isUser ? null : allMeta[entry.from.name]
+                  const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
+                  const sourceBadge = !isUser && entry.from.source ? ` · ${entry.from.source}` : ''
                   const label = isUser
                     ? 'You'
                     : meta?.title
-                      ? `${meta.title} (@${entry.from.name})`
-                      : `@${entry.from.name}`
+                      ? `${meta.title} (@${entry.from.name})${sourceBadge}`
+                      : `@${entry.from.name}${sourceBadge}`
 
                   return jsxs('div', {
                     className: isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1',
@@ -6932,7 +7184,30 @@ function BotsPane() {
   }
 
   const groupChatMembers = groupChatName
-    ? activeSourceRoster.filter(bot => (botRosterMeta(bot, allMeta)?.group || '').trim() === groupChatName)
+    ? (() => {
+        const local = activeSourceRoster.filter(
+          bot => (botRosterMeta(bot, allMeta)?.group || '').trim() === groupChatName
+        )
+        // Remote members live on the room record (they can't ride bot-meta).
+        // Prefer the LIVE roster row for each descriptor when present —
+        // fresher handle/label — else seat the stored descriptor itself.
+        const stored = ($groupChats.get()[groupChatName] || {}).members || []
+        const seated = new Set(local.map(botRosterKey))
+        const remote = []
+
+        for (const descriptor of stored) {
+          const key = botRosterKey(descriptor)
+
+          if (seated.has(key)) {
+            continue
+          }
+
+          seated.add(key)
+          remote.push(roster.find(bot => botRosterKey(bot) === key) || descriptor)
+        }
+
+        return [...local, ...remote]
+      })()
     : []
 
   if (groupChatName && groupChatMembers.length) {
@@ -7185,7 +7460,9 @@ function BotsPane() {
       }),
       jsx(CreateGroupChatDialog, {
         open: groupCreateOpen,
-        roster: activeSourceRoster,
+        // Full multi-source roster: group chats can seat bots from other
+        // registered connections — their turns route to their own machines.
+        roster,
         onClose: () => setGroupCreateOpen(false),
         onCreated: groupName => $groupChatWorkspace.set(groupName)
       }),
@@ -7368,6 +7645,7 @@ export default {
                   log: room.log,
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
+                  members: Array.isArray(room.members) ? room.members : [],
                   epoch: 0,
                   running: false
                 }

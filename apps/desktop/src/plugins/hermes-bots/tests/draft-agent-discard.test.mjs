@@ -8,11 +8,11 @@ import test from 'node:test'
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
-test('discardDraft deletes the materialized draft via deleteBot', () => {
+test('discardDraft deletes the materialized draft (deleteBot locally, remote CLI for other connections)', () => {
   assert.match(source, /const discardDraft = \(\) => \{/)
-  assert.match(source, /void deleteBot\(\{ name: draft \}\)/)
+  assert.match(source, /: deleteBot\(\{ name: draft \}\)/)
   // Ref cleared FIRST so a re-entrant cancel can't double-delete.
-  assert.match(source, /createdRef\.current = null\n\s*flightRef\.current = null\n\s*void deleteBot/)
+  assert.match(source, /createdRef\.current = null\n\s*flightRef\.current = null\n\s*const discard = remoteTarget/)
 })
 
 test('both cancel paths discard the draft (esc/overlay + Cancel button)', () => {
@@ -32,5 +32,10 @@ test('renaming after materialization discards the orphaned draft', () => {
 })
 
 test("the draft's own slug does not read as taken", () => {
-  assert.match(source, /roster\.some\(b => b\.name === slug && b\.name !== createdRef\.current\)/)
+  // Both branches of the target-scoped taken check exempt the draft's slug.
+  assert.match(source, /roster\.some\(b => !b\.remoteSource && b\.name === slug && b\.name !== createdRef\.current\)/)
+  assert.match(
+    source,
+    /roster\.some\(b => b\.remoteSource && b\.connectionId === targetConnection && b\.name === slug && b\.name !== createdRef\.current\)/
+  )
 })

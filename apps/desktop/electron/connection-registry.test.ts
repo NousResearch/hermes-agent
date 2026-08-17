@@ -28,10 +28,10 @@ import {
   REGISTRY_VERSION,
   rememberSshEnumeration,
   removeConnection,
-  shouldRetrySshInventory,
   resolveRegistryLocalRoute,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
+  shouldRetrySshInventory,
   uniqueLabel,
   updateEligibility,
   upsertConnection

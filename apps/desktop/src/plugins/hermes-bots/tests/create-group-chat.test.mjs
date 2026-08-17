@@ -30,5 +30,5 @@ test('source contract: create-group modal has search, checkboxes, name, create',
 })
 
 test('source contract: group name falls back to member names, Discord-style', () => {
-  assert.match(pluginSource, /selected\.map\(bot => displayName\(bot, allMeta\[bot\.name\]\)\)\.join\(', '\)/)
+  assert.match(pluginSource, /selected\.map\(bot => displayName\(bot, botRosterMeta\(bot, allMeta\)\)\)\.join\(', '\)/)
 })

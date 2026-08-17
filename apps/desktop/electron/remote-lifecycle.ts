@@ -410,7 +410,11 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
       ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
       ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
       'except OSError:\n' +
-      ' line=subprocess.check_output(["ps","-o","command=","-p",str(pid)],text=True).strip()\n' +
+      ' try:\n' +
+      '  line=subprocess.check_output(["ps","-o","command=","-p",str(pid)],text=True).strip()\n' +
+      ' except subprocess.CalledProcessError:\n' +
+      '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
+      '  print("FOREIGN");sys.exit(0)\n' +
       ' args=shlex.split(line)\n' +
       'ok=False\n' +
       'try:\n' +
@@ -910,10 +914,10 @@ export {
   expandRemotePath,
   fingerprintToken,
   isForwardBindCollision,
+  listRemoteHermesProfiles,
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
-  listRemoteHermesProfiles,
   mintToken,
   openForward,
   ownershipDirectory,

@@ -27,6 +27,8 @@
 
 import crypto from 'node:crypto'
 
+import { parseRemoteProfileListing } from './connection-registry'
+
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
 // an old running dashboard unsafe to reattach to (token handling, readiness/spawn
@@ -252,6 +254,35 @@ async function probeRemoteHermesHome(ssh) {
     error.cause = cause
     throw error
   }
+}
+
+async function listRemoteHermesProfiles(ssh) {
+  const home = assertSafeRemoteHome(await probeRemoteHermesHome(ssh))
+  const dir = expandRemotePath(`${home}/profiles`)
+  let listing = ''
+
+  try {
+    listing = await ssh.exec(`if [ -d ${dir} ]; then ls -1 ${dir}; fi`)
+  } catch (cause) {
+    const error: any = new Error('Could not list remote Hermes profiles.')
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+
+  return parseRemoteProfileListing(listing)
+}
+
+function assertSafeRemoteHome(home) {
+  const value = String(home || '').trim()
+
+  if (!/^(\/|~\/)[A-Za-z0-9._/+-]+$/.test(value) || value.includes('..')) {
+    const error: any = new Error('Unsafe remote Hermes home.')
+    error.kind = 'unsafe-path'
+    throw error
+  }
+
+  return value.replace(/\/+$/, '')
 }
 
 async function readLockfile(ssh, ownershipId) {
@@ -882,6 +913,7 @@ export {
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
+  listRemoteHermesProfiles,
   mintToken,
   openForward,
   ownershipDirectory,

@@ -2211,7 +2211,7 @@ function useRoster() {
       if (typeof host.agents === 'function') {
         try {
           const union = await host.agents()
-          return mergeMultiSourceRoster(local, union, activeConnectionId)
+          return mergeMultiSourceRoster(local, union, activeConnectionId, $lastRoster.get())
         } catch {
           /* older build or roster failure — single-source list stands */
         }
@@ -2237,10 +2237,17 @@ function useRoster() {
  *  Rows from other sources become new roster entries tagged with their
  *  source label so BotRow can badge them and route open/warm through
  *  ensureAgent/warmAgent. Pure — exercised directly by the tests. */
-function mergeMultiSourceRoster(local, union, activeConnectionId = null) {
+function mergeMultiSourceRoster(local, union, activeConnectionId, previous = []) {
   const localProfiles = Array.isArray(local?.profiles) ? local.profiles : []
   const agents = Array.isArray(union?.agents) ? union.agents : []
-  const activeId = String(activeConnectionId || union?.primaryConnectionId || '').trim()
+  // A live id of null/'' means the window is on the unscoped local backend
+  // (host.state.connectionId is null for mode:'local'). Do NOT fall back to
+  // registry primary in that case — primary can still say "spark" after the
+  // user clicked a local bot, which skipped every Spark row as "active" and
+  // invented a This-device shadow of default.
+  const liveProvided = arguments.length >= 3
+  const liveId = String(activeConnectionId || '').trim()
+  const activeId = liveId || (liveProvided ? '' : String(union?.primaryConnectionId || '').trim())
   const activeByName = new Map()
 
   // Treat the rich list as one row per active-source profile. Clone every
@@ -2264,10 +2271,6 @@ function mergeMultiSourceRoster(local, union, activeConnectionId = null) {
   }
 
   const profiles = [...activeByName.values()]
-
-  if (!agents.length) {
-    return { ...local, profiles }
-  }
 
   // host.agents is an Electron/main-process capability. Defend the plugin
   // boundary too: older shells or reconnect races can still hand us repeated
@@ -2320,6 +2323,35 @@ function mergeMultiSourceRoster(local, union, activeConnectionId = null) {
       remoteSource: true,
       sourceScoped: true
     })
+  }
+
+  // SSH sources drop to connect-on-demand the moment their tunnel is not
+  // the live gateway. Keep previously painted remote rows so clicking the
+  // local agent does not empty Bot Mode.
+  if (Array.isArray(previous) && previous.length > 0) {
+    const present = new Set(profiles.map(row => `${row.connectionId || ''}::${row.name}`))
+    const unionSourceIds = new Set(agents.map(agent => String(agent?.connectionId || '').trim()).filter(Boolean))
+    const omitted = new Set(
+      (Array.isArray(union?.sources) ? union.sources : [])
+        .filter(source => source?.error === 'connect-on-demand' || source?.reachable === false)
+        .map(source => String(source.connectionId || '').trim())
+        .filter(Boolean)
+    )
+
+    for (const row of previous) {
+      const connectionId = String(row?.connectionId || '').trim()
+      const name = String(row?.name || '').trim()
+      const key = `${connectionId}::${name || 'default'}`
+
+      if (!row?.remoteSource || !connectionId || !name || present.has(key)) {
+        continue
+      }
+
+      if (omitted.has(connectionId) || !unionSourceIds.has(connectionId)) {
+        profiles.push({ ...row, remoteSource: true, sourceScoped: true })
+        present.add(key)
+      }
+    }
   }
 
   return { ...local, profiles }

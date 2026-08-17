@@ -343,6 +343,110 @@ test('merge: primary-local desktop keeps single-source behavior (no phantom rows
 // source's agent, profiles.list answers from THAT source — the merge must
 // classify against the live id, not the registry primary, or the active
 // source's agents duplicate all over again.
+test('merge: live-null local window does not treat registry primary as active', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = { profiles: [{ name: 'default', last_session: { id: 'this-chat' } }] }
+  const union = {
+    primaryConnectionId: 'spark',
+    agents: [
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'default',
+        handle: 'default-this-device'
+      },
+      { connectionId: 'spark', connectionKind: 'ssh', connectionLabel: 'Spark', profile: 'bob', handle: 'bob' },
+      { connectionId: 'spark', connectionKind: 'ssh', connectionLabel: 'Spark', profile: 'kai', handle: 'kai' },
+      { connectionId: 'spark', connectionKind: 'ssh', connectionLabel: 'Spark', profile: 'rook', handle: 'rook' }
+    ]
+  }
+
+  // Clicking the local agent leaves host.state.connectionId null while the
+  // registry primary stays on Spark. That must not skip Spark bots or invent
+  // a second "This device" shadow of default.
+  const out = merge(local, union, null)
+
+  assert.equal(out.profiles.filter(p => p.name === 'default').length, 1)
+  assert.equal(out.profiles.find(p => p.name === 'default').last_session.id, 'this-chat')
+  assert.equal(out.profiles.filter(p => p.remoteSource && p.connectionId === 'local').length, 0)
+  assert.equal(
+    out.profiles
+      .filter(p => p.remoteSource)
+      .map(p => p.name)
+      .sort()
+      .join(','),
+    'bob,kai,rook'
+  )
+})
+
+test('merge: previously seen remotes survive a connect-on-demand empty union', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const previous = [
+    { name: 'default', last_session: { id: 'this-chat' } },
+    {
+      name: 'bob',
+      remoteSource: true,
+      sourceScoped: true,
+      connectionId: 'spark',
+      connectionKind: 'ssh',
+      connectionLabel: 'Spark',
+      handle: 'bob'
+    }
+  ]
+  const local = { profiles: [{ name: 'default', last_session: { id: 'this-chat' } }] }
+  const union = {
+    primaryConnectionId: 'local',
+    agents: [
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'default',
+        handle: 'default'
+      }
+    ],
+    sources: [{ connectionId: 'spark', kind: 'ssh', error: 'connect-on-demand' }]
+  }
+
+  const out = merge(local, union, 'local', previous)
+  const bob = out.profiles.find(p => p.name === 'bob' && p.connectionId === 'spark')
+
+  assert.ok(bob)
+  assert.equal(bob.remoteSource, true)
+  assert.equal(out.profiles.filter(p => p.name === 'default').length, 1)
+})
+
+test('displayName: local default stays Hermes; remote default uses the device label', () => {
+  const { __displayName: name } = runtime()
+
+  assert.equal(
+    name(
+      {
+        name: 'default',
+        sourceScoped: true,
+        connectionKind: 'local',
+        connectionLabel: 'This device'
+      },
+      null
+    ),
+    'Hermes'
+  )
+  assert.equal(
+    name(
+      {
+        name: 'default',
+        sourceScoped: true,
+        remoteSource: true,
+        connectionKind: 'ssh',
+        connectionLabel: 'Spark'
+      },
+      null
+    ),
+    'Spark'
+  )
+})
+
 test('merge: live active id beats primaryConnectionId for active-source matching', () => {
   const { __mergeMultiSourceRoster: merge } = runtime()
   const local = { profiles: [{ name: 'default', last_session: { id: 's1' } }] }

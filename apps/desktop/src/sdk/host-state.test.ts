@@ -65,7 +65,7 @@ describe('host.state focused-session atoms', () => {
     expect(host.state.connectionId.get()).toBe('work')
 
     session.setConnection({ mode: 'local' } as never)
-    expect(host.state.connectionId.get()).toBeNull()
+    expect(host.state.connectionId.get()).toBe('local')
     session.setConnection(null)
   })
 

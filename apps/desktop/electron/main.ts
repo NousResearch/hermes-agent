@@ -101,6 +101,7 @@ import {
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
+  rememberSshEnumeration,
   removeConnection,
   resolveRegistryLocalRoute,
   setPrimaryConnection,
@@ -12409,7 +12410,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
   // The ssh probe path in testDesktopConnectionConfig never consults v1
   // connection state, so mapping the entry onto it is safe.
   if (entry.kind === 'ssh') {
-    return testDesktopConnectionConfig({
+    const result = await testDesktopConnectionConfig({
       mode: 'ssh',
       sshHost: entry.host,
       sshUser: entry.user,
@@ -12417,6 +12418,14 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
       sshKeyPath: entry.keyPath,
       sshRemoteHermesPath: entry.remoteHermesPath
     })
+
+    if (result?.reachable) {
+      sshInventoryAttempted.delete(entry.id)
+      sshRosterCache.delete(entry.id)
+      await probeSshProfileInventory(entry)
+    }
+
+    return result
   }
 
   // Remote/cloud/local probe built DIRECTLY from the registry entry. Routing
@@ -12480,54 +12489,113 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // instead of failing the whole roster. ssh sources that have never been dialed
 // are SKIPPED (connect-on-demand — dialing every ssh box just to list agents
 // would spawn tunnels the user never asked for); once dialed, their pooled
-// descriptor serves the enumeration like any remote.
+// descriptor serves the enumeration like any remote. Last-known SSH profile
+// lists are reused so switching the window back to local does not empty Bot Mode.
+const sshRosterCache = new Map<string, string[]>()
+const sshInventoryAttempted = new Set<string>()
+
+async function probeSshProfileInventory(connection) {
+  if (sshRosterCache.has(connection.id) || sshInventoryAttempted.has(connection.id)) {
+    return
+  }
+
+  sshInventoryAttempted.add(connection.id)
+
+  const sshConfig = normalizeSshConfig({
+    mode: 'ssh',
+    host: connection.host,
+    user: connection.user,
+    port: connection.port,
+    keyPath: connection.keyPath,
+    remoteHermesPath: connection.remoteHermesPath
+  })
+
+  if (!sshConfig) {
+    return
+  }
+
+  const ssh = createSshProbeConnection(
+    { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
+    { rememberLog: sshRememberLog }
+  )
+
+  try {
+    await ssh.open()
+    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+
+    if (profiles.length > 0) {
+      sshRosterCache.set(connection.id, profiles)
+    }
+  } catch (error: any) {
+    sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
+  } finally {
+    try {
+      await ssh.close()
+    } catch {
+      void 0
+    }
+  }
+}
+
 async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRegistry()) {
   return Promise.all(
     registry.connections.map(async connection => {
+      let raw: { connection: typeof connection; error?: string; profiles: null | string[] }
+
       try {
         if (
           connection.kind === 'ssh' &&
           ![...sshConnections.keys()].some(scope => String(scope).startsWith(backendScopePrefix(connection.id)))
         ) {
-          return { connection, profiles: null, error: 'connect-on-demand' }
-        }
+          await probeSshProfileInventory(connection)
+          raw = { connection, profiles: null, error: 'connect-on-demand' }
+        } else {
+          // Same connect-on-demand courtesy for the forced-local path: when
+          // the primary route is remote, enumerating "This device" would
+          // SPAWN a local backend this user has never asked for — a phantom
+          // `default` agent that also forces -device handle disambiguation
+          // onto the real one (remote-gateway-only desktops showed their main
+          // agent twice, Aug 17 2026). Enumerate the local source only when
+          // it is the delegate route (local-primary desktops, unchanged
+          // behavior) or a forced-local child is ALREADY pooled (the user
+          // opened one).
+          if (connection.kind === 'local') {
+            const localRoute = resolveRegistryLocalRoute('default', {
+              globalRemote: globalRemoteActive(),
+              profileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey()))
+            })
 
-        // Same connect-on-demand courtesy for the forced-local path: when the
-        // primary route is remote, enumerating "This device" would SPAWN a
-        // local backend this user has never asked for — a phantom `default`
-        // agent that also forces -device handle disambiguation onto the real
-        // one (remote-gateway-only desktops showed their main agent twice,
-        // Aug 17 2026). Enumerate the local source only when it is the
-        // delegate route (local-primary desktops, unchanged behavior) or a
-        // forced-local child is ALREADY pooled (the user opened one).
-        if (connection.kind === 'local') {
-          const localRoute = resolveRegistryLocalRoute('default', {
-            globalRemote: globalRemoteActive(),
-            profileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey()))
-          })
-
-          if (shouldDeferLocalEnumeration(localRoute, backendPool.keys(), connection.id)) {
-            return { connection, profiles: null, error: 'connect-on-demand' }
+            if (shouldDeferLocalEnumeration(localRoute, backendPool.keys(), connection.id)) {
+              return { connection, profiles: null, error: 'connect-on-demand' }
+            }
           }
+
+          const descriptor: any = await ensureRegistryBackend(connection.id, null)
+          const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+
+          const profiles = Array.isArray(body?.profiles)
+            ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
+            : []
+
+          // The root HERMES_HOME is an agent too; enumerations that omit it
+          // (older backends list only named profiles) still get a default row.
+          if (!profiles.includes('default')) {
+            profiles.unshift('default')
+          }
+
+          raw = { connection, profiles }
         }
 
-        const descriptor: any = await ensureRegistryBackend(connection.id, null)
-        const body: any = await getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
-
-        const profiles = Array.isArray(body?.profiles)
-          ? body.profiles.map(p => String(p?.name || '').trim()).filter(Boolean)
-          : []
-
-        // The root HERMES_HOME is an agent too; enumerations that omit it
-        // (older backends list only named profiles) still get a default row.
-        if (!profiles.includes('default')) {
-          profiles.unshift('default')
-        }
-
-        return { connection, profiles }
       } catch (error: any) {
-        return { connection, profiles: null, error: String(error?.message || error) }
+        raw = { connection, profiles: null, error: String(error?.message || error) }
       }
+
+      if (raw.profiles && raw.profiles.length > 0) {
+        sshRosterCache.set(connection.id, raw.profiles)
+      }
+
+      const remembered = rememberSshEnumeration(raw, sshRosterCache.get(connection.id), connection.kind)
+      return { connection, ...remembered }
     })
   )
 }

@@ -169,7 +169,20 @@ if (typeof window !== 'undefined') {
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
 const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
-const $activeConnectionId = computed($connection, connection => connection?.connectionId ?? null)
+const $activeConnectionId = computed($connection, connection => {
+  if (!connection) {
+    return null
+  }
+
+  if (connection.connectionId) {
+    return connection.connectionId
+  }
+
+  // mode:'local' used to report null, which made Bot Mode fall back to the
+  // registry primary (often an SSH box) and treat Spark as the active source
+  // while this window was actually local.
+  return connection.mode === 'local' ? 'local' : null
+})
 
 export const host = {
   state: {

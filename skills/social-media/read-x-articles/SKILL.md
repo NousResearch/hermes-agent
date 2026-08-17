@@ -34,6 +34,8 @@ and a JS-capable web-extract/browser tool. No X API key or auth needed.
 ## How to Run
 On any X link the user shares, run `web_extract` on the canonical article URL
 `https://x.com/i/article/<ID>`. The full article body is returned directly.
+Then **inspect the article's images** (cover art, diagrams, charts) — they often
+carry meaning the text alone misses.
 
 ## Quick Reference
 - X **Articles** read at the canonical **`/i/article/<ID>`** using a JS-executing
@@ -42,6 +44,9 @@ On any X link the user shares, run `web_extract` on the canonical article URL
   even for a browser — resolve the article URL first.
 - If only a plain HTTP client is available, expect a login shell and fall back to a
   browser render.
+- **Images matter.** The article's cover, diagrams, charts, and screenshots can be
+  essential to understanding it. Extract the media URLs and analyze them (vision)
+  as part of the read — do not stop at the text.
 
 ## Procedure
 1. **Try first, judge later.** On any X link, immediately run `web_extract`
@@ -68,6 +73,12 @@ On any X link the user shares, run `web_extract` on the canonical article URL
 6. **Use the content.** It's legitimate primary source. Quote it and cite the
    author. Community takes (e.g. a power-user writing about a product) are real
    material for summaries, scripts, and analysis.
+7. **Read the images too.** After extracting the body, collect the article's
+   media image URLs (cover art, diagrams, screenshots — ignore user avatars and
+   profile thumbnails) from the extract or the article HTML, and analyze the
+   meaningful ones with a vision tool. Report any visual info that adds to the
+   text: diagrams that explain a workflow, charts with data, or a cover that
+   sets the tone. Do not skip this — images are part of the article.
 
 ## Pitfalls
 - Do not assume "articles are paywalled/login-walled." The canonical

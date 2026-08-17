@@ -22,6 +22,7 @@ import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
+const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
@@ -113,6 +114,20 @@ export function AboutSettings() {
               <div className="min-w-0">
                 <p className="font-medium">{a.bundleOutOfSync}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{a.bundleOutOfSyncDesc}</p>
+                <Button asChild className="mt-2" size="sm" variant="textStrong">
+                  <a
+                    href={INSTALLER_URL}
+                    onClick={event => {
+                      event.preventDefault()
+                      void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
+                    }}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    <ExternalLink className="size-3" />
+                    {a.bundleOutOfSyncAction}
+                  </a>
+                </Button>
               </div>
             </div>
           </div>

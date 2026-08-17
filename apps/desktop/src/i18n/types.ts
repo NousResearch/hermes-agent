@@ -460,6 +460,7 @@ export interface Translations {
       versionUnavailable: string
       bundleOutOfSync: string
       bundleOutOfSyncDesc: string
+      bundleOutOfSyncAction: string
       updates: string
       checkNow: string
       checking: string

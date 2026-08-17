@@ -1740,7 +1740,7 @@ def _maybe_unregister_gateway_service(profile_name: str) -> None:
 
 
 def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
-    """Disable and remove systemd/launchd service for a profile."""
+    """Disable and remove the platform gateway service for a profile."""
     import platform as _platform
 
     # Derive service name for this profile
@@ -1778,6 +1778,15 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                 )
                 plist_path.unlink(missing_ok=True)
                 print("✓ Launchd service removed")
+
+        elif _platform.system() == "Windows":
+            # Reuse the canonical Windows teardown so both Scheduled Task and
+            # Startup-folder persistence are removed before the process is
+            # stopped below.  With HERMES_HOME scoped to profile_dir,
+            # get_task_name() resolves the profile-specific task.
+            from hermes_cli import gateway_windows
+
+            gateway_windows.uninstall()
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
@@ -1788,17 +1797,20 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
 
 def _stop_gateway_process(profile_dir: Path) -> None:
-    """Stop a running gateway process via its PID file."""
+    """Stop a running gateway process via its verified runtime record."""
     import time as _time
 
     pid_file = profile_dir / "gateway.pid"
-    if not pid_file.exists():
-        return
 
     try:
-        raw = pid_file.read_text(encoding="utf-8").strip()
-        data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
-        pid = int(data["pid"])
+        # get_running_pid verifies the process against gateway.lock and falls
+        # back to that lock record when gateway.pid is absent.  Task-spawned
+        # Windows gateways can legitimately be in exactly that state.
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid(pid_file, cleanup_stale=False)
+        if pid is None:
+            return
         # Route through terminate_pid so Windows uses the appropriate
         # primitive (taskkill / TerminateProcess) — raw os.kill with
         # _signal.SIGKILL raises AttributeError at import time on Windows,

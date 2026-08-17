@@ -20740,6 +20740,13 @@ def main(
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
                 cli.tool_progress_mode = "off"
+                # Startup resume must restore the session route before the
+                # first credential resolution and turn-route snapshot. The
+                # quiet path previously resolved the ambient provider first,
+                # then built the turn route from Luna even though the resume
+                # banner said Qwen/Turbohaul had been restored.
+                if getattr(cli, "_resumed", False) and not cli.conversation_history:
+                    cli._preload_resumed_session()
                 if cli._ensure_runtime_credentials():
                     effective_query: Any = query
                     if single_query_images or single_query_image_urls:
@@ -20921,6 +20928,8 @@ def main(
                 # facing single-query path in line so all non-interactive
                 # invocations are fast.
                 _query_label = query or ("[image attached]" if single_query_images else "")
+                if getattr(cli, "_resumed", False) and not cli.conversation_history:
+                    cli._preload_resumed_session()
                 if _query_label:
                     cli.console.print(f"[bold blue]Query:[/] {_query_label}")
                 # Surface security advisories before the agent runs — short

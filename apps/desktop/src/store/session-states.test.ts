@@ -38,7 +38,9 @@ describe('resetTileRuntimeBindings', () => {
     resetTileRuntimeBindings()
 
     expect(invalidateRuntimeBindings).toHaveBeenCalledTimes(1)
-    expect($sessionTiles.get()).toEqual([{ anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }])
+    expect($sessionTiles.get()).toEqual([
+      { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
+    ])
   })
 
   it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {

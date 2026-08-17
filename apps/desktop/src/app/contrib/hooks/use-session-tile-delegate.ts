@@ -122,11 +122,7 @@ export function useSessionTileDelegate({
         // transcript or a stale pre-reconnect survivor; reusing it painted the
         // post-sleep/wake tile permanently empty. Fall through to a real
         // resume instead — it's idempotent for a genuinely live session.
-        if (
-          existing &&
-          cached?.storedSessionId === storedSessionId &&
-          (cached.busy || cached.messages.length > 0)
-        ) {
+        if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
           publishSessionState(existing, cached)
 
           return existing

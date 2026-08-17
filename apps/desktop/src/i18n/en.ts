@@ -707,6 +707,7 @@ export const en: Translations = {
       stagedNote:
         'Switch sources from the Sessions sidebar. Profiles, chats, messaging, and cron stay scoped to that source; Primary is the registry default and does not switch your current workspace.',
       loadFailed: 'Could not load connections',
+      currentPill: 'Current',
       primaryPill: 'Primary',
       managedPill: 'This device',
       addConnection: 'Add connection',

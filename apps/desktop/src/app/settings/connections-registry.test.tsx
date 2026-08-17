@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { $connection } from '@/store/session'
 
 import {
   ConnectionsRegistrySection,
@@ -36,6 +37,17 @@ const registry: DesktopConnectionsRegistry = {
 }
 
 beforeEach(() => {
+  $connection.set({
+    baseUrl: 'http://homelab.lan:9119',
+    connectionId: 'homelab',
+    isFullscreen: false,
+    logs: [],
+    mode: 'remote',
+    nativeOverlayWidth: 0,
+    token: 'test-token',
+    windowButtonPosition: null,
+    wsUrl: 'ws://homelab.lan:9119/ws'
+  })
   list.mockResolvedValue(registry)
   save.mockResolvedValue({ connection: registry.connections[1], ok: true, registry })
   remove.mockResolvedValue({ ok: true, registry: { ...registry, connections: [registry.connections[0]] } })
@@ -48,17 +60,19 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  $connection.set(null)
   cleanup()
   vi.clearAllMocks()
 })
 
 describe('ConnectionsRegistrySection', () => {
-  it('lists registered connections with primary + local pills', async () => {
+  it('distinguishes the current connection from the registry primary', async () => {
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
     // Label and the managed pill share the copy, so expect both instances.
     expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
+    expect(screen.getByText('Current')).toBeTruthy()
     expect(screen.getByText('Primary')).toBeTruthy()
     expect(list).toHaveBeenCalledTimes(1)
   })

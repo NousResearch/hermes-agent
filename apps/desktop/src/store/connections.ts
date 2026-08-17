@@ -18,12 +18,11 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
 export const $connectionsRegistry = atom<DesktopConnectionsRegistry | null>(null)
 
-// Use the resolved descriptor identity Electron publishes. The registry
-// primary is only a compatibility fallback for older mains.
-export const $activeConnectionId = computed(
-  [$connectionsRegistry, $connection],
-  (registry, connection) => connection?.connectionId ?? (connection ? (registry?.primary ?? null) : null)
-)
+// Use only the resolved descriptor identity Electron publishes. `primary`
+// means the registry default, not necessarily the source this window is using;
+// guessing it here would paint the wrong source as active for an unmatched v1
+// route or while a legacy main is still resolving the descriptor.
+export const $activeConnectionId = computed($connection, connection => connection?.connectionId ?? null)
 
 export const $hasMultipleConnections = computed(
   $connectionsRegistry,

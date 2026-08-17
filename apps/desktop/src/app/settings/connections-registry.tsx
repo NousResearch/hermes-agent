@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -12,7 +13,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
-import { setConnectionsRegistry } from '@/store/connections'
+import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
@@ -201,6 +202,7 @@ export function sameBackendPeerLabel(
 export function ConnectionsRegistrySection() {
   const { t } = useI18n()
   const s = t.settings.connections
+  const activeConnectionId = useStore($activeConnectionId)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -466,6 +468,7 @@ export function ConnectionsRegistrySection() {
       ) : (
         registry.connections.map(conn => {
           const Icon = KIND_ICONS[conn.kind]
+          const isCurrent = activeConnectionId === conn.id
           const isPrimary = registry.primary === conn.id
           const busy = busyId === conn.id
           // Display-only: this connection is a second address for a backend
@@ -530,7 +533,8 @@ export function ConnectionsRegistrySection() {
                 <span className="flex items-center gap-2">
                   <Icon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="truncate">{conn.label}</span>
-                  {isPrimary && <Pill tone="primary">{s.primaryPill}</Pill>}
+                  {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+                  {isPrimary && <Pill>{s.primaryPill}</Pill>}
                   {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
                 </span>
               }

@@ -89,13 +89,13 @@ describe('connection registry cache', () => {
     expect($activeConnectionId.get()).toBeNull()
   })
 
-  it('uses the resolved descriptor identity for a primary gateway', () => {
+  it('uses only the resolved descriptor identity for the active gateway', () => {
     setConnectionsRegistry({ ...registry, primary: 'homelab' })
     $connection.set({ connectionId: 'work-vps', mode: 'remote' })
     expect($activeConnectionId.get()).toBe('work-vps')
 
     $connection.set({ mode: 'remote' })
-    expect($activeConnectionId.get()).toBe('homelab')
+    expect($activeConnectionId.get()).toBeNull()
 
     $connection.set({ connectionId: 'work-vps', mode: 'remote' })
     expect($activeConnectionId.get()).toBe('work-vps')

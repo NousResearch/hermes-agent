@@ -593,6 +593,7 @@ export interface Translations {
       intro: string
       stagedNote: string
       loadFailed: string
+      currentPill: string
       primaryPill: string
       managedPill: string
       addConnection: string

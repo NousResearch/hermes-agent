@@ -1085,6 +1085,21 @@ class TestTextVerbosityConfig:
             ("openai-api", "gpt-4.1", "https://api.openai.com/v1"),
             ("custom", "gpt-5.6-sol", "https://responses.example.com/v1"),
             ("openai-codex", "gpt-5.6-sol", "https://responses.example.com/v1"),
+            (
+                "openai-codex",
+                "gpt-5.6-sol",
+                "https://chatgpt.com/backend-api/codex-extra",
+            ),
+            (
+                "openai-codex",
+                "gpt-5.6-sol",
+                "https://chatgpt.com/proxy/backend-api/codex",
+            ),
+            (
+                "openai-codex",
+                "gpt-5.6-sol",
+                "https://chatgpt.com/custom?next=/backend-api/codex",
+            ),
             ("openai-codex", "gpt-5.6-sol", "https://api.x.ai/v1"),
             ("openai-codex", "gpt-5.6-sol", "https://models.github.ai/inference"),
         ],

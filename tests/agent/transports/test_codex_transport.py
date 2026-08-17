@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 from agent.text_verbosity import supports_openai_text_verbosity
 from agent.transports import get_transport
+from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.transports.types import NormalizedResponse
 
 
@@ -14,6 +15,34 @@ from agent.transports.types import NormalizedResponse
 def transport():
     import agent.transports.codex  # noqa: F401
     return get_transport("codex_responses")
+
+
+class TestChatCompletionsTextVerbosityBoundary:
+    def test_request_overrides_cannot_send_responses_text_verbosity(self):
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={
+                "text": {
+                    " verbosity ": "high",
+                    "format": {"type": "text"},
+                },
+                "extra_body": {
+                    " text ": {
+                        "verbosity": "low",
+                        "format": {"type": "json_schema"},
+                    },
+                    "metadata": {"source": "test"},
+                },
+            },
+        )
+
+        assert kwargs["text"] == {"format": {"type": "text"}}
+        assert kwargs["extra_body"] == {
+            "text": {"format": {"type": "json_schema"}},
+            "metadata": {"source": "test"},
+        }
 
 
 class TestCodexTransportBasic:
@@ -588,7 +617,7 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_text_verbosity=True,
+            text_verbosity_target_supported=True,
             text_verbosity=verbosity,
         )
 
@@ -607,13 +636,116 @@ class TestCodexBuildKwargs:
 
         assert "text" not in kw
 
+    @pytest.mark.parametrize(
+        "target",
+        [
+            {"is_xai_responses": True},
+            {"is_github_responses": True},
+            {"base_url": "https://custom.example/v1"},
+        ],
+    )
+    def test_unsupported_route_strips_override_verbosity_only(self, transport, target):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={
+                "text": {
+                    "format": {"type": "text"},
+                    " verbosity ": "high",
+                }
+            },
+            text_verbosity_target_supported=False,
+            **target,
+        )
+
+        assert kw["text"] == {"format": {"type": "text"}}
+
+    def test_request_override_model_cannot_enable_text_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={
+                "model": "claude-sonnet-4",
+                "text": {"verbosity": "high", "format": {"type": "text"}},
+            },
+            text_verbosity_target_supported=True,
+            text_verbosity="low",
+        )
+
+        assert kw["model"] == "claude-sonnet-4"
+        assert kw["text"] == {"format": {"type": "text"}}
+
+    def test_extra_body_cannot_bypass_text_verbosity_filter(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={
+                "extra_body": {
+                    "text": {
+                        " verbosity ": "high",
+                        "format": {"type": "text"},
+                    },
+                    "metadata": {"source": "test"},
+                }
+            },
+            text_verbosity_target_supported=False,
+        )
+
+        assert kw["text"] == {"format": {"type": "text"}}
+        assert kw["extra_body"] == {"metadata": {"source": "test"}}
+
+    def test_model_override_can_enable_text_verbosity_on_supported_route(self, transport):
+        kw = transport.build_kwargs(
+            model="claude-sonnet-4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={"model": "gpt-5.4"},
+            text_verbosity_target_supported=True,
+            text_verbosity="low",
+        )
+
+        assert kw["model"] == "gpt-5.4"
+        assert kw["text"] == {"verbosity": "low"}
+
+    def test_extra_body_model_cannot_enable_text_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={
+                "extra_body": {
+                    "model": "claude-sonnet-4",
+                    "text": {"verbosity": "high", "format": {"type": "text"}},
+                }
+            },
+            text_verbosity_target_supported=True,
+            text_verbosity="low",
+        )
+
+        assert kw["text"] == {"format": {"type": "text"}}
+        assert kw["extra_body"] == {"model": "claude-sonnet-4"}
+
+    def test_unsupported_model_strips_override_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            request_overrides={"text": {"verbosity": "high"}},
+            text_verbosity_target_supported=False,
+        )
+
+        assert "text" not in kw
+
     def test_codex_backend_omits_invalid_text_verbosity(self, transport):
         kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_text_verbosity=True,
+            text_verbosity_target_supported=True,
             text_verbosity="extra-short",
         )
 
@@ -626,7 +758,7 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_text_verbosity=True,
+            text_verbosity_target_supported=True,
             text_verbosity="low",
             request_overrides=request_overrides,
         )
@@ -643,7 +775,7 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_text_verbosity=True,
+            text_verbosity_target_supported=True,
             text_verbosity="low",
             request_overrides={"text": {"verbosity": "high"}},
         )
@@ -656,7 +788,7 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             is_codex_backend=True,
-            supports_text_verbosity=True,
+            text_verbosity_target_supported=True,
             text_verbosity="low",
             request_overrides={"service_tier": "priority"},
         )

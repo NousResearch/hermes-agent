@@ -26,6 +26,7 @@ import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -1883,14 +1884,15 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             base_url_host_matches(agent.base_url, "models.github.ai")
             or base_url_host_matches(agent.base_url, "githubcopilot.com")
         )
+        codex_route_path = urlsplit(str(agent.base_url or "")).path.rstrip("/")
         is_canonical_codex_route = (
             agent._base_url_hostname == "chatgpt.com"
-            and "/backend-api/codex" in agent._base_url_lower
+            and codex_route_path == "/backend-api/codex"
         )
         is_codex_backend = agent.provider == "openai-codex" or is_canonical_codex_route
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
-        supports_text_verbosity = supports_openai_text_verbosity(
-            agent.model,
+        text_verbosity_target_supported = supports_openai_text_verbosity(
+            "gpt-5",
             base_url_hostname=agent._base_url_hostname,
             is_canonical_codex_route=is_canonical_codex_route,
             is_xai_responses=is_xai_responses,
@@ -1947,7 +1949,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
             text_verbosity=getattr(agent, "text_verbosity", None),
-            supports_text_verbosity=supports_text_verbosity,
+            text_verbosity_target_supported=text_verbosity_target_supported,
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
             base_url=agent.base_url,

@@ -2691,6 +2691,40 @@
     const panRef = useRef({ isPanning: false, startX: 0, scrollLeft: 0 });
     const [isPanning, setIsPanning] = useState(false);
     const [isScrollable, setIsScrollable] = useState(false);
+    const [activeColumn, setActiveColumn] = useState(
+      props.board.columns.length ? props.board.columns[0].name : "",
+    );
+
+    useEffect(function () {
+      if (!props.board.columns.some(function (col) { return col.name === activeColumn; })) {
+        setActiveColumn(props.board.columns.length ? props.board.columns[0].name : "");
+      }
+    }, [props.board.columns, activeColumn]);
+
+    const showColumn = useCallback(function (columnName) {
+      const rail = columnsRef.current;
+      if (!rail) return;
+      const column = rail.querySelector(`[data-kanban-column="${columnName}"]`);
+      if (!column) return;
+      setActiveColumn(columnName);
+      rail.scrollTo({ left: column.offsetLeft, behavior: "smooth" });
+      column.focus({ preventScroll: true });
+    }, []);
+
+    const syncActiveColumn = useCallback(function () {
+      const rail = columnsRef.current;
+      if (!rail) return;
+      let nearest = null;
+      let distance = Infinity;
+      for (const column of rail.querySelectorAll("[data-kanban-column]")) {
+        const nextDistance = Math.abs(column.offsetLeft - rail.scrollLeft);
+        if (nextDistance < distance) {
+          distance = nextDistance;
+          nearest = column;
+        }
+      }
+      if (nearest) setActiveColumn(nearest.getAttribute("data-kanban-column"));
+    }, []);
 
     const checkScrollable = useCallback(function () {
       const el = columnsRef.current;
@@ -2783,18 +2817,36 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
-    return h("div", {
-      ref: columnsRef,
-      className: cn(
-        "hermes-kanban-columns",
-        isScrollable ? "hermes-kanban-columns--scrollable" : "",
-        isPanning ? "hermes-kanban-columns--panning" : "",
-      ),
-      onDragStart: handleDragStart,
-      onDragEnd: handleDragEnd,
-      onMouseDown: handleMouseDown,
-    },
-      props.board.columns.map(function (col) {
+    return h(React.Fragment, null,
+      h("nav", {
+        className: "hermes-kanban-column-nav",
+        "aria-label": "Kanban lanes",
+      }, props.board.columns.map(function (col) {
+        const selected = col.name === activeColumn;
+        return h("button", {
+          key: col.name,
+          type: "button",
+          className: cn("hermes-kanban-column-nav-item", selected ? "hermes-kanban-column-nav-item--active" : ""),
+          "aria-controls": `kanban-column-${col.name}`,
+          "aria-current": selected ? "true" : undefined,
+          onClick: function () { showColumn(col.name); },
+        },
+          h("span", null, getColumnLabel(null, col.name)),
+          h("span", { className: "hermes-kanban-column-nav-count" }, col.tasks.length),
+        );
+      })),
+      h("div", {
+        ref: columnsRef,
+        className: cn(
+          "hermes-kanban-columns",
+          isScrollable ? "hermes-kanban-columns--scrollable" : "",
+          isPanning ? "hermes-kanban-columns--panning" : "",
+        ),
+        onDragStart: handleDragStart,
+        onDragEnd: handleDragEnd,
+        onMouseDown: handleMouseDown,
+        onScroll: syncActiveColumn,
+      }, props.board.columns.map(function (col) {
         return h(Column, {
           key: col.name,
           column: col,
@@ -2812,13 +2864,12 @@
           onCreate: props.onCreate,
           allTasks: props.allTasks,
         });
-      }),
-      h(TrashDropZone, {
+      }), h(TrashDropZone, {
         draggingTaskId: props.draggingTaskId,
         selectedIds: props.selectedIds,
         onDelete: props.onDelete,
         onDeleteSelected: props.onDeleteSelected,
-      }),
+      })),
     );
   }
 
@@ -2881,6 +2932,8 @@
 
     return h("div", {
       ref: colRef,
+      id: `kanban-column-${props.column.name}`,
+      tabIndex: -1,
       "data-kanban-column": props.column.name,
       className: cn(
         "hermes-kanban-column",

@@ -41,6 +41,16 @@ html, body {{ margin: 0; width: 100%; background: #111; color: #eee }}
     <div class="hermes-kanban-toolbar-filter"><select><option>all</option></select></div>
     <button>Refresh</button><button>Clear filters</button>
   </div>
+  <nav class="hermes-kanban-column-nav" aria-label="Kanban lanes">
+    <button class="hermes-kanban-column-nav-item hermes-kanban-column-nav-item--active">Triage<span class="hermes-kanban-column-nav-count">20</span></button>
+    <button class="hermes-kanban-column-nav-item">Todo<span class="hermes-kanban-column-nav-count">0</span></button>
+    <button class="hermes-kanban-column-nav-item">Scheduled<span class="hermes-kanban-column-nav-count">1</span></button>
+    <button class="hermes-kanban-column-nav-item">Ready<span class="hermes-kanban-column-nav-count">2</span></button>
+    <button class="hermes-kanban-column-nav-item">Running<span class="hermes-kanban-column-nav-count">3</span></button>
+    <button class="hermes-kanban-column-nav-item">Blocked<span class="hermes-kanban-column-nav-count">1</span></button>
+    <button class="hermes-kanban-column-nav-item">Review<span class="hermes-kanban-column-nav-count">4</span></button>
+    <button class="hermes-kanban-column-nav-item">Done<span class="hermes-kanban-column-nav-count">9</span></button>
+  </nav>
   <div class="hermes-kanban-columns">
     <section class="hermes-kanban-column"><button class="hermes-kanban-column-add">+</button></section>
     <section class="hermes-kanban-column"></section>
@@ -57,6 +67,8 @@ addEventListener('load', () => {{
   const input = rect('.hermes-kanban-toolbar-search input');
   const add = rect('.hermes-kanban-column-add');
   const close = rect('.hermes-kanban-drawer-close');
+  const nav = rect('.hermes-kanban-column-nav');
+  const navItems = [...document.querySelectorAll('.hermes-kanban-column-nav-item')];
   document.querySelector('#result').textContent = JSON.stringify({{
     viewport: innerWidth,
     bodyScrollWidth: document.body.scrollWidth,
@@ -67,6 +79,9 @@ addEventListener('load', () => {{
     addHeight: add.height,
     closeWidth: close.width,
     closeHeight: close.height,
+    navHeight: nav.height,
+    navLabels: navItems.map(item => item.firstChild.textContent),
+    navTargets: navItems.map(item => item.getBoundingClientRect().height),
     railOverflow: rail.scrollWidth > rail.clientWidth,
     snap: getComputedStyle(rail).scrollSnapType,
   }});
@@ -124,6 +139,9 @@ def test_mobile_board_uses_viewport_lanes_and_touch_targets(layout_fixture: Path
     assert measured["addHeight"] >= 44
     assert measured["closeWidth"] >= 44
     assert measured["closeHeight"] >= 44
+    assert measured["navLabels"] == ["Triage", "Todo", "Scheduled", "Ready", "Running", "Blocked", "Review", "Done"]
+    assert all(height >= 44 for height in measured["navTargets"])
+    assert measured["navHeight"] >= 88
     assert measured["railOverflow"] is True
     assert measured["snap"] == "x mandatory"
 
@@ -134,4 +152,5 @@ def test_desktop_keeps_compact_columns_and_disables_snap(layout_fixture: Path):
     assert measured["bodyScrollWidth"] == 1280
     assert measured["laneWidth"] == pytest.approx(280, abs=1)
     assert measured["drawerWidth"] == pytest.approx(640, abs=1)
+    assert measured["navHeight"] == 0
     assert measured["snap"] == "none"

@@ -78,6 +78,10 @@
   cursor: grabbing !important;
 }
 
+.hermes-kanban-column-nav {
+  display: none;
+}
+
 .hermes-kanban-column {
   flex: 0 0 280px;
   display: flex;
@@ -94,6 +98,43 @@
 /* Mobile contract adapted from fangliquanflq's Desktop PR #87244: one
    viewport-width lane at a time, with intentional horizontal snapping. */
 @media (max-width: 767px) {
+  .hermes-kanban-column-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--color-border);
+    background: var(--color-border);
+  }
+  .hermes-kanban-column-nav-item {
+    appearance: none;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.3rem 0.2rem;
+    border: 0;
+    border-radius: 0;
+    background: var(--color-card);
+    color: var(--color-muted-foreground);
+    font: inherit;
+    font-size: 0.68rem;
+    cursor: pointer;
+  }
+  .hermes-kanban-column-nav-item--active {
+    background: var(--color-foreground);
+    color: var(--color-background);
+    font-weight: 700;
+  }
+  .hermes-kanban-column-nav-item:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid var(--color-ring);
+    outline-offset: -2px;
+  }
+  .hermes-kanban-column-nav-count {
+    display: block;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.72rem;
+  }
   .hermes-kanban-columns {
     overscroll-behavior-x: contain;
     scroll-snap-type: x mandatory;

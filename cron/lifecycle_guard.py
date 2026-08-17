@@ -109,6 +109,23 @@ _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
 
+
+def _is_apple_file_provider_path(path: Path) -> bool:
+    """Return True for paths inside macOS's cloud-backed document root.
+
+    ``O_NONBLOCK`` does not make regular-file reads non-blocking.  Opening an
+    evicted FileProvider placeholder below ``~/Library/Mobile Documents`` can
+    therefore wait indefinitely for hydration.  The lifecycle guard runs
+    before a terminal command's timeout starts, so it must identify this
+    boundary from path metadata and fail closed without opening the file.
+    """
+    parts = path.parts
+    return any(
+        parts[index - 1] == "Library" and part == "Mobile Documents"
+        for index, part in enumerate(parts)
+        if index
+    )
+
 # Executables whose arguments are DATA, not commands: search patterns, SQL
 # statements, log filters. None of these can execute their argument text, so
 # a lifecycle-shaped string inside their arguments (a grep pattern hunting
@@ -532,6 +549,11 @@ def _contains_unsafe_gateway_action(
             return True
 
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+        # Do not touch a FileProvider path even to discover whether the file is
+        # hydrated.  The lexical check covers direct cloud paths; the resolved
+        # check below covers local launchers that are symlinks into iCloud.
+        if _is_apple_file_provider_path(script_path):
+            return True
         try:
             resolved = script_path.resolve(strict=False)
         except (OSError, ValueError):
@@ -539,6 +561,8 @@ def _contains_unsafe_gateway_action(
             # from a binary's decoded contents tokenized as a path — a
             # guarded path must never crash the guard (#76762).
             resolved = script_path
+        if _is_apple_file_provider_path(resolved):
+            return True
         if resolved in visited:
             continue
         visited.add(resolved)

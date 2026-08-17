@@ -761,6 +761,48 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    def test_cloud_backed_symlink_fails_closed_without_opening_target(
+        self, tmp_path, monkeypatch
+    ):
+        """A FileProvider placeholder must not block terminal preflight.
+
+        ``O_NONBLOCK`` has no effect on regular files.  On macOS, opening an
+        iCloud placeholder can therefore wait indefinitely for hydration,
+        before the terminal command's own timeout has even started.  Detect
+        the resolved FileProvider path from local metadata and fail closed
+        without opening it.
+        """
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        target = cloud_dir / "helper"
+        target.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        launcher = bin_dir / "helper"
+        launcher.symlink_to(target)
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(launcher):
+                pytest.fail("lifecycle guard opened a cloud-backed symlink")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        assert lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+            str(launcher)
+        ) is True
+
     # -- Whole-class regression tests (tilllt's T1-T4 on PR #79454) --------
 
     def test_tilde_nul_candidate_does_not_crash_terminal_walk(self):

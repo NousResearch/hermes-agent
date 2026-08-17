@@ -93,7 +93,7 @@ compression:
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
   codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
-  codex_responses_compact_threshold: 200000  # Server-side compaction trigger (input tokens)
+  codex_responses_compact_threshold: null  # Automatic server compaction trigger
   in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -120,7 +120,7 @@ auxiliary:
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
-| `codex_responses_compact_threshold` | `200000` | ≥1 tokens | Server-side compaction trigger in input tokens. Clamped below the local compression threshold at request time so the server compacts first |
+| `codex_responses_compact_threshold` | `null` | `null` or positive integer | `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 
 ### In-place compaction (single stable session id)
@@ -263,6 +263,14 @@ rejection of the field disables native compaction for the session and retries
 the request without it. Switching the session to a non-eligible model or route
 simply stops the field from being sent — captured checkpoints are dropped from
 replay by the existing cross-issuer guard when the endpoint changes.
+
+By default, `compression.codex_responses_compact_threshold: null` derives the
+native threshold from the resolved local trigger. For example, a local trigger
+of 765,000 selects 756,808. Set a positive integer to preserve an absolute
+threshold such as 200,000. Invalid values select automatic behavior. If no
+usable local trigger exists, automatic mode uses 200,000. The provider minimum
+is 1,024 tokens, so an unusually small local trigger at or below that floor
+cannot preserve strict native first ordering.
 
 ### Computed Values (for a 200K context model at defaults)
 

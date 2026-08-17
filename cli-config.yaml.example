@@ -658,9 +658,13 @@ compression:
   # fallback and still handles every non-eligible session.
   codex_responses_native: false
 
-  # Server-side compaction trigger in input tokens. Clamped below the local
-  # compression threshold at request time so the server compacts first.
-  codex_responses_compact_threshold: 200000
+  # Optional absolute server compaction trigger in input tokens. The default
+  # null value follows the resolved local compression trigger with an 8192 token
+  # safety margin. For example, a local trigger of 765000 selects 756808.
+  # A positive integer stays absolute and only clamps downward when needed so
+  # the server compacts first. Invalid values use this automatic behavior. If
+  # the local trigger is unavailable, automatic mode uses 200000.
+  codex_responses_compact_threshold: null
 
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).

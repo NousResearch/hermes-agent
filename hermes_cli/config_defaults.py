@@ -984,10 +984,11 @@ DEFAULT_CONFIG = {
                                       # the ChatGPT Codex backend; every other
                                       # route/model is unaffected. Hermes' local
                                       # compression stays armed as the fallback.
-        "codex_responses_compact_threshold": 200000,  # Server-side compaction trigger
-                                      # (input tokens). Clamped below the local
-                                      # compression threshold at request time so
-                                      # the server compacts before Hermes does.
+        "codex_responses_compact_threshold": None,  # Optional absolute server compaction
+                                      # trigger in input tokens. None follows the
+                                      # resolved local compression trigger with a
+                                      # safety margin. Explicit values only clamp
+                                      # downward so the server compacts first.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

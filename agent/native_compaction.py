@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 # trigger so the server always gets the first shot at compaction.
 LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 
+# Deterministic fallback when automatic mode cannot inspect a local trigger.
 DEFAULT_COMPACT_THRESHOLD = 200_000
 
 # Model-family gate. Substring match on the lowercased model id so dated
@@ -86,33 +87,41 @@ def resolve_compact_threshold(
     configured_threshold: Any,
     local_trigger_tokens: Any = None,
 ) -> int:
-    """Clamp the configured native threshold below the local compressor trigger.
+    """Resolve automatic mode or clamp an explicit native threshold.
 
-    Without the clamp a native threshold above the local trigger would let the
-    local summarizer fire first every time, making native compaction dead
-    config. ``local_trigger_tokens`` is ``ContextCompressor.threshold_tokens``
-    when a compressor is attached, else None.
+    An omitted or invalid setting follows the resolved local compressor trigger.
+    An explicit positive integer remains absolute unless it must be clamped so
+    native compaction fires first. ``local_trigger_tokens`` is
+    ``ContextCompressor.threshold_tokens`` when a compressor is attached.
     """
-    try:
-        configured = int(configured_threshold)
-    except (TypeError, ValueError):
-        configured = DEFAULT_COMPACT_THRESHOLD
-    if isinstance(configured_threshold, bool) or configured <= 0:
-        configured = DEFAULT_COMPACT_THRESHOLD
-
     local = None
     try:
         if local_trigger_tokens is not None and not isinstance(local_trigger_tokens, bool):
             local = int(local_trigger_tokens)
     except (TypeError, ValueError):
         local = None
-    if local is None or local <= 0:
-        return configured
+    if local is not None and local <= 0:
+        local = None
 
-    if local > LOCAL_TRIGGER_SAFETY_MARGIN:
-        upper = local - LOCAL_TRIGGER_SAFETY_MARGIN
-    else:
-        upper = max(1_024, int(local * 0.8))
+    upper = None
+    if local is not None:
+        if local > LOCAL_TRIGGER_SAFETY_MARGIN:
+            upper = max(1_024, local - LOCAL_TRIGGER_SAFETY_MARGIN)
+        else:
+            upper = max(1_024, int(local * 0.8))
+
+    try:
+        configured = (
+            None
+            if isinstance(configured_threshold, (bool, float))
+            else int(configured_threshold)
+        )
+    except (TypeError, ValueError):
+        configured = None
+    if isinstance(configured_threshold, bool) or configured is None or configured <= 0:
+        return upper if upper is not None else DEFAULT_COMPACT_THRESHOLD
+    if upper is None:
+        return configured
     return max(1_024, min(configured, upper))
 
 
@@ -176,7 +185,7 @@ def native_compaction_context_management(
 
     compressor = getattr(agent, "context_compressor", None)
     threshold = resolve_compact_threshold(
-        getattr(agent, "codex_responses_compact_threshold", DEFAULT_COMPACT_THRESHOLD),
+        getattr(agent, "codex_responses_compact_threshold", None),
         getattr(compressor, "threshold_tokens", None) if compressor is not None else None,
     )
     return [{"type": "compaction", "compact_threshold": threshold}]

@@ -2337,21 +2337,22 @@ def init_agent(
     codex_responses_native_compaction = _is_truthy(
         _compression_cfg.get("codex_responses_native", False)
     )
-    _native_threshold_raw = _compression_cfg.get(
-        "codex_responses_compact_threshold", 200_000
-    )
-    try:
-        if isinstance(_native_threshold_raw, bool):
-            raise ValueError
-        codex_responses_compact_threshold = int(_native_threshold_raw)
-        if codex_responses_compact_threshold <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        _ra().logger.warning(
-            "Invalid compression.codex_responses_compact_threshold=%r; using 200000.",
-            _native_threshold_raw,
-        )
-        codex_responses_compact_threshold = 200_000
+    _native_threshold_raw = _compression_cfg.get("codex_responses_compact_threshold")
+    codex_responses_compact_threshold = None
+    if _native_threshold_raw is not None:
+        try:
+            if isinstance(_native_threshold_raw, (bool, float)):
+                raise ValueError
+            codex_responses_compact_threshold = int(_native_threshold_raw)
+            if codex_responses_compact_threshold <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid compression.codex_responses_compact_threshold=%r; "
+                "using the automatic threshold derived from local compression.",
+                _native_threshold_raw,
+            )
+            codex_responses_compact_threshold = None
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().

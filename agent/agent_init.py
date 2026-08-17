@@ -1876,10 +1876,19 @@ def init_agent(
     # a malformed section falls back to the schema defaults (guard on,
     # $0.25 threshold), matching the guard's overall fail-open posture.
     from agent.empty_response_guard import resolve_guard_settings
+    _guard_section = _agent_section.get("empty_response_guard")
+    if not isinstance(_guard_section, dict):
+        _guard_section = {}
+    # Prefer nested max_retries; accept legacy top-level
+    # agent.empty_response_max_retries for issue #58670 callers.
+    if "max_retries" not in _guard_section and "empty_response_max_retries" in _agent_section:
+        _guard_section = dict(_guard_section)
+        _guard_section["max_retries"] = _agent_section.get("empty_response_max_retries")
     (
         agent._empty_guard_enabled,
         agent._empty_guard_cost_threshold_usd,
-    ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
+        agent._empty_response_max_retries,
+    ) = resolve_guard_settings(_guard_section)
 
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of

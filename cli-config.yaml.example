@@ -1001,6 +1001,13 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+  # Empty-response retry guard (NS-503 + #58670). Base ceiling is
+  # max_retries (default 3); cost guard may reduce it to 1 on expensive
+  # attempts. Legacy alias: agent.empty_response_max_retries.
+  # empty_response_guard:
+  #   enabled: true
+  #   cost_threshold_usd: 0.25
+  #   max_retries: 3
 
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive

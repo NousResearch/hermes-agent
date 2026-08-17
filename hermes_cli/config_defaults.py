@@ -131,13 +131,18 @@ DEFAULT_CONFIG = {
         # any generated tokens, model/provider change mid-streak).
         "empty_response_guard": {
             # Master switch for both guards below. False restores the
-            # legacy fixed 3-retry behaviour unconditionally.
+            # configured base max_retries budget unconditionally (no
+            # deterministic-empty skip / cost reduction).
             "enabled": True,
             # When the estimated input cost of a single empty attempt
             # meets or exceeds this many USD, the retry budget for the
-            # streak drops from 3 to 1. Unknown pricing or missing usage
-            # leaves the budget untouched.
+            # streak drops from max_retries to min(max_retries, 1).
+            # Unknown pricing or missing usage leaves the budget untouched.
             "cost_threshold_usd": 0.25,
+            # Base empty-response retry ceiling (default 3). Clamp >=0;
+            # 0 disables empty-response retries. Also accepted as legacy
+            # top-level agent.empty_response_max_retries.
+            "max_retries": 3,
         },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the

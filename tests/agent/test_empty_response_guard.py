@@ -213,13 +213,20 @@ class TestEmptyRetryBudget:
             == guard.DEFAULT_COST_THRESHOLD_USD
         )
 
-    def test_guard_disabled_keeps_default_budget(self, monkeypatch):
+    def test_guard_disabled_keeps_base_budget(self, monkeypatch):
         monkeypatch.setattr(
             guard, "_estimate_attempt_cost", lambda a, r: Decimal("9.99")
         )
         assert (
             guard.empty_retry_budget(_agent(_empty_guard_enabled=False), _response())
             == guard.DEFAULT_EMPTY_RETRY_BUDGET
+        )
+        assert (
+            guard.empty_retry_budget(
+                _agent(_empty_guard_enabled=False, _empty_response_max_retries=9),
+                _response(),
+            )
+            == 9
         )
 
     def test_pricing_exception_fails_open(self):
@@ -306,44 +313,60 @@ class TestZeroOutputExtraction:
 
 class TestResolveGuardSettings:
     """resolve_guard_settings maps the additive agent.empty_response_guard
-    config.yaml section into (enabled, threshold), tolerating malformed
-    input by falling back to schema defaults."""
+    config.yaml section into (enabled, threshold, max_retries), tolerating
+    malformed input by falling back to schema defaults."""
 
     def test_missing_section_uses_defaults(self):
         assert guard.resolve_guard_settings(None) == (
             guard.DEFAULT_GUARD_ENABLED,
             guard.DEFAULT_COST_THRESHOLD_USD,
+            guard.DEFAULT_EMPTY_RETRY_BUDGET,
         )
 
     def test_non_dict_section_uses_defaults(self):
         assert guard.resolve_guard_settings("nope") == (
             guard.DEFAULT_GUARD_ENABLED,
             guard.DEFAULT_COST_THRESHOLD_USD,
+            guard.DEFAULT_EMPTY_RETRY_BUDGET,
         )
 
     def test_disabled(self):
-        enabled, _ = guard.resolve_guard_settings({"enabled": False})
+        enabled, _, _ = guard.resolve_guard_settings({"enabled": False})
         assert enabled is False
 
     def test_yaml_string_bool(self):
-        enabled, _ = guard.resolve_guard_settings({"enabled": "false"})
+        enabled, _, _ = guard.resolve_guard_settings({"enabled": "false"})
         assert enabled is False
-        enabled, _ = guard.resolve_guard_settings({"enabled": "true"})
+        enabled, _, _ = guard.resolve_guard_settings({"enabled": "true"})
         assert enabled is True
 
     def test_custom_threshold(self):
-        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": 5})
+        _, threshold, _ = guard.resolve_guard_settings({"cost_threshold_usd": 5})
         assert threshold == Decimal("5")
-        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": "1.50"})
+        _, threshold, _ = guard.resolve_guard_settings({"cost_threshold_usd": "1.50"})
         assert threshold == Decimal("1.50")
 
     def test_bad_threshold_falls_back(self):
-        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": "banana"})
+        _, threshold, _ = guard.resolve_guard_settings({"cost_threshold_usd": "banana"})
         assert threshold == guard.DEFAULT_COST_THRESHOLD_USD
-        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": -1})
+        _, threshold, _ = guard.resolve_guard_settings({"cost_threshold_usd": -1})
         assert threshold == guard.DEFAULT_COST_THRESHOLD_USD
-        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": True})
+        _, threshold, _ = guard.resolve_guard_settings({"cost_threshold_usd": True})
         assert threshold == guard.DEFAULT_COST_THRESHOLD_USD
+
+    def test_custom_max_retries(self):
+        _, _, max_retries = guard.resolve_guard_settings({"max_retries": 7})
+        assert max_retries == 7
+        _, _, max_retries = guard.resolve_guard_settings({"max_retries": "0"})
+        assert max_retries == 0
+
+    def test_max_retries_clamps_negative_and_invalid(self):
+        _, _, max_retries = guard.resolve_guard_settings({"max_retries": -4})
+        assert max_retries == 0
+        _, _, max_retries = guard.resolve_guard_settings({"max_retries": "banana"})
+        assert max_retries == guard.DEFAULT_EMPTY_RETRY_BUDGET
+        _, _, max_retries = guard.resolve_guard_settings({"max_retries": True})
+        assert max_retries == guard.DEFAULT_EMPTY_RETRY_BUDGET
 
     def test_default_config_schema_matches(self):
         """The shipped DEFAULT_CONFIG section resolves to the module
@@ -354,4 +377,40 @@ class TestResolveGuardSettings:
         assert guard.resolve_guard_settings(section) == (
             guard.DEFAULT_GUARD_ENABLED,
             guard.DEFAULT_COST_THRESHOLD_USD,
+            guard.DEFAULT_EMPTY_RETRY_BUDGET,
+        )
+
+
+class TestConfigurableMaxRetries:
+    """#58670 — base empty-response retry ceiling is configurable."""
+
+    def test_custom_base_budget(self, monkeypatch):
+        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: None)
+        assert (
+            guard.empty_retry_budget(
+                _agent(_empty_response_max_retries=7), _response()
+            )
+            == 7
+        )
+
+    def test_zero_disables_retries(self, monkeypatch):
+        monkeypatch.setattr(
+            guard, "_estimate_attempt_cost", lambda a, r: Decimal("9.99")
+        )
+        assert (
+            guard.empty_retry_budget(
+                _agent(_empty_response_max_retries=0), _response()
+            )
+            == 0
+        )
+
+    def test_cost_guard_reduces_to_one_not_below_zero(self, monkeypatch):
+        monkeypatch.setattr(
+            guard, "_estimate_attempt_cost", lambda a, r: Decimal("0.80")
+        )
+        assert (
+            guard.empty_retry_budget(
+                _agent(_empty_response_max_retries=5), _response()
+            )
+            == guard.REDUCED_EMPTY_RETRY_BUDGET
         )

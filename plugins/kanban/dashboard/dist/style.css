@@ -67,6 +67,10 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 0.25rem;
+  -webkit-overflow-scrolling: touch;
 }
 
 .hermes-kanban-columns--scrollable {
@@ -79,7 +83,13 @@
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  /* Mobile contract adapted from fangliquanflq's Desktop PR #87244: one
+     viewport-width lane at a time, with intentional horizontal snapping. */
+  flex: 0 0 calc(100vw - 2rem);
+  width: calc(100vw - 2rem);
+  max-width: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -124,8 +134,8 @@
   border: 1px solid var(--color-border);
   color: var(--color-foreground);
   border-radius: var(--radius-sm, 0.25rem);
-  width: 22px;
-  height: 22px;
+  width: 2.75rem;
+  height: 2.75rem;
   line-height: 1;
   font-size: 1rem;
   cursor: pointer;
@@ -347,6 +357,17 @@
   animation: hermes-kanban-drawer-in 180ms ease-out;
 }
 
+@media (max-width: 767px) {
+  .hermes-kanban-drawer {
+    width: 100vw;
+    max-width: 100vw;
+    border-left: 0;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
 @keyframes hermes-kanban-drawer-in {
   from { transform: translateX(100%); opacity: 0.3; }
   to   { transform: translateX(0);    opacity: 1; }
@@ -382,7 +403,9 @@
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
-  padding: 0 0.25rem;
+  width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
 
@@ -639,7 +662,7 @@
 
 .hermes-kanban-bulk > button,
 .hermes-kanban-bulk-reassign > button {
-  height: 1.7rem !important;
+  min-height: 2.75rem !important;
   padding: 0 0.5rem !important;
   font-size: 0.7rem !important;
   border: 1px solid var(--color-border);
@@ -1014,6 +1037,57 @@
   align-items: flex-end;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+/* Narrow dashboard toolbar: controls use the available width rather than
+   retaining desktop's fixed 14rem search field. Actions wrap without clipping. */
+@media (max-width: 767px) {
+  .hermes-kanban {
+    min-width: 0;
+  }
+  .hermes-kanban-toolbar {
+    width: 100%;
+    min-width: 0;
+    gap: 0.75rem;
+  }
+  .hermes-kanban-toolbar-search,
+  .hermes-kanban-toolbar-filter {
+    width: 100%;
+    min-width: 0;
+  }
+  .hermes-kanban-toolbar-search input,
+  .hermes-kanban-toolbar-filter select {
+    width: 100% !important;
+    min-width: 0;
+  }
+  .hermes-kanban-toolbar-toggle {
+    min-height: 2.75rem;
+  }
+  .hermes-kanban-toolbar > button {
+    min-height: 2.75rem;
+    flex: 1 1 auto;
+  }
+  .hermes-kanban-boardswitcher-inner > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .hermes-kanban-bulk-priority,
+  .hermes-kanban-bulk-reassign {
+    width: 100%;
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+@media (min-width: 768px) {
+  .hermes-kanban-columns {
+    scroll-snap-type: none;
+  }
+  .hermes-kanban-column {
+    flex-basis: 280px;
+    width: 280px;
+    scroll-snap-align: none;
+  }
 }
 .hermes-kanban-boardswitcher-compact {
   display: flex;

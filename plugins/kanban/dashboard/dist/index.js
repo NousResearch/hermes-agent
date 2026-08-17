@@ -2418,8 +2418,8 @@
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
-    return h("div", { className: "flex flex-wrap items-end gap-3" },
-      h("div", { className: "flex flex-col gap-1",
+    return h("div", { className: "hermes-kanban-toolbar flex flex-wrap items-end gap-3" },
+      h("div", { className: "hermes-kanban-toolbar-search flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "search", "Search")),
         h(Input, {
@@ -2429,7 +2429,7 @@
           className: "w-56 h-8",
         }),
       ),
-      h("div", { className: "flex flex-col gap-1",
+      h("div", { className: "hermes-kanban-toolbar-filter flex flex-col gap-1",
                  title: "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "tenant", "Tenant")),
         h(Select, Object.assign({
@@ -2442,7 +2442,7 @@
           }),
         ),
       ),
-      h("div", { className: "flex flex-col gap-1",
+      h("div", { className: "hermes-kanban-toolbar-filter flex flex-col gap-1",
                  title: "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "assignee", "Assignee")),
         h(Select, Object.assign({
@@ -2455,7 +2455,7 @@
           }),
         ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
+      h("label", { className: "hermes-kanban-toolbar-toggle flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
           checked: props.includeArchived,
@@ -2463,7 +2463,7 @@
         }),
         tx(t, "showArchived", "Show archived"),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
+      h("label", { className: "hermes-kanban-toolbar-toggle flex items-center gap-2 text-xs",
                    title: "Group the Running column by assigned profile" },
         h(Checkbox, {
           checked: props.laneByProfile,

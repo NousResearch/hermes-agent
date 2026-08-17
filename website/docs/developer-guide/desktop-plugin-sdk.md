@@ -394,6 +394,16 @@ its own design. Non-HTML targets and remote gateways fall back to the
 classic preview card. Tell the agent about your directive in a skill (that's
 how it learns to emit it).
 
+Previewed widgets can also **talk back**. Inside the frame,
+`window.hermes.send('get-price eth')` (or a declarative
+`<button data-hermes-send="get-price eth">` — no script needed) hands that
+prompt to the agent as a user turn, off-screen: no bubble takes up the
+transcript, the widget updating is the visible response. The turn is still
+real — it wakes the agent, rides the composer's steer/queue rules, and
+persists (typed `hidden`) so resume and the session DB keep the full record.
+Prompts are trimmed, capped at 500 chars, and throttled to one per second
+per frame.
+
 ### Mount-scoped chrome (`Contribute`)
 
 `ctx.register` is for **permanent** contributions. When chrome should live and

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -32,6 +33,13 @@ import { isRemoteGateway } from '@/lib/media'
  * app. The page's own styles override all of it, so a full page keeps its
  * own design.
  *
+ * WIDGETS TALK BACK OFF-SCREEN. `window.hermes.send(prompt)` (or declarative
+ * `data-hermes-send` on any clickable element) routes the prompt through the
+ * composer's send path as a user turn typed `display_kind=hidden`: the agent
+ * wakes and the durable row exists (context, resume, audit via the DB), but
+ * no bubble renders — the widget updating is the visible response. Token-
+ * gated, length-capped, throttled to human speed.
+ *
  * Non-HTML targets and remote gateways (no local file access) fall back to
  * the standard preview-attachment card rather than a broken frame.
  */
@@ -59,6 +67,54 @@ export function directiveFrameHeight(raw: string | undefined): number | null {
 }
 
 const SIZE_MESSAGE_TYPE = 'hermes-inline-preview-size'
+const INTENT_MESSAGE_TYPE = 'hermes-inline-preview-intent'
+
+/** Prompt length cap for a widget intent — a sentence, not a payload dump. */
+const MAX_INTENT_LENGTH = 500
+/** One intent per frame per second; clicks are human-speed. */
+const INTENT_THROTTLE_MS = 1000
+
+/** The script that gives the widget its ONE voice: `hermes.send(prompt)`.
+ *  Posts the prompt up tagged with the mount token; the parent validates,
+ *  throttles, and routes it through the composer as a normal user message —
+ *  the widget speaks WITH the user's voice, visibly, never silently. Also
+ *  wires `data-hermes-send` so declarative HTML works with zero script:
+ *  `<button data-hermes-send="get-price eth">ETH</button>`. */
+export function intentScript(token: string): string {
+  return (
+    '<script>(function(){var t=' +
+    JSON.stringify(token) +
+    ';function send(p){if(typeof p!=="string"||!p.trim())return false;' +
+    'parent.postMessage({type:' +
+    JSON.stringify(INTENT_MESSAGE_TYPE) +
+    ',token:t,prompt:p.slice(0,' +
+    String(MAX_INTENT_LENGTH) +
+    ')},"*");return true}' +
+    'window.hermes={send:send};' +
+    'addEventListener("click",function(e){var el=e.target&&e.target.closest?' +
+    'e.target.closest("[data-hermes-send]"):null;' +
+    'if(el)send(el.getAttribute("data-hermes-send")||"")},true)})()</script>'
+  )
+}
+
+/** Parse a widget intent. Null unless it is OUR type with OUR token and a
+ *  non-empty string prompt — same trust boundary as size reports, because
+ *  this one turns into a user message. Trimmed and length-capped. */
+export function intentFromMessage(data: unknown, token: string): string | null {
+  if (typeof data !== 'object' || data === null) {
+    return null
+  }
+
+  const message = data as { type?: unknown; token?: unknown; prompt?: unknown }
+
+  if (message.type !== INTENT_MESSAGE_TYPE || message.token !== token || typeof message.prompt !== 'string') {
+    return null
+  }
+
+  const prompt = message.prompt.trim().slice(0, MAX_INTENT_LENGTH)
+
+  return prompt || null
+}
 
 /** Semantic tokens handed into the frame, resolved to concrete values from
  *  the LIVE theme. Friendly names, not internal ones — this is the contract
@@ -139,10 +195,10 @@ export function measurementScript(token: string): string {
 }
 
 /** Assemble the srcdoc: theme prelude first (so the page's own styles win),
- *  measuring script before `</body>` when present so it runs after the
- *  page's own markup, appended otherwise. */
+ *  then the measuring + intent scripts before `</body>` when present so they
+ *  run after the page's own markup, appended otherwise. */
 export function withInlineChrome(doc: string, token: string, prelude: string): string {
-  const script = measurementScript(token)
+  const script = measurementScript(token) + intentScript(token)
   const bodyClose = /<\/body\s*>/i.exec(doc)
   const framed = bodyClose ? doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index) : doc + script
 
@@ -261,7 +317,28 @@ function InlineHtmlFrame({
   }, [path, streaming])
 
   useEffect(() => {
+    // Human-speed gate on widget intents. A closure local, not state: it's
+    // a rate limiter read inside the handler, never rendered.
+    let lastIntentAt = 0
+
     const onMessage = (event: MessageEvent) => {
+      const intent = intentFromMessage(event.data, token)
+
+      if (intent !== null) {
+        const now = Date.now()
+
+        if (now - lastIntentAt >= INTENT_THROTTLE_MS) {
+          lastIntentAt = now
+          // Off-screen: the prompt reaches the agent as a normal user turn
+          // through the composer's own send path (steer/queue rules apply),
+          // but the row is typed hidden — no bubble, no UI space. The widget
+          // updating IS the visible response.
+          requestComposerSubmit(intent, { target: 'active', displayKind: 'hidden' })
+        }
+
+        return
+      }
+
       const next = frameSizeFromMessage(event.data, token)
 
       if (next === null) {

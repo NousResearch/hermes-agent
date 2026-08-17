@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { directiveFrameHeight, frameSizeFromMessage, themePrelude, withInlineChrome } from './inline-preview-directive'
+import {
+  directiveFrameHeight,
+  frameSizeFromMessage,
+  intentFromMessage,
+  themePrelude,
+  withInlineChrome
+} from './inline-preview-directive'
 
 describe('directiveFrameHeight', () => {
   it('returns null (auto-size) when absent or garbage', () => {
@@ -91,5 +97,41 @@ describe('frameSizeFromMessage', () => {
     expect(frameSizeFromMessage(msg({ height: -5 }), 'tok')).toBeNull()
     expect(frameSizeFromMessage(null, 'tok')).toBeNull()
     expect(frameSizeFromMessage('str', 'tok')).toBeNull()
+  })
+})
+
+describe('intentFromMessage', () => {
+  const msg = (over: Record<string, unknown> = {}) => ({
+    type: 'hermes-inline-preview-intent',
+    token: 'tok',
+    prompt: 'get-price eth',
+    ...over
+  })
+
+  it('accepts our intent with our token, trimmed', () => {
+    expect(intentFromMessage(msg(), 'tok')).toBe('get-price eth')
+    expect(intentFromMessage(msg({ prompt: '  hi  ' }), 'tok')).toBe('hi')
+  })
+
+  it('caps runaway prompts to a sentence-sized budget', () => {
+    expect(intentFromMessage(msg({ prompt: 'x'.repeat(9000) }), 'tok')).toHaveLength(500)
+  })
+
+  it('rejects wrong token, wrong type, empty, and hostile shapes', () => {
+    expect(intentFromMessage(msg({ token: 'stolen' }), 'tok')).toBeNull()
+    expect(intentFromMessage(msg({ type: 'hermes-inline-preview-size' }), 'tok')).toBeNull()
+    expect(intentFromMessage(msg({ prompt: '   ' }), 'tok')).toBeNull()
+    expect(intentFromMessage(msg({ prompt: 42 }), 'tok')).toBeNull()
+    expect(intentFromMessage(null, 'tok')).toBeNull()
+  })
+})
+
+describe('withInlineChrome intent wiring', () => {
+  it('injects hermes.send and the data-hermes-send click bridge', () => {
+    const framed = withInlineChrome('<html><body><h1>w</h1></body></html>', 'tok', '')
+
+    expect(framed).toContain('window.hermes={send:send}')
+    expect(framed).toContain('data-hermes-send')
+    expect(framed).toContain('hermes-inline-preview-intent')
   })
 })

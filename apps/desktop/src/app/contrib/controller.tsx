@@ -6,7 +6,7 @@ import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
-import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
@@ -277,15 +277,16 @@ registry.registerMany([
     } satisfies PaletteContribution
   },
   // The core `::preview{file="…"}` transcript directive — the model (or a
-  // skill) addresses the existing preview card deliberately instead of
-  // relying on artifact/fence heuristics. Also the reference consumer for
+  // skill) renders a workspace HTML file LIVE inside its own message
+  // (sandboxed srcdoc iframe; falls back to the classic preview card for
+  // non-HTML targets and remote gateways). Also the reference consumer for
   // the `transcript.directives` area plugins register into.
   {
     id: 'transcript.preview',
     area: TRANSCRIPT_DIRECTIVE_AREA,
     data: {
       name: 'preview',
-      render: ({ attrs }) => (attrs.file ? <PreviewAttachment source="explicit-link" target={attrs.file} /> : null)
+      render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
     } satisfies TranscriptDirectiveContribution
   },
   {

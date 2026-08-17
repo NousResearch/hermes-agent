@@ -382,8 +382,12 @@ Rules the host enforces so the surface stays safe:
   with your slug (`myplugin-board`, not `board`).
 
 Core ships one directive as the reference consumer: `::preview{file="…"}`
-renders the standard preview-attachment card for a workspace file. Tell the
-agent about your directive in a skill (that's how it learns to emit it).
+renders the workspace HTML file **live inside the message** — a sandboxed
+`srcdoc` iframe with an opaque origin (scripts run; no reach into the app,
+its storage, or the bridge), optional `height="480"`, with the classic
+preview card below it as the rail escape hatch. Non-HTML targets and remote
+gateways fall back to the card alone. Tell the agent about your directive in
+a skill (that's how it learns to emit it).
 
 ### Mount-scoped chrome (`Contribute`)
 

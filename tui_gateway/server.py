@@ -6848,10 +6848,12 @@ def _make_agent(
     # harness. Both inline and compute-host paths construct through _make_agent,
     # leaving the process boundary as the only experimental variable.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
+    from agent.isolation import resolve_agent_isolation
 
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
+    skip_context_files, skip_memory = resolve_agent_isolation()
 
     from run_agent import AIAgent
 
@@ -7014,8 +7016,8 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_context_files=skip_context_files,
+        skip_memory=skip_memory,
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )

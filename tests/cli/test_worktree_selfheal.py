@@ -92,13 +92,21 @@ class TestMaintainPackHealth:
         return len(list((repo / ".git" / "objects" / "pack").glob("*.pack")))
 
     def _make_packs(self, repo, n):
-        """Create n distinct packs by committing + repacking incrementally."""
+        """Create exactly n distinct packs via git pack-objects (deterministic
+        across git versions — incremental `git repack` consolidates small
+        packs on newer CI git builds, which made the count nondeterministic)."""
+        pack_dir = repo / ".git" / "objects" / "pack"
+        pack_dir.mkdir(parents=True, exist_ok=True)
         for i in range(n):
             (repo / f"p{i}.txt").write_text(f"{i}\n")
             _git(repo, "add", "-A")
             _git(repo, "commit", "-qm", f"c{i}")
-            # `repack` without -a packs only loose objects → one new pack.
-            _git(repo, "repack", "-q")
+            sha = _git(repo, "rev-parse", f"HEAD^{{commit}}").stdout.strip()
+            # One pack per commit object: pipe the sha into pack-objects.
+            subprocess.run(
+                ["git", "pack-objects", "-q", str(pack_dir / f"tpack{i}")],
+                input=f"{sha}\n", cwd=str(repo), capture_output=True, text=True, check=True,
+            )
         return self._pack_count(repo)
 
     def test_repacks_at_threshold(self, repo, monkeypatch):

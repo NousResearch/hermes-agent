@@ -118,7 +118,7 @@ test('behavior: pointer entry prewarms only the hovered bot', () => {
   assert.deepEqual(warmed, ['alpha'])
 })
 
-test('behavior: a thin source row activates its owner and uses that owner\'s chat pin', async () => {
+test('behavior: a remote Connections row stays in this chat instead of hopping SSH', async () => {
   const { ensured, opened, row, warmed } = renderBotRow({
     connectionId: 'work',
     connectionLabel: 'Work',
@@ -131,8 +131,8 @@ test('behavior: a thin source row activates its owner and uses that owner\'s cha
   assert.deepEqual(warmed, [['work', 'research']])
 
   await row.props.onClick()
-  assert.deepEqual(ensured, [['work', 'research']])
-  assert.deepEqual(opened, [['research', 'owner-chat']])
+  assert.deepEqual(ensured, [])
+  assert.deepEqual(opened, [])
 })
 
 test('behavior: remote default does not open this-device chat when the source did not activate', async () => {
@@ -210,7 +210,7 @@ test('behavior: remote default does not open this-device chat when the source di
   const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
 
   await row.props.onClick()
-  assert.deepEqual(ensured, [['mac-mini', 'default']])
+  assert.deepEqual(ensured, [])
   assert.deepEqual(opened, [])
-  assert.match(String(errors[0] || ''), /Mac Mini/)
+  assert.equal(errors.length, 0)
 })

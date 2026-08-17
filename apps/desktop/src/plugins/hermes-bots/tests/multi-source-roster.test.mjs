@@ -32,7 +32,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;'
+      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__botRosterKey = botRosterKey;\nglobalThis.__botRosterMeta = botRosterMeta;\nglobalThis.__displayName = displayName;\nglobalThis.__filterBots = filterBots;\nglobalThis.__resolveRosterMentions = resolveRosterMentions;'
     )
   vm.runInNewContext(code, context)
   return context
@@ -513,4 +513,73 @@ test('botRosterKey: same name on two sources yields distinct React keys', () => 
   assert.notEqual(activeRow, remoteRow)
   // Single-source desktops (no connection ids anywhere) keep a stable key.
   assert.equal(legacyRow, 'legacy::default')
+})
+
+test('resolveRosterMentions: @dixie and @bob-mac-mini hit Connections bots, not this chat', () => {
+  const { __resolveRosterMentions: resolve } = runtime()
+  const roster = [
+    { name: 'default', connectionId: 'local', connectionKind: 'local', handle: 'default-this-device' },
+    {
+      name: 'dixie',
+      connectionId: 'mac-mini',
+      connectionKind: 'ssh',
+      connectionLabel: 'Mac Mini',
+      handle: 'dixie',
+      remoteSource: true,
+      sourceScoped: true
+    },
+    {
+      name: 'bob',
+      connectionId: 'mac-mini',
+      connectionKind: 'ssh',
+      connectionLabel: 'Mac Mini',
+      handle: 'bob-mac-mini',
+      remoteSource: true,
+      sourceScoped: true
+    },
+    {
+      name: 'bob',
+      connectionId: 'spark',
+      connectionKind: 'ssh',
+      connectionLabel: 'Spark',
+      handle: 'bob-spark',
+      remoteSource: true,
+      sourceScoped: true
+    }
+  ]
+
+  const hits = resolve('hey @dixie and @bob-spark, ping @bob-mac-mini', roster, {
+    name: 'default',
+    connectionId: 'local'
+  })
+
+  assert.equal(
+    hits
+      .map(bot => `${bot.connectionId}::${bot.name}`)
+      .sort()
+      .join(','),
+    'mac-mini::bob,mac-mini::dixie,spark::bob'
+  )
+})
+
+test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself', () => {
+  const { __resolveRosterMentions: resolve } = runtime()
+  const roster = [
+    { name: 'default', connectionId: 'local', handle: 'hermes' },
+    {
+      name: 'default',
+      connectionId: 'mac-mini',
+      connectionLabel: 'Mac Mini',
+      handle: 'default-mac-mini',
+      remoteSource: true
+    }
+  ]
+
+  const hits = resolve('ask @hermes and @default-mac-mini', roster, {
+    name: 'default',
+    connectionId: 'local'
+  })
+
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0].connectionId, 'mac-mini')
 })

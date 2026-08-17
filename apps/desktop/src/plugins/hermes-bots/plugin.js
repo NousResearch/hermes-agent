@@ -2381,6 +2381,134 @@ function botHandle(name, bot) {
   return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
 }
 
+function isActiveRosterBot(bot, active) {
+  const activeName = String(active?.name || 'default').trim() || 'default'
+  const activeId = String(active?.connectionId || '').trim()
+  const botId = String(bot?.connectionId || '').trim()
+  const botName = String(bot?.name || '').trim() || 'default'
+
+  if (bot?.remoteSource) {
+    return Boolean(activeId) && activeId === botId && botName === activeName
+  }
+
+  if (activeId && activeId !== 'local' && botId && activeId !== botId) {
+    return false
+  }
+
+  return botName === activeName
+}
+
+/** Resolve @handles in prose against the Bot Mode roster (local + Connections).
+ *  Skips the bot already speaking in this chat. Unique bare names match;
+ *  duplicate names require the @name-device handle. */
+function resolveRosterMentions(text, roster, active = {}) {
+  const members = Array.isArray(roster) ? roster : []
+  const prose = String(text || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
+  const byForm = new Map()
+
+  for (const bot of members) {
+    if (!bot?.name || isActiveRosterBot(bot, active)) {
+      continue
+    }
+
+    const handle = String(botHandle(bot.name, bot) || '').toLowerCase()
+    const name = String(bot.name || '').toLowerCase()
+    const forms = new Set([handle, name])
+
+    if (bot.handle) {
+      forms.add(String(bot.handle).toLowerCase())
+    }
+
+    for (const form of forms) {
+      if (!form) {
+        continue
+      }
+
+      const existing = byForm.get(form)
+
+      if (existing && existing !== bot) {
+        byForm.set(form, null)
+        continue
+      }
+
+      if (!existing) {
+        byForm.set(form, bot)
+      }
+    }
+  }
+
+  const mentioned = []
+  const seen = new Set()
+
+  for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
+    let token = match[2].toLowerCase()
+
+    if (token === 'hermes') {
+      token = byForm.has('hermes') ? 'hermes' : token
+    }
+
+    const bot = byForm.get(token)
+
+    if (!bot) {
+      continue
+    }
+
+    const key = botRosterKey(bot)
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    mentioned.push(bot)
+  }
+
+  return mentioned
+}
+
+async function deliverRemoteRosterMentions(bots, userText) {
+  const text = String(userText || '').trim()
+
+  if (!text || typeof host.requestProfile !== 'function') {
+    return
+  }
+
+  for (const bot of bots) {
+    const connectionId = String(bot?.connectionId || '').trim()
+    const profile = String(bot?.name || '').trim() || 'default'
+
+    if (!connectionId || connectionId === 'local') {
+      continue
+    }
+
+    try {
+      const created = await host.requestProfile(
+        { connectionId, profile, mode: 'remote', targetProfile: profile },
+        'session.create',
+        { profile, title: 'Bot Chat', hidden: true }
+      )
+      const sessionId = created?.session_id
+
+      if (!sessionId) {
+        throw new Error('No remote session')
+      }
+
+      await host.requestProfile(
+        { connectionId, profile, mode: 'remote', targetProfile: profile },
+        'prompt.submit',
+        { session_id: sessionId, text }
+      )
+      host.notify?.({
+        kind: 'info',
+        title: displayName(bot),
+        message: `Messaged @${botHandle(profile, bot)} on ${bot.connectionLabel || connectionId} from this chat.`
+      })
+    } catch (error) {
+      host.notifyError?.(error, `Could not reach ${bot.connectionLabel || profile}`)
+    }
+  }
+}
+
 /** Source-qualified identity for a roster row — the React list key AND the
  *  cross-surface roster identity. Names alone are NOT unique in a
  *  multi-source roster (two connections can both expose 'default');
@@ -3458,6 +3586,17 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const open = async () => {
     haptic('tap')
     $selectedBot.set(bot.name)
+
+    if (bot.remoteSource) {
+      const handle = botHandle(bot.name, bot)
+      host.notify?.({
+        kind: 'info',
+        title: displayName(bot),
+        message: `Stay in this chat and @${handle} to message them. Gateway stays on this device.`
+      })
+      return
+    }
+
     let pinnedChat = meta?.chat
 
     if (!bot.remoteSource && $botUnread.get()[bot.name]) {
@@ -6877,6 +7016,16 @@ function BotsPane() {
           haptic('tap')
           $selectedBot.set(bot.name)
 
+          if (bot.remoteSource) {
+            const handle = botHandle(bot.name, bot)
+            host.notify?.({
+              kind: 'info',
+              title: displayName(bot),
+              message: `Stay in this chat and @${handle} to message them. Gateway stays on this device.`
+            })
+            return
+          }
+
           if ($botUnread.get()[bot.name]) {
             const next = { ...$botUnread.get() }
             delete next[bot.name]
@@ -7119,9 +7268,13 @@ export default {
           const active = (host.state.profile.get() || 'default').trim() || 'default'
           const q = (query || '').toLowerCase()
           const items = []
+          const live = {
+            name: active,
+            connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
+          }
 
           for (const profile of profiles) {
-            if (!profile?.name || profile.name === active) {
+            if (!profile?.name || isActiveRosterBot(profile, live)) {
               continue
             }
 
@@ -7321,52 +7474,73 @@ export default {
             return draft
           }
 
-          let names = []
-          try {
-            const res = await host.request('profiles.list', { include_sessions: false })
-            names = (res?.profiles ?? []).map(p => p.name)
-          } catch {
+          const live = {
+            name: (host.state.profile.get() || 'default').trim() || 'default',
+            connectionId: String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
+          }
+          const cached = typeof queryClient !== 'undefined' && queryClient && typeof queryClient.getQueryData === 'function'
+            ? queryClient.getQueryData(ROSTER_KEY)
+            : null
+          const roster = Array.isArray(cached?.profiles) ? cached.profiles : null
+          let mentionedBots = roster ? resolveRosterMentions(text, roster, live) : []
+
+          if (!roster) {
+            let names = []
+            try {
+              const res = await host.request('profiles.list', { include_sessions: false })
+              names = (res?.profiles ?? []).map(p => p.name)
+            } catch {
+              return draft
+            }
+
+            const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
+            const mentioned = []
+
+            for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
+              let name = match[2].toLowerCase()
+
+              if (name === 'hermes' && !names.includes('hermes') && names.includes('default')) {
+                name = 'default'
+              }
+
+              if (names.includes(name) && name !== live.name && !mentioned.includes(name)) {
+                mentioned.push(name)
+              }
+            }
+
+            mentionedBots = mentioned.map(name => ({ name }))
+          }
+
+          if (!mentionedBots.length) {
             return draft
           }
 
-          // Mentions in code are code, not handoffs (#20).
-          const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
-          const active = (host.state.profile.get() || 'default').trim() || 'default'
-          const mentioned = []
+          const localMentions = mentionedBots.filter(bot => !bot.remoteSource)
+          const remoteMentions = mentionedBots.filter(bot => bot.remoteSource)
 
-          for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
-            let name = match[2].toLowerCase()
-
-            if (name === 'hermes' && !names.includes('hermes') && names.includes('default')) {
-              name = 'default'
-            }
-
-            if (names.includes(name) && name !== active && !mentioned.includes(name)) {
-              mentioned.push(name)
-            }
+          if (remoteMentions.length && typeof host.requestProfile === 'function') {
+            void deliverRemoteRosterMentions(remoteMentions, text)
           }
 
-          if (!mentioned.length) {
-            return draft
+          const activeMeta = $botMeta.get()[live.name]
+          const senderName = displayName({ name: live.name, title: activeMeta?.title }, activeMeta)
+          let note = ''
+
+          if (localMentions.length) {
+            note +=
+              '\n\n[@mention handoff — for each mentioned agent (' + localMentions.map(bot => botHandle(bot.name, bot)).join(', ') + '): ' +
+              'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim (avoid double quotes in your composed message). Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
+              localMentions.map(bot => '`hermes -p ' + shellQuote(bot.name) + ' chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 ' + shellDoubleQuote(senderName) + ' (@' + shellDoubleQuote(botHandle(live.name)) + '): <your composed message>"`').join('\n') +
+              '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. ' +
+              'Relay the reply back to the user, attributed to that agent.]'
           }
 
-          // The ACTIVE BOT composes the message — it understands intent; a
-          // text pipe never can. Delivery is the one blessed command into the
-          // recipient's canonical Bot Chat, so their side reads as a normal
-          // DM (message bubble + their reply), and the reply prints on
-          // stdout for the sender to relay.
-          const activeMeta = $botMeta.get()[active]
-          const senderName = displayName({ name: active, title: activeMeta?.title }, activeMeta)
-          // The command below runs verbatim in the active agent's terminal:
-          // sender titles are free text (and sync from ui_meta), and profile
-          // names come from the gateway — every interpolated value must stay
-          // shell-literal, same class as the routine-prompt fix (#21).
-          const note =
-            '\n\n[@mention handoff — for each mentioned agent (' + mentioned.map(botHandle).join(', ') + '): ' +
-            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim (avoid double quotes in your composed message). Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
-            mentioned.map(n => '`hermes -p ' + shellQuote(n) + ' chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from \uD83E\uDD16 ' + shellDoubleQuote(senderName) + ' (@' + shellDoubleQuote(botHandle(active)) + '): <your composed message>"`').join('\n') +
-            '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. ' +
-            'Relay the reply back to the user, attributed to that agent.]'
+          if (remoteMentions.length) {
+            const labels = remoteMentions.map(bot => `@${botHandle(bot.name, bot)} (${bot.connectionLabel || bot.connectionId})`).join(', ')
+            note +=
+              '\n\n[@mention — stay on this device. Desktop is delivering to ' + labels +
+              ' over Connections in the background. Do not run hermes -p for them and do not switch Gateway. Tell the user they were messaged here; when a reply lands, relay it attributed to that agent.]'
+          }
 
           return { ...draft, text: text + note }
         }      }

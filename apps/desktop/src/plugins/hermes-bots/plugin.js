@@ -3068,7 +3068,7 @@ function parseGroupChatMentions(text, members) {
     // Cross-connection members are also addressable by their @name-device
     // handle (the roster's disambiguated form) — same-named agents on two
     // machines resolve to the right one.
-    const handle = String(member.handle || '').trim()
+    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
     const forms = new Set([
       member.name.toLowerCase(),
       member.name.toLowerCase().replace(/[\s_-]+/g, ''),
@@ -3154,6 +3154,13 @@ function rotateGroupSpeakers(members, round) {
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
+/** Transcript form of a room speaker's profile name. The primary profile is
+ *  literally named "default" — render it as Hermes (matching displayName and
+ *  the @hermes handle) so the main agent never loses its name in rooms. */
+function groupSpeakerLabel(name) {
+  return (name || '').trim().toLowerCase() === 'default' ? 'Hermes' : name
+}
+
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
 function formatGroupChatLine(entry, viewerName) {
@@ -3166,7 +3173,7 @@ function formatGroupChatLine(entry, viewerName) {
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${entry.from.name}${suffix}${source}: ${entry.text}`
+  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}`
 }
 
 /** The full per-turn payload for one member: participation rules + the room
@@ -3177,13 +3184,13 @@ function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }) {
   const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
   const peerNames = peers
     .map(m => {
-      const handle = m.title ? `${m.title} (@${m.name})` : `@${m.name}`
+      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
       return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
     })
     .join(', ')
 
   return [
-    `[Group chat: "${groupName}"] You are @${viewer.name}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
     'New messages in the room since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),
@@ -7143,6 +7150,10 @@ function GroupChatWorkspace({ group, members }) {
   const room = rooms[group] || { log: [], running: false }
   const [draft, setDraft] = useState('')
   const [confirmDisband, setConfirmDisband] = useState(false)
+  // Click-to-disambiguate: which log entry is showing its speaker's full
+  // @handle (the roster's name-device form when names collide across
+  // connections). Naturally every speaker just shows its display name.
+  const [revealedSpeaker, setRevealedSpeaker] = useState(null)
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -7205,12 +7216,28 @@ function GroupChatWorkspace({ group, members }) {
               ? room.log.map((entry, index) => {
                   const isUser = entry.from.kind === 'user'
                   const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
-                  const sourceBadge = !isUser && entry.from.source ? ` · ${entry.from.source}` : ''
+                  // Match this speaker back to its member descriptor so display
+                  // names and disambiguating handles come from the roster (the
+                  // primary "default" profile renders as Hermes, remote dupes
+                  // carry their @name-device handle) instead of raw profile ids.
+                  const member = isUser
+                    ? null
+                    : members.find(b =>
+                        b.name === entry.from.name &&
+                        (entry.from.source
+                          ? (b.connectionLabel || b.connectionId) === entry.from.source
+                          : !b.remoteSource)
+                      ) || null
+                  const display = isUser ? 'You' : displayName(member || { name: entry.from.name }, meta)
+                  const entryKey = `${entry.at}:${index}`
+                  const revealed = !isUser && revealedSpeaker === entryKey
+                  // Clicked: append the gateway name so same-named agents on
+                  // two connections are tellable apart on demand.
                   const label = isUser
                     ? 'You'
-                    : meta?.title
-                      ? `${meta.title} (@${entry.from.name})${sourceBadge}`
-                      : `@${entry.from.name}${sourceBadge}`
+                    : revealed
+                      ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
+                      : display
 
                   return jsxs('div', {
                     className: isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1',
@@ -7218,12 +7245,19 @@ function GroupChatWorkspace({ group, members }) {
                       jsxs('div', {
                         className: 'flex items-baseline gap-2',
                         children: [
-                          jsx('span', {
-                            className: isUser
-                              ? 'text-[0.7rem] font-semibold text-foreground'
-                              : 'text-[0.7rem] font-semibold text-(--ui-accent,#4f9cf9)',
-                            children: label
-                          }),
+                          isUser
+                            ? jsx('span', {
+                                className: 'text-[0.7rem] font-semibold text-foreground',
+                                children: label
+                              })
+                            : jsx('button', {
+                                type: 'button',
+                                className:
+                                  'cursor-pointer border-0 bg-transparent p-0 text-left text-[0.7rem] font-semibold text-(--ui-accent,#4f9cf9)',
+                                title: revealed ? 'Hide full handle' : 'Show full handle',
+                                onClick: () => setRevealedSpeaker(revealed ? null : entryKey),
+                                children: label
+                              }),
                           jsx('span', {
                             className: 'text-[0.625rem] text-(--ui-text-quaternary)',
                             children: relativeTime(entry.at)
@@ -7235,7 +7269,7 @@ function GroupChatWorkspace({ group, members }) {
                         children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                       })
                     ]
-                  }, `${entry.at}:${index}`)
+                  }, entryKey)
                 })
               : [
                   jsx('div', {

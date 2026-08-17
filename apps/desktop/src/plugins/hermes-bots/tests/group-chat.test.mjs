@@ -312,3 +312,53 @@ test('source contract: workspace header offers disband behind a ConfirmDialog', 
   assert.match(pluginSource, /Disband group chat\?/)
   assert.match(pluginSource, /title: `Disband the \$\{group\} group chat`/)
 })
+
+test('default profile speaks as Hermes in room transcripts, not @default', () => {
+  const gc = load(() => '(pass)')
+  const line = gc.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hello room' }, 'builder')
+  assert.equal(line, 'Hermes: hello room')
+  assert.doesNotMatch(line, /default/)
+
+  // Other members keep their profile name; the (you) suffix survives.
+  const you = gc.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' }, 'default')
+  assert.equal(you, 'Hermes (you): hi')
+  const plain = gc.formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' }, 'research')
+  assert.equal(plain, 'builder: yo')
+})
+
+test('turn prompt addresses the default profile as @hermes', () => {
+  const gc = load(() => '(pass)')
+  const prompt = gc.buildGroupChatTurnPrompt({
+    groupName: 'Core',
+    members: [{ name: 'default', title: '' }, { name: 'builder', title: '' }],
+    viewer: { name: 'default', title: '' },
+    deltaLines: []
+  })
+  assert.match(prompt, /You are @hermes,/)
+  assert.doesNotMatch(prompt, /@default\b/)
+
+  const peerView = gc.buildGroupChatTurnPrompt({
+    groupName: 'Core',
+    members: [{ name: 'default', title: '' }, { name: 'builder', title: '' }],
+    viewer: { name: 'builder', title: '' },
+    deltaLines: []
+  })
+  assert.match(peerView, /group chat with @hermes/)
+})
+
+test('mention routing: @hermes resolves to the default member', () => {
+  const gc = load(() => '(pass)')
+  const members = [{ name: 'default', title: '' }, { name: 'builder', title: '' }]
+  const parsed = gc.parseGroupChatMentions('@hermes take a look', members)
+  assert.equal(parsed.mentioned.has('default'), true)
+  assert.equal(parsed.mentioned.size, 1)
+})
+
+test('source contract: workspace speaker labels use displayName with a click-to-reveal handle', () => {
+  // Speaker labels come from the roster displayName (default → Hermes)…
+  assert.match(pluginSource, /displayName\(member \|\| \{ name: entry\.from\.name \}, meta\)/)
+  // …and clicking a speaker reveals the full disambiguated handle, with the
+  // gateway/device name appended for cross-connection speakers.
+  assert.match(pluginSource, /setRevealedSpeaker\(revealed \? null : entryKey\)/)
+  assert.match(pluginSource, /\$\{display\}\$\{entry\.from\.source \? `-\$\{entry\.from\.source\}` : ''\} \(@\$\{botHandle\(entry\.from\.name, member \|\| undefined\)\}\)/)
+})

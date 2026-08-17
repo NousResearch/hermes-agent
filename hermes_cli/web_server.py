@@ -12307,6 +12307,11 @@ def _validate_dashboard_cron_context_from(
     if not refs:
         return
     for ref in refs:
+        # "self" (the continuity toggle) resolves to the job's own id at run
+        # time — it can't be validated against the store (create precedes the
+        # job's existence).
+        if isinstance(ref, str) and ref.strip().lower() == "self":
+            continue
         if not _call_cron_for_profile(profile_name, "get_job", ref):
             raise HTTPException(
                 status_code=400,

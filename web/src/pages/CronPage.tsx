@@ -145,6 +145,7 @@ function emptyCronJobForm(): CronJobEditorState {
     script: "",
     no_agent: false,
     context_from: "",
+    continuity: false,
     enabled_toolsets: [],
     workdir: "",
     scheduleState: { ...DEFAULT_SCHEDULE_STATE },
@@ -290,6 +291,16 @@ function CronAdvancedFields({
             placeholder="/absolute/project/path"
           />
         </div>
+
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            className="accent-foreground"
+            checked={form.continuity}
+            onChange={(e) => update("continuity", e.target.checked)}
+          />
+          continuity: each run sees the previous run&apos;s output (dedupe, pick up where it left off)
+        </label>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="grid gap-1">

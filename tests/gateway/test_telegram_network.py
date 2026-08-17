@@ -138,6 +138,44 @@ class TestFallbackTransport:
         assert resp2.status_code == 200
         assert calls[0]["url_host"] == "149.154.167.220"
 
+    @pytest.mark.asyncio
+    async def test_first_choice_ipv4_success_logs_info_not_warning(self, monkeypatch, caplog):
+        """Healthy IPv4-first connect is info; warning only after a skipped dead path."""
+        import logging
+
+        calls = []
+        monkeypatch.setattr(
+            tnet.httpx,
+            "AsyncHTTPTransport",
+            _fake_transport_factory(calls, {"149.154.167.220": "ok"}),
+        )
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
+            await transport.handle_async_request(_telegram_request())
+        records = [r for r in caplog.records if "sticky IPv4 Telegram API path" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].levelno == logging.INFO
+
+    @pytest.mark.asyncio
+    async def test_sticky_after_failed_literal_logs_warning(self, monkeypatch, caplog):
+        import logging
+
+        calls = []
+        monkeypatch.setattr(
+            tnet.httpx,
+            "AsyncHTTPTransport",
+            _fake_transport_factory(
+                calls, {"149.154.167.220": "timeout", "149.154.167.221": "ok"}
+            ),
+        )
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
+            await transport.handle_async_request(_telegram_request())
+        records = [r for r in caplog.records if "sticky IPv4 Telegram API path" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        assert "149.154.167.221" in records[0].getMessage()
+
 
     @pytest.mark.asyncio
     async def test_sticky_ip_tried_first_but_falls_through_if_stale(self, monkeypatch):

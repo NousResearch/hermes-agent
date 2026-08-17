@@ -53,12 +53,13 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
-    """Retry Telegram Bot API requests via fallback IPs while preserving TLS/SNI.
+    """Reach Telegram Bot API via known IPv4 literals first, hostname last.
 
-    Requests continue to target https://api.telegram.org/... logically, but on
-    connect failures the underlying TCP connection is retried against a known
-    reachable IP. This is effectively the programmatic equivalent of
-    ``curl --resolve api.telegram.org:443:<ip>``.
+    Requests still target https://api.telegram.org/... logically (Host + SNI
+    stay on the hostname). TCP connects to a known A-record IP first so a
+    blackholed IPv6 AAAA cannot pin initialize(). Equivalent to
+    ``curl --resolve api.telegram.org:443:<ip>``. The dual-stack hostname
+    is last resort for IPv6-only networks.
     """
 
     # Bound every pool. httpx defaults to 100 connections per pool, so a wedged
@@ -159,7 +160,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                         if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                             self._sticky_ip = ip
                             if ip is not None:
-                                logger.warning(
+                                log = logger.warning if last_error is not None else logger.info
+                                log(
                                     "[Telegram] Using sticky IPv4 Telegram API path %s "
                                     "(dual-stack hostname tried last — #87015)",
                                     ip,

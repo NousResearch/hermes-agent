@@ -26,6 +26,7 @@ describe('detectBundleSkew', () => {
 
   it('passes the stamp range scoped to apps/desktop', async () => {
     let seen: string[] = []
+
     const git: RunGit = async args => {
       seen = args
 

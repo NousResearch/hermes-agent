@@ -12552,10 +12552,11 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
       let raw: { connection: typeof connection; error?: string; profiles: null | string[] }
 
       try {
-        if (
-          connection.kind === 'ssh' &&
-          ![...sshConnections.keys()].some(scope => String(scope).startsWith(backendScopePrefix(connection.id)))
-        ) {
+        // SSH roster listing must never spawn a dashboard. A stale
+        // sshConnections key used to fall into ensureRegistryBackend and
+        // respawn Spark/Mini every Bot Mode poll (~5s), then the mux died
+        // (ECONNRESET / liveness probe drop).
+        if (connection.kind === 'ssh') {
           await probeSshProfileInventory(connection)
           raw = { connection, profiles: null, error: 'connect-on-demand' }
         } else {

@@ -43,6 +43,7 @@ import {
   reorderStepHaptic
 } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
+import { $hasMultipleConnections } from '@/store/connections'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -69,6 +70,7 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
+import { ConnectionSwitcher } from './connection-switcher'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
@@ -105,9 +107,10 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
 // The active profile pops in its own color — the "where am I" cue. Single-
-// profile users see the "+" (create their first profile) and the Manage
-// overflow (edit the default profile's SOUL.md); the colored named squares
-// and the default↔all toggle only appear once a second profile exists.
+// source users see the default home, "+", and Manage; with several sources the
+// active source glyph replaces that redundant home. Colored named squares and
+// the default↔all toggle only appear once a second profile exists on the active
+// source.
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
@@ -116,6 +119,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const multipleConnections = useStore($hasMultipleConnections)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -230,7 +234,9 @@ export function ProfileRail() {
   }, [createRequest])
 
   return (
-    <div aria-label="Profiles" className="flex items-center gap-0.5" data-slot="profile-rail" role="tablist">
+    <div aria-label={p.title} className="flex items-center gap-0.5" data-slot="profile-rail" role="group">
+      <ConnectionSwitcher />
+      {multipleConnections && <span aria-hidden="true" className="mx-0.5 h-3.5 w-px bg-(--ui-stroke-tertiary)" />}
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -249,7 +255,7 @@ export function ProfileRail() {
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
-      {!multiProfile && defaultProfile && (
+      {!multipleConnections && !multiProfile && defaultProfile && (
         <ProfilePill
           active
           glyph="home"

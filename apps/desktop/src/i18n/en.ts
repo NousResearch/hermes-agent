@@ -705,7 +705,7 @@ export const en: Translations = {
       intro:
         'Register every place your agents live — this device, remote gateways on your network, and Hermes Cloud instances. All of them are stored here.',
       stagedNote:
-        'Chats and the agent roster follow the source you pick; the app-managed window backend is still chosen in Settings → Gateway.',
+        'Switch sources from the Sessions sidebar. Profiles, chats, messaging, and cron stay scoped to that source; Primary is the registry default and does not switch your current workspace.',
       loadFailed: 'Could not load connections',
       primaryPill: 'Primary',
       managedPill: 'This device',
@@ -1762,6 +1762,8 @@ export const en: Translations = {
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
     switchToProfile: name => `Switch to ${name}`,
+    switchToConnection: name => `Switch to ${name}`,
+    switchConnectionFailed: name => `Could not connect to ${name}`,
     manageProfiles: 'Manage profiles…',
     connectGateway: 'Connect another Hermes gateway…',
     actions: 'Actions',

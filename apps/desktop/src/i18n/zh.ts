@@ -908,7 +908,8 @@ export const zh: Translations = {
     connections: {
       title: '连接',
       intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——全部保存在这里。',
-      stagedNote: '聊天和智能体列表会跟随你选择的来源；应用管理的窗口后端仍在“设置 → 网关”中选择。',
+      stagedNote:
+        '可在“会话”侧边栏切换来源。配置档案、聊天、消息和定时任务始终限定在所选来源；“主连接”是注册表的默认值，不会切换当前工作区。',
       loadFailed: '无法加载连接',
       primaryPill: '主连接',
       managedPill: '本机',
@@ -1948,6 +1949,8 @@ export const zh: Translations = {
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
+    switchToConnection: name => `切换到 ${name}`,
+    switchConnectionFailed: name => `无法连接到 ${name}`,
     manageProfiles: '管理配置档案…',
     connectGateway: '连接另一个 Hermes 网关…',
     actions: '操作',

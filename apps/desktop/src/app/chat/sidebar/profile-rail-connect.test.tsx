@@ -59,6 +59,10 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
+vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
+
+vi.mock('./connection-switcher', () => ({ ConnectionSwitcher: () => null }))
+
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),
   runImportProfileFlow: vi.fn()
@@ -78,6 +82,9 @@ vi.mock('../../profiles/create-profile-dialog', () => ({ CreateProfileDialog: ()
 vi.mock('../../profiles/delete-profile-dialog', () => ({ DeleteProfileDialog: () => null }))
 vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: () => null }))
 
+const { $hasMultipleConnections } = await import('@/store/connections')
+const hasMultipleConnections = $hasMultipleConnections as ReturnType<typeof atom<boolean>>
+
 describe('ProfileRail multi-gateway entry point', () => {
   it('deep-links to the unified Settings → Gateways page from the rail', () => {
     render(<ProfileRail />)
@@ -94,6 +101,14 @@ describe('ProfileRail multi-gateway entry point', () => {
     // The whole point is first-run discoverability: the pill must not be
     // gated behind multiProfile the way the default↔all toggle is.
     expect(screen.getByRole('button', { name: 'Connect another Hermes gateway…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
+  })
+
+  it('does not duplicate the default home when source buttons identify multiple single-profile backends', () => {
+    hasMultipleConnections.set(true)
+    render(<ProfileRail />)
+
+    expect(screen.queryByRole('button', { name: 'default' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Manage profiles…' })).toBeTruthy()
   })
 })

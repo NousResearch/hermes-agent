@@ -93,6 +93,14 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.register({ id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: '/my-page', label: 'My Page', codicon: 'project' } })`
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
+- TRANSCRIPT directives: register `area: TRANSCRIPT_DIRECTIVE_AREA` with
+  `data: { name: 'task', render: ({ attrs, streaming }) => jsx(...) }` and
+  the assistant can render your component inline in a chat message by
+  emitting `::task{id="BB-12"}` alone on its own line. Attrs are untrusted
+  `key="value"` strings — validate them. Unclaimed/malformed directives fall
+  back to plain text; core's own `::preview{file="…"}` is the reference.
+  After registering one, TELL the model it exists (a bundled skill or the
+  user's instructions) — it won't discover the name on its own.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
 - `ctx.os` — the curated OS door, attributed to your plugin:
   `ctx.os.notify({ title, body?, silent? })` posts a native OS notification.

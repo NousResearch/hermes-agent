@@ -349,6 +349,42 @@ ctx.register({ id: 'noir', area: THEMES_AREA, data: myDesktopTheme })
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+### Transcript directives — inline components the model addresses
+
+`TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.
+Register a named directive and the agent can render your component inline in
+an assistant message by emitting a paragraph of the form `::name{key="value"}`:
+
+```javascript
+import { TRANSCRIPT_DIRECTIVE_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'task-card',
+  area: TRANSCRIPT_DIRECTIVE_AREA,
+  data: {
+    name: 'task', // the model writes ::task{id="BB-12"}
+    render: ({ attrs, streaming }) => jsx(TaskCard, { taskId: attrs.id, streaming })
+  }
+})
+```
+
+Rules the host enforces so the surface stays safe:
+
+- The directive must be the **entire paragraph** — `::name` mid-prose stays
+  prose, so plugin components can never hijack running text.
+- Attributes are **untrusted model output** (`key="value"` pairs, string-only).
+  Validate your own fields; render nothing on garbage rather than guessing.
+- An **unclaimed** directive (no plugin registered for the name) renders as
+  the plain paragraph it always was — nothing breaks when a plugin is off.
+- Renders are wrapped in the contribution error boundary: a throw degrades to
+  an inline error chip, never a dead message.
+- First registration wins on a name collision; namespace adventurous names
+  with your slug (`myplugin-board`, not `board`).
+
+Core ships one directive as the reference consumer: `::preview{file="…"}`
+renders the standard preview-attachment card for a workspace file. Tell the
+agent about your directive in a skill (that's how it learns to emit it).
+
 ### Mount-scoped chrome (`Contribute`)
 
 `ctx.register` is for **permanent** contributions. When chrome should live and

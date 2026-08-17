@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import timezone
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -25,6 +26,13 @@ MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
+
+
+def _utc_now_iso() -> str:
+    # Store timestamps in UTC (offset always +00:00) so lexicographic TEXT
+    # ordering of claimed_at matches absolute time across DST transitions and
+    # HERMES_TIMEZONE changes (#86520).
+    return _hermes_now().astimezone(timezone.utc).isoformat()
 
 
 def _connect() -> sqlite3.Connection:
@@ -138,7 +146,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
 
 def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
-    now = _hermes_now().isoformat()
+    now = _utc_now_iso()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
     with _transaction() as conn:
@@ -160,7 +168,7 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
 
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
-    now = _hermes_now().isoformat()
+    now = _utc_now_iso()
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status='running', started_at=?
@@ -181,7 +189,7 @@ def finish_execution(
     delivery_outcome: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten."""
-    now = _hermes_now().isoformat()
+    now = _utc_now_iso()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
@@ -202,7 +210,7 @@ def finish_execution(
 
 def recover_interrupted_executions() -> int:
     """Mark provably abandoned attempts unknown without scheduling retries."""
-    now = _hermes_now().isoformat()
+    now = _utc_now_iso()
     changed = 0
     recovered: List[Dict[str, Any]] = []
     with _transaction() as conn:

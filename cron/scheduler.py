@@ -495,6 +495,7 @@ from cron.jobs import (
     advance_next_runs,
     claim_dispatch,
     claim_job_for_fire,
+    clear_run_claim,
     fire_claim_fence,
     get_due_jobs,
     heartbeat_fire_claim,
@@ -6663,6 +6664,28 @@ def tick(
             membership is released in the worker's finally block.
             """
             job_id = job["id"]
+
+            def _clear_oneshot_run_claim() -> None:
+                # A skipped/failed one-shot dispatch must not keep the
+                # run_claim stamped by _get_due_jobs_locked until the TTL
+                # expires — clear it so the next healthy tick picks the job
+                # up immediately (#86522). Best-effort: never break the
+                # skip path.
+                schedule = job.get("schedule")
+                if not isinstance(schedule, dict) or schedule.get("kind") != "once":
+                    return
+                try:
+                    clear_run_claim(
+                        job_id,
+                        expected_owner=(job.get("run_claim") or {}).get("by"),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Job '%s': failed to clear one-shot run_claim",
+                        job.get("name", job_id),
+                        exc_info=True,
+                    )
+
             # A tick can race gateway teardown: once the interpreter is
             # finalizing, ``pool.submit`` raises "cannot schedule new futures
             # after interpreter shutdown" and crashes the tick. Skip cleanly —
@@ -6673,6 +6696,7 @@ def tick(
                     "Job '%s' not dispatched — interpreter is shutting down",
                     job.get("name", job_id),
                 )
+                _clear_oneshot_run_claim()
                 return None
             if not try_register_running_job(job_id):
                 logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -6695,6 +6719,7 @@ def tick(
                     job.get("name", job_id),
                     execution_err,
                 )
+                _clear_oneshot_run_claim()
                 return None
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
@@ -6712,6 +6737,7 @@ def tick(
                     success=False,
                     error=f"Executor dispatch failed: {submit_err}",
                 )
+                _clear_oneshot_run_claim()
                 # Interpreter began finalizing between the guard above and the
                 # submit — release the in-flight claim we just took and skip.
                 if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):

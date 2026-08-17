@@ -22,6 +22,7 @@ from cron.jobs import (
     claim_dispatch,
     claim_job_for_fire,
     heartbeat_run_claim,
+    clear_run_claim,
     get_due_jobs,
     save_job_output,
     _hermes_now,
@@ -831,6 +832,62 @@ class TestGetDueJobs:
             "at": original_at,
             "by": "new-owner",
         }
+
+
+class TestClearRunClaim:
+    """#86522: a one-shot skipped/failed at dispatch must not keep its
+    run_claim until the TTL expires."""
+
+    def _save_claimed_oneshot(self, job_id="oneshot", owner="owner-1"):
+        run_at = (_hermes_now() - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": job_id, "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 0},
+            "run_claim": {"at": _hermes_now().isoformat(), "by": owner},
+        }])
+
+    def test_clear_lets_next_tick_redispatch_immediately(self, tmp_cron_dir):
+        """Without the clear, the fresh claim makes the next healthy tick
+        skip the job for up to the claim TTL (default 30 min)."""
+        self._save_claimed_oneshot()
+
+        # A healthy tick right after a failed dispatch skips the claimed job.
+        assert get_due_jobs() == []
+
+        assert clear_run_claim("oneshot", expected_owner="owner-1") is True
+        assert get_job("oneshot")["run_claim"] is None
+
+        # The very next tick picks the job up again.
+        assert [j["id"] for j in get_due_jobs()] == ["oneshot"]
+
+    def test_rejects_mismatched_owner(self, tmp_cron_dir):
+        """CAS: a stale skip path must not wipe a claim another scheduler
+        process has since taken over."""
+        self._save_claimed_oneshot()
+
+        assert clear_run_claim("oneshot", expected_owner="other-owner") is False
+        assert get_job("oneshot")["run_claim"]["by"] == "owner-1"
+
+    def test_noop_for_recurring_job(self, tmp_cron_dir):
+        future = (_hermes_now() + timedelta(hours=1)).isoformat()
+        save_jobs([{
+            "id": "recur", "name": "R", "prompt": "x",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+            "run_claim": {"at": _hermes_now().isoformat(), "by": "owner-1"},
+        }])
+
+        assert clear_run_claim("recur", expected_owner="owner-1") is False
+        assert get_job("recur")["run_claim"] is not None
+
+    def test_noop_without_claim_or_job(self, tmp_cron_dir):
+        self._save_claimed_oneshot()
+        save_jobs([{**get_job("oneshot"), "run_claim": None}])
+
+        assert clear_run_claim("oneshot", expected_owner="owner-1") is False
+        assert clear_run_claim("missing", expected_owner="owner-1") is False
 
 
 class TestEnabledToolsets:

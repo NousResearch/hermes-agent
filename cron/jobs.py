@@ -2538,6 +2538,42 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
     return False
 
 
+def clear_run_claim(job_id: str, *, expected_owner: Optional[str] = None) -> bool:
+    """Clear a one-shot's ``run_claim`` when its dispatch never ran.
+
+    Skip/failure paths in the scheduler (interpreter shutdown, ledger-write
+    failure, pool.submit failure) leave the claim stamped by
+    _get_due_jobs_locked in place, so the next healthy tick reads a fresh
+    claim and skips the job — a one-shot could arrive up to the claim TTL
+    late (#86522). Clearing here lets the next tick pick it up immediately.
+
+    ``expected_owner`` (copied from the dispatched job's claim) makes the
+    clear compare-and-swap: a stale path must not wipe a claim another
+    scheduler process has since taken over.
+
+    Returns True if this job's one-shot claim was cleared; False when the
+    job, claim, or ownership does not match.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if job.get("schedule", {}).get("kind") != "once":
+                return False
+            claim = job.get("run_claim")
+            if claim is None:
+                return False
+            if expected_owner is not None and (
+                not isinstance(claim, dict) or claim.get("by") != expected_owner
+            ):
+                return False
+            job["run_claim"] = None
+            save_jobs(jobs)
+            return True
+    return False
+
+
 def advance_next_runs(job_ids) -> int:
     """Batch form of :func:`advance_next_run` for the due-dispatch loop.
 

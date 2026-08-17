@@ -29,12 +29,14 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -661,6 +663,23 @@ def _meta_key(session_id: str) -> str:
 
 
 _DB_CACHE: Dict[str, Any] = {}
+_DB_BOOTSTRAP_LOCK = threading.Lock()
+_DB_BOOTSTRAP_INFLIGHT: set = set()
+
+
+def _bootstrap_session_db(home: str) -> None:
+    """Construct SessionDB off-loop and populate the cache (worker thread)."""
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+    except Exception as exc:  # pragma: no cover
+        logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
+        db = None
+    with _DB_BOOTSTRAP_LOCK:
+        if db is not None and home not in _DB_CACHE:
+            _DB_CACHE[home] = db
+        _DB_BOOTSTRAP_INFLIGHT.discard(home)
 
 
 def _get_session_db() -> Optional[Any]:
@@ -671,6 +690,15 @@ def _get_session_db() -> Optional[Any]:
     ``hermes_home`` path so profile switches still pick up the right DB.
     Defensive against import/instantiation failures so tests and
     non-standard launchers can still use the GoalManager.
+
+    Never constructs SessionDB on an event-loop thread. ``SessionDB.__init__``
+    runs schema init, and a migration against a contended state.db blocks for
+    seconds — on the gateway's loop thread that starves the loop-liveness
+    watchdog, which hard-exits the process (exit 75) and crash-loops the
+    gateway (Coatue field report, 2026-08-14). On a cache miss with a running
+    loop we kick a one-shot background bootstrap and return None; every
+    caller already degrades gracefully on None, and a later call returns the
+    cached instance.
     """
     try:
         from hermes_constants import get_hermes_home
@@ -684,12 +712,47 @@ def _get_session_db() -> Optional[Any]:
     cached = _DB_CACHE.get(home)
     if cached is not None:
         return cached
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        on_loop_thread = False
+    else:
+        on_loop_thread = True
+
+    if on_loop_thread:
+        with _DB_BOOTSTRAP_LOCK:
+            # Re-check under the lock: a bootstrap may have finished between
+            # the unlocked read above and here.
+            cached = _DB_CACHE.get(home)
+            if cached is not None:
+                return cached
+            if home not in _DB_BOOTSTRAP_INFLIGHT:
+                _DB_BOOTSTRAP_INFLIGHT.add(home)
+                threading.Thread(
+                    target=_bootstrap_session_db,
+                    args=(home,),
+                    name="goals-sessiondb-bootstrap",
+                    daemon=True,
+                ).start()
+        return None
+
     try:
         db = SessionDB()
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
-    _DB_CACHE[home] = db
+    with _DB_BOOTSTRAP_LOCK:
+        existing = _DB_CACHE.get(home)
+        if existing is not None:
+            # A concurrent bootstrap won the race; keep one instance and
+            # close ours so connections don't leak.
+            try:
+                db.close()
+            except Exception:
+                pass
+            return existing
+        _DB_CACHE[home] = db
     return db
 
 

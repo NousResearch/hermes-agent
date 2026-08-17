@@ -45,7 +45,11 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { isRetryableRemoteBootFailure, shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import {
+  isRetryableRemoteBootFailure,
+  shouldLatchBackendStartFailure,
+  shouldLatchRemoteReauthFailure
+} from './backend-start-failure'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,

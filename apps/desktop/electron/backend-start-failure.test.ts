@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { isRetryableRemoteBootFailure, shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import {
+  isRetryableRemoteBootFailure,
+  shouldLatchBackendStartFailure,
+  shouldLatchRemoteReauthFailure
+} from './backend-start-failure'
 
 test('latches a LOCAL backend failure so the install-retry loop is broken', () => {
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false }), true)

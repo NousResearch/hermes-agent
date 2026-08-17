@@ -283,14 +283,14 @@ describe('startWorkInRepo remote capability gate (#81724)', () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
     desktopGit.mockReturnValue({
       worktreeAdd: vi.fn(async () => {
-        throw new Error('Expected JSON from https://vps/api/git/worktree/add but got HTML (status 404). The endpoint is likely missing on the Hermes backend.')
+        throw new Error(
+          'Expected JSON from https://vps/api/git/worktree/add but got HTML (status 404). The endpoint is likely missing on the Hermes backend.'
+        )
       })
     } as never)
 
     // The i18n mock echoes keys, so the surfaced error is the catalog key.
-    await expect(startWorkInRepo('/srv/repo', { branch: 'x' })).rejects.toThrow(
-      'sidebar.projects.worktreeStaleBackend'
-    )
+    await expect(startWorkInRepo('/srv/repo', { branch: 'x' })).rejects.toThrow('sidebar.projects.worktreeStaleBackend')
   })
 
   it('re-throws real git failures untouched (a remote 400 is not a capability verdict)', async () => {
@@ -301,7 +301,7 @@ describe('startWorkInRepo remote capability gate (#81724)', () => {
       })
     } as never)
 
-    await expect(startWorkInRepo('/srv/repo', { branch: 'x' })).rejects.toThrow("not a commit")
+    await expect(startWorkInRepo('/srv/repo', { branch: 'x' })).rejects.toThrow('not a commit')
   })
 })
 

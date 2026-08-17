@@ -93,8 +93,14 @@ test('remoteRequestMatchesBaseUrl treats HTTPS and WSS as the same gateway origi
     true
   )
   assert.equal(remoteRequestMatchesBaseUrl('ws://hermes.example.com/api/ws', 'http://hermes.example.com'), true)
-  assert.equal(remoteRequestMatchesBaseUrl('wss://hermes.example.com/other/api/ws', 'https://hermes.example.com/gateway'), false)
-  assert.equal(remoteRequestMatchesBaseUrl('wss://other.example.com/gateway/api/ws', 'https://hermes.example.com/gateway'), false)
+  assert.equal(
+    remoteRequestMatchesBaseUrl('wss://hermes.example.com/other/api/ws', 'https://hermes.example.com/gateway'),
+    false
+  )
+  assert.equal(
+    remoteRequestMatchesBaseUrl('wss://other.example.com/gateway/api/ws', 'https://hermes.example.com/gateway'),
+    false
+  )
 })
 
 // --- modeIsRemoteLike ---

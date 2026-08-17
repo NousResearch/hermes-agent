@@ -145,6 +145,7 @@ test('probe passes extra upgrade headers to the WebSocket constructor (Cloudflar
   }
 
   const headers = { 'CF-Access-Client-Id': 'id', 'CF-Access-Client-Secret': 'secret' }
+
   const pending = probeGatewayWebSocket('wss://x/api/ws?token=t', {
     WebSocketImpl: HeaderFakeWs,
     headers,

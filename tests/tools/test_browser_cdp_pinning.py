@@ -345,6 +345,7 @@ def test_navigate_fails_if_auto_snapshot_reports_tab_gone(monkeypatch):
     session = {
         "session_name": "cdp_task_a",
         "cdp_url": "ws://shared",
+        "target_id": "TARGET-OWNED",
         "_first_nav": False,
     }
     command_results = iter(
@@ -393,10 +394,16 @@ def test_navigate_fails_if_auto_snapshot_reports_tab_gone(monkeypatch):
 
 def test_explicit_navigation_after_cleanup_creates_fresh_owned_session(monkeypatch):
     task_id = "task-retired"
+    monkeypatch.setattr(
+        browser_tool,
+        "_close_shared_cdp_target_confirmed",
+        lambda _cdp_url, _target_id: True,
+    )
     old_session = {
         "session_name": "cdp_old",
         "bb_session_id": None,
         "cdp_url": "ws://shared",
+        "target_id": "TARGET-OWNED",
         "features": {"cdp_override": True},
         "session_key": task_id,
         "owner_task_id": task_id,
@@ -458,12 +465,28 @@ def test_explicit_navigation_after_cleanup_creates_fresh_owned_session(monkeypat
 
 def test_failed_explicit_restart_restores_retired_boundary(monkeypatch):
     task_id = "task-retired-failed-restart"
+    monkeypatch.setattr(
+        browser_tool,
+        "_close_shared_cdp_target_confirmed",
+        lambda _cdp_url, _target_id: True,
+    )
     monkeypatch.setattr(browser_tool, "_active_sessions", {})
     monkeypatch.setattr(browser_tool, "_session_last_activity", {})
     monkeypatch.setattr(browser_tool, "_last_active_session_key", {})
     monkeypatch.setattr(browser_tool, "_retired_browser_tasks", {task_id}, raising=False)
     monkeypatch.setattr(browser_tool, "_start_browser_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://shared")
+    monkeypatch.setattr(
+        browser_tool,
+        "_create_cdp_session",
+        lambda task, cdp_url: {
+            "session_name": f"cdp_{task}",
+            "bb_session_id": None,
+            "cdp_url": cdp_url,
+            "target_id": "TARGET-RESTART",
+            "features": {"cdp_override": True},
+        },
+    )
     monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda _url: False)
     monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
     monkeypatch.setattr(browser_tool, "check_website_access", lambda _url: None)
@@ -492,6 +515,5 @@ def test_failed_explicit_restart_restores_retired_boundary(monkeypatch):
     assert task_id not in browser_tool._last_active_session_key
     assert command_calls == [
         (task_id, "open", ["https://example.com"]),
-        (task_id, "tab", ["close"]),
         (task_id, "close", []),
     ]

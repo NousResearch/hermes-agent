@@ -44,6 +44,11 @@ class TestBrowserCleanup:
         self.orig_provider_cleanups = browser_tool._pending_provider_cleanups.copy()
         self.orig_recording_sessions = browser_tool._recording_sessions.copy()
         self.orig_cleanup_done = browser_tool._cleanup_done
+        self.close_target_patch = patch(
+            "tools.browser_tool._close_shared_cdp_target_confirmed",
+            return_value=True,
+        )
+        self.close_target_mock = self.close_target_patch.start()
 
     def teardown_method(self):
         self.browser_tool._active_sessions.clear()
@@ -74,6 +79,7 @@ class TestBrowserCleanup:
         self.browser_tool._recording_sessions.clear()
         self.browser_tool._recording_sessions.update(self.orig_recording_sessions)
         self.browser_tool._cleanup_done = self.orig_cleanup_done
+        self.close_target_patch.stop()
 
     def test_cleanup_browser_clears_tracking_state(self):
         browser_tool = self.browser_tool
@@ -107,6 +113,7 @@ class TestBrowserCleanup:
             "session_name": "sess-cdp",
             "bb_session_id": None,
             "cdp_url": "ws://127.0.0.1:9222/devtools/browser/shared",
+            "target_id": "TARGET-OWNED",
         }
 
         with (
@@ -122,7 +129,6 @@ class TestBrowserCleanup:
         assert cleaned is True
         assert "task-cdp" not in browser_tool._active_sessions
         assert mock_run.call_args_list == [
-            (("task-cdp", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
             (("task-cdp", "close", []), {"timeout": 10, "_allow_cleanup": True}),
         ]
 
@@ -132,6 +138,7 @@ class TestBrowserCleanup:
             "session_name": "sess-gone",
             "bb_session_id": None,
             "cdp_url": "ws://shared",
+            "target_id": "TARGET-OWNED",
         }
         browser_tool._session_last_activity["task-gone"] = 123.0
 
@@ -139,14 +146,7 @@ class TestBrowserCleanup:
             patch("tools.browser_tool._maybe_stop_recording"),
             patch(
                 "tools.browser_tool._run_browser_command",
-                side_effect=[
-                    {
-                        "success": False,
-                        "code": "tab_gone",
-                        "error": "Pinned tab is no longer available",
-                    },
-                    {"success": True},
-                ],
+                return_value={"success": True},
             ) as mock_run,
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
@@ -156,7 +156,6 @@ class TestBrowserCleanup:
         assert "task-gone" not in browser_tool._active_sessions
         assert "task-gone" not in browser_tool._session_last_activity
         assert mock_run.call_args_list == [
-            (("task-gone", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
             (("task-gone", "close", []), {"timeout": 10, "_allow_cleanup": True}),
         ]
 
@@ -166,19 +165,14 @@ class TestBrowserCleanup:
             "session_name": "sess-retry",
             "bb_session_id": None,
             "cdp_url": "ws://shared",
+            "target_id": "TARGET-OWNED",
         }
         browser_tool._active_sessions["task-retry"] = session
         browser_tool._session_last_activity["task-retry"] = 123.0
         browser_tool._last_active_session_key["task-retry"] = "task-retry"
 
-        with (
-            patch("tools.browser_tool._maybe_stop_recording"),
-            patch(
-                "tools.browser_tool._run_browser_command",
-                return_value={"success": False, "error": "temporary disconnect"},
-            ) as mock_run,
-        ):
-            cleaned = browser_tool.cleanup_browser("task-retry")
+        self.close_target_mock.return_value = False
+        cleaned = browser_tool.cleanup_browser("task-retry")
 
         assert cleaned is False
         assert browser_tool._active_sessions["task-retry"] is session
@@ -186,9 +180,7 @@ class TestBrowserCleanup:
         assert browser_tool._last_active_session_key["task-retry"] == "task-retry"
         assert "task-retry" not in browser_tool._retired_browser_tasks
         assert session["_cleanup_retry_pending"] is True
-        mock_run.assert_called_once_with(
-            "task-retry", "tab", ["close"], timeout=10, _allow_cleanup=True
-        )
+        self.close_target_mock.return_value = True
 
     def test_cleanup_shared_cdp_retries_then_becomes_idempotent(self):
         browser_tool = self.browser_tool
@@ -196,18 +188,16 @@ class TestBrowserCleanup:
             "session_name": "sess-repeat",
             "bb_session_id": None,
             "cdp_url": "ws://shared",
+            "target_id": "TARGET-OWNED",
         }
         browser_tool._session_last_activity["task-repeat"] = 123.0
 
+        self.close_target_mock.side_effect = [False, True]
         with (
             patch("tools.browser_tool._maybe_stop_recording"),
             patch(
                 "tools.browser_tool._run_browser_command",
-                side_effect=[
-                    {"success": False, "error": "temporary disconnect"},
-                    {"success": True},
-                    {"success": True},
-                ],
+                return_value={"success": True},
             ) as mock_run,
             patch("tools.browser_tool.os.path.exists", return_value=False),
         ):
@@ -218,8 +208,6 @@ class TestBrowserCleanup:
 
         assert "task-repeat" not in browser_tool._active_sessions
         assert mock_run.call_args_list == [
-            (("task-repeat", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
-            (("task-repeat", "tab", ["close"]), {"timeout": 10, "_allow_cleanup": True}),
             (("task-repeat", "close", []), {"timeout": 10, "_allow_cleanup": True}),
         ]
 
@@ -379,6 +367,7 @@ def test_inactivity_reaper_spares_task_owned_shared_cdp(monkeypatch):
                 "session_name": "cdp_owned",
                 "bb_session_id": None,
                 "cdp_url": "ws://127.0.0.1:9222/devtools/browser/shared",
+                "target_id": "TARGET-OWNED",
                 "features": {"cdp_override": True},
             }
         },
@@ -454,12 +443,18 @@ def test_successful_cleanup_tombstones_non_navigation_without_recreation(
     task_id = "task-terminal"
     monkeypatch.setattr(
         browser_tool,
+        "_close_shared_cdp_target_confirmed",
+        lambda _cdp_url, _target_id: True,
+    )
+    monkeypatch.setattr(
+        browser_tool,
         "_active_sessions",
         {
             task_id: {
                 "session_name": "cdp_terminal",
                 "bb_session_id": None,
                 "cdp_url": "ws://shared",
+                "target_id": "TARGET-OWNED",
                 "features": {"cdp_override": True},
             }
         },
@@ -481,6 +476,7 @@ def test_successful_cleanup_tombstones_non_navigation_without_recreation(
             "session_name": "replacement",
             "bb_session_id": None,
             "cdp_url": "ws://shared",
+            "target_id": "TARGET-OWNED",
         }
     )
     find_browser = MagicMock(return_value="/usr/bin/agent-browser")

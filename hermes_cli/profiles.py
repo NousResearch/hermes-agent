@@ -1614,6 +1614,22 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
 
+    # 2c. Release this process's holographic memory-store connections into
+    # the profile. The Desktop's *main* serve process opens memory_store.db
+    # for every known profile and is deliberately not stopped above, so on
+    # Windows its open handles make the rmtree below fail with WinError 32
+    # (#88347). When this delete runs inside serve (the DELETE
+    # /api/profiles/<name> route) the handles live in this process and are
+    # closed here; from the CLI this finds nothing and is a no-op.
+    try:
+        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
+
+        _released = _MemoryStore.release_all_under(profile_dir)
+        if _released:
+            print(f"✓ Released {_released} memory-store connection(s) held by this process")
+    except Exception:
+        pass  # best-effort: never block the delete on the release path
+
     # 3. Remove wrapper script
     if has_wrapper:
         if remove_wrapper_script(canon):

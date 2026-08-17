@@ -3,6 +3,7 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import os
 import re
 import sqlite3
 import threading
@@ -615,6 +616,42 @@ class MemoryStore:
     def _row_to_dict(self, row: sqlite3.Row) -> dict:
         """Convert a sqlite3.Row to a plain dict."""
         return dict(row)
+
+    @classmethod
+    def release_all_under(cls, directory: "str | Path") -> int:
+        """Force-close every shared connection whose database lives under ``directory``.
+
+        ``close()`` is refcount-driven, so a live holder (e.g. an agent's
+        memory provider) keeps a profile's SQLite handle open indefinitely.
+        That is exactly what a profile delete must break on Windows: the
+        desktop's main ``serve`` process opens ``memory_store.db`` for every
+        known profile, and ``rmtree`` of the profile directory fails with
+        ``WinError 32`` while any of those handles is open (#88347). This
+        closes the matching connections unconditionally — the directory is
+        going away, so later use by a stale holder is expected to fail — and
+        returns how many were closed. In a process that holds none (e.g. the
+        CLI deleting from outside serve) this is a harmless no-op returning 0.
+        """
+        root = os.path.normcase(str(Path(directory).expanduser().resolve())) + os.sep
+        with cls._shared_guard:
+            # Snapshot the keys first so the registry stays stable while
+            # connections are closed inside their per-database locks (closing
+            # can run no user code, but this keeps the invariant obvious).
+            doomed = [
+                key
+                for key in cls._shared
+                if os.path.normcase(key).startswith(root)
+            ]
+            for key in doomed:
+                entry = cls._shared.pop(key)
+                try:
+                    with entry["lock"]:
+                        entry["conn"].close()
+                except Exception:
+                    # A connection that is already closed or broken must not
+                    # abort releasing its siblings.
+                    pass
+        return len(doomed)
 
     def close(self) -> None:
         """Release this instance's reference to the shared connection.

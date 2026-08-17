@@ -46,3 +46,48 @@ def test_shutdown_closes_store_connection(tmp_path):
         conn.execute("SELECT 1")
 
 
+def test_release_all_under_closes_connections_inside_directory_only(tmp_path):
+    """Regression test for #88347 — profile delete must break refcounted handles.
+
+    ``close()`` alone can never free a database held by a live agent (refs >= 1),
+    and on Windows an open SQLite handle makes rmtree of the profile directory
+    fail with WinError 32. ``release_all_under`` force-closes exactly the shared
+    connections under the doomed directory and leaves everything else alone.
+    """
+    from plugins.memory.holographic.store import MemoryStore
+
+    profile_dir = tmp_path / "profiles" / "default-2"
+    profile_dir.mkdir(parents=True)
+    inside = MemoryStore(db_path=profile_dir / "memory_store.db", hrr_dim=64)
+    outside = MemoryStore(db_path=tmp_path / "other" / "memory_store.db", hrr_dim=64)
+    inside_conn = inside._conn
+    outside_conn = outside._conn
+    # Both live before the release; the inside one is held "forever" (refs=1,
+    # like a live agent's provider — nobody calls close()).
+    inside_conn.execute("SELECT 1").fetchone()
+    outside_conn.execute("SELECT 1").fetchone()
+
+    try:
+        released = MemoryStore.release_all_under(profile_dir)
+        assert released == 1
+
+        # The doomed connection is really closed despite refs > 0 ...
+        with pytest.raises(sqlite3.ProgrammingError):
+            inside_conn.execute("SELECT 1")
+        # ... and the registry entry is gone, so a second release finds
+        # nothing (the CLI-process no-op case).
+        assert str((profile_dir / "memory_store.db").resolve()) not in MemoryStore._shared
+        assert MemoryStore.release_all_under(profile_dir) == 0
+        # A new store on the same path reopens fresh instead of reusing
+        # the dead connection.
+        reopened = MemoryStore(db_path=profile_dir / "memory_store.db", hrr_dim=64)
+        reopened._conn.execute("SELECT 1").fetchone()
+
+        # The sibling outside the directory is untouched.
+        outside_conn.execute("SELECT 1").fetchone()
+    finally:
+        inside.close()
+        reopened.close()
+        outside.close()
+
+

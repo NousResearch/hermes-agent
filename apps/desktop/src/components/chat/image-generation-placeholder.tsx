@@ -2,6 +2,7 @@ import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { onThemeRepaint } from '@/hooks/use-theme-epoch'
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -299,15 +300,50 @@ export const DiffusionCanvas: FC = () => {
 
     sizeRef.current = fitCanvas(canvas, ctx)
 
-    let frame = requestAnimationFrame(function draw(now) {
+    let frame = 0
+    let stopped = false
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
+
+    const cancelFrame = () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame)
+        frame = 0
+      }
+    }
+
+    const scheduleFrame = () => {
+      if (stopped || pauseController?.isPaused() || frame !== 0) {
+        return
+      }
+
+      frame = window.requestAnimationFrame(draw)
+    }
+
+    const draw = (now: number) => {
+      frame = 0
+
+      if (stopped || pauseController?.isPaused()) {
+        return
+      }
+
       const { width, height } = sizeRef.current
       ctx.clearRect(0, 0, width, height)
       drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
-      frame = requestAnimationFrame(draw)
-    })
+      scheduleFrame()
+    }
+
+    const handleVisibilityChange = () => {
+      cancelFrame()
+      scheduleFrame()
+    }
+
+    pauseController = createRendererLoopPauseController(handleVisibilityChange)
+    scheduleFrame()
 
     return () => {
-      cancelAnimationFrame(frame)
+      stopped = true
+      cancelFrame()
+      pauseController.dispose()
     }
   }, [])
 

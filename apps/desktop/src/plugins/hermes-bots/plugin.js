@@ -68,6 +68,9 @@ const { McpTab, ToolsetConfigPanel } = sdk
 // Keep optional exports feature-detected; test harnesses may strip the SDK namespace.
 const SkillsView = typeof sdk === 'undefined' ? undefined : sdk.SkillsView
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+// Budgeted render loop (fps cap + observability pause + dormancy + teardown).
+// Feature-detected: older desktops fall back to the hand-rolled clock below.
+const createBudgetedLoop = typeof sdk === 'undefined' ? undefined : sdk.createBudgetedLoop
 
 const ID = 'hermes-bots'
 const ROSTER_KEY = [ID, 'roster']
@@ -1122,10 +1125,6 @@ function startFaceClock() {
   // off-screen cards do not consume a full animation frame by themselves.
   let faces = []
   let lastScan = -Infinity
-  let lastPaint = -Infinity
-  let rafId = 0
-  let dormant = false
-  let stopped = false
   const visibleFaces = new Set()
   const observedFaces = new Set()
   const observer =
@@ -1144,7 +1143,7 @@ function startFaceClock() {
 
           // A parked clock (no visible faces) resumes when one scrolls in.
           if (becameVisible) {
-            wake()
+            window.__hbFaceClock?.wake()
           }
         })
       : null
@@ -1174,6 +1173,65 @@ function startFaceClock() {
     }
   }
 
+  // Shared painting body for both scheduling paths: 1Hz document rescans,
+  // paint only visible faces (all cached faces when IO is unavailable).
+  const paint = now => {
+    if (now - lastScan > 1000) {
+      scanFaces()
+      lastScan = now
+    }
+    const t = (now - t0) / 1000
+    const facesToPaint = observer ? visibleFaces : faces
+
+    for (const svg of facesToPaint) {
+      if (svg.isConnected) {
+        paintMathFace(svg, t)
+      }
+    }
+  }
+
+  // Nothing worth animating: no faces mounted (BotFace wakes us on the next
+  // mount) or none visible (the observer wakes us when one scrolls in).
+  const idle = () => faces.length === 0 || (observer && visibleFaces.size === 0)
+
+  const teardownCaches = () => {
+    if (observer) {
+      observer.disconnect()
+    }
+
+    visibleFaces.clear()
+    observedFaces.clear()
+    faces = []
+    delete window.__hbFaceClock
+  }
+
+  // Newer desktops: the SDK's budgeted loop owns scheduling (15fps budget,
+  // hidden/minimized/unfocused pause, dormancy, teardown). typeof-guarded so
+  // older shells and the vm test harness use the hand-rolled path below.
+  if (typeof createBudgetedLoop === 'function' && createBudgetedLoop) {
+    const loop = createBudgetedLoop(paint, { fps: 15, idleWhen: idle })
+
+    window.__hbFaceClock = {
+      stop: () => {
+        loop.dispose()
+        teardownCaches()
+      },
+      wake: () => {
+        // Faces may have mounted/unmounted while parked — rescan on wake.
+        lastScan = -Infinity
+        loop.wake()
+      }
+    }
+
+    return
+  }
+
+  // Fallback scheduling for desktops whose SDK predates createBudgetedLoop.
+  let lastPaint = -Infinity
+  let rafId = 0
+  let dormant = false
+  let stopped = false
+
   const tick = now => {
     if (stopped) {
       return
@@ -1183,25 +1241,12 @@ function startFaceClock() {
     // 15fps is smooth at avatar scale and bounds SVG/DOM churn. The clock
     // still uses rAF so Chromium can pause it when the window is occluded.
     if (!document.hidden && now - lastPaint >= 1000 / 15) {
-      if (now - lastScan > 1000) {
-        scanFaces()
-        lastScan = now
-      }
-      const t = (now - t0) / 1000
-      const facesToPaint = observer ? visibleFaces : faces
-
-      for (const svg of facesToPaint) {
-        if (svg.isConnected) {
-          paintMathFace(svg, t)
-        }
-      }
+      paint(now)
       lastPaint = now
     }
 
-    // Dormancy: no faces mounted (BotFace wakes us on the next mount), or
-    // none visible (the observer wakes us when one scrolls in). Park the
-    // clock instead of burning frames + 1Hz whole-document shadow walks.
-    if (faces.length === 0 || (observer && visibleFaces.size === 0)) {
+    // Park instead of burning frames + 1Hz whole-document shadow walks.
+    if (idle()) {
       dormant = true
 
       return
@@ -1229,14 +1274,7 @@ function startFaceClock() {
       rafId = 0
     }
 
-    if (observer) {
-      observer.disconnect()
-    }
-
-    visibleFaces.clear()
-    observedFaces.clear()
-    faces = []
-    delete window.__hbFaceClock
+    teardownCaches()
   }
 
   window.__hbFaceClock = { stop, wake }

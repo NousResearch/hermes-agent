@@ -13,7 +13,7 @@ const end = pluginSource.indexOf('/**\n * Live math face.')
 assert.ok(start > 0 && end > start, 'face clock functions present in plugin.js')
 const clockSource = pluginSource.slice(start, end)
 
-function load({ faces = [], intersectionObserver = true } = {}) {
+function load({ budgetedLoop = undefined, faces = [], intersectionObserver = true } = {}) {
   const rafQueue = new Map()
   let rafSeq = 0
   let observerInstance = null
@@ -61,7 +61,8 @@ function load({ faces = [], intersectionObserver = true } = {}) {
     performance: { now: () => 0 },
     IntersectionObserver: intersectionObserver ? FakeIntersectionObserver : undefined,
     walkMathFaces: () => [...faces],
-    paintMathFace: () => undefined
+    paintMathFace: () => undefined,
+    createBudgetedLoop: budgetedLoop
   }
   vm.createContext(context)
   vm.runInContext(`${clockSource}; __start = startFaceClock; __stop = stopFaceClock`, context)
@@ -149,4 +150,51 @@ test('unit: stopFaceClock cancels the frame, disconnects the observer, and clear
 
 test('source: plugin registers face-clock teardown via ctx.onDispose', () => {
   assert.match(pluginSource, /ctx\.onDispose\(stopFaceClock\)/)
+})
+
+test('unit: SDK path — clock delegates scheduling to createBudgetedLoop', () => {
+  const calls = { dispose: 0, wake: 0 }
+  let capturedDraw = null
+  let capturedOptions = null
+  const fakeLoop = {
+    dispose: () => {
+      calls.dispose += 1
+    },
+    isDormant: () => false,
+    wake: () => {
+      calls.wake += 1
+    }
+  }
+  const face = { isConnected: true }
+  const h = load({
+    faces: [face],
+    budgetedLoop: (draw, options) => {
+      capturedDraw = draw
+      capturedOptions = options
+      return fakeLoop
+    }
+  })
+
+  h.start()
+  assert.equal(typeof capturedDraw, 'function', 'draw handed to the SDK loop')
+  assert.equal(capturedOptions.fps, 15, '15fps budget requested')
+  assert.equal(typeof capturedOptions.idleWhen, 'function', 'idle predicate wired')
+  assert.equal(h.pending(), 0, 'no hand-rolled rAF scheduled on the SDK path')
+
+  // idleWhen reflects visible-face state: observed-but-not-visible = idle.
+  capturedDraw(1000) // triggers the initial scan + observation
+  assert.equal(capturedOptions.idleWhen(), true, 'no visible faces -> idle')
+  h.observer().emit([{ target: face, isIntersecting: true }])
+  assert.equal(capturedOptions.idleWhen(), false, 'visible face -> not idle')
+  assert.ok(calls.wake >= 1, 'visibility wakes the SDK loop')
+
+  // Re-entry (BotFace mount) wakes rather than re-initializing.
+  h.start()
+  assert.ok(calls.wake >= 2, 'startFaceClock re-entry wakes the SDK loop')
+
+  // Teardown disposes the loop and clears the handle.
+  h.stop()
+  assert.equal(calls.dispose, 1, 'stop disposes the SDK loop')
+  assert.equal(h.observer().disconnected, true, 'observer disconnected')
+  assert.equal(h.clock(), undefined, 'window handle removed')
 })

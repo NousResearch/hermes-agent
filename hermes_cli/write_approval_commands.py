@@ -122,12 +122,14 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed = 0, []
+    applied, failed, warnings = 0, [], []
     for rec in targets:
         ok, msg = _apply_one(subsystem, rec, memory_store)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
+            if msg:
+                warnings.append(f"{rec['id']}: {msg}")
         else:
             failed.append(f"{rec['id']}: {msg}")
 
@@ -135,6 +137,9 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
+    if warnings:
+        out.append("Warnings:")
+        out.extend(f"  {warning}" for warning in warnings)
     return "\n".join(out)
 
 
@@ -150,7 +155,9 @@ def _apply_one(subsystem: str, rec, memory_store):
         else:
             from tools.skill_manager_tool import apply_skill_pending
             result = json.loads(apply_skill_pending(payload))
-            return bool(result.get("success")), result.get("error", "")
+            if result.get("success"):
+                return True, result.get("security_note", "")
+            return False, result.get("error", "")
     except Exception as e:
         return False, str(e)
 

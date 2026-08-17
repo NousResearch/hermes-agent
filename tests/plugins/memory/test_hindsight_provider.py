@@ -1206,24 +1206,49 @@ class TestUpdateModeAppendCapability:
             "append",
         )
 
-    def test_text_disabled_bank_uses_cumulative_non_append_retains(
-        self, provider, monkeypatch
-    ):
-        """Append is unusable when the effective bank policy drops source text."""
+    def test_pre_policy_boundary_skips_bank_config_probe(self, provider, monkeypatch):
+        """0.8.5 remains on legacy feature semantics immediately below the boundary."""
         self._clear_capability_cache()
         monkeypatch.setattr(
             "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
             lambda *a, **kw: (
-                "0.9.0",
+                "0.8.5",
+                {"observations": True, "bank_config_api": True},
+            ),
+        )
+        bank_probe = MagicMock(side_effect=AssertionError("0.8.5 must not query bank config"))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+        bank_probe.assert_not_called()
+
+    def test_text_disabled_bank_uses_cumulative_non_append_retains(
+        self, provider, monkeypatch
+    ):
+        """At the 0.8.6 boundary, text-disabled banks use cumulative replacement."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.8.6",
                 {"store_document_text": True, "bank_config_api": True},
             ),
         )
-        monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_bank_config",
-            lambda *a, **kw: {
+        bank_probe = MagicMock(
+            return_value={
                 "config": {"store_document_text": False},
                 "overrides": {"store_document_text": False},
-            },
+            }
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
         )
 
         provider.sync_turn("first-user", "first-assistant")
@@ -1242,6 +1267,34 @@ class TestUpdateModeAppendCapability:
         assert "first-user" in second_content
         assert "second-user" in second_content
         assert second_content.index("first-user") < second_content.index("second-user")
+        bank_probe.assert_called_once()
+
+    def test_policy_boundary_text_enabled_bank_allows_append(self, provider, monkeypatch):
+        """At 0.8.6, the resolved bank policy overrides the server default."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.8.6",
+                {"store_document_text": False, "bank_config_api": True},
+            ),
+        )
+        bank_probe = MagicMock(
+            return_value={
+                "config": {"store_document_text": True},
+                "overrides": {"store_document_text": True},
+            }
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+        bank_probe.assert_called_once()
 
     def test_append_policy_cache_isolated_per_bank(self, provider, monkeypatch):
         """Banks behind one API URL may resolve different source-text policies."""

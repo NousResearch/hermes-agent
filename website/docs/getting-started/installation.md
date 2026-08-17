@@ -82,6 +82,10 @@ hermes setup --portal
 That logs you in, sets Nous as your provider, and turns on the Tool Gateway in one command.
 :::
 
+:::tip Already running Hermes on another machine?
+You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](/reference/faq#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export) explains which to use.
+:::
+
 ---
 
 ## Prerequisites

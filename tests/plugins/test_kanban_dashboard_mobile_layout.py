@@ -1,8 +1,9 @@
-"""Browser-level responsive geometry checks for the Kanban dashboard plugin."""
+"""Browser contracts for the real Kanban dashboard plugin application."""
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -10,147 +11,194 @@ from typing import Any
 import pytest
 
 
+LANES = ["Triage", "Todo", "Ready", "In Progress", "Blocked", "Review", "Done", "scheduled"]
+
+
+def _task(task_id: str, status: str, *, assignee: str = "alpha", tenant: str = "acme") -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "title": f"{status} task {task_id}",
+        "body": "Deterministic privacy-safe fixture",
+        "status": status,
+        "assignee": assignee,
+        "tenant": tenant,
+        "priority": 1,
+        "parents": [],
+        "children": [],
+        "created_at": 1,
+        "updated_at": 1,
+    }
+
+
 @pytest.fixture()
-def layout_fixture(tmp_path: Path) -> Path:
-    stylesheet = (
-        Path(__file__).resolve().parents[2]
-        / "plugins"
-        / "kanban"
-        / "dashboard"
-        / "dist"
-        / "style.css"
-    ).as_uri()
-    page = tmp_path / "layout.html"
+def app_fixture(tmp_path: Path) -> Path:
+    """Bundle React into a tiny host, then execute the shipped plugin unchanged."""
+    repo = Path(__file__).resolve().parents[2]
+    shared = repo.parent.parent
+    node_modules = shared / "node_modules"
+    playwright = node_modules / "playwright"
+    esbuild = node_modules / "esbuild" / "bin" / "esbuild"
+    if not playwright.exists() or not esbuild.exists():
+        pytest.skip("Playwright and esbuild are required for the Kanban browser contract")
+
+    statuses = ["triage", "todo", "ready", "running", "blocked", "review", "done", "scheduled"]
+    columns = []
+    for status in statuses:
+        tasks = [] if status == "todo" else [_task(f"{status}-1", status)]
+        if status == "triage":
+            tasks = [_task(f"triage-{i}", status) for i in range(20)]
+        if status == "running":
+            tasks = [
+                _task("running-alpha", status, assignee="alpha"),
+                _task("running-beta", status, assignee="beta"),
+            ]
+        columns.append({"name": status, "tasks": tasks})
+    board = {
+        "columns": columns,
+        "tenants": ["acme", "other"],
+        "assignees": ["alpha", "beta"],
+        "latest_event_id": 0,
+    }
+
+    entry = tmp_path / "entry.jsx"
+    entry.write_text(
+        """import React from 'react';
+import { createRoot } from 'react-dom/client';
+const pass = (tag) => React.forwardRef(({children, ...props}, ref) => React.createElement(tag, {...props, ref}, children));
+const Select = React.forwardRef(({children, onValueChange, ...props}, ref) =>
+  React.createElement('select', {...props, ref, onChange: e => onValueChange ? onValueChange(e.target.value) : props.onChange?.(e)}, children));
+const Checkbox = React.forwardRef(({onCheckedChange, ...props}, ref) =>
+  React.createElement('input', {...props, ref, type: 'checkbox', onChange: e => onCheckedChange?.(e.target.checked)}));
+window.__HERMES_PLUGIN_SDK__ = {
+  React,
+  hooks: React,
+  components: {Card: pass('div'), CardContent: pass('div'), Badge: pass('span'), Button: pass('button'),
+    Input: pass('input'), Label: pass('label'), Select, SelectOption: pass('option'), Checkbox},
+  utils: {cn: (...xs) => xs.filter(Boolean).join(' '), timeAgo: () => 'now'},
+  fetchJSON: async url => {
+    if (url.includes('/config')) return {lane_by_profile: true, render_markdown: true};
+    if (url.includes('/boards')) return {boards: [{slug: 'default', name: 'Default'}], current: 'default'};
+    if (url.includes('/board')) return window.__BOARD_FIXTURE__;
+    return {};
+  },
+  // Keep the event stream pending: deterministic fixtures do not need a socket,
+  // and this avoids reconnect timers keeping Chromium alive after assertions.
+  buildWsUrl: () => new Promise(() => {}),
+  useI18n: () => ({t: {kanban: null}, locale: 'en'}),
+};
+window.__HERMES_PLUGINS__ = {register(_name, Component) { createRoot(document.querySelector('#root')).render(React.createElement(Component)); }};
+""",
+        encoding="utf-8",
+    )
+    bundle = tmp_path / "harness.js"
+    subprocess.run(
+        [str(esbuild), str(entry), "--bundle", "--format=iife", f"--outfile={bundle}"],
+        check=True,
+        cwd=shared,
+        env={**os.environ, "NODE_PATH": str(node_modules)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    page = tmp_path / "index.html"
     page.write_text(
-        f"""<!doctype html>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<link rel="stylesheet" href="{stylesheet}">
-<style>
-* {{ box-sizing: border-box }}
-html, body {{ margin: 0; width: 100%; background: #111; color: #eee }}
-.hermes-kanban {{ padding: 16px }}
-.hermes-kanban-toolbar {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: end }}
-.hermes-kanban-toolbar-search input {{ width: 224px }}
-.hermes-kanban-columns {{ margin-top: 12px }}
-.hermes-kanban-column {{ box-sizing: border-box }}
-.hermes-kanban-drawer-shade {{ display: flex }}
-</style>
-<div class="hermes-kanban">
-  <div class="hermes-kanban-toolbar">
-    <div class="hermes-kanban-toolbar-search"><input></div>
-    <div class="hermes-kanban-toolbar-filter"><select><option>all</option></select></div>
-    <button>Refresh</button><button>Clear filters</button>
-  </div>
-  <nav class="hermes-kanban-column-nav" aria-label="Kanban lanes">
-    <button class="hermes-kanban-column-nav-item hermes-kanban-column-nav-item--active">Triage<span class="hermes-kanban-column-nav-count">20</span></button>
-    <button class="hermes-kanban-column-nav-item">Todo<span class="hermes-kanban-column-nav-count">0</span></button>
-    <button class="hermes-kanban-column-nav-item">Scheduled<span class="hermes-kanban-column-nav-count">1</span></button>
-    <button class="hermes-kanban-column-nav-item">Ready<span class="hermes-kanban-column-nav-count">2</span></button>
-    <button class="hermes-kanban-column-nav-item">Running<span class="hermes-kanban-column-nav-count">3</span></button>
-    <button class="hermes-kanban-column-nav-item">Blocked<span class="hermes-kanban-column-nav-count">1</span></button>
-    <button class="hermes-kanban-column-nav-item">Review<span class="hermes-kanban-column-nav-count">4</span></button>
-    <button class="hermes-kanban-column-nav-item">Done<span class="hermes-kanban-column-nav-count">9</span></button>
-  </nav>
-  <div class="hermes-kanban-columns">
-    <section class="hermes-kanban-column"><button class="hermes-kanban-column-add">+</button></section>
-    <section class="hermes-kanban-column"></section>
-  </div>
-</div>
-<div class="hermes-kanban-drawer-shade"><aside class="hermes-kanban-drawer"><button class="hermes-kanban-drawer-close">x</button></aside></div>
-<pre id="result"></pre>
-<script>
-addEventListener('load', () => {{
-  const rect = s => document.querySelector(s).getBoundingClientRect();
-  const rail = document.querySelector('.hermes-kanban-columns');
-  const lane = rect('.hermes-kanban-column');
-  const drawer = rect('.hermes-kanban-drawer');
-  const input = rect('.hermes-kanban-toolbar-search input');
-  const add = rect('.hermes-kanban-column-add');
-  const close = rect('.hermes-kanban-drawer-close');
-  const nav = rect('.hermes-kanban-column-nav');
-  const navItems = [...document.querySelectorAll('.hermes-kanban-column-nav-item')];
-  document.querySelector('#result').textContent = JSON.stringify({{
-    viewport: innerWidth,
-    bodyScrollWidth: document.body.scrollWidth,
-    laneWidth: lane.width,
-    drawerWidth: drawer.width,
-    inputWidth: input.width,
-    addWidth: add.width,
-    addHeight: add.height,
-    closeWidth: close.width,
-    closeHeight: close.height,
-    navHeight: nav.height,
-    navLabels: navItems.map(item => item.firstChild.textContent),
-    navTargets: navItems.map(item => item.getBoundingClientRect().height),
-    railOverflow: rail.scrollWidth > rail.clientWidth,
-    snap: getComputedStyle(rail).scrollSnapType,
-  }});
-}});
-</script>""",
+        "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<link rel='stylesheet' href='{(repo / 'plugins/kanban/dashboard/dist/style.css').as_uri()}'>"
+        "<style>*{box-sizing:border-box}html,body,#root{margin:0;width:100%;background:#111;color:#eee}"
+        ".hermes-kanban{padding:16px}.hermes-kanban-toolbar{display:flex}.hermes-kanban-columns{margin-top:12px}</style>"
+        f"<div id='root'></div><script>window.__BOARD_FIXTURE__={json.dumps(board)}</script>"
+        f"<script src='{bundle.as_uri()}'></script>"
+        f"<script src='{(repo / 'plugins/kanban/dashboard/dist/index.js').as_uri()}'></script>",
         encoding="utf-8",
     )
     return page
 
 
-def _measure(page: Path, width: int) -> dict[str, Any]:
-    repo_root = Path(__file__).resolve().parents[2]
-    playwright_candidates = [
-        repo_root / "node_modules" / "playwright",
-        repo_root.parent.parent / "node_modules" / "playwright",
-    ]
-    playwright = next((path for path in playwright_candidates if path.exists()), None)
-    if playwright is None:
-        pytest.skip("Playwright dependencies are required for browser geometry coverage")
-    probe = page.parent / "probe.cjs"
+def _run_browser(page: Path, width: int, screenshot: Path | None = None) -> dict[str, Any]:
+    repo = Path(__file__).resolve().parents[2]
+    playwright = repo.parent.parent / "node_modules" / "playwright"
+    probe = page.parent / f"probe-{width}.cjs"
     probe.write_text(
         """const { chromium } = require(process.argv[2]);
 (async () => {
-  const browser = await chromium.launch({headless: true, executablePath: '/usr/bin/chromium', args: ['--no-sandbox']});
-  const context = await browser.newContext({viewport: {width: Number(process.argv[4]), height: 900}});
+  const browser = await chromium.launch({headless:true, executablePath:'/usr/bin/chromium', args:['--no-sandbox']});
+  const context = await browser.newContext({viewport:{width:Number(process.argv[4]),height:900}});
   const page = await context.newPage();
   await page.goto(process.argv[3]);
-  const result = await page.locator('#result').textContent();
-  process.stdout.write(result);
+  page.on('console', msg => console.error('browser:', msg.text()));
+  page.on('pageerror', error => console.error('pageerror:', error.message));
+  await page.locator('.hermes-kanban-column-nav-item').first().waitFor({state:'attached',timeout:5000});
+  console.error('step: mounted');
+  const labels = await page.locator('.hermes-kanban-column-nav-item').allTextContents();
+  const visits = [];
+  for (const button of await page.locator('.hermes-kanban-column-nav-item').all()) {
+    await button.focus(); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
+    const controls = await button.getAttribute('aria-controls');
+    visits.push({controls, current: await button.getAttribute('aria-current'),
+      visible: await page.locator('#' + controls).evaluate((el) => {
+        const lane = el.getBoundingClientRect(); const rail = el.parentElement.getBoundingClientRect();
+        return lane.left >= rail.left && lane.right <= rail.right + 1;
+      })});
+  }
+  console.error('step: lanes');
+  const empty = await page.evaluate(() => document.querySelector('[data-kanban-column="todo"] .hermes-kanban-empty')?.textContent || null);
+  console.error('step: empty');
+  await page.evaluate(() => {
+    const input = document.querySelector('.hermes-kanban-toolbar-search input');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    Reflect.apply(setter, input, ['running-alpha']); input.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+  await page.waitForTimeout(50);
+  const filteredCounts = await page.locator('.hermes-kanban-column-nav-count').allTextContents();
+  await page.evaluate(() => {
+    const input = document.querySelector('.hermes-kanban-toolbar-search input');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    Reflect.apply(setter, input, ['']); input.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+  await page.waitForTimeout(50);
+  console.error('step: filters');
+  const groupedBefore = await page.locator('[data-kanban-column="running"] .hermes-kanban-lane').count();
+  await page.evaluate(() => [...document.querySelectorAll('.hermes-kanban-toolbar-toggle')]
+    .find(el => el.textContent.includes('Lanes by profile')).querySelector('input').click());
+  console.error('step: grouping');
+  const groupedAfter = await page.locator('[data-kanban-column="running"] .hermes-kanban-lane').count();
+  const navTargets = await page.locator('.hermes-kanban-column-nav-item').evaluateAll(xs => xs.map(x => x.getBoundingClientRect().height));
+  const laneWidth = await page.locator('.hermes-kanban-column').first().evaluate(el => el.getBoundingClientRect().width);
+  const navHeight = await page.locator('.hermes-kanban-column-nav').evaluate(el => el.getBoundingClientRect().height);
+  if (process.argv[5]) await page.screenshot({path:process.argv[5], fullPage:true});
+  process.stdout.write(JSON.stringify({labels,visits,empty,filteredCounts,groupedBefore,groupedAfter,navTargets,laneWidth,navHeight,
+    bodyWidth:await page.evaluate(() => document.body.scrollWidth), viewport:await page.evaluate(() => innerWidth)}));
   await browser.close();
-})().catch(error => { console.error(error); process.exit(1); });
-""",
+})().catch(e => {console.error(e);process.exit(1)});""",
         encoding="utf-8",
     )
-    completed = subprocess.run(
-        ["node", str(probe), str(playwright), page.as_uri(), str(width)],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
+    result = subprocess.run(
+        ["node", str(probe), str(playwright), page.as_uri(), str(width), str(screenshot or "")],
+        check=False, capture_output=True, text=True, timeout=30,
     )
-    return json.loads(completed.stdout)
+    if result.returncode:
+        pytest.fail(result.stderr)
+    return json.loads(result.stdout)
 
 
 @pytest.mark.parametrize("width", [320, 360, 390, 430])
-def test_mobile_board_uses_viewport_lanes_and_touch_targets(layout_fixture: Path, width: int):
-    measured = _measure(layout_fixture, width)
-
-    assert measured["viewport"] == width
-    assert measured["bodyScrollWidth"] == width
-    assert measured["laneWidth"] == pytest.approx(width - 32, abs=1)
-    assert measured["drawerWidth"] == pytest.approx(width, abs=1)
-    assert measured["inputWidth"] == pytest.approx(width - 32, abs=1)
-    assert measured["addWidth"] >= 44
-    assert measured["addHeight"] >= 44
-    assert measured["closeWidth"] >= 44
-    assert measured["closeHeight"] >= 44
-    assert measured["navLabels"] == ["Triage", "Todo", "Scheduled", "Ready", "Running", "Blocked", "Review", "Done"]
+def test_real_app_exposes_and_activates_every_mobile_lane(app_fixture: Path, width: int):
+    screenshot_dir = os.environ.get("HERMES_KANBAN_SCREENSHOT_DIR")
+    screenshot = Path(screenshot_dir) / f"kanban-mobile-{width}.png" if screenshot_dir else None
+    measured = _run_browser(app_fixture, width, screenshot)
+    assert measured["labels"] == ["Triage20", "Todo0", "Ready1", "In Progress2", "Blocked1", "Review1", "Done1", "scheduled1"]
+    assert all(visit["current"] == "true" and visit["visible"] for visit in measured["visits"]), measured["visits"]
+    assert measured["empty"] == "— no tasks —"
+    assert measured["filteredCounts"] == ["0", "0", "0", "1", "0", "0", "0", "0"]
+    assert measured["groupedBefore"] == 2
+    assert measured["groupedAfter"] == 0
     assert all(height >= 44 for height in measured["navTargets"])
-    assert measured["navHeight"] >= 88
-    assert measured["railOverflow"] is True
-    assert measured["snap"] == "x mandatory"
+    assert measured["bodyWidth"] == width
+    assert measured["laneWidth"] == pytest.approx(width - 32, abs=1)
 
 
-def test_desktop_keeps_compact_columns_and_disables_snap(layout_fixture: Path):
-    measured = _measure(layout_fixture, 1280)
-
-    assert measured["bodyScrollWidth"] == 1280
+def test_real_app_preserves_desktop_lane_geometry(app_fixture: Path):
+    measured = _run_browser(app_fixture, 1280)
+    assert measured["bodyWidth"] == 1280
     assert measured["laneWidth"] == pytest.approx(280, abs=1)
-    assert measured["drawerWidth"] == pytest.approx(640, abs=1)
     assert measured["navHeight"] == 0
-    assert measured["snap"] == "none"

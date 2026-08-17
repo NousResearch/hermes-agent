@@ -227,7 +227,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Tavily",
-            "badge": "free | key optional",
+            "badge": "free · key optional",
             "tag": "Search + extract. Works keyless; set TAVILY_API_KEY for higher limits.",
             "env_vars": [
                 {

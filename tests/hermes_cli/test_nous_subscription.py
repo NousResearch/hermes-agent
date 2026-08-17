@@ -58,8 +58,67 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
     assert features.web.current_provider == "exa"
 
 
+def test_get_nous_subscription_features_recognizes_keyless_tavily_backend(monkeypatch):
+    """Selecting Tavily in setup/tools counts as available with no API key.
+
+    Mirrors tools.web_tools._is_backend_available('tavily'): keyless is
+    opt-in via web.backend / search_backend / extract_backend, not a
+    silent empty-install default. The setup summary previously required
+    TAVILY_API_KEY and printed a false 'missing' after a skipped key prompt.
+    """
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features({"web": {"backend": "tavily"}})
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.managed_by_nous is False
+    assert features.web.direct_override is True
+    assert features.web.current_provider == "tavily"
+    assert features.web.explicit_configured is True
 
 
+def test_keyless_tavily_search_backend_without_shared_backend(monkeypatch):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features(
+        {"web": {"search_backend": "tavily"}}
+    )
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.current_provider == "tavily"
+
+
+def test_unconfigured_web_without_keys_is_unavailable(monkeypatch):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features({})
+
+    assert features.web.available is False
+    assert features.web.active is False
+    assert features.web.explicit_configured is False
 def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda=False):
     """Common monkeypatches for local-browser readiness scenarios.
 

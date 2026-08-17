@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 
 import {
   appendMidTurnUserMessage,
+  applyReloadOptimistic,
+  applyRewindOptimistic,
   finalizeInterruptedMessages,
   planEdit,
   planReload,
@@ -483,5 +486,43 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
 
     expect(submit?.params?.truncate_before_row_id).toBe(13)
     expect(submit?.params?.truncate_before_user_ordinal).toBe(1)
+  })
+})
+
+describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
+  // The no-payload settle gate in gateway-event.ts holds a running=false
+  // heartbeat off while an optimistically armed turn waits for the backend —
+  // but only for a bounded grace window measured from turnStartedAt. These
+  // transforms are the arm sites for restore/edit/regenerate, so they must
+  // seed the clock (and reset turnLive): an armed state without a clock is
+  // settled by the first heartbeat, and a STALE clock from a previous turn
+  // would let a heartbeat settle the fresh arm immediately.
+  const seeded = (extra: Partial<ReturnType<typeof createClientSessionState>>) => ({
+    ...createClientSessionState(null, [row('u1', 'user', 'first'), row('a1', 'assistant', 'answer')]),
+    ...extra
+  })
+
+  it('applyRewindOptimistic arms busy with a fresh turn clock', () => {
+    const before = Date.now()
+    const next = applyRewindOptimistic(seeded({ turnLive: true, turnStartedAt: before - 60_000 }), 0)
+
+    expect(next.busy).toBe(true)
+    expect(next.awaitingResponse).toBe(true)
+    expect(next.turnLive).toBe(false)
+    expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
+  })
+
+  it('applyReloadOptimistic arms busy with a fresh turn clock', () => {
+    const state = seeded({ turnLive: true, turnStartedAt: Date.now() - 60_000 })
+    const plan = planReload(state.messages, null)
+    const before = Date.now()
+
+    expect(plan).not.toBeNull()
+
+    const next = applyReloadOptimistic(state, plan!)
+
+    expect(next.busy).toBe(true)
+    expect(next.turnLive).toBe(false)
+    expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
   })
 })

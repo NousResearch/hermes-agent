@@ -10,6 +10,8 @@ import { modelOptionsQueryKey } from '@/lib/model-options'
 import { setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+import { PRE_TURN_LIVE_SETTLE_GRACE_MS } from './utils'
+
 import { useMessageStream } from './index'
 
 // Per-turn REST amplification guards: session.info must not refetch config for
@@ -200,6 +202,60 @@ describe('session.info settles a turn that produced no assistant payload', () =>
     expect(state.awaitingResponse).toBe(true)
     expect(busyFor(ACTIVE_SID)).toBe(true)
     expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+
+  // #86795: the pre-start hold above must be BOUNDED. A restore/edit/submit
+  // that armed busy optimistically but whose turn never went live backend-side
+  // (rewind refused after the arm, gateway bounce, dropped submit response)
+  // otherwise ignores every running=false heartbeat forever: busy latches,
+  // isTargetSessionBusy refuses every send, the composer queues each message
+  // ("moves to the send area") and the queue drain — gated on busy→false —
+  // never fires. Only an app restart cleared it. Past the grace window the
+  // gateway's running=false is authoritative and must settle the session.
+  it('settles an armed-but-never-live turn once the pre-start grace expires (#86795)', async () => {
+    await mountStream()
+
+    act(() => {
+      sessionStates!.set(ACTIVE_SID, {
+        ...createClientSessionState(),
+        awaitingResponse: true,
+        busy: true,
+        sawAssistantPayload: false,
+        turnStartedAt: Date.now() - PRE_TURN_LIVE_SETTLE_GRACE_MS - 1,
+        turnLive: false
+      })
+    })
+
+    sessionInfo(ACTIVE_SID, { running: false })
+
+    const state = sessionStates!.get(ACTIVE_SID)!
+    expect(state.awaitingResponse).toBe(false)
+    expect(state.busy).toBe(false)
+    expect(state.turnStartedAt).toBeNull()
+    // The predicate submit.ts / slash.ts / the composer queue drain gate on.
+    expect(busyFor(ACTIVE_SID)).toBe(false)
+  })
+
+  // An armed-busy state that carries NO clock at all (no path today creates
+  // one — submit and the rewind optimistic transforms both seed the clock —
+  // but a regression that forgets the seed must fail open, not latch).
+  it('settles an armed turn with no clock instead of latching busy (#86795)', async () => {
+    await mountStream()
+
+    act(() => {
+      sessionStates!.set(ACTIVE_SID, {
+        ...createClientSessionState(),
+        awaitingResponse: true,
+        busy: true,
+        sawAssistantPayload: false,
+        turnStartedAt: null,
+        turnLive: false
+      })
+    })
+
+    sessionInfo(ACTIVE_SID, { running: false })
+
+    expect(busyFor(ACTIVE_SID)).toBe(false)
   })
 
   it('un-latches a background session but does not hydrate its transcript', async () => {

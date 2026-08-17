@@ -505,7 +505,11 @@ test('win32 staging reports the recovery steps when the rebuild hook produces no
           arch: 'x64',
           rebuild: () => {}
         }),
-      /npm rebuild get-windows/
+      (error) => {
+        assert.match(error.message, /npm rebuild get-windows/)
+        assert.doesNotMatch(error.message, /npm install-scripts/)
+        return true
+      }
     )
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })

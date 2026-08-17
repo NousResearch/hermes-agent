@@ -518,7 +518,6 @@ export function stageGetWindowsInto(
       throw new Error(
         `[stage-native-deps] get-windows has no win32-${arch} prebuilt binding under lib/binding. ` +
           'Recover from the checkout root with:\n' +
-          '  npm install-scripts approve get-windows\n' +
           '  npm rebuild get-windows'
       )
     }

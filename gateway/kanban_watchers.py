@@ -1293,6 +1293,20 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress = None
                 else:
                     logger.info("kanban dispatcher: max_in_progress=%s", max_in_progress)
+        # When the operator never set kanban.max_in_progress, fall back to a
+        # memory-derived default (OOF-30/OOF-77): unbounded fan-out on small
+        # hosted VMs has repeatedly swap-thrashed the whole machine. Explicit
+        # config always wins; None stays None on hosts where total memory
+        # can't be read (macOS/Windows dev machines).
+        effective_max_in_progress = _kb.resolve_max_in_progress(max_in_progress)
+        if max_in_progress is None and effective_max_in_progress is not None:
+            logger.info(
+                "kanban dispatcher: kanban.max_in_progress unset; using "
+                "memory-derived default max_in_progress=%d "
+                "(set kanban.max_in_progress in config.yaml to override)",
+                effective_max_in_progress,
+            )
+        max_in_progress = effective_max_in_progress
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:

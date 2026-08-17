@@ -2529,6 +2529,16 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Global concurrency cap (#33488): when set to a positive int, the
+        # board never has more than N tasks in 'running' at once, across
+        # both the ready and review dispatch lanes. Unset (None) means
+        # "derive from system memory" (OOF-30/OOF-77): the dispatcher caps
+        # concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] —
+        # e.g. 2 workers on a 1 GiB VM. On hosts where total memory can't
+        # be read (macOS/Windows), unset falls back to no cap. Set an
+        # explicit value to override the derived default in either
+        # direction.
+        "max_in_progress": None,
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow

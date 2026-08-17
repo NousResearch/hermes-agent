@@ -136,3 +136,24 @@ def test_cleanup_finalizes_normal_session():
         cli_mod._run_cleanup()
 
     mock_finalize.assert_called_once()
+
+
+def test_single_query_finalize_skipped_for_handed_off():
+    """_notify_single_query_session_finalize must not fire for a handed-off session."""
+    import cli as cli_mod
+
+    _reset_cli_globals(cli_mod)
+    cli_mod._handed_off_session_ids.add("handoff-session-single")
+
+    agent = MagicMock()
+    agent.session_id = "handoff-session-single"
+    agent.platform = "cli"
+
+    cli_mock = MagicMock()
+    cli_mock.agent = agent
+    cli_mock.session_id = "handoff-session-single"
+
+    with patch("hermes_cli.lifecycle.finalize_session") as mock_finalize:
+        cli_mod._notify_single_query_session_finalize(cli_mock)
+
+    mock_finalize.assert_not_called()

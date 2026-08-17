@@ -1363,6 +1363,10 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
     session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
     if session_id in _single_query_finalize_attempted_session_ids:
         return
+    # Don't finalize a session that was handed off to the gateway —
+    # the gateway owns the lifecycle now (#88234).
+    if session_id in _handed_off_session_ids:
+        return
 
     try:
         _notify_session_finalize(

@@ -70,7 +70,9 @@ function validateSshTarget(host, user, port) {
   }
 
   if (host.includes(',')) {
-    throw new Error(`Invalid SSH host "${host}": commas are not valid in a hostname or IP (use dots, e.g. 192.168.1.10).`)
+    throw new Error(
+      `Invalid SSH host "${host}": commas are not valid in a hostname or IP (use dots, e.g. 192.168.1.10).`
+    )
   }
 
   if (host.includes(':')) {

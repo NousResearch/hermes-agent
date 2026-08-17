@@ -64,9 +64,7 @@ afterEach(() => {
 describe('contributed @ completion sources', () => {
   it('merges contributed rows ahead of gateway path results', async () => {
     vi.useFakeTimers()
-    addSource('bots', q =>
-      'researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot · Researcher' }] : []
-    )
+    addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot · Researcher' }] : []))
 
     const { result } = renderHook(() =>
       useAtCompletions({ gateway: gatewayStub() as never, sessionId: 's1', cwd: '/repo' })
@@ -79,9 +77,7 @@ describe('contributed @ completion sources', () => {
 
   it('drops rows when the query does not match the source filter', async () => {
     vi.useFakeTimers()
-    addSource('bots', q =>
-      'researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot' }] : []
-    )
+    addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot' }] : []))
 
     const { result } = renderHook(() =>
       useAtCompletions({ gateway: gatewayStub() as never, sessionId: 's1', cwd: '/repo' })

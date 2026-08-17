@@ -58,6 +58,17 @@ describe('host.state focused-session atoms', () => {
     expect(host.state.focusedUsage.get()).toBe(focused?.usage ?? null)
   })
 
+  it('exposes the registry source that owns the active gateway', async () => {
+    const { host, session } = await setup()
+
+    session.setConnection({ connectionId: 'work', mode: 'remote' } as never)
+    expect(host.state.connectionId.get()).toBe('work')
+
+    session.setConnection({ mode: 'local' } as never)
+    expect(host.state.connectionId.get()).toBeNull()
+    session.setConnection(null)
+  })
+
   it('follows the interacted tile while the primary-only atom stays put', async () => {
     const { host, session, states } = await setup()
     const tree = await import('@/components/pane-shell/tree/store')

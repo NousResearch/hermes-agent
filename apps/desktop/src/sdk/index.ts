@@ -47,7 +47,14 @@ import {
   setActiveProfile,
   setShowAllProfiles
 } from '@/store/profile'
-import { $activeSessionId, $currentCwd, $currentModel, $gatewayState, $selectedStoredSessionId } from '@/store/session'
+import {
+  $activeSessionId,
+  $connection,
+  $currentCwd,
+  $currentModel,
+  $gatewayState,
+  $selectedStoredSessionId
+} from '@/store/session'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
@@ -162,6 +169,7 @@ if (typeof window !== 'undefined') {
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
 const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
+const $activeConnectionId = computed($connection, connection => connection?.connectionId ?? null)
 
 export const host = {
   state: {
@@ -178,6 +186,8 @@ export const host = {
     busy: readonlyAtom<boolean>($focusedBusy),
     /** Runtime session id → mid-turn. Not socket state; see `gateway`. */
     busyBySession: readonlyAtom<Record<string, boolean>>($busyBySession),
+    /** Registry source that owns the active gateway, when source-scoped. */
+    connectionId: readonlyAtom<null | string>($activeConnectionId),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
     /** Runtime id of the FOCUSED chat session — the interacted tile, else the

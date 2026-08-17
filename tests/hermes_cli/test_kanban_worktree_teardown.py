@@ -128,6 +128,28 @@ def test_non_git_dir_preserved(tmp_path: Path) -> None:
     assert plain.is_dir()
 
 
+def test_tree_dirtied_between_check_and_removal_preserved(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TOCTOU: a tree that becomes dirty after the pre-check is NOT removed.
+
+    Simulates the race by making the pre-check see a clean tree while the
+    tree is actually dirty when ``git worktree remove`` runs. Without
+    ``--force``, git's own dirty guard re-verifies at removal time and the
+    removal fails safe.
+    """
+    import cli
+
+    wt = _make_worktree(repo, "t_gggg7777")
+    (wt / "late-wip.txt").write_text("dirtied after the check\n", encoding="utf-8")
+    # Pre-check lies (as if the file appeared just after it ran) — real git
+    # must still refuse the removal.
+    monkeypatch.setattr(cli, "_worktree_is_dirty", lambda _p: False)
+    kb._cleanup_worktree_workspace("t_gggg7777", str(wt))
+    assert wt.is_dir()
+    assert (wt / "late-wip.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle integration: complete / archive / deferred parents
 # ---------------------------------------------------------------------------

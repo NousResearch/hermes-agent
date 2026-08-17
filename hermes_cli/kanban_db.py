@@ -5985,8 +5985,12 @@ def _cleanup_worktree_workspace(
                 task_id, wp,
             )
             return
+        # No --force: the dirty/unpushed checks above run before removal, so
+        # git's own dirty guard re-verifies at removal time. If the tree
+        # became dirty between our check and the removal (TOCTOU), removal
+        # fails safe and the worktree is preserved.
         result = subprocess.run(
-            ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(wp)],
+            ["git", "-C", str(repo_root), "worktree", "remove", str(wp)],
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=60,

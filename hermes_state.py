@@ -1859,12 +1859,27 @@ _MAX_MALFORMED_BACKUPS = 3
 # header on any real recovery), while staying O(1) on a multi-GB file.
 _FINGERPRINT_SAMPLE_BYTES = 65536
 
-# Free-space floor for the pre-repair forensic backup. The backup is a full
-# raw copy of the damaged DB, so a repair loop on a large state.db is a disk
-# amplifier: the reported incident wrote 98MB every ~10s until the volume was
-# nearly full, which would have taken down every agent on the host. Refuse
-# the copy unless the volume would still hold this much afterwards.
-_REPAIR_BACKUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+# Free-space headroom for the pre-repair forensic backup. The backup is a
+# full raw copy of the damaged DB (plus its -wal/-shm sidecars), so a repair
+# loop on a large state.db is a disk amplifier: the reporting incident wrote
+# ~98MB every ~10s until the volume was nearly full, which would have taken
+# down every agent on the host.
+#
+# Proportional, not a flat floor: an absolute multi-GB reserve would refuse
+# backups that fit comfortably on small container/VM volumes, and because a
+# refused backup is a HARD STOP (#69603) that would silently convert "repair
+# loops" into "repair never runs" for those deployments. Require the copy
+# itself plus a small slice of the volume, clamped to a modest floor.
+_REPAIR_BACKUP_MIN_FREE_BYTES = 256 * 1024 * 1024  # 256 MiB absolute floor
+_REPAIR_BACKUP_FREE_FRACTION = 0.02  # plus 2% of the volume
+
+
+def _repair_backup_headroom_bytes(total_bytes: int) -> int:
+    """Free space required *beyond* the copy itself, for a volume of *total_bytes*."""
+    return max(
+        _REPAIR_BACKUP_MIN_FREE_BYTES,
+        int(total_bytes * _REPAIR_BACKUP_FREE_FRACTION),
+    )
 
 
 def _repair_ledger_path(db_path: Path) -> Path:
@@ -2070,31 +2085,70 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
                     return existing, None
         except OSError:
             pass
-        # Disk guard: this is a full raw copy of a possibly multi-GB DB. On a
-        # host whose volume is already nearly full — which a preceding repair
-        # loop may itself have caused — taking it can finish off the disk and
-        # take down every process on the machine. Refuse while there is still
-        # room to refuse in.
+        # Disk guard: this is a full raw copy of a possibly multi-GB DB plus
+        # its sidecars. On a host whose volume is already nearly full — which
+        # a preceding repair loop may itself have caused — taking it can
+        # finish off the disk and take down every process on the machine.
+        # Refuse while there is still room to refuse in.
         try:
-            src_size = db_path.stat().st_size
-            free = shutil.disk_usage(db_path.parent).free
-            if free - src_size < _REPAIR_BACKUP_MIN_FREE_BYTES:
+            need = db_path.stat().st_size
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path.with_name(db_path.name + suffix)
+                if sidecar.exists():
+                    need += sidecar.stat().st_size
+            usage = shutil.disk_usage(db_path.parent)
+            headroom = _repair_backup_headroom_bytes(usage.total)
+            if usage.free - need < headroom:
                 reason = (
-                    f"only {free / 1e9:.1f}GB free on {db_path.parent}; copying "
-                    f"the {src_size / 1e9:.1f}GB damaged DB would leave less than "
-                    f"{_REPAIR_BACKUP_MIN_FREE_BYTES / 1e9:.1f}GB. Free disk space, "
-                    "then retry (or recover manually with `sqlite3 "
-                    f"{db_path} \".recover\"`)."
+                    f"only {usage.free / 1e9:.2f}GB free on {db_path.parent}; "
+                    f"copying the damaged DB needs {need / 1e9:.2f}GB and must "
+                    f"leave {headroom / 1e9:.2f}GB headroom. Free disk space, "
+                    f"then retry (or recover manually with `sqlite3 {db_path} "
+                    '".recover"`).'
                 )
                 logger.error("Refusing forensic backup of %s: %s", db_path, reason)
                 return None, reason
         except OSError:
             pass
-        shutil.copy2(db_path, backup_path)
-        for suffix in ("-wal", "-shm"):
-            sidecar = db_path.with_name(db_path.name + suffix)
-            if sidecar.exists():
-                shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
+        # Copy to a staging name that does NOT match the backup prefix, then
+        # rename into place only once every copy has succeeded. A copy that
+        # fails partway (ENOSPC, kill) would otherwise leave a prefix-matching
+        # partial that `_prune_malformed_backups` never reaches — prune runs
+        # only on the success path — so debris accumulated unbounded and, on a
+        # later successful pass, the newest-by-name partials were KEPT while
+        # intact forensic copies were pruned away.
+        staging = db_path.with_name(f"{backup_path.name}.incomplete")
+        staged: "List[Tuple[Path, Path]]" = []
+        try:
+            # Clear debris from an earlier interrupted pass (kill mid-copy).
+            # Matches sidecar staging names (``.incomplete-wal``) too.
+            for old in db_path.parent.glob(
+                f"{db_path.name}.malformed-backup-*.incomplete*"
+            ):
+                old.unlink(missing_ok=True)
+            shutil.copy2(db_path, staging)
+            staged.append((staging, backup_path))
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path.with_name(db_path.name + suffix)
+                if sidecar.exists():
+                    side_staging = staging.with_name(staging.name + suffix)
+                    shutil.copy2(sidecar, side_staging)
+                    staged.append(
+                        (side_staging, backup_path.with_name(backup_path.name + suffix))
+                    )
+            for src, dst in staged:
+                os.replace(src, dst)
+        except Exception:
+            for src, _ in staged:
+                try:
+                    src.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         # Retention cap (#86747): keep only the newest few forensic copies.
         _prune_malformed_backups(db_path)
         return backup_path, None

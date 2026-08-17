@@ -22,6 +22,7 @@ missing free-space refusal.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -36,6 +37,7 @@ from hermes_state import (
     _existing_malformed_backups,
     _persistent_repair_attempts_exhausted,
     _record_repair_outcome,
+    _repair_backup_headroom_bytes,
 )
 
 
@@ -137,13 +139,88 @@ def test_backup_refused_when_disk_would_be_exhausted(tmp_path):
     """A nearly-full volume must not be finished off by the forensic copy."""
     db = _damaged_db(tmp_path)
     tight = type(
-        "Usage", (), {"total": 0, "used": 0, "free": _REPAIR_BACKUP_MIN_FREE_BYTES // 2}
+        "Usage",
+        (),
+        {"total": 10_000_000_000, "used": 0, "free": _REPAIR_BACKUP_MIN_FREE_BYTES // 2},
     )()
     with patch("shutil.disk_usage", return_value=tight):
         path, reason = _backup_db_file(db)
     assert path is None
     assert reason is not None and "free" in reason.lower()
     assert not _existing_malformed_backups(db)
+
+
+def test_backup_allowed_on_small_volume_with_room(tmp_path):
+    """A flat multi-GB floor would disable repair on small VMs/containers.
+
+    50MB DB on a 10GB volume with 1.5GB free fits with ~30x headroom; the
+    guard must allow it rather than hard-stopping repair forever.
+    """
+    db = _damaged_db(tmp_path, size=50_000_000)
+    small_vm = type(
+        "Usage", (), {"total": 10_000_000_000, "used": 8_500_000_000, "free": 1_500_000_000}
+    )()
+    with patch("shutil.disk_usage", return_value=small_vm):
+        path, reason = _backup_db_file(db)
+    assert reason is None and path is not None
+
+
+def test_headroom_scales_with_volume_size():
+    """Big volumes reserve proportionally; small ones keep a modest floor."""
+    assert _repair_backup_headroom_bytes(1_000_000_000) == _REPAIR_BACKUP_MIN_FREE_BYTES
+    assert _repair_backup_headroom_bytes(1_000_000_000_000) > _REPAIR_BACKUP_MIN_FREE_BYTES
+
+
+def test_disk_guard_accounts_for_sidecars(tmp_path):
+    """The copy includes -wal/-shm, so the space check must count them."""
+    db = _damaged_db(tmp_path, size=1_000_000)
+    db.with_name(db.name + "-wal").write_bytes(os.urandom(400_000_000))
+    usage = type(
+        "Usage",
+        (),
+        {"total": 10_000_000_000, "used": 0, "free": _REPAIR_BACKUP_MIN_FREE_BYTES + 300_000_000},
+    )()
+    with patch("shutil.disk_usage", return_value=usage):
+        path, reason = _backup_db_file(db)
+    assert path is None, "sidecar bytes were ignored by the free-space check"
+    assert reason is not None
+
+
+def test_failed_copy_leaves_no_countable_debris(tmp_path):
+    """Prune only runs on success, so a failed copy must self-clean.
+
+    Otherwise partials matching the backup prefix accumulate unbounded and,
+    on a later successful pass, are KEPT (newest by name) while intact
+    forensic copies get pruned away.
+    """
+    db = _damaged_db(tmp_path, size=1_000_000)
+    db.with_name(db.name + "-wal").write_bytes(os.urandom(1_000_000))
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+    real_copy2 = shutil.copy2
+
+    def sidecar_fails(src, dst, *a, **kw):
+        if str(src).endswith("-wal"):
+            Path(dst).write_bytes(b"PARTIAL" * 100)
+            raise OSError(28, "No space left on device")
+        return real_copy2(src, dst, *a, **kw)
+
+    with patch("shutil.disk_usage", return_value=roomy), \
+            patch("shutil.copy2", sidecar_fails):
+        for _ in range(6):
+            _backup_db_file(db)
+            time.sleep(0.01)
+            os.utime(db, None)
+
+    assert len(_existing_malformed_backups(db)) <= _MAX_MALFORMED_BACKUPS
+
+    # a later successful pass must sweep any staging debris
+    with patch("shutil.disk_usage", return_value=roomy):
+        path, reason = _backup_db_file(db)
+    assert reason is None and path is not None
+    strays = list(tmp_path.glob("*.incomplete*"))
+    assert not strays, f"staging debris survived: {strays}"
 
 
 def test_backup_allowed_with_ample_disk(tmp_path):

@@ -2263,12 +2263,26 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
 
-    def test_default_config_bounds_one_million_context_trigger(self):
-        """The shipped default must not let a 1M window defer compaction to 500K."""
+    @pytest.mark.parametrize(
+        ("context_length", "expected_threshold"),
+        [
+            (128_000, 96_000),
+            (272_000, 204_000),
+            (400_000, 256_000),
+            (1_000_000, 256_000),
+        ],
+    )
+    def test_default_config_uses_lower_effective_trigger(
+        self, context_length, expected_threshold,
+    ):
+        """The shipped cap bounds large windows without raising smaller triggers."""
         from hermes_cli.config import DEFAULT_CONFIG
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=context_length,
+        ):
             comp = ContextCompressor(
                 "model-a",
                 threshold_percent=DEFAULT_CONFIG["compression"]["threshold"],
@@ -2277,9 +2291,9 @@ class TestThresholdTokensCap:
             )
             _ = comp.context_length
 
-        assert comp.threshold_tokens == 256_000
-        assert comp.should_compress(255_999) is False
-        assert comp.should_compress(256_000) is True
+        assert comp.threshold_tokens == expected_threshold
+        assert comp.should_compress(expected_threshold - 1) is False
+        assert comp.should_compress(expected_threshold) is True
 
 
 

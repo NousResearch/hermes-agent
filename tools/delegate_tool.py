@@ -2508,8 +2508,23 @@ def _run_single_child(
                 subagent_worktree.finalize_subagent_worktree(_worktree_info)
             )
         except Exception as e:
-            logger.debug("worktree finalize failed: %s", e)
-            entry_dict["worktree"] = dict(_worktree_info)
+            # finalize is written hard not to raise, but if it ever does the
+            # state is unknown — emit the SAME schema the parent expects,
+            # flagged, instead of leaking the creation-side metadata shape.
+            logger.warning("worktree finalize failed: %s", e)
+            entry_dict["worktree"] = {
+                "path": _worktree_info.get("path", ""),
+                "branch": _worktree_info.get("branch", ""),
+                "commits": 0,
+                "dirty": False,
+                "pruned": False,
+                "inspection_failed": True,
+                "note": (
+                    "worktree finalize raised; state unknown — inspect "
+                    f"{_worktree_info.get('path', '')} manually before "
+                    "assuming no work."
+                ),
+            }
 
     try:
         _heartbeat_thread.start()

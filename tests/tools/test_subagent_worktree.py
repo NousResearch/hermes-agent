@@ -163,6 +163,65 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertTrue((wt / "UNCOMMITTED-WORK.txt").exists())
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertNotEqual(branches.strip(), "")
+        # The parent agent only ever sees this payload (it cannot read logs),
+        # so the uncertainty must travel in the dict — otherwise "0 commits,
+        # clean" reads as "the child produced nothing" and the work we just
+        # preserved never gets looked at.
+        self.assertTrue(payload["inspection_failed"])
+        self.assertIn("UNKNOWN", payload["note"])
+        self.assertIn(info["path"], payload["note"])
+
+    def test_finalize_flags_unproven_state_distinguishably(self):
+        """#88113 follow-up: a failed inspection must not look like "no work".
+
+        Without an explicit flag, "inspection failed, uncommitted work
+        preserved" and "inspected fine, child left nothing" serialize to the
+        byte-identical dict {commits: 0, dirty: False, pruned: False} — so the
+        parent agent's rational reading of the failure case is the exact wrong
+        conclusion.
+        """
+        repo = _make_repo(self.tmp)
+
+        # Case 1: inspection SUCCEEDED, tree genuinely clean, prune disabled.
+        ok_info = sw.create_subagent_worktree(str(repo), "proven-clean")
+        assert ok_info is not None
+        ok_payload = sw.finalize_subagent_worktree(ok_info, prune=False)
+
+        # Case 2: inspection FAILED with real uncommitted work on disk.
+        bad_info = sw.create_subagent_worktree(str(repo), "unproven")
+        assert bad_info is not None
+        bad_wt = Path(bad_info["path"])
+        (bad_wt / "WIP.txt").write_text("real work\n", encoding="utf-8")
+        git_dir = Path(_git(["rev-parse", "--git-dir"], bad_wt).stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = (bad_wt / git_dir).resolve()
+        (git_dir / "index").write_bytes(b"not-a-valid-git-index\n")
+        bad_payload = sw.finalize_subagent_worktree(bad_info)
+
+        # The three state fields are identical — that is exactly the ambiguity.
+        for key in ("commits", "dirty", "pruned"):
+            self.assertEqual(ok_payload[key], bad_payload[key])
+        # Only the flag separates them.
+        self.assertNotIn("inspection_failed", ok_payload)
+        self.assertNotIn("note", ok_payload)
+        self.assertTrue(bad_payload["inspection_failed"])
+
+    def test_finalize_flags_unproven_state_when_inspection_raises(self):
+        """A raising probe is the same unknown state as a non-zero exit."""
+        repo = _make_repo(self.tmp)
+        info = sw.create_subagent_worktree(str(repo), "raises")
+        assert info is not None
+
+        def _boom(*_a, **_k):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=30)
+
+        with mock.patch.object(sw, "_run_git", side_effect=_boom):
+            payload = sw.finalize_subagent_worktree(info)
+
+        self.assertFalse(payload["pruned"])
+        self.assertTrue(payload["inspection_failed"])
+        self.assertIn("UNKNOWN", payload["note"])
+        self.assertTrue(os.path.isdir(info["path"]))
 
     def test_finalize_missing_path_reports_pruned(self):
         payload = sw.finalize_subagent_worktree(

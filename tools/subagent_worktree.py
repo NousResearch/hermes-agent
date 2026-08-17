@@ -26,7 +26,9 @@ Contract (mirrors Muse Code's documented semantics):
   dirty state so the parent can review or merge each branch.
 - **Clean worktrees are pruned.** A worktree with no new commits and a
   clean tree is removed automatically after the child finishes; anything
-  holding work is kept and reported.
+  holding work is kept and reported. Pruning requires affirmative proof:
+  if a git inspection probe fails the state is unknown, so the worktree is
+  kept and the result entry is flagged ``inspection_failed`` (#88113).
 
 Only the local terminal backend is supported: on docker/ssh/modal/etc. the
 worktree created on the host would not be visible inside the sandbox, so
@@ -177,8 +179,15 @@ def finalize_subagent_worktree(
 
     Returns a result-entry payload: path, branch, ``commits`` ahead of the
     base, ``dirty`` (uncommitted changes present), and ``pruned``. A worktree
-    with zero commits and a clean tree is removed when *prune* is true;
-    anything holding work is always kept for the parent to review or merge.
+    with zero commits and a clean tree is removed when *prune* is true **and
+    both git probes succeeded**; anything holding work is always kept for the
+    parent to review or merge.
+
+    If ``git rev-list``/``git status`` exits non-zero (or the inspection
+    raises), the tree state is unknown, so the worktree and branch are kept
+    and the payload carries ``inspection_failed: True`` plus a ``note``.
+    ``commits``/``dirty`` are then defaults, NOT measurements — the parent
+    must inspect the worktree instead of concluding the child did no work.
     """
     path = info.get("path", "")
     branch = info.get("branch", "")
@@ -194,6 +203,30 @@ def finalize_subagent_worktree(
     }
     if not path or not os.path.isdir(path):
         payload["pruned"] = True  # nothing on disk to review
+        return payload
+
+    def _unproven(reason: str) -> Dict[str, Any]:
+        """Flag the payload as un-inspected and keep the worktree (#88113).
+
+        A failed probe proves nothing about the tree, so ``commits``/``dirty``
+        are still their defaults. The parent agent only ever sees this dict —
+        it cannot read logs — so the uncertainty has to travel *in the
+        payload*, or "0 commits, clean" reads as "the child produced nothing"
+        and the work we just preserved is never looked at.
+        """
+        payload["inspection_failed"] = True
+        payload["note"] = (
+            f"git inspection failed ({reason}): 'commits' and 'dirty' are "
+            "UNKNOWN, not zero/clean. The worktree and branch were preserved "
+            f"— inspect {path} (branch {branch}) before assuming no work."
+        )
+        logger.warning(
+            "subagent worktree: git inspection failed (%s) — keeping %s "
+            "(branch %s) for manual review",
+            reason,
+            path,
+            branch,
+        )
         return payload
 
     inspection_ok = True
@@ -212,9 +245,10 @@ def finalize_subagent_worktree(
         else:
             inspection_ok = False
     except Exception as exc:
-        logger.debug("subagent worktree: finalize inspection failed: %s", exc)
-        # Unknown state — keep the worktree rather than risk deleting work.
-        return payload
+        # Same unknown state as a non-zero exit (timeout, OSError, or a
+        # non-numeric rev-list stdout) — keep the worktree rather than risk
+        # deleting work, and tell the caller the numbers are unproven.
+        return _unproven(f"inspection raised: {exc}")
 
     if not inspection_ok:
         # Fail-safe (#88113): a non-zero git exit proves nothing about the
@@ -223,13 +257,7 @@ def finalize_subagent_worktree(
         # child work. A destructive cleanup requires affirmative proof of
         # "zero commits + clean tree"; otherwise keep the worktree and
         # branch for manual inspection.
-        logger.warning(
-            "subagent worktree: git inspection failed (rev-list/status "
-            "non-zero) — keeping %s (branch %s) for manual review",
-            path,
-            branch,
-        )
-        return payload
+        return _unproven("rev-list/status non-zero")
 
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         try:

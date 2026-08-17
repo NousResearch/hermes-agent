@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import type {
   DesktopConnectionKind,
   DesktopConnectionsRegistry,
@@ -211,6 +212,7 @@ export function ConnectionsRegistrySection() {
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
+  const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
@@ -384,6 +386,26 @@ export function ConnectionsRegistrySection() {
     [bridge, publishRegistry, s.saveFailed]
   )
 
+  const setLaunchMode = useCallback(
+    async (mode: 'last-used' | 'primary') => {
+      if (!bridge?.setLaunchMode) {
+        return
+      }
+
+      setLaunchModeBusy(true)
+
+      try {
+        const result = await bridge.setLaunchMode(mode)
+        publishRegistry(result.registry)
+      } catch (err) {
+        notifyError(err, s.saveFailed)
+      } finally {
+        setLaunchModeBusy(false)
+      }
+    },
+    [bridge, publishRegistry, s.saveFailed]
+  )
+
   const test = useCallback(
     async (conn: DesktopRegistryConnection) => {
       if (!bridge) {
@@ -458,6 +480,24 @@ export function ConnectionsRegistrySection() {
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.stagedNote}
       </p>
+
+      {!loading && registry && registry.connections.length > 1 && (
+        <ListRow
+          action={
+            <SegmentedControl
+              disabled={launchModeBusy || !bridge?.setLaunchMode}
+              onChange={mode => void setLaunchMode(mode)}
+              options={[
+                { id: 'primary', label: s.launchPrimary },
+                { id: 'last-used', label: s.launchLastUsed }
+              ]}
+              value={registry.launchMode ?? 'primary'}
+            />
+          }
+          description={s.launchModeDesc}
+          title={s.launchModeTitle}
+        />
+      )}
 
       {loading ? (
         <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">

@@ -706,6 +706,10 @@ export const en: Translations = {
         'Register every place your agents live — this device, remote gateways on your network, and Hermes Cloud instances. All of them are stored here.',
       stagedNote:
         'Switch sources from the Sessions sidebar. Profiles, chats, messaging, and cron stay scoped to that source; Primary is the registry default and does not switch your current workspace.',
+      launchModeTitle: 'Open on launch',
+      launchModeDesc: 'Always open the Primary source, or resume the last source that connected successfully.',
+      launchPrimary: 'Primary source',
+      launchLastUsed: 'Last used',
       loadFailed: 'Could not load connections',
       currentPill: 'Current',
       primaryPill: 'Primary',

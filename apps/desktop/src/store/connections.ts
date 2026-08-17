@@ -31,6 +31,7 @@ export const $hasMultipleConnections = computed(
 
 const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
 let pendingTarget: null | string = null
+let restoreAttempted = false
 let switchRevision = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
@@ -72,6 +73,7 @@ $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, 
 export function _resetConnectionsForTests(): void {
   $lastProfileByConnection.set({})
   pendingTarget = null
+  restoreAttempted = false
   switchRevision = 0
   $pendingConnectionId.set(null)
 }
@@ -92,6 +94,55 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
   setConnectionsRegistry(registry)
 
   return registry
+}
+
+async function rememberConnection(connectionId: string): Promise<void> {
+  const setLastUsed = window.hermesDesktop?.connections?.setLastUsed
+
+  if (!setLastUsed) {
+    return
+  }
+
+  try {
+    const result = await setLastUsed(connectionId)
+    setConnectionsRegistry(result.registry)
+  } catch {
+    // The source is already usable. A read-only/full userData directory must
+    // not turn a successful backend switch into a false connection failure.
+  }
+}
+
+/**
+ * Load the registry once for Sessions and restore the last successfully used
+ * source. Later registry refreshes stay side-effect free, so editing Settings
+ * in another window never changes the active workspace.
+ */
+export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
+  const registry = await refreshConnectionsRegistry()
+
+  if (!registry || restoreAttempted) {
+    return registry
+  }
+
+  restoreAttempted = true
+
+  const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
+    ? registry.lastUsed
+    : registry.primary
+
+  const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+
+  if (!preferredId) {
+    return registry
+  }
+
+  if ($activeConnectionId.get() === preferredId) {
+    await rememberConnection(preferredId)
+  } else {
+    await selectConnection(preferredId)
+  }
+
+  return $connectionsRegistry.get() ?? registry
 }
 
 /**
@@ -123,6 +174,8 @@ export async function selectConnection(connectionId: string): Promise<void> {
     currentProfile !== targetProfile
 
   if (!switching) {
+    await rememberConnection(connectionId)
+
     return
   }
 
@@ -130,6 +183,7 @@ export async function selectConnection(connectionId: string): Promise<void> {
     $showAllProfiles.set(false)
     $newChatProfile.set(targetProfile)
     requestFreshSession()
+    await rememberConnection(connectionId)
 
     return
   }
@@ -151,6 +205,7 @@ export async function selectConnection(connectionId: string): Promise<void> {
     // already makes the latest source win; this guard also prevents an older
     // request from repainting its profile list after that newer activation.
     if (revision === switchRevision) {
+      await rememberConnection(connectionId)
       wipeSessionListsForGatewaySwitch()
       $showAllProfiles.set(false)
       $newChatProfile.set(targetProfile)

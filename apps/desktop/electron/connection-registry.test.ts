@@ -30,6 +30,8 @@ import {
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  setConnectionLaunchMode,
+  setLastUsedConnection,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
@@ -688,6 +690,8 @@ test('normalizeRegistry degrades junk to a local-only registry', () => {
 
     assert.equal(registry.version, REGISTRY_VERSION)
     assert.equal(registry.primary, LOCAL_CONNECTION_ID)
+    assert.equal(registry.launchMode, 'primary')
+    assert.equal(registry.lastUsed, LOCAL_CONNECTION_ID)
     assert.equal(registry.connections.length, 1)
     assert.equal(registry.connections[0].kind, 'local')
   }
@@ -719,6 +723,8 @@ test('normalizeRegistry round-trips a valid registry unchanged in shape', () => 
   const input = {
     version: 2,
     primary: 'homelab',
+    launchMode: 'last-used',
+    lastUsed: 'homelab',
     connections: [
       { id: 'local', kind: 'local', label: 'This device' },
       {
@@ -744,6 +750,8 @@ test('normalizeRegistry round-trips a valid registry unchanged in shape', () => 
   const registry = normalizeRegistry(input)
 
   assert.equal(registry.primary, 'homelab')
+  assert.equal(registry.launchMode, 'last-used')
+  assert.equal(registry.lastUsed, 'homelab')
   assert.equal(registry.connections.length, 4)
   assert.deepEqual(
     registry.connections.map(c => c.id),
@@ -751,6 +759,22 @@ test('normalizeRegistry round-trips a valid registry unchanged in shape', () => 
   )
   assert.deepEqual(registry.connections[1].token, { v: 1 })
   assert.equal(registry.connections[3].port, 2222)
+})
+
+test('normalizeRegistry falls back to Primary when the last-used source is missing', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    primary: 'homelab',
+    launchMode: 'last-used',
+    lastUsed: 'retired-host',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'homelab', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }
+    ]
+  })
+
+  assert.equal(registry.launchMode, 'last-used')
+  assert.equal(registry.lastUsed, 'homelab')
 })
 
 // --- v1 → v2 migration ---
@@ -837,17 +861,19 @@ test('migrate: duplicate host labels are suffixed, not dropped', () => {
 
 // --- registry operations ---
 
-test('removeConnection: local refuses, primary retargets to local', () => {
+test('removeConnection: local refuses, primary and last-used retarget safely', () => {
   let registry = emptyRegistry()
   const entry = normalizeConnectionInput({ kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }, registry)
   registry = upsertConnection(registry, entry)
   registry = setPrimaryConnection(registry, entry.id)
+  registry = setLastUsedConnection(registry, entry.id)
 
   assert.throws(() => removeConnection(registry, LOCAL_CONNECTION_ID), /cannot be removed/)
 
   const after = removeConnection(registry, entry.id)
 
   assert.equal(after.primary, LOCAL_CONNECTION_ID)
+  assert.equal(after.lastUsed, LOCAL_CONNECTION_ID)
   assert.equal(after.connections.length, 1)
   // Removing an unknown id is a no-op, not an error.
   assert.equal(removeConnection(after, 'ghost'), after)
@@ -858,6 +884,17 @@ test('setPrimaryConnection validates the target id', () => {
 
   assert.throws(() => setPrimaryConnection(registry, 'ghost'), /No connection/)
   assert.equal(setPrimaryConnection(registry, LOCAL_CONNECTION_ID).primary, LOCAL_CONNECTION_ID)
+})
+
+test('last-used source and launch mode validate their persisted values', () => {
+  let registry = emptyRegistry()
+  const entry = normalizeConnectionInput({ kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }, registry)
+  registry = upsertConnection(registry, entry)
+
+  assert.throws(() => setLastUsedConnection(registry, 'ghost'), /No connection/)
+  assert.equal(setLastUsedConnection(registry, entry.id).lastUsed, entry.id)
+  assert.equal(setConnectionLaunchMode(registry, 'last-used').launchMode, 'last-used')
+  assert.throws(() => setConnectionLaunchMode(registry, 'sometimes'), /Unknown connection launch mode/)
 })
 
 test('upsertConnection replaces by id and appends new ids', () => {

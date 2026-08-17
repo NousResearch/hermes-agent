@@ -35,6 +35,7 @@ const {
   $activeConnectionId,
   $connectionsRegistry,
   $pendingConnectionId,
+  initializeConnectionsRegistry,
   refreshConnectionsRegistry,
   _resetConnectionsForTests,
   selectConnection,
@@ -53,6 +54,7 @@ const registry: DesktopConnectionsRegistry = {
 }
 
 const list = vi.fn(async () => registry)
+const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registry, lastUsed: id } }))
 
 beforeEach(() => {
   localStorage.clear()
@@ -75,7 +77,8 @@ beforeEach(() => {
   requestFreshSession.mockClear()
   wipeSessionListsForGatewaySwitch.mockClear()
   list.mockClear()
-  vi.stubGlobal('window', { hermesDesktop: { connections: { list } }, localStorage })
+  setLastUsed.mockClear()
+  vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed } }, localStorage })
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -87,6 +90,27 @@ describe('connection registry cache', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect($connectionsRegistry.get()).toEqual(registry)
     expect($activeConnectionId.get()).toBeNull()
+  })
+
+  it('restores the last-used source once when that launch mode is enabled', async () => {
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await initializeConnectionsRegistry()
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(setLastUsed).toHaveBeenCalledWith('homelab')
+  })
+
+  it('preserves the established Primary-source launch behavior by default', async () => {
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'primary' })
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
   })
 
   it('uses only the resolved descriptor identity for the active gateway', () => {
@@ -114,6 +138,7 @@ describe('selectConnection', () => {
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
     expect($newChatProfile.get()).toBe('default')
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
+    expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
   it('does not reset or dial when the active source/profile is selected again', async () => {
@@ -215,5 +240,6 @@ describe('selectConnection', () => {
     expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
     expect($newChatProfile.get()).toBeNull()
     expect($pendingConnectionId.get()).toBeNull()
+    expect(setLastUsed).not.toHaveBeenCalled()
   })
 })

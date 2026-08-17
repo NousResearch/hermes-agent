@@ -137,6 +137,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     save: payload => ipcRenderer.invoke('hermes:connections:save', payload),
     remove: id => ipcRenderer.invoke('hermes:connections:remove', id),
     setPrimary: id => ipcRenderer.invoke('hermes:connections:set-primary', id),
+    setLaunchMode: mode => ipcRenderer.invoke('hermes:connections:set-launch-mode', mode),
+    setLastUsed: id => ipcRenderer.invoke('hermes:connections:set-last-used', id),
     test: id => ipcRenderer.invoke('hermes:connections:test', id),
     // Fan out `hermes update` to every eligible registered connection.
     updateAll: () => ipcRenderer.invoke('hermes:connections:update-all'),

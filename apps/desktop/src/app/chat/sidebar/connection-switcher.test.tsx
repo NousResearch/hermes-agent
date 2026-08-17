@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,8 +15,22 @@ vi.mock('@/store/connections', () => ({
   $activeConnectionId: atom<null | string>('local'),
   $connectionsRegistry: atom<DesktopConnectionsRegistry | null>(null),
   $pendingConnectionId: atom<null | string>(null),
+  initializeConnectionsRegistry: vi.fn(async () => null),
   refreshConnectionsRegistry: vi.fn(async () => null),
   selectConnection: vi.fn(async () => undefined)
+}))
+
+vi.mock('@/store/boot', () => ({
+  $desktopBoot: atom({
+    error: null,
+    fakeMode: false,
+    message: 'Starting',
+    phase: 'renderer.init',
+    progress: 2,
+    running: true,
+    timestamp: 0,
+    visible: true
+  })
 }))
 
 vi.mock('@/i18n', () => ({
@@ -33,9 +47,13 @@ vi.mock('@/i18n', () => ({
 }))
 
 const connectionStore = await import('@/store/connections')
+const bootStore = await import('@/store/boot')
 const $activeConnectionId = connectionStore.$activeConnectionId as ReturnType<typeof atom<null | string>>
 const $connectionsRegistry = connectionStore.$connectionsRegistry
+const $desktopBoot = bootStore.$desktopBoot
 const $pendingConnectionId = connectionStore.$pendingConnectionId
+const initializeConnectionsRegistry = vi.mocked(connectionStore.initializeConnectionsRegistry)
+const refreshConnectionsRegistry = vi.mocked(connectionStore.refreshConnectionsRegistry)
 const selectConnection = vi.mocked(connectionStore.selectConnection)
 const onConnect = vi.fn()
 
@@ -59,10 +77,38 @@ afterEach(() => {
   vi.clearAllMocks()
   $connectionsRegistry.set(null)
   $activeConnectionId.set('local')
+  $desktopBoot.set({
+    error: null,
+    fakeMode: false,
+    message: 'Starting',
+    phase: 'renderer.init',
+    progress: 2,
+    running: true,
+    timestamp: 0,
+    visible: true
+  })
   $pendingConnectionId.set(null)
 })
 
 describe('ConnectionSwitcher', () => {
+  it('waits for primary boot fetches before restoring the launch source', async () => {
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    expect(refreshConnectionsRegistry).toHaveBeenCalledTimes(1)
+    expect(initializeConnectionsRegistry).not.toHaveBeenCalled()
+
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      phase: 'renderer.ready',
+      progress: 100,
+      running: false,
+      visible: false
+    })
+
+    await waitFor(() => expect(initializeConnectionsRegistry).toHaveBeenCalledTimes(1))
+  })
+
   it('adds no source chrome for a local-only setup', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local')]))
     render(<ConnectionSwitcher onConnect={onConnect} />)

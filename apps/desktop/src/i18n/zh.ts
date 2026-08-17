@@ -910,6 +910,10 @@ export const zh: Translations = {
       intro: '注册你的智能体所在的每个位置——本机、局域网中的远程网关、Hermes Cloud 实例——全部保存在这里。',
       stagedNote:
         '可在“会话”侧边栏切换来源。配置档案、聊天、消息和定时任务始终限定在所选来源；“主连接”是注册表的默认值，不会切换当前工作区。',
+      launchModeTitle: '启动时打开',
+      launchModeDesc: '始终打开主连接，或恢复上次成功连接的来源。',
+      launchPrimary: '主连接',
+      launchLastUsed: '上次使用',
       loadFailed: '无法加载连接',
       currentPill: '当前',
       primaryPill: '主连接',

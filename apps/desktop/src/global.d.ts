@@ -144,6 +144,10 @@ declare global {
         ) => Promise<{ ok: boolean; connection: DesktopRegistryConnection; registry: DesktopConnectionsRegistry }>
         remove: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setPrimary: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        setLaunchMode?: (
+          mode: 'last-used' | 'primary'
+        ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
+        setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
         // Fan out `hermes update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
@@ -819,6 +823,12 @@ export interface DesktopConnectionsRegistry {
   version: number
   // id of the connection that owns the window/primary backend.
   primary: string
+  // Preserve old installs by defaulting to the explicit primary; users may
+  // instead resume the last successfully opened source.
+  launchMode?: 'last-used' | 'primary'
+  // Last source the Sessions workspace opened successfully. Optional for
+  // compatibility with an older Electron main during a rolling app update.
+  lastUsed?: string
   // Whether OS-keychain-backed encryption (Electron safeStorage) is available;
   // false drives the plain-text token opt-in on keyring-less Linux.
   secureTokenStorage: boolean

@@ -16,10 +16,12 @@ import type { DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Cloud, Loader2, Monitor, Network, Terminal } from '@/lib/icons'
+import { $desktopBoot } from '@/store/boot'
 import {
   $activeConnectionId,
   $connectionsRegistry,
   $pendingConnectionId,
+  initializeConnectionsRegistry,
   refreshConnectionsRegistry,
   selectConnection
 } from '@/store/connections'
@@ -29,6 +31,7 @@ export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
+  const boot = useStore($desktopBoot)
   const pendingConnectionId = useStore($pendingConnectionId)
 
   useEffect(() => {
@@ -42,6 +45,16 @@ export function ConnectionSwitcher({ onConnect }: { onConnect: () => void }) {
 
     return off
   }, [])
+
+  useEffect(() => {
+    // The primary boot owns its initial config/session fetches. Restoring a
+    // different source before those settle lets a late primary response repaint
+    // the sidebar under the new source label. Switch only after boot completes,
+    // then the normal source reset/refetch remains the final writer.
+    if (!boot.running) {
+      void initializeConnectionsRegistry().catch(() => undefined)
+    }
+  }, [boot.running])
 
   const connections = registry?.connections ?? []
 

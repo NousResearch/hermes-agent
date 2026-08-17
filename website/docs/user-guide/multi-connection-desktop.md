@@ -59,6 +59,12 @@ Rules worth knowing:
   registry fallback for multi-source calls that do not name a source.
   **Make primary** does not switch the current Sessions workspace; removing
   the primary falls back to the local entry.
+- **Open on launch** controls which source Sessions opens after a full app
+  restart. **Primary source** preserves the established Desktop behavior and
+  remains the default for existing and new installs. Choose **Last used** to
+  resume the most recent source that connected successfully. A failed switch
+  is never remembered, and a removed or unavailable saved source falls back
+  to Primary.
 - **Test** probes the connection's own HTTP *and* WebSocket legs, so a pass
   (the *"Reachable"* toast) means chat will actually work — not just that the
   host pinged.
@@ -170,6 +176,10 @@ that live on one source.
   then shows only that source's profiles; the home pill returns to its default
   profile and the layers pill shows **All profiles on this source**.
   **Cmd/Ctrl+1–9** continue to switch profiles within the active source.
+- The selected source survives a quit and relaunch only when **Settings →
+  Connections → Open on launch** is set to **Last used**. The preference and
+  source id live in the app's user-data registry, so replacing or updating the
+  application bundle does not reset them.
 - With more than thirteen profiles on the active source, their avatar strip
   condenses into a named profile selector. Large source and profile sets can
   therefore coexist without changing the **source → profile → sessions** model.

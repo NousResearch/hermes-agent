@@ -15,6 +15,7 @@ import {
 const list = vi.fn()
 const save = vi.fn()
 const remove = vi.fn()
+const setLaunchMode = vi.fn()
 const setPrimary = vi.fn()
 const test = vi.fn()
 
@@ -51,11 +52,12 @@ beforeEach(() => {
   list.mockResolvedValue(registry)
   save.mockResolvedValue({ connection: registry.connections[1], ok: true, registry })
   remove.mockResolvedValue({ ok: true, registry: { ...registry, connections: [registry.connections[0]] } })
+  setLaunchMode.mockResolvedValue({ ok: true, registry: { ...registry, launchMode: 'last-used' } })
   setPrimary.mockResolvedValue({ ok: true, registry: { ...registry, primary: 'homelab' } })
   test.mockResolvedValue({ ok: true, reachable: true })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { connections: { list, remove, save, setPrimary, test } }
+    value: { connections: { list, remove, save, setLaunchMode, setPrimary, test } }
   })
 })
 
@@ -141,6 +143,24 @@ describe('ConnectionsRegistrySection', () => {
     fireEvent.click(screen.getByText('Make primary'))
 
     await waitFor(() => expect(setPrimary).toHaveBeenCalledWith('homelab'))
+  })
+
+  it('lets users opt into restoring the last-used source', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Open on launch')).toBeTruthy())
+    fireEvent.click(screen.getByText('Last used'))
+
+    await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
+  })
+
+  it('keeps the launch preference out of the way for a single source', async () => {
+    list.mockResolvedValueOnce({ ...registry, connections: [registry.connections[0]] })
+
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Open on launch')).toBeNull()
   })
 
   it('tests a connection through the bridge', async () => {

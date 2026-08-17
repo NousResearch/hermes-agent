@@ -6008,7 +6008,7 @@ function selectRoutineJobs(data, error, lastJobs, bot) {
   return {
     live,
     all,
-    jobs: scopedToBot ? all : all.filter(job => routineBot(job) === bot)
+    jobs: scopedToBot ? all : all.filter(job => (routineBot(job) || 'default') === bot)
   }
 }
 

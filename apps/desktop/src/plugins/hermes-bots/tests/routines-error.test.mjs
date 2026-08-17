@@ -82,6 +82,14 @@ test('compatibility: a stale scope marker cannot leak another profile\'s jobs', 
   )
 })
 
+test('regression: untagged legacy cronjobs remain visible only on the default bot', () => {
+  const legacy = { name: 'Existing reminder', job_id: 'legacy' }
+  const api = load().__api
+
+  assert.deepEqual(api.selectRoutineJobs({ jobs: [legacy] }, null, [], 'default').jobs, [legacy])
+  assert.deepEqual(api.selectRoutineJobs({ jobs: [legacy] }, null, [], 'ops').jobs, [])
+})
+
 test('unit: a failed refresh keeps the last good list', () => {
   const view = load().__api.selectRoutineJobs(undefined, new Error('down'), jobs, 'ops')
   assert.equal(view.live, null)

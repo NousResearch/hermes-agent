@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 
-import { ConnectionsRegistrySection, findDuplicateConnection, normalizeGatewayUrl, sshCompositeKey } from './connections-registry'
+import {
+  ConnectionsRegistrySection,
+  findDuplicateConnection,
+  normalizeGatewayUrl,
+  sshCompositeKey
+} from './connections-registry'
 
 const list = vi.fn()
 const save = vi.fn()

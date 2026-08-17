@@ -719,7 +719,8 @@ export const zhHant = defineLocale({
       defaultConnection: '預設連線適用於所有沒有自訂覆寫的設定檔。',
       profileConnection: profile => `僅當「${profile}」為作用中設定檔時使用此連線。選擇「使用預設閘道」可移除其覆寫。`,
       profileOverridesTitle: '依設定檔覆寫',
-      profileOverridesDesc: '每個設定檔都可以指向自己的閘道。下方的連線控制項會編輯所選目標；此頁其餘設定為整個應用程式範圍。',
+      profileOverridesDesc:
+        '每個設定檔都可以指向自己的閘道。下方的連線控制項會編輯所選目標；此頁其餘設定為整個應用程式範圍。',
       overrideEdit: '編輯',
       overrideEditing: '編輯中',
       overrideSelectHint: '選取即可檢視或變更此設定檔使用的閘道。',

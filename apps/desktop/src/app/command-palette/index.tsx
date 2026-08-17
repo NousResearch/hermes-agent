@@ -414,7 +414,18 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   {
     icon: Globe,
     // The Connections registry merged into the unified Gateways page.
-    keywords: ['connection', 'connections', 'messaging', 'remote', 'multi', 'instances', 'ssh', 'cloud', 'add gateway', 'registry'],
+    keywords: [
+      'connection',
+      'connections',
+      'messaging',
+      'remote',
+      'multi',
+      'instances',
+      'ssh',
+      'cloud',
+      'add gateway',
+      'registry'
+    ],
     labelKey: 'gateway',
     tab: 'gateway'
   },

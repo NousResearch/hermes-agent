@@ -24,12 +24,7 @@ import type { ReactNode } from 'react'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
-import {
-  $narrowViewport,
-  registerPaneCloser,
-  removeTreePane,
-  revealTreePane
-} from '@/components/pane-shell/tree/store'
+import { $narrowViewport, registerPaneCloser, removeTreePane, revealTreePane } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'

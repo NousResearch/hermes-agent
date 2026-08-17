@@ -196,11 +196,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             {updating && <Loader2 className="size-3 animate-spin" />}
             {updating ? h.updating : h.updateAll}
           </Button>
-          <Button
-            onClick={() => setPaneHeightOverride(HUB_PANE_ID, open ? 0 : undefined)}
-            size="xs"
-            variant="text"
-          >
+          <Button onClick={() => setPaneHeightOverride(HUB_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
             {open ? h.pickerHide : h.pickerBrowse}
           </Button>
         </div>

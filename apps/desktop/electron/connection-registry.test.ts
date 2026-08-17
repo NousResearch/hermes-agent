@@ -452,7 +452,11 @@ test('duplicate ssh targets are rejected on user@host:port + remote profile', ()
   )
 
   assert.throws(
-    () => normalizeConnectionInput({ kind: 'ssh', label: 'Box twin', host: 'alice@box:22', remoteProfile: 'work' }, registry),
+    () =>
+      normalizeConnectionInput(
+        { kind: 'ssh', label: 'Box twin', host: 'alice@box:22', remoteProfile: 'work' },
+        registry
+      ),
     /already exists/
   )
 

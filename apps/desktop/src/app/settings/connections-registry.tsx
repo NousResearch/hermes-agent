@@ -135,7 +135,8 @@ export function findDuplicateConnection(
 
     return (
       connections.find(
-        c => (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
+        c =>
+          (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
       ) ?? null
     )
   }

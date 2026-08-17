@@ -4,6 +4,7 @@ The illustrator now drives every image from a single art brief (art_director):
 one style + locked palette/motif + shared direction, with a unique prompt for
 the hero and each section. Generation backend is Codex CLI (no FAL/Pollinations).
 """
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,6 +18,45 @@ import config
 @pytest.fixture(autouse=True)
 def isolated_rotation_state(monkeypatch, tmp_path):
     monkeypatch.setattr(bi, "ROTATION_STATE_PATH", tmp_path / "skill_rotation.json")
+
+
+@pytest.fixture(autouse=True)
+def reviewed_reference_catalog(monkeypatch, tmp_path):
+    """Give illustrator tests a real, isolated P11 reference pack."""
+    root = tmp_path / "refs"
+    root.mkdir()
+    rows = []
+    core_rows = []
+    for reference_id, role in (
+        ("layout-fixture", "layout"),
+        ("style-fixture", "style"),
+        ("composition-fixture", "composition"),
+    ):
+        content = reference_id.encode("utf-8")
+        rel = f"{reference_id}.png"
+        (root / rel).write_bytes(content)
+        row = {
+            "record_schema_version": "2", "reference_id": reference_id,
+            "path": rel, "sha256": hashlib.sha256(content).hexdigest(),
+            "provenance_class": "sahil_curated",
+            "ownership_or_usage_basis": "test fixture",
+            "usage_classification": "review-required",
+            "allowed_roles": [role], "parent_reference_id": None,
+        }
+        rows.append(row)
+        core_rows.append({
+            **row, "core_role": role, "core_tag": "fixture",
+            "curation_status": "visually-reviewed-core-candidate-test",
+            "blocked_roles": ["generation", "publication"],
+            "visual_rationale": "isolated test reference",
+        })
+    (root / "manifest.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    (root / "core-pack.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in core_rows), encoding="utf-8"
+    )
+    monkeypatch.setattr(config, "IMAGERY_ANCHORS_DIR", str(root))
 
 
 @pytest.fixture(autouse=True)

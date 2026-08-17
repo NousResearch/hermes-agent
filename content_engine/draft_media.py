@@ -185,6 +185,44 @@ def _record_rotation(tracker, draft, model_used="", generation_cost=0.0, ocr_pas
         print(f"[draft_media] rotation tracker record failed: {exc}")
 
 
+def _native_aspect(aspect: str) -> str:
+    """Map a prompt-engine aspect to the native seam's three-way aspect."""
+    if aspect == "landscape":
+        return "landscape"
+    if str(aspect).startswith("portrait"):
+        return "portrait"
+    return "square"
+
+
+def _generate_native_codex(draft: dict, output_dir=None) -> Optional[str]:
+    """Generate one image via the explicit native Codex seam (approval-only).
+
+    Uses the existing prompt engine for the art-directed prompt and the
+    editorial decision engine's studio for the style. Fail-closed: raises on
+    any seam error so the caller returns None rather than falling back to FAL.
+    """
+    from image_jobs import prepare_image_request
+    from image_job_service import execute_staged_image_job, stage_and_plan_image_job
+    from prompt_engine import build_image_prompt
+
+    prompt, aspect, _model_key, _expected = build_image_prompt(draft)
+    studio = (draft.get("_editorial") or {}).get("studio") or "chromatic-institute"
+
+    staging_root = Path(output_dir or OUTPUT_ROOT) / "image_staging"
+    job_id = f"social-{uuid.uuid4().hex[:12]}"
+
+    request = prepare_image_request(prompt=prompt, style=studio, backend="codex")
+    staged = stage_and_plan_image_job(request, staging_root=staging_root, job_id=job_id)
+    completed = execute_staged_image_job(
+        request,
+        staged,
+        staging_root=staging_root,
+        job_id=job_id,
+        aspect_ratio=_native_aspect(aspect),
+    )
+    return str(completed.output_path)
+
+
 def generate_post_image(draft, model=None, output_dir=None, scene_prompt=None):
     """Build a baoyu-method prompt, generate via Seedream, OCR-verify the baked-in
     text, regenerate (reseed -> nano-banana) on failure within budget. Returns a
@@ -209,28 +247,23 @@ def generate_post_image(draft, model=None, output_dir=None, scene_prompt=None):
         print(f"[draft_media] decision engine error: {_exc}; using defaults")
         draft["_editorial"] = {}
 
-    # Personal brands use the reference-anchored transplant path for
-    # infographic-family content (validated 2026-06-16, brand_imagery_standard.md).
-    # Falls through to the legacy chain for scene/hero, explicit-model calls, or
-    # on any failure.
+    # Personal brands (X/LinkedIn) use the explicit native Codex seam
+    # (image_jobs + image_job_service), which is approval-only and fail-closed.
+    # There is no FAL fallback: on any seam error we return None rather than
+    # silently degrading to the legacy FAL chain.
     try:
-        from config import IMAGERY_TRANSPLANT_BRANDS
-        if (draft.get("brand") in IMAGERY_TRANSPLANT_BRANDS
-                and not scene_prompt and not model):
-            import imagery_transplant
-            _p = imagery_transplant.generate(draft, draft.get("brand"), out_dir=output_dir)
+        from config import NATIVE_CODEX_SOCIAL_BRANDS
+        if draft.get("brand") in NATIVE_CODEX_SOCIAL_BRANDS:
+            _p = _generate_native_codex(draft, output_dir=output_dir)
             if _p and os.path.exists(_p):
-                # Record rotation metadata for the transplant path.
-                # Model/cost are the edit defaults since imagery_transplant may
-                # have used either the edit or scene model internally.
-                from config import IMAGERY_EDIT_MODEL, IMAGERY_EDIT_COST_GBP
                 _record_rotation(tracker, draft,
-                                 model_used=IMAGERY_EDIT_MODEL,
-                                 generation_cost=IMAGERY_EDIT_COST_GBP,
+                                 model_used="openai-codex",
+                                 generation_cost=0.0,
                                  ocr_passed=1)
                 return _p
-    except Exception as _exc:  # noqa: BLE001 (never let the new path break generation)
-        print(f"[draft_media] transplant path error: {_exc}; using legacy")
+    except Exception as _exc:  # noqa: BLE001 (fail-closed: no FAL fallback)
+        print(f"[draft_media] native codex path error: {_exc}; no FAL fallback")
+        return None
 
     import budget
     from fal_client import MODEL_COST_GBP

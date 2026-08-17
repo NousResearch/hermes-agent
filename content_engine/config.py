@@ -287,22 +287,13 @@ ARTICLE_TOPIC_RECENCY_DAYS = int(os.getenv("ARTICLE_TOPIC_RECENCY_DAYS", "30"))
 # a palette system for variety. See brand_imagery_standard.md.
 IMAGERY_ANCHORS_DIR = os.path.expanduser(
     os.getenv("CONTENT_IMAGERY_ANCHORS", "~/content-references"))
-# Brands routed through the transplant path (others keep the legacy path).
-IMAGERY_TRANSPLANT_BRANDS = tuple(
-    b.strip() for b in os.getenv(
-        "CONTENT_TRANSPLANT_BRANDS", "sahil_twitter,sahil_linkedin").split(",")
-    if b.strip())
-IMAGERY_EDIT_MODEL = os.getenv("CONTENT_EDIT_MODEL", "fal-ai/nano-banana-pro/edit").strip()
-IMAGERY_EDIT_COST_GBP = float(os.getenv("CONTENT_EDIT_COST_GBP", "0.12"))
-# Tiered scene models (validated 2026-06-16): infographics + HERO scenes need
-# nano-banana-pro (text/quality); default (non-hero) scenes use the ~3x cheaper
-# nano-banana non-pro at near-identical quality. qwen was too anchor-literal
-# (reproduced refs) and pollinations is textless-only — both rejected for scenes.
-IMAGERY_SCENE_MODEL = os.getenv("CONTENT_SCENE_MODEL", "fal-ai/nano-banana/edit").strip()
-IMAGERY_SCENE_COST_GBP = float(os.getenv("CONTENT_SCENE_COST_GBP", "0.039"))
-IMAGERY_HERO_MODEL = os.getenv("CONTENT_HERO_EDIT_MODEL", "fal-ai/nano-banana-pro/edit").strip()
-# How many recent (palette|layout) picks to avoid re-using, per brand.
-IMAGERY_ROTATION_MEMORY = int(os.getenv("CONTENT_IMAGERY_ROTATION_MEMORY", "6"))
+# Personal brands use the explicit native Codex image seam. Product brands retain
+# their separate legacy path until migrated under a dedicated, approved task.
+NATIVE_CODEX_SOCIAL_BRANDS = tuple(
+    brand.strip()
+    for brand in os.getenv("CONTENT_NATIVE_CODEX_SOCIAL_BRANDS", "sahil_twitter,sahil_linkedin").split(",")
+    if brand.strip()
+)
 
 # Temporarily paused brands — skipped by the social generator. Paused 2026-06-16
 # while the personal brands (sahil_twitter/sahil_linkedin) are validated on the

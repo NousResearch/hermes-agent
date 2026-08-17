@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from blog.asset_manifest import AssetManifest, build_asset_manifest
+from blog.concept_direction import (
+    DEFAULT_HOUSE_STYLE_ID,
+    ConceptPlanError,
+    build_concept_plan,
+)
 from blog.reference_catalog import ReferenceCatalog
 from blog.visual_plan import VisualPlan, build_visual_plan
 
@@ -67,6 +72,15 @@ TEXT_POLICIES = {
 # skills (Baoyu, data, typography, diorama, etc.) are represented as prompt
 # modes here; the blog path never calls their original FAL/Pollinations tools.
 STYLE_LIBRARY = [
+    {
+        "id": DEFAULT_HOUSE_STYLE_ID,
+        "label": "Sahil Editorial House Style",
+        "kind": "house-style",
+        "look": "tactile editorial illustration with deliberate framing, restrained print texture, concrete narrative action, and no generic AI gloss.",
+        "best_for": "the default rendering language for all publication imagery.",
+        "layout": "editorial widescreen tableau, process cutaway, overhead consequence map, asymmetrical narrative spread",
+        "text_policy": "none",
+    },
     {
         "id": "mythic-tech-codex",
         "label": "Mythic Tech Codex",
@@ -228,6 +242,7 @@ UNDERUSED_STYLE_BOOSTS = {
 }
 
 STYLE_NATIVE_COMPILERS = {
+    DEFAULT_HOUSE_STYLE_ID: "Render inside the Sahil Editorial House Style: tactile editorial craft, concrete narrative action, deliberate framing, restrained print texture, and no generic AI gloss.",
     "baoyu-article-illustrator": "Redraft the concept as an article-illustration system: choose a clear Type (infographic, scene, flowchart, comparison, framework, or timeline), visible information hierarchy, section cards, arrows, and exact short labels.",
     "baoyu-infographic": "Redraft the concept as a dense infographic: bento panels, comparison blocks, numbered steps, icon-like objects, arrows, category labels, and a strong top-to-bottom reading path.",
     "baoyu-comic": "Redraft the concept as a single-card knowledge comic: 2-4 panels inside one 16:9 image, expressive characters or objects, before/after contrast, concise caption labels, and a memorable punchline moment.",
@@ -390,52 +405,40 @@ def _native_compiler_for(style_id: str) -> str:
     return STYLE_NATIVE_COMPILERS.get(style_id, "Redraft the concept in the native language of the chosen visual style, with concrete composition, material, label, and reading-path decisions.")
 
 def _brief_system_prompt(recent_styles: list[str]) -> str:
-    avoid = ", ".join(recent_styles) if recent_styles else "(none yet)"
     return (
-        "You are the senior art director for a technical blog. Given one article, "
-        "design a single coherent illustration set: a hero image plus one image "
-        "per selected section. All images in a post MUST share ONE style/mode, "
-        "ONE colour palette, ONE layout grammar, and ONE recurring motif, so the "
-        "post reads as a designed set — but each image's subject must come from "
-        "its own part of the article.\n\n"
-        f"{CREATIVE_DIRECTION_RULES}\n\n"
-        f"{REFERENCE_IMAGE_STANDARD}\n\n"
-        "First produce 3-5 viable style/layout candidates, then choose one. "
-        "Do not collapse to deterministic best-fit. Treat style selection as "
-        "constrained exploration: content fit matters, but underused modes and "
-        "recent-style avoidance also matter. Use Baoyu/data/typographic/comic/"
-        "diorama modes when the article needs information structure, labels, "
-        "diagrams, or poster-like typography:\n"
-        f"{_styles_catalogue()}\n\n"
-        f"Do NOT choose any of these recently-used styles unless none of the "
-        f"others fit at all: {avoid}. Prefer variety across the blog.\n\n"
-        "The palette must be specific (4-6 named colours or hex). The motif must "
-        "be a concrete recurring object/shape that can appear differently in "
-        "each image. The layout must name the information/composition structure "
-        "being used (e.g. bento-grid, comparison matrix, isometric cutaway, "
-        "typographic poster, comic panels). Include layout_variants so hero and "
-        "section images can vary composition while sharing the same style family. "
-        "The text_elements array is mandatory: "
-        "for text-capable modes, include exact short labels or title phrases that "
-        "would add value; for no-text modes, return an empty array.\n\n"
-        "Every hero_prompt and section prompt must be a COMPILED generation prompt: "
-        "3-5 vivid sentences, 80-140 words, concrete scene nouns, clear reading "
-        "path, graphical design detail, and no checklist formatting. Include text "
-        "only if the chosen style's text policy allows it.\n\n"
+        "You are the concept director for a technical publication. The publication has a fixed "
+        "house visual DNA: tactile editorial craft, deliberate framing, restrained print texture, "
+        "concrete narrative action, and no generic AI gloss. Do NOT rotate styles for novelty. "
+        "A specialist rendering skill is an explicit exception only when the article genuinely "
+        "needs a diagram, infographic, comic, or technical diorama.\n\n"
+        "Your job is to create controlled conceptual variation. First identify the article truth. "
+        "Then produce 3-5 candidate shared worlds by combining it with an unexpected world, a "
+        "narrative rule, and a story moment. Every candidate must visibly explain the article; "
+        "randomness is only the translation, never the reason for the image. The three asset "
+        "scenes must be materially different: hero=thesis, each section=its local mechanism or consequence.\n\n"
+        "For every scene use the exact asset_key and source_target_id supplied by the user. Include: "
+        "the article claim, its visual translation, a precise scene, a unique composition, and a "
+        "unique creative technique. No candidate is valid if it cannot supply every requested asset.\n\n"
         "Return ONLY a JSON object, no prose, with this exact shape:\n"
         '{\n'
-        '  "style": "<style id from the catalogue>",\n'
-        '  "style_candidates": ["<3-5 viable style ids>"],\n'
-        '  "layout": "<specific layout/composition grammar>",\n'
-        '  "layout_variants": ["<hero/section layout options inside chosen style>"],\n'
-        '  "text_policy": "none|labels|typography",\n'
-        '  "text_elements": ["<exact short label/phrase>", "..."],\n'
-        '  "palette": "<4-6 specific colours>",\n'
-        '  "motif": "<one concrete recurring visual motif>",\n'
-        '  "art_direction": "<2-3 sentences of shared composition/mood rules>",\n'
-        '  "hero_prompt": "<compiled, vivid hero image prompt>",\n'
-        '  "section_prompts": [\n'
-        '    {"heading": "<section heading text>", "prompt": "<compiled, vivid section image prompt>"}\n'
+        '  "style": "sahil-editorial-v1",\n'
+        '  "layout": "<legacy compatibility layout>",\n'
+        '  "text_policy": "none",\n'
+        '  "text_elements": [],\n'
+        '  "palette": "<legacy compatibility palette>",\n'
+        '  "motif": "<recurring object or shape>",\n'
+        '  "art_direction": "<shared rendering rules>",\n'
+        '  "hero_prompt": "<legacy compatibility placeholder; it will be compiled from the scene>",\n'
+        '  "section_prompts": [],\n'
+        '  "concept_candidates": [\n'
+        '    {"candidate_id":"<stable short id>","world":"<one shared creative world>",'
+        '"fingerprint":["<3 concrete world terms>"],"creative_score":<0-100>,\n'
+        '     "relevance_rationale":"<why every scene explains the article>",'
+        '"specialist_skill":"<optional allowed specialist id; omit for house style>",\n'
+        '     "scenes":[{"asset_key":"hero","source_target_id":"hero",'
+        '"source_claim":"<claim from that target>","visual_translation":"<claim made visible>",'
+        '"scene":"<specific moment>","composition":"<specific layout>",'
+        '"creative_technique":"<distinct story device>"}]}\n'
         "  ]\n"
         "}\n"
     )
@@ -446,16 +449,17 @@ def _brief_user_prompt(title: str, description: str, body_md: str,
     body = body_md.strip()
     if len(body) > 6000:
         body = body[:6000] + "\n...[truncated]"
-    heads = "\n".join(f"- {h}" for h in headings) if headings else "(no sections; hero only)"
+    heads = "\n".join(f"- section-{index:02d}: {heading}" for index, heading in enumerate(headings, start=1)) if headings else "(none; hero only)"
     return (
         f"STREAM: {stream}\n"
         f"TITLE: {title}\n"
         f"DECK: {description}\n\n"
-        f"SECTION HEADINGS needing an image (in order):\n{heads}\n\n"
+        "REQUIRED SOURCE TARGET IDS (use these exact ids in every candidate):\n"
+        "- hero: title/deck and article thesis\n"
+        f"{heads}\n\n"
         f"FULL ARTICLE:\n{body}\n\n"
-        "Design the illustration set. One section_prompts entry per heading "
-        "above, in the same order. If there are no sections, return an empty "
-        "section_prompts array."
+        "Design 3-5 candidates. Each candidate must provide exactly one hero scene and "
+        "one scene for every section target above, using the matching source_target_id."
     )
 
 
@@ -506,6 +510,16 @@ def _normalise_text_policy(style_id: str, supplied: str) -> str:
     return default
 
 
+def _scene_image_concept(world: str, scene) -> str:
+    """Compile a reviewed scene into the concise prompt language a renderer needs."""
+    return (
+        f"Shared world: {world} "
+        f"Article claim to make visible: {scene.source_claim} "
+        f"Visual translation: {scene.visual_translation} "
+        f"Scene: {scene.scene}"
+    )
+
+
 def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
               recent_styles: Optional[list[str]] = None) -> Optional[dict]:
     """Coerce/validate an LLM brief into a usable shape, or None if unusable."""
@@ -523,7 +537,24 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
         return None
 
     selection_seed = _selection_seed(draft) if draft is not None else ""
+    concept_plan = None
     if draft is not None:
+        raw_candidates = brief.get("concept_candidates")
+        if not isinstance(raw_candidates, list) or not raw_candidates:
+            return None
+        try:
+            concept_plan = build_concept_plan(
+                draft,
+                headings,
+                candidates=raw_candidates,
+                recent_concept_fingerprints=brief.get("recent_concept_fingerprints") or [],
+            )
+        except ConceptPlanError:
+            return None
+        # The publication house style is the default. A specialist is a deliberate
+        # rendering exception, never a random style roulette result.
+        style = concept_plan.specialist_skill or DEFAULT_HOUSE_STYLE_ID
+    elif draft is not None:
         style = _choose_style(
             draft,
             preferred=style,
@@ -531,17 +562,20 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
             supplied_candidates=brief.get("style_candidates") or [],
         )
 
-    palette = str(brief.get("palette", "")).strip()
+    palette = concept_plan.palette if concept_plan is not None else str(brief.get("palette", "")).strip()
     motif = str(brief.get("motif", "")).strip()
     direction = str(brief.get("art_direction", "")).strip()
-    layout_source = dict(brief)
-    if style != preferred_style:
-        # If the sampler rebalances the chosen style, don't keep a mismatched
-        # layout grammar from the LLM's original choice. Keep palette/motif,
-        # but reset layout to the chosen style's native grammar.
-        layout_source["layout"] = STYLE_BY_ID.get(style, {}).get("layout", "")
-        layout_source["layout_variants"] = []
-    layout, layout_variants = _normalise_layout(layout_source, style)
+    asset_layouts: dict[str, str] = {}
+    if concept_plan is not None:
+        asset_layouts = {scene.asset_key: scene.composition for scene in concept_plan.scenes}
+        layout = asset_layouts["hero"]
+        layout_variants = list(asset_layouts.values())
+    else:
+        layout_source = dict(brief)
+        if style != preferred_style:
+            layout_source["layout"] = STYLE_BY_ID.get(style, {}).get("layout", "")
+            layout_source["layout_variants"] = []
+        layout, layout_variants = _normalise_layout(layout_source, style)
     text_policy = _normalise_text_policy(style, str(brief.get("text_policy", "")))
 
     raw_text = brief.get("text_elements") or []
@@ -554,7 +588,15 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
 
     raw_sections = brief.get("section_prompts") or []
     section_prompts: dict[str, str] = {}
-    if isinstance(raw_sections, list):
+    if concept_plan is not None:
+        hero = _scene_image_concept(
+            concept_plan.world,
+            next(scene for scene in concept_plan.scenes if scene.asset_key == "hero"),
+        )
+        for index, heading in enumerate(headings, start=1):
+            scene = next(scene for scene in concept_plan.scenes if scene.asset_key == f"section-{index:02d}")
+            section_prompts[heading] = _scene_image_concept(concept_plan.world, scene)
+    elif isinstance(raw_sections, list):
         for i, h in enumerate(headings):
             if i < len(raw_sections) and isinstance(raw_sections[i], dict):
                 p = str(raw_sections[i].get("prompt", "")).strip()
@@ -564,8 +606,9 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
         "style": style,
         "layout": layout,
         "layout_variants": layout_variants,
+        "asset_layouts": asset_layouts,
         "selection_seed": selection_seed,
-        "style_candidates": _style_candidates(draft or {}, style, brief.get("style_candidates") or []) if draft is not None else [style],
+        "style_candidates": [style] if concept_plan is not None else _style_candidates(draft or {}, style, brief.get("style_candidates") or []),
         "style_native_compiler": _native_compiler_for(style),
         "text_policy": text_policy,
         "text_elements": text_elements,
@@ -574,6 +617,7 @@ def _validate(brief: dict, headings: list[str], draft: Optional[dict] = None,
         "art_direction": direction,
         "hero_prompt": hero,
         "section_prompts": section_prompts,
+        **({"concept_plan": concept_plan.to_dict()} if concept_plan is not None else {}),
     }
 
 
@@ -587,15 +631,14 @@ def _text_rule_for(brief: dict) -> str:
     return rule
 
 
-def compose_prompt(image_concept: str, brief: dict) -> str:
-    """Compile a per-image concept + shared art direction into a Codex prompt."""
+def compose_prompt(image_concept: str, brief: dict, *, assigned_layout: str | None = None) -> str:
+    """Compile one source-grounded scene into its deliberately assigned layout."""
     style = STYLE_BY_ID.get(brief["style"], {})
-    layout_variants = brief.get("layout_variants") or _layout_variants_for(brief["style"], brief.get("layout", ""))
+    active_layout = (assigned_layout or brief.get("layout") or style.get("layout", "")).strip()
     parts = [
         f"Create a 16:9 landscape editorial image in the {style.get('label', brief['style'])} mode.",
         f"Visual language: {style.get('look', '')}",
-        f"Primary layout/composition grammar: {brief.get('layout') or style.get('layout', '')}.",
-        f"Allowed layout variation inside this style family: {', '.join(layout_variants)}.",
+        f"Assigned layout/composition for this asset: {active_layout}.",
         f"Style-native prompt redraft rule: {brief.get('style_native_compiler') or _native_compiler_for(brief['style'])}",
     ]
     if brief.get("palette"):

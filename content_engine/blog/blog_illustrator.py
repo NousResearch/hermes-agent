@@ -272,14 +272,21 @@ def illustrate(
 
     # P11 contract seam: select only reviewed core references, write the plan
     # and planned provenance before the unchanged legacy generator is reached.
-    planned_prompts = {"hero": compose_prompt(brief["hero_prompt"], brief)}
+    asset_layouts = brief.get("asset_layouts", {})
+    planned_prompts = {
+        "hero": compose_prompt(
+            brief["hero_prompt"], brief, assigned_layout=asset_layouts.get("hero")
+        )
+    }
     planned_outputs = {"hero": "hero.png"}
     section_prompts = brief.get("section_prompts", {})
     body_lines = body_md.splitlines()
     for index, heading in enumerate(headings, 1):
         concept = section_prompts.get(heading) or _extract_section_text(body_lines, heading) or heading
         key = f"section-{index:02d}"
-        planned_prompts[key] = compose_prompt(concept, brief)
+        planned_prompts[key] = compose_prompt(
+            concept, brief, assigned_layout=asset_layouts.get(key)
+        )
         planned_outputs[key] = f"section_{index:02d}.png"
     try:
         visual_plan = art_director.build_visual_plan_from_brief(

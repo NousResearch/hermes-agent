@@ -28,21 +28,48 @@ def _good_brief_json():
         "section_prompts": [
             {"heading": "The mechanism", "prompt": "amortising hardware as stone foundations"}
         ],
+        "concept_candidates": [{
+            "candidate_id": "clockwork-theatre",
+            "world": "A travelling clockwork theatre where futures are performed before they happen.",
+            "fingerprint": ["clockwork theatre", "origami futures", "deep sea"],
+            "creative_score": 92,
+            "relevance_rationale": "The hero and supporting scene each bind to a supplied article target.",
+            "scenes": [
+                {
+                    "asset_key": "hero",
+                    "source_target_id": "hero",
+                    "source_claim": "The crossover point compares API cost with hardware amortisation.",
+                    "visual_translation": "Two physical routes race toward one answer, one rented and one owned.",
+                    "scene": "A brass courier races across the stage with rented tickets while a permanent engine wakes below.",
+                    "composition": "wide proscenium collision",
+                    "creative_technique": "temporal-collision",
+                },
+                {
+                    "asset_key": "section-01",
+                    "source_target_id": "section-01",
+                    "source_claim": "Hardware amortises.",
+                    "visual_translation": "A durable machine pays for itself through repeated use.",
+                    "scene": "Stagehands feed the same brass engine through repeated performances until its gears glow warm.",
+                    "composition": "side-on process cutaway",
+                    "creative_technique": "assembly-line",
+                },
+            ],
+        }],
     })
 
 
 def test_build_art_brief_parses_valid_llm_output():
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: _good_brief_json())
     assert brief is not None
-    assert brief["style"] in {"ninth-observatory", "technical-diorama", "baoyu-infographic"}
+    assert brief["style"] == ad.DEFAULT_HOUSE_STYLE_ID
     assert brief["layout"]
     assert brief["layout_variants"]
     assert brief["selection_seed"] == ad._selection_seed(_DRAFT)
     assert len(brief["selection_seed"]) == 16
     assert brief["style_candidates"]
-    assert brief["style_native_compiler"].startswith("Redraft")
-    assert brief["text_policy"] == "labels"
-    assert brief["text_elements"] == ["API", "LOCAL", "CROSSOVER"]
+    assert brief["style_native_compiler"].startswith("Render inside")
+    assert brief["text_policy"] == "none"
+    assert brief["text_elements"] == []
     assert brief["palette"]
     assert brief["hero_prompt"]
     assert brief["section_prompts"]["The mechanism"]
@@ -52,7 +79,7 @@ def test_build_art_brief_handles_fenced_json():
     fenced = "Here you go:\n```json\n" + _good_brief_json() + "\n```\n"
     brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: fenced)
     assert brief is not None
-    assert brief["style"] in {"ninth-observatory", "technical-diorama", "baoyu-infographic"}
+    assert brief["style"] == ad.DEFAULT_HOUSE_STYLE_ID
 
 
 def test_build_art_brief_rejects_unknown_style():
@@ -72,14 +99,14 @@ def test_build_art_brief_none_on_llm_exception():
     assert ad.build_art_brief(_DRAFT, _HEADINGS, llm=boom) is None
 
 
-def test_recent_styles_in_system_prompt():
+def test_house_style_prompt_does_not_rotate_recent_styles():
     captured = {}
     def spy(system, user):
         captured["system"] = system
         return _good_brief_json()
     ad.build_art_brief(_DRAFT, _HEADINGS, recent_styles=["saga-noir", "pixel-art"], llm=spy)
-    assert "saga-noir" in captured["system"]
-    assert "pixel-art" in captured["system"]
+    assert "fixed house visual DNA" in captured["system"]
+    assert "saga-noir" not in captured["system"]
 
 
 def test_full_article_in_user_prompt():
@@ -130,7 +157,9 @@ def test_section_prompts_mapped_by_order_tolerant_of_drift():
     brief = ad.build_art_brief(
         _DRAFT, ["The mechanism"], llm=lambda s, u: json.dumps(payload))
     assert brief is not None
-    assert brief["section_prompts"] == {}
+    # Legacy prompt ordering is ignored once the candidate plan is present;
+    # the supporting scene is compiled from the selected source-grounded world.
+    assert "Stagehands" in brief["section_prompts"]["The mechanism"]
 
 
 def test_style_catalogue_includes_missing_workflow_and_design_modes():
@@ -149,7 +178,7 @@ def test_style_catalogue_includes_missing_workflow_and_design_modes():
     assert expected.issubset(ad.STYLE_IDS)
 
 
-def test_art_director_system_prompt_uses_creative_concept_direction_and_baoyu():
+def test_art_director_system_prompt_requires_article_grounded_concept_candidates():
     captured = {}
     def spy(system, user):
         captured["system"] = system
@@ -157,10 +186,9 @@ def test_art_director_system_prompt_uses_creative_concept_direction_and_baoyu():
 
     ad.build_art_brief(_DRAFT, _HEADINGS, llm=spy)
     system = captured["system"]
-    assert "Creative Concept Direction" in system
-    assert "5-12 concrete interacting elements" in system
-    assert "Baoyu" in system
-    assert "21 layout" in system or "21 layout families" in system
+    assert "controlled conceptual variation" in system
+    assert "randomness is only the translation" in system
+    assert "specialist rendering skill is an explicit exception" in system
 
 
 def test_text_capable_styles_do_not_inherit_blanket_text_ban():
@@ -199,7 +227,7 @@ def test_no_text_styles_still_ban_readable_text():
 
 
 
-def test_system_prompt_requests_constrained_exploration_candidates():
+def test_system_prompt_requests_shared_world_candidates_with_bound_scenes():
     captured = {}
     def spy(system, user):
         captured["system"] = system
@@ -207,12 +235,12 @@ def test_system_prompt_requests_constrained_exploration_candidates():
 
     ad.build_art_brief(_DRAFT, _HEADINGS, llm=spy)
     system = captured["system"]
-    assert "constrained exploration" in system
-    assert "style_candidates" in system
-    assert "layout_variants" in system
+    assert "3-5 candidate shared worlds" in system
+    assert "concept_candidates" in system
+    assert "source_target_id" in system
 
 
-def test_recent_style_penalty_can_override_safe_default():
+def test_house_style_replaces_random_style_rotation_for_standard_articles():
     draft = {
         "title": "Bank of England reviews agentic AI rules for finance",
         "description": "Regulators test autonomous agents in financial markets",
@@ -221,12 +249,7 @@ def test_recent_style_penalty_can_override_safe_default():
     }
     payload = {
         "style": "mythic-tech-codex",
-        "style_candidates": [
-            "mythic-tech-codex", "baoyu-infographic", "ninth-observatory",
-            "data-atlas", "vintage-print-atelier",
-        ],
         "layout": "annotated plate",
-        "layout_variants": ["annotated plate", "comparison matrix", "control hall"],
         "text_policy": "labels",
         "text_elements": ["RISK"],
         "palette": "black, brass, red",
@@ -234,41 +257,32 @@ def test_recent_style_penalty_can_override_safe_default():
         "art_direction": "dense finance control system.",
         "hero_prompt": "finance agents inside a regulatory machine",
         "section_prompts": [],
+        "concept_candidates": [{
+            "candidate_id": "regulatory-courtroom",
+            "world": "A brass courtroom where automated agents present evidence to a living ledger.",
+            "fingerprint": ["courtroom", "brass ledger", "paper automata"],
+            "creative_score": 92,
+            "relevance_rationale": "The only scene binds to the article thesis target.",
+            "scenes": [{
+                "asset_key": "hero",
+                "source_target_id": "hero",
+                "source_claim": "Regulators test autonomous agents in financial markets.",
+                "visual_translation": "Risk controls become visible evidence checks.",
+                "scene": "A paper automaton presents a sealed risk ledger before a brass judge.",
+                "composition": "asymmetrical courtroom reveal",
+                "creative_technique": "puppet-master",
+            }],
+        }],
     }
-    brief = ad.build_art_brief(
-        draft,
-        [],
-        recent_styles=["mythic-tech-codex"],
-        llm=lambda s, u: json.dumps(payload),
-    )
+
+    brief = ad.build_art_brief(draft, [], llm=lambda s, u: json.dumps(payload))
+
     assert brief is not None
-    assert brief["style"] != "mythic-tech-codex"
-    assert brief["style"] in brief["style_candidates"]
+    assert brief["style"] == ad.DEFAULT_HOUSE_STYLE_ID
+    assert brief["style_candidates"] == [ad.DEFAULT_HOUSE_STYLE_ID]
 
 
-def test_sampler_is_stable_but_varies_across_articles():
-    candidates = [
-        "mythic-tech-codex", "technical-diorama", "data-atlas",
-        "baoyu-infographic", "photographic-realism",
-    ]
-    articles = [
-        "NVIDIA BioNeMo accelerates Anthropic Claude science",
-        "Ford rehires human engineers after AI fails quality checks",
-        "How multi-agent AI economics influence business automation",
-        "Bank of England agentic AI finance rules",
-    ]
-    chosen = []
-    for title in articles:
-        draft = {"title": title, "description": title, "body_md": title, "stream": "ai"}
-        assert ad._selection_seed(draft) == ad._selection_seed(draft)
-        first = ad._choose_style(draft, "mythic-tech-codex", [], candidates)
-        second = ad._choose_style(draft, "mythic-tech-codex", [], candidates)
-        assert first == second
-        chosen.append(first)
-    assert len(set(chosen)) >= 2
-
-
-def test_compose_prompt_includes_style_native_redrafting_and_layout_variants():
+def test_compose_prompt_enforces_the_assigned_asset_layout_not_all_variants():
     brief = {
         "style": "baoyu-infographic",
         "layout": "bento grid",
@@ -282,46 +296,11 @@ def test_compose_prompt_includes_style_native_redrafting_and_layout_variants():
         "hero_prompt": "x",
         "section_prompts": {},
     }
-    prompt = ad.compose_prompt("explain agent economics", brief)
+    prompt = ad.compose_prompt("explain agent economics", brief, assigned_layout="side-on process cutaway")
     assert "Style-native prompt redraft rule" in prompt
     assert "dense infographic" in prompt
-    assert "Allowed layout variation" in prompt
-    assert "comparison matrix" in prompt
-
-
-
-def test_sampler_override_resets_layout_to_chosen_style_grammar():
-    draft = {
-        "title": "Bank of England reviews agentic AI rules for finance",
-        "description": "Regulators test autonomous agents in financial markets",
-        "body_md": "bank rules finance risk governance agentic ai capital controls",
-        "stream": "pm",
-    }
-    payload = {
-        "style": "mythic-tech-codex",
-        "style_candidates": ["mythic-tech-codex", "data-atlas", "ninth-observatory"],
-        "layout": "antique scientific plate with specimen card",
-        "layout_variants": ["specimen plate"],
-        "text_policy": "labels",
-        "text_elements": ["RISK"],
-        "palette": "black, brass, red",
-        "motif": "regulatory seal",
-        "art_direction": "dense finance control system.",
-        "hero_prompt": "finance agents inside a regulatory machine",
-        "section_prompts": [],
-    }
-    brief = ad.build_art_brief(
-        draft,
-        [],
-        recent_styles=["mythic-tech-codex"],
-        llm=lambda s, u: json.dumps(payload),
-    )
-    assert brief is not None
-    if brief["style"] != "mythic-tech-codex":
-        chosen_native_layout = ad.STYLE_BY_ID[brief["style"]]["layout"]
-        assert brief["layout"] == chosen_native_layout
-        assert "antique scientific plate" not in brief["layout"]
-
+    assert "Assigned layout/composition for this asset: side-on process cutaway" in prompt
+    assert "comparison matrix" not in prompt
 
 
 
@@ -330,3 +309,46 @@ def test_text_policy_normalisation_respects_style_defaults():
     assert ad._normalise_text_policy("photographic-realism", "typography") == "none"
     assert ad._normalise_text_policy("typographic-poster-design", "labels") == "typography"
     assert ad._normalise_text_policy("baoyu-infographic", "none") == "labels"
+
+
+def test_art_brief_compiles_a_grounded_shared_world_into_distinct_asset_layouts():
+    payload = json.loads(_good_brief_json())
+    payload["concept_candidates"] = [{
+        "candidate_id": "clockwork-theatre",
+        "world": "A travelling clockwork theatre where futures are performed before they happen.",
+        "fingerprint": ["clockwork theatre", "origami futures", "deep sea"],
+        "creative_score": 92,
+        "relevance_rationale": "The hero shows prediction and verification; the supporting scene shows hardware amortisation.",
+        "scenes": [
+            {
+                "asset_key": "hero",
+                "source_target_id": "hero",
+                "source_claim": "The crossover point compares API cost with hardware amortisation.",
+                "visual_translation": "Two physical routes race toward the same answer, one rented and one owned.",
+                "scene": "A brass courier races across the stage with rented tickets while a permanent engine wakes below.",
+                "composition": "wide proscenium collision",
+                "creative_technique": "temporal-collision",
+            },
+            {
+                "asset_key": "section-01",
+                "source_target_id": "section-01",
+                "source_claim": "Hardware amortises.",
+                "visual_translation": "A durable machine pays for itself through repeated use.",
+                "scene": "Stagehands feed the same brass engine through repeated performances until its gears glow warm.",
+                "composition": "side-on process cutaway",
+                "creative_technique": "assembly-line",
+            },
+        ],
+    }]
+
+    brief = ad.build_art_brief(_DRAFT, _HEADINGS, llm=lambda s, u: json.dumps(payload))
+
+    assert brief is not None
+    assert brief["concept_plan"]["world"].startswith("A travelling clockwork theatre")
+    assert brief["style"] == "sahil-editorial-v1"
+    assert brief["asset_layouts"] == {
+        "hero": "wide proscenium collision",
+        "section-01": "side-on process cutaway",
+    }
+    assert "brass courier" in brief["hero_prompt"]
+    assert "Stagehands" in brief["section_prompts"]["The mechanism"]

@@ -15,9 +15,7 @@ function loadCanonicalRecovery({ openSession, request }) {
     $hideBotChats: { get: () => false },
     window: { setTimeout: callback => callback() }
   }
-  const section = source
-    .slice(start, end)
-    .concat('\nglobalThis.__canonical = { openBotCanonicalChat };\n')
+  const section = source.slice(start, end).concat('\nglobalThis.__canonical = { openBotCanonicalChat };\n')
 
   assert.notEqual(start, -1, 'canonical chat section is missing')
   assert.notEqual(end, -1, 'canonical chat section delimiter is missing')
@@ -42,4 +40,29 @@ test('regression: an empty session list clears a stale pin and creates a replace
     { name: 'ops', patch: { chat: null } },
     { name: 'ops', patch: { chat: 'replacement' } }
   ])
+})
+
+test('regression: an unpinned bot adopts an existing Bot Chat instead of creating another', async () => {
+  const opened = []
+  const requests = []
+  const runtime = loadCanonicalRecovery({
+    openSession: async id => opened.push(id),
+    request: async method => {
+      requests.push(method)
+      if (method === 'session.list') {
+        return {
+          sessions: [
+            { id: 'latest-scratch', title: 'Scratch chat' },
+            { id: 'existing-canonical', title: 'Bot Chat' }
+          ]
+        }
+      }
+      throw new Error(`unexpected ${method}`)
+    }
+  })
+
+  assert.equal(await runtime.openBotCanonicalChat('ops', null), 'existing-canonical')
+  assert.deepEqual(opened, ['existing-canonical'])
+  assert.deepEqual(requests, ['session.list'])
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.saved)), [{ name: 'ops', patch: { chat: 'existing-canonical' } }])
 })

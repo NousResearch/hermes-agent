@@ -195,6 +195,32 @@ test('roster: unreachable sources contribute no rows and cannot fake duplicates'
   assert.equal(roster[0].handle, 'research')
 })
 
+test('roster: duplicate profiles from one connection remain one routable agent', () => {
+  const local = { id: 'local', kind: 'local' as const, label: 'This device' }
+  const homelab = { id: 'homelab', kind: 'remote' as const, label: 'Homelab', url: 'http://h:1' }
+
+  const roster = buildAgentRoster([
+    { connection: local, profiles: ['default', 'research', 'default'] },
+    // A duplicate registry enumeration must not make local/research a second
+    // bot identity either.
+    { connection: local, profiles: ['research'] },
+    { connection: homelab, profiles: ['research', 'research'] }
+  ])
+
+  assert.deepEqual(
+    roster.map(agent => `${agent.connectionId}/${agent.profile}`),
+    ['local/default', 'local/research', 'homelab/research']
+  )
+  assert.equal(
+    roster.find(agent => agent.connectionId === 'local' && agent.profile === 'research')?.handle,
+    'research-this-device'
+  )
+  assert.equal(
+    roster.find(agent => agent.connectionId === 'homelab' && agent.profile === 'research')?.handle,
+    'research-homelab'
+  )
+})
+
 // --- updateEligibility ---
 
 test('update fan-out: cloud is platform-managed, everything else eligible', () => {

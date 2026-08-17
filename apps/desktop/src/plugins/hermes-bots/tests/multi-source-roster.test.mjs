@@ -61,7 +61,13 @@ test('merge: local rows are annotated, remote rows appended with source tags', (
         profile: 'research',
         handle: 'research-homelab'
       },
-      { connectionId: 'homelab', connectionKind: 'remote', connectionLabel: 'Homelab', profile: 'coder', handle: 'coder' }
+      {
+        connectionId: 'homelab',
+        connectionKind: 'remote',
+        connectionLabel: 'Homelab',
+        profile: 'coder',
+        handle: 'coder'
+      }
     ]
   }
 
@@ -89,13 +95,56 @@ test('merge: union-only local profiles are NOT invented as thin rows', () => {
   const local = { profiles: [{ name: 'default' }] }
   const union = {
     agents: [
-      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'ghost', handle: 'ghost' }
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'ghost',
+        handle: 'ghost'
+      }
     ]
   }
 
   const out = merge(local, union)
   assert.equal(out.profiles.length, 1)
   assert.equal(out.profiles[0].name, 'default')
+})
+
+test('merge: duplicate source and local identities render once', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = {
+    profiles: [
+      { name: 'default', last_session: { id: 'newest' } },
+      { name: 'default', last_session: { id: 'stale' } }
+    ]
+  }
+  const union = {
+    agents: [
+      { connectionId: 'local', connectionKind: 'local', profile: 'default', handle: 'default-this-device' },
+      { connectionId: 'local', connectionKind: 'local', profile: 'default', handle: 'default-this-device' },
+      {
+        connectionId: 'homelab',
+        connectionKind: 'remote',
+        connectionLabel: 'Homelab',
+        profile: 'default',
+        handle: 'default-homelab'
+      },
+      {
+        connectionId: 'homelab',
+        connectionKind: 'remote',
+        connectionLabel: 'Homelab',
+        profile: 'default',
+        handle: 'default-homelab'
+      }
+    ]
+  }
+
+  const out = merge(local, union)
+
+  assert.equal(out.profiles.length, 2)
+  assert.equal(out.profiles[0].last_session.id, 'newest')
+  assert.equal(out.profiles[0].handle, 'default-this-device')
+  assert.equal(out.profiles[1].connectionId, 'homelab')
 })
 
 test('botHandle: precomputed multi-source handle wins; default stays hermes', () => {

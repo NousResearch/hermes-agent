@@ -2080,7 +2080,23 @@ function useRoster() {
  *  label so BotRow can badge them and route open/warm through
  *  ensureAgent/warmAgent. Pure — exercised directly by the tests. */
 function mergeMultiSourceRoster(local, union) {
-  const profiles = Array.isArray(local?.profiles) ? local.profiles.slice() : []
+  // Keep the first rich local row for every profile. profiles.list is normally
+  // unique, but a duplicated backend response must not turn one agent into an
+  // unbounded list of visually identical Bots rows.
+  const profiles = []
+  const localByName = new Map()
+
+  for (const profile of Array.isArray(local?.profiles) ? local.profiles : []) {
+    const name = String(profile?.name || '').trim()
+
+    if (!name || localByName.has(name)) {
+      continue
+    }
+
+    localByName.set(name, profile)
+    profiles.push(profile)
+  }
+
   const agents = Array.isArray(union?.agents) ? union.agents : []
   const primaryId = String(union?.primaryConnectionId || '').trim()
 
@@ -2088,19 +2104,30 @@ function mergeMultiSourceRoster(local, union) {
     return { ...local, profiles }
   }
 
-  const localByName = new Map(profiles.map(p => [p.name, p]))
+  // host.agents is an Electron/main-process capability. Defend the plugin
+  // boundary too: older shells or reconnect races can still hand us repeated
+  // identities even after the core roster deduplicates them.
+  const seenAgentIdentities = new Set()
 
   for (const agent of agents) {
+    const profile = String(agent?.profile || '').trim()
+    const connectionId = String(agent?.connectionId || '').trim()
+    const identity = `${connectionId}\0${profile}`
+
+    if (!profile || seenAgentIdentities.has(identity)) {
+      continue
+    }
+
+    seenAgentIdentities.add(identity)
+
     // The union enumerates EVERY registered connection, including the active
     // gateway that already answered profiles.list. Without this the active
     // gateway's own agents (connectionKind 'remote' on a remote-primary
     // desktop) would be appended as phantom duplicates — every bot listed
     // twice. Older Electron builds predate primaryConnectionId; fall back to
     // the legacy local-source rule so single-source behavior stays intact.
-    const isPrimarySource = primaryId
-      ? String(agent.connectionId || '').trim() === primaryId
-      : agent.connectionKind === 'local'
-    const row = isPrimarySource ? localByName.get(agent.profile) : null
+    const isPrimarySource = primaryId ? connectionId === primaryId : agent.connectionKind === 'local'
+    const row = isPrimarySource ? localByName.get(profile) : null
 
     if (row) {
       // Annotate in place: the @name-device handle only differs from the
@@ -2117,9 +2144,9 @@ function mergeMultiSourceRoster(local, union) {
     }
 
     profiles.push({
-      name: agent.profile,
+      name: profile,
       handle: agent.handle,
-      connectionId: agent.connectionId,
+      connectionId,
       connectionKind: agent.connectionKind,
       connectionLabel: agent.connectionLabel,
       remoteSource: true
@@ -2235,13 +2262,18 @@ function createCanonicalChat(name) {
 async function openBotCanonicalChat(name, pinned) {
   let id = pinned
 
-  if (!id) {
-    return createCanonicalChat(name)
-  }
-
   try {
     const res = await host.request('session.list', { profile: name, limit: 100 })
     const rows = res?.sessions ?? []
+
+    if (!id && rows.length) {
+      // A CLI/A2A exchange may have created the canonical Bot Chat before the
+      // desktop saved ui_meta.chat. Reuse its explicit title first; for older
+      // bot installs retain the documented grandfathering behavior and adopt
+      // the most recent existing session rather than minting another one.
+      id = rows.find(session => session.title === 'Bot Chat')?.id || rows[0].id
+      saveBotMeta(name, { chat: id })
+    }
 
     if (!rows.length) {
       saveBotMeta(name, { chat: null })
@@ -2253,7 +2285,12 @@ async function openBotCanonicalChat(name, pinned) {
       saveBotMeta(name, { chat: id })
     }
   } catch {
-    // Gateway hiccup — try the stored pin as-is.
+    // Gateway hiccup — try the stored pin as-is. Without a pin we cannot
+    // safely discover a pre-existing canonical chat, so create one as the
+    // fallback rather than leaving the click inert.
+    if (!id) {
+      return createCanonicalChat(name)
+    }
   }
 
   try {

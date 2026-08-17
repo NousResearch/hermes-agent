@@ -3086,9 +3086,25 @@
         .finally(function () { setBusy(false); });
     };
     const stop = function (e) { e.stopPropagation(); };
+    const padLocal = function (value) { return String(value).padStart(2, "0"); };
+    const formatLocal = function (date) {
+      return date.getFullYear() + "-" + padLocal(date.getMonth() + 1) + "-" + padLocal(date.getDate()) +
+        "T" + padLocal(date.getHours()) + ":" + padLocal(date.getMinutes());
+    };
+    const parseLocal = function (value) {
+      const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+      if (!match) return null;
+      const date = new Date(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], 0, 0);
+      return formatLocal(date) === value ? date : null;
+    };
+    const customWake = parseLocal(custom);
     if (receipt.state === "settled") {
-      return h("button", { type: "button", className: "hermes-kanban-attention-button", disabled: busy,
-        onClick: function (e) { stop(e); apply("wake"); } }, "Wake");
+      return h("div", { onClick: stop, onKeyDown: stop },
+        h("span", { role: "status", "aria-live": "polite", "aria-atomic": "true", className: "sr-only" }, announcement),
+        h("button", { type: "button", className: "hermes-kanban-attention-button", disabled: busy,
+          onClick: function () { apply("wake"); } }, "Wake"),
+        error ? h("span", { role: "alert", className: "hermes-kanban-attention-error" }, error) : null,
+      );
     }
     return h("div", { className: "hermes-kanban-attention", onClick: stop, onKeyDown: stop },
       h("span", { role: "status", "aria-live": "polite", "aria-atomic": "true", className: "sr-only" }, announcement),
@@ -3106,10 +3122,10 @@
           } }, "Tomorrow, 9:00 AM local time"),
           h("button", { type: "button", onClick: function () { apply("snooze", Math.floor(Date.now() / 1000) + 604800); } }, "One week"),
           h("label", null, "Custom wake time",
-            h("input", { type: "datetime-local", value: custom,
+            h("input", { type: "datetime-local", value: custom, min: formatLocal(new Date()),
               onChange: function (e) { setCustom(e.target.value); } })),
-          h("button", { type: "button", disabled: !custom || Date.parse(custom) <= Date.now(),
-            onClick: function () { apply("snooze", Math.floor(Date.parse(custom) / 1000)); } }, "Snooze until then"),
+          h("button", { type: "button", disabled: !customWake || customWake.getTime() <= Date.now(),
+            onClick: function () { if (customWake) apply("snooze", Math.floor(customWake.getTime() / 1000)); } }, "Snooze until then"),
         ),
       ),
       error ? h("span", { role: "alert", className: "hermes-kanban-attention-error" }, error) : null,

@@ -81,6 +81,7 @@ import {
   updateAttention
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { formatLocalDateTime, parseLocalDateTime } from './datetime-local'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
@@ -241,7 +242,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   )
 }
 
-function AttentionControls({ task }: { task: KanbanTask }) {
+export function AttentionControls({ task }: { task: KanbanTask }) {
   const qc = useQueryClient()
   const [custom, setCustom] = useState('')
   const [announcement, setAnnouncement] = useState('')
@@ -273,6 +274,7 @@ function AttentionControls({ task }: { task: KanbanTask }) {
 
   const stop = (event: SyntheticEvent) => event.stopPropagation()
   const snooze = (seconds: number) => action.mutate({ kind: 'snooze', wakeAt: Math.floor(Date.now() / 1000) + seconds })
+  const customWake = parseLocalDateTime(custom)
 
   const tomorrowMorning = () => {
     const wake = new Date()
@@ -283,17 +285,17 @@ function AttentionControls({ task }: { task: KanbanTask }) {
 
   if (receipt.state === 'settled') {
     return (
-      <button
-        className="min-h-7 rounded px-2 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2"
-        disabled={action.isPending}
-        onClick={event => {
-          stop(event)
-          action.mutate({ kind: 'wake' })
-        }}
-        type="button"
-      >
-        Wake
-      </button>
+      <div onClick={stop} onKeyDown={stop}>
+        <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">{announcement}</span>
+        <button
+          className="min-h-7 rounded px-2 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2"
+          disabled={action.isPending}
+          onClick={() => action.mutate({ kind: 'wake' })}
+          type="button"
+        >
+          Wake
+        </button>
+      </div>
     )
   }
 
@@ -318,12 +320,12 @@ function AttentionControls({ task }: { task: KanbanTask }) {
           <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={() => snooze(7 * 24 * 3600)} type="button">One week</button>
           <label className="grid gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
             Custom wake time
-            <input className="min-h-9 rounded border border-(--ui-stroke-secondary) bg-transparent px-1 text-xs" min={new Date().toISOString().slice(0, 16)} onChange={event => setCustom(event.target.value)} type="datetime-local" value={custom} />
+            <input className="min-h-9 rounded border border-(--ui-stroke-secondary) bg-transparent px-1 text-xs" min={formatLocalDateTime(new Date())} onChange={event => setCustom(event.target.value)} type="datetime-local" value={custom} />
           </label>
           <button
             className="min-h-8 rounded bg-primary px-2 text-xs text-primary-foreground disabled:opacity-50"
-            disabled={!custom || Date.parse(custom) <= Date.now()}
-            onClick={() => action.mutate({ kind: 'snooze', wakeAt: Math.floor(Date.parse(custom) / 1000) })}
+            disabled={!customWake || customWake.getTime() <= Date.now()}
+            onClick={() => customWake && action.mutate({ kind: 'snooze', wakeAt: Math.floor(customWake.getTime() / 1000) })}
             type="button"
           >
             Snooze until then

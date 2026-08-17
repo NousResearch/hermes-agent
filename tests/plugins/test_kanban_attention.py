@@ -6,7 +6,9 @@ import importlib.util
 import json
 import sqlite3
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -92,6 +94,44 @@ def test_idempotency_and_concurrent_revision_conflicts(client):
     assert conflict.status_code == 409
     stale = act(client, task["id"], "wake", "other", revision=0)
     assert stale.status_code == 409
+
+
+def test_independent_connections_serialize_same_revision_race(kanban_home):
+    seed = kb.connect()
+    task_id = kb.create_task(seed, title="race", assignee="worker")
+    seed.close()
+    barrier = threading.Barrier(2)
+
+    def settle(key):
+        conn = kb.connect()
+        barrier.wait()
+        try:
+            with kb.write_txn(conn):
+                return kb.update_task_attention(
+                    conn, task_id, action="settle", actor="captain", source="race",
+                    idempotency_key=key, expected_revision=0,
+                )
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(settle, f"race-{index}") for index in range(2)]
+        outcomes = []
+        for future in futures:
+            try:
+                outcomes.append(("ok", future.result()))
+            except kb.AttentionConflict:
+                outcomes.append(("conflict", None))
+
+    assert sorted(kind for kind, _ in outcomes) == ["conflict", "ok"]
+    verify = kb.connect()
+    receipt = verify.execute("SELECT state, revision FROM attention_receipts WHERE subject_id=?", (task_id,)).fetchone()
+    events = verify.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='attention_settle'", (task_id,)).fetchone()[0]
+    integrity = verify.execute("PRAGMA integrity_check").fetchone()[0]
+    verify.close()
+    assert dict(receipt) == {"state": "settled", "revision": 1}
+    assert events == 1
+    assert integrity == "ok"
 
 
 def test_activity_resurfaces_settled_and_snoozed(client):

@@ -2346,18 +2346,40 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
-) -> None:
+) -> list:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
     send_video, send_document) based on file extension — mirroring the routing logic
     in ``BasePlatformAdapter._process_message_background``.
+
+    Returns a list of per-file error strings (empty when every attachment
+    delivered). Callers surface these into the job's delivery errors so a
+    dropped attachment is visible in ``last_error``/run status instead of
+    only in the gateway log (the silent-drop half of the manual-run
+    attachment bug: text delivered, file vanished, job marked ok).
     """
     from pathlib import Path
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+    errors: list = []
+    requested = [(str(p), v) for p, v in (media_files or [])]
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Report paths the safety filter dropped: the model referenced them in
+    # MEDIA: tags but they will never be sent (missing file, denied prefix,
+    # or strict-mode policy miss).
+    kept = {p for p, _ in media_files}
+    for raw_path, _v in requested:
+        try:
+            from gateway.platforms.base import validate_media_delivery_path
+
+            if validate_media_delivery_path(raw_path) not in kept:
+                errors.append(
+                    f"attachment dropped by media path policy: {raw_path}"
+                )
+        except Exception:
+            errors.append(f"attachment dropped by media path policy: {raw_path}")
 
     for media_path, _is_voice in media_files:
         try:
@@ -2375,23 +2397,27 @@ def _send_media_via_adapter(
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
-                logger.warning(
-                    "Job '%s': cannot send media %s, gateway loop unavailable",
-                    job.get("id", "?"), media_path,
-                )
-                return
+                msg = f"cannot send media {media_path}: gateway loop unavailable"
+                logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+                errors.append(msg)
+                return errors
             try:
                 result = future.result(timeout=30)
             except TimeoutError:
                 future.cancel()
                 raise
             if result and not getattr(result, "success", True):
-                logger.warning(
-                    "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                msg = (
+                    f"media send failed for {media_path}: "
+                    f"{getattr(result, 'error', 'unknown')}"
                 )
+                logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+                errors.append(msg)
         except Exception as e:
-            logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+            msg = f"failed to send media {media_path}: {e}"
+            logger.warning("Job '%s': %s", job.get("id", "?"), msg)
+            errors.append(msg)
+    return errors
 
 
 def _confirm_adapter_delivery(send_result) -> bool:
@@ -2533,8 +2559,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
+
+    # Bridge gateway media-policy config (strict / allow_dirs / trust_recent)
+    # into the env vars the path validator reads. Gateway startup does this
+    # at boot; a standalone process (manual `hermes cron run` from the CLI,
+    # a cron tick without the gateway) historically did NOT — so manual runs
+    # filtered attachment paths under a DIFFERENT policy than scheduled runs
+    # and silently dropped files the gateway would deliver. Idempotent,
+    # env-wins, never raises.
+    from gateway.media_policy import apply_media_policy_env
+
+    apply_media_policy_env(user_cfg)
+
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    requested_media = [(str(p), v) for p, v in media_files]
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Attachments the policy filter dropped will never be sent on ANY lane —
+    # record them up front so the run status says so (previously one
+    # stderr WARNING was the only trace: text delivered, file vanished).
+    _policy_dropped = len(requested_media) - len(media_files)
+    policy_drop_errors = (
+        [
+            f"{_policy_dropped} media attachment(s) dropped by media path "
+            "policy (missing file, denied prefix, or strict-mode miss); "
+            "see gateway.strict / media_delivery_allow_dirs in config.yaml"
+        ]
+        if _policy_dropped > 0
+        else []
+    )
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -2974,7 +3026,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 routed_media_metadata["user_id"] = logical_home.user_id
                             if logical_home.scope_id:
                                 routed_media_metadata["scope_id"] = logical_home.scope_id
-                    _send_media_via_adapter(
+                    _media_errors = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
@@ -2983,6 +3035,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job,
                         platform=platform,
                     )
+                    # Surface per-file failures into the run status (parity
+                    # with the standalone lane): text delivered but an
+                    # attachment didn't is a visible partial failure, not ok.
+                    for _me in _media_errors:
+                        _msg = f"{_me} (target {platform_name}:{chat_id})"
+                        delivery_errors.append(_msg)
                 elif timed_out and media_files:
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
@@ -3120,6 +3178,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
 
+            # Standalone senders report per-file attachment failures in
+            # ``warnings`` while still returning success (the text leg
+            # delivered). Surface them: a cron whose PDF/image silently
+            # vanished used to mark the run ok with no trace — the exact
+            # "manual run delivers text but no attachment" field report.
+            _sender_warnings = (
+                result.get("warnings") if isinstance(result, dict) else None
+            ) or []
+            for _w in _sender_warnings:
+                msg = f"delivery warning: {_w} (target {platform_name}:{chat_id})"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
@@ -3127,6 +3198,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 enabled=mirror_this_target and not thread_seeded,
             )
 
+    if policy_drop_errors:
+        # Filter-time drops apply to every target; report them once.
+        delivery_errors.extend(policy_drop_errors)
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None

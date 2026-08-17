@@ -3031,6 +3031,10 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
+        # The process-level runtime status is owned by the primary adapter.
+        # Multiplexed secondary adapters disable publication when configured by
+        # GatewayRunner so their lifecycle cannot overwrite the primary state.
+        self._runtime_status_publication_enabled = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         # Strong references to shielded fatal-error handler tasks that outlive
         # their carrier task (asyncio only keeps weak refs). Without this set,
@@ -3455,6 +3459,8 @@ class BasePlatformAdapter(ABC):
         surfaces the first failure per (platform, context) at warning level and
         downgrades subsequent failures to debug.
         """
+        if not getattr(self, "_runtime_status_publication_enabled", True):
+            return
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(platform=self.platform.value, **kwargs)

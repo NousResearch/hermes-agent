@@ -14897,6 +14897,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
+        # Runtime status is a process-global, platform-keyed record owned by the
+        # primary adapter. Secondary transitions must not clobber that record.
+        adapter._runtime_status_publication_enabled = False
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)

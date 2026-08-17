@@ -450,6 +450,11 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+  /** True when the running renderer bundle predates desktop changes in the
+   *  installed source tree (runtime updated, app binary not rebuilt/swapped). */
+  bundleOutOfSync?: boolean
+  /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
+  bundleCommitsBehind?: null | number
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

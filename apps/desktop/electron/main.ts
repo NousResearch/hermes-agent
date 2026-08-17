@@ -58,6 +58,7 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
+import { detectBundleSkew } from './bundle-skew'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -14403,26 +14404,49 @@ function resolveHermesVersion() {
   return app.getVersion()
 }
 
+// Renderer-bundle skew: `hermes update` moves the SOURCE TREE, but the UI
+// (including bundled plugins like Bot Mode) is compiled into this binary at
+// build time. A terminal-side update — or an in-app update whose bundle-swap
+// leg failed — leaves the new runtime running under an old renderer, so About
+// shows the new version while the sidebar is missing that version's desktop
+// features. Compare the build stamp's commit against the tree, scoped to
+// apps/desktop/, and warn when the running renderer is provably behind.
+// Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
+// report in-sync rather than risk a false "your install is torn" warning.
+async function detectRendererSkew() {
+  return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
+}
+
 // Re-resolve the live Hermes version and push it into the native About panel
 // just before showing it, so an in-place `hermes update` is reflected without
 // an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
 // other platforms don't use this menu item.
 function showAboutPanelFresh() {
-  app.setAboutPanelOptions({
-    applicationName: APP_NAME,
-    applicationVersion: resolveHermesVersion(),
-    copyright: 'Copyright © 2026 Nous Research'
+  void detectRendererSkew().then(skew => {
+    app.setAboutPanelOptions({
+      applicationName: APP_NAME,
+      applicationVersion: skew.outOfSync
+        ? `${resolveHermesVersion()} — app build out of date, update the desktop app`
+        : resolveHermesVersion(),
+      copyright: 'Copyright © 2026 Nous Research'
+    })
+    app.showAboutPanel()
   })
-  app.showAboutPanel()
 }
 
-ipcMain.handle('hermes:version', async () => ({
-  appVersion: resolveHermesVersion(),
-  electronVersion: process.versions.electron,
-  nodeVersion: process.versions.node,
-  platform: process.platform,
-  hermesRoot: resolveUpdateRoot()
-}))
+ipcMain.handle('hermes:version', async () => {
+  const skew = await detectRendererSkew()
+
+  return {
+    appVersion: resolveHermesVersion(),
+    electronVersion: process.versions.electron,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    hermesRoot: resolveUpdateRoot(),
+    bundleOutOfSync: skew.outOfSync,
+    bundleCommitsBehind: skew.desktopCommitsBehind
+  }
+})
 
 // ===========================================================================
 // Uninstall — remove the Chat GUI (and optionally the agent / user data).

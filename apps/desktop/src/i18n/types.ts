@@ -458,6 +458,8 @@ export interface Translations {
       heading: string
       version: (value: string) => string
       versionUnavailable: string
+      bundleOutOfSync: string
+      bundleOutOfSyncDesc: string
       updates: string
       checkNow: string
       checking: string

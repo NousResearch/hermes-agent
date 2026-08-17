@@ -1141,6 +1141,30 @@ def _try_dispatch_background_run(
     return result
 
 
+def _apply_continuity(
+    context_from: Optional[Union[str, List[str]]],
+    continuity: bool,
+) -> Optional[List[str]]:
+    """Translate the ``continuity`` flag into the ``context_from`` list.
+
+    ``continuity=True`` ensures ``"self"`` is present (the job's own previous
+    output is injected each run); ``continuity=False`` removes any
+    ``"self"``/own-id entry. Other entries are preserved untouched.
+    """
+    if isinstance(context_from, str):
+        refs = [context_from.strip()] if context_from.strip() else []
+    elif context_from:
+        refs = [str(j).strip() for j in context_from if str(j).strip()]
+    else:
+        refs = []
+    has_self = any(r.lower() == "self" for r in refs)
+    if continuity and not has_self:
+        refs.append("self")
+    elif not continuity and has_self:
+        refs = [r for r in refs if r.lower() != "self"]
+    return refs or None
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -1158,6 +1182,7 @@ def cronjob(
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
+    continuity: Optional[bool] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
@@ -1231,6 +1256,11 @@ def cronjob(
                             "Use cronjob(action='list') to see available jobs.",
                             success=False,
                         )
+
+            # continuity=True is sugar for context_from including "self":
+            # the job wakes up with its own previous run's output injected.
+            if continuity is not None:
+                context_from = _apply_continuity(context_from, continuity)
 
             from cron.scheduler import (
                 CronSchedulerRegistrationError,
@@ -1494,14 +1524,20 @@ def cronjob(
                         "clear one before setting the other.",
                         success=False,
                     )
-            if context_from is not None:
+            if context_from is not None or continuity is not None:
                 # Empty string / empty list clears the field; otherwise validate
                 # each referenced job exists before storing. Normalized to a list
                 # (or None) to match the shape stored by create_job().
-                if isinstance(context_from, str):
+                if context_from is None:
+                    # continuity-only update: start from the job's stored refs.
+                    existing = job.get("context_from") or []
+                    refs = [str(j).strip() for j in existing if str(j).strip()]
+                elif isinstance(context_from, str):
                     refs = [context_from.strip()] if context_from.strip() else []
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
+                if continuity is not None:
+                    refs = _apply_continuity(refs, continuity) or []
                 if refs:
                     from cron.jobs import get_job as _get_job
                     for ref_id in refs:
@@ -1657,13 +1693,23 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                     "Optional job ID or list of job IDs whose most recent completed output is "
                     "injected into the prompt as context before each run. "
                     "Use this to chain cron jobs: job A collects data, job B processes it. "
-                    "The special value 'self' injects this job's OWN previous output, giving "
-                    "recurring jobs continuity across runs (dedupe against what was already "
-                    "reported, continue where the last run left off). "
-                    "Each other entry must be a valid job ID (from cronjob action='list'). "
+                    "Each entry must be a valid job ID (from cronjob action='list'); "
+                    "for a job's OWN previous output, prefer the `continuity` flag. "
                     "Note: injects the most recent completed output — does not wait for "
                     "upstream jobs running in the same tick. "
                     "On update, pass an empty array to clear."
+                ),
+            },
+            "continuity": {
+                "type": "boolean",
+                "description": (
+                    "When true, this recurring job carries continuity across runs: each run "
+                    "wakes up with the job's own most recent output injected into its prompt, "
+                    "so it can dedupe against what was already reported and continue where the "
+                    "last run left off (scouts, monitors, incremental digests). "
+                    "First run has no previous output and runs unchanged. "
+                    "On update, pass false to turn continuity off (other context_from entries "
+                    "are preserved). Default: false."
                 ),
             },
             "enabled_toolsets": {
@@ -1733,6 +1779,7 @@ registry.register(
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),
+        continuity=args.get("continuity"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),

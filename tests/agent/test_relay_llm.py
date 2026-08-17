@@ -822,6 +822,36 @@ def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
     assert result is completed
 
 
+def test_stream_current_unwraps_completed_response_with_real_interceptor(relay_turn):
+    """A real stream interceptor makes Relay lazy; completion still unwraps."""
+    relay, _turn = relay_turn
+    completed = _completed_response()
+
+    async def identity_stream(request, next_call):
+        return await next_call(request)
+
+    relay.intercepts.register_llm_stream_execution(
+        "hermes-test-prime-completed",
+        1,
+        identity_stream,
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            lambda _request: completed,
+            name="test-provider",
+            model_name="test-model",
+            finalizer=lambda: completed,
+            completed_response_predicate=_choices_predicate,
+        )
+
+        assert result is completed
+    finally:
+        relay.intercepts.deregister_llm_stream_execution(
+            "hermes-test-prime-completed"
+        )
+
+
 def test_stream_current_preserves_real_relay_interceptor_chunks(relay_turn):
     """Priming a real managed pipeline must retain its transformed first chunk."""
     relay, _turn = relay_turn

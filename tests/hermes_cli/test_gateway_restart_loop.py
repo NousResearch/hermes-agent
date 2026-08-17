@@ -803,6 +803,61 @@ class TestLifecycleGuardModule:
             str(launcher)
         ) is True
 
+    def test_third_party_cloudstorage_path_fails_closed_without_opening(
+        self, tmp_path, monkeypatch
+    ):
+        """~/Library/CloudStorage (Dropbox/OneDrive/Google Drive) is the same
+        FileProvider hazard as iCloud's Mobile Documents: an evicted
+        placeholder's open() can hang preflight. The guard must fail closed
+        on the lexical path without opening the file."""
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "CloudStorage"
+            / "Dropbox-Personal"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "helper.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(script):
+                pytest.fail("lifecycle guard opened a CloudStorage path")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        assert lifecycle_guard.contains_gateway_lifecycle_command_or_referenced_script(
+            str(script)
+        ) is True
+
+    def test_read_referenced_script_choke_point_refuses_cloud_paths(
+        self, tmp_path, monkeypatch
+    ):
+        """The cloud refusal lives in _read_referenced_script itself so EVERY
+        caller (terminal walk AND cron-script scan) is covered — not just the
+        walk-level short-circuit in _contains_unsafe_gateway_action."""
+        import cron.lifecycle_guard as lifecycle_guard
+
+        cloud_dir = tmp_path / "Library" / "CloudStorage" / "OneDrive" / "s"
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "job.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        def forbid_open(path, flags, *args, **kwargs):  # pragma: no cover
+            pytest.fail("choke point opened a cloud placeholder path")
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", forbid_open)
+
+        text, unsafe = lifecycle_guard._read_referenced_script(script)
+        assert text is None
+        assert unsafe is True
+
     # -- Whole-class regression tests (tilllt's T1-T4 on PR #79454) --------
 
     def test_tilde_nul_candidate_does_not_crash_terminal_walk(self):

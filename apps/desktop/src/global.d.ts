@@ -754,6 +754,10 @@ export interface DesktopRegistryConnection {
   remoteProfile?: string
   tokenSet: boolean
   tokenPreview: null | string
+  // Names of the stored extra gateway headers (Cloudflare Access etc.);
+  // header VALUES are secrets and never cross the IPC boundary. Optional so
+  // fixtures/older payloads without the field remain valid.
+  headerNames?: string[]
 }
 
 export interface DesktopConnectionsRegistry {
@@ -776,6 +780,11 @@ export interface DesktopRegistryConnectionInput {
   // Plaintext token to store (encrypted at rest); omit to keep the saved one.
   token?: string
   allowPlainTextToken?: boolean
+  // Extra gateway headers for remote/cloud entries (access proxies such as
+  // Cloudflare Access). The map is authoritative when present: name → new
+  // plaintext value (encrypted at rest), or null to keep the stored secret
+  // for that name. Omit the field entirely to keep the saved set unchanged.
+  headers?: Record<string, null | string>
   org?: string
   host?: string
   user?: string

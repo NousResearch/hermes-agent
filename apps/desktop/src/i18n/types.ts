@@ -574,6 +574,12 @@ export interface Translations {
       labelPlaceholder: string
       urlTitle: string
       sshHostTitle: string
+      headersTitle: string
+      headersDesc: string
+      headerValuePlaceholder: string
+      headerValueSaved: string
+      headerAdd: string
+      headerRemove: string
       save: string
       saving: string
       cancel: string

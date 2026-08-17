@@ -889,6 +889,13 @@ export const zh: Translations = {
       labelPlaceholder: '家庭服务器',
       urlTitle: '网关 URL',
       sshHostTitle: 'SSH 主机',
+      headersTitle: '额外网关请求头',
+      headersDesc:
+        '随发往此网关的每个 HTTP 和 WebSocket 请求一起发送——用于 Cloudflare Access 等访问代理（CF-Access-Client-Id / CF-Access-Client-Secret）。值加密存储。由 Hermes 管理的请求头（Authorization、Cookie、Host 等）会被忽略。',
+      headerValuePlaceholder: '值',
+      headerValueSaved: '已保存——留空以保留',
+      headerAdd: '添加请求头',
+      headerRemove: '移除',
       save: '保存连接',
       saving: '保存中…',
       cancel: '取消',

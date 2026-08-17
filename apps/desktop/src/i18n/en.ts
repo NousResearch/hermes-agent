@@ -685,6 +685,13 @@ export const en: Translations = {
       labelPlaceholder: 'Homelab',
       urlTitle: 'Gateway URL',
       sshHostTitle: 'SSH host',
+      headersTitle: 'Extra gateway headers',
+      headersDesc:
+        'Sent with every HTTP and WebSocket request to this gateway — for access proxies such as Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Values are stored encrypted. Headers Hermes manages (Authorization, Cookie, Host…) are ignored.',
+      headerValuePlaceholder: 'Value',
+      headerValueSaved: 'Saved — leave blank to keep',
+      headerAdd: 'Add header',
+      headerRemove: 'Remove',
       save: 'Save connection',
       saving: 'Saving…',
       cancel: 'Cancel',

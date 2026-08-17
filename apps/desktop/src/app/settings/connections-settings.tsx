@@ -33,6 +33,12 @@ interface EditorState {
   token: string
   host: string
   keyPath: string
+  // Extra gateway headers (access proxies such as Cloudflare Access).
+  // `value: ''` on a row that came from storage means "keep the saved
+  // secret" (sent as null); a typed value replaces it; a removed row clears
+  // it. `stored` marks rows hydrated from headerNames so the placeholder can
+  // say "saved" instead of demanding a value.
+  headers: { name: string; stored: boolean; value: string }[]
 }
 
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
@@ -49,12 +55,13 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     // parsed host string — sending stored user/port alongside a retyped host
     // would silently resurrect the old values.
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
-    keyPath: conn.keyPath || ''
+    keyPath: conn.keyPath || '',
+    headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
   }
 }
 
 function emptyEditor(kind: DesktopConnectionKind): EditorState {
-  return { id: null, kind, label: '', url: '', authMode: 'token', token: '', host: '', keyPath: '' }
+  return { id: null, kind, label: '', url: '', authMode: 'token', token: '', host: '', keyPath: '', headers: [] }
 }
 
 /**
@@ -128,6 +135,19 @@ export function ConnectionsSettings() {
 
           if (allowPlainTextToken) {
             payload.allowPlainTextToken = true
+          }
+
+          // Authoritative header map: typed value → new secret; empty value on
+          // a stored row → null (keep saved secret); a removed row is simply
+          // absent, which clears it server-side.
+          const headerEntries = editor.headers
+            .map(row => ({ name: row.name.trim(), stored: row.stored, value: row.value.trim() }))
+            .filter(row => row.name)
+
+          if (headerEntries.length > 0 || editor.headers.length === 0) {
+            payload.headers = Object.fromEntries(
+              headerEntries.map(row => [row.name, row.value ? row.value : row.stored ? null : ''])
+            )
           }
         } else if (editor.kind === 'ssh') {
           // The composite host string (user@host:port) is the single source
@@ -429,6 +449,60 @@ export function ConnectionsSettings() {
                 />
               )}
             </>
+          )}
+
+          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
+            <div className="grid gap-2">
+              <div>
+                <div className="text-sm font-medium">{s.headersTitle}</div>
+                <p className="mt-1 text-xs text-muted-foreground">{s.headersDesc}</p>
+              </div>
+              {editor.headers.map((row, index) => (
+                <div className="flex items-center gap-2" key={index}>
+                  <Input
+                    className="flex-1"
+                    onChange={e =>
+                      setEditor({
+                        ...editor,
+                        headers: editor.headers.map((h, i) => (i === index ? { ...h, name: e.target.value } : h))
+                      })
+                    }
+                    placeholder="CF-Access-Client-Id"
+                    value={row.name}
+                  />
+                  <Input
+                    className="flex-1"
+                    onChange={e =>
+                      setEditor({
+                        ...editor,
+                        headers: editor.headers.map((h, i) => (i === index ? { ...h, value: e.target.value } : h))
+                      })
+                    }
+                    placeholder={row.stored ? s.headerValueSaved : s.headerValuePlaceholder}
+                    type="password"
+                    value={row.value}
+                  />
+                  <Button
+                    onClick={() => setEditor({ ...editor, headers: editor.headers.filter((_, i) => i !== index) })}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {s.headerRemove}
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button
+                  onClick={() =>
+                    setEditor({ ...editor, headers: [...editor.headers, { name: '', stored: false, value: '' }] })
+                  }
+                  size="sm"
+                  variant="outline"
+                >
+                  {s.headerAdd}
+                </Button>
+              </div>
+            </div>
           )}
 
           {editor.kind === 'ssh' && (

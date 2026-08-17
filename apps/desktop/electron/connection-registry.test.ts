@@ -603,3 +603,130 @@ test('connectionDialFieldsChanged: ssh routing fields recycle, kind change recyc
     true
   )
 })
+
+// --- remote gateway headers (Cloudflare Access etc., #74466 / PR #74468) ---
+
+test('normalizeConnectionInput keeps filtered headers on remote/cloud, drops them elsewhere', () => {
+  const registry = emptyRegistry()
+
+  const remote = normalizeConnectionInput(
+    {
+      kind: 'remote',
+      label: 'CF box',
+      url: 'https://hermes.example.com',
+      authMode: 'token',
+      token: { enc: 'x' },
+      headers: {
+        'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' },
+        Authorization: { encoding: 'plain', value: 'blocked' }
+      }
+    },
+    registry
+  )
+
+  assert.deepEqual(remote.headers, {
+    'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' }
+  })
+
+  const ssh = normalizeConnectionInput(
+    {
+      kind: 'ssh',
+      label: 'Box',
+      host: 'box.lan',
+      headers: { 'CF-Access-Client-Id': { encoding: 'plain', value: 'id' } }
+    } as any,
+    registry
+  )
+
+  assert.equal((ssh as any).headers, undefined)
+})
+
+test('mergeConnectionInput inherits stored headers when the editor payload omits them', () => {
+  const stored = {
+    id: 'cf',
+    kind: 'remote' as const,
+    label: 'CF box',
+    url: 'https://hermes.example.com',
+    authMode: 'token' as const,
+    headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' } }
+  }
+
+  const renamed = mergeConnectionInput({ id: 'cf', kind: 'remote', label: 'Renamed' }, stored)
+
+  assert.deepEqual(renamed.headers, stored.headers)
+
+  // An explicit headers payload (even empty) is authoritative — clearing works.
+  const cleared = mergeConnectionInput({ id: 'cf', kind: 'remote', label: 'CF box', headers: {} }, stored)
+
+  assert.deepEqual(cleared.headers, {})
+})
+
+test('connectionDialFieldsChanged: a header change recycles live backends', () => {
+  const before = {
+    id: 'cf',
+    kind: 'remote',
+    label: 'CF box',
+    url: 'https://hermes.example.com',
+    authMode: 'token',
+    token: { enc: 'x' },
+    headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' } }
+  } as const
+
+  assert.equal(connectionDialFieldsChanged(before, { ...before }), false)
+  assert.equal(
+    connectionDialFieldsChanged(before, {
+      ...before,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'OTHER' } }
+    }),
+    true
+  )
+  assert.equal(connectionDialFieldsChanged(before, { ...before, headers: undefined }), true)
+})
+
+test('normalizeRegistry preserves stored headers on remote entries (v2 additive field)', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'cf',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      {
+        id: 'cf',
+        kind: 'remote',
+        label: 'CF box',
+        url: 'https://hermes.example.com',
+        authMode: 'token',
+        token: { enc: 'x' },
+        headers: {
+          'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' },
+          Cookie: { encoding: 'plain', value: 'blocked' }
+        }
+      }
+    ]
+  })
+
+  const remote = registry.connections.find(c => c.id === 'cf')
+
+  assert.ok(remote)
+  assert.deepEqual(remote.headers, {
+    'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' }
+  })
+})
+
+test('migrateV1ToRegistry carries v1 remote headers into the registry entry', () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'remote',
+    remote: {
+      url: 'https://hermes.example.com',
+      authMode: 'token',
+      token: { enc: 'x' },
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' } }
+    }
+  })
+
+  const remote = registry.connections.find(c => c.kind === 'remote')
+
+  assert.ok(remote)
+  assert.deepEqual(remote.headers, {
+    'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'id' }
+  })
+})

@@ -148,9 +148,9 @@ terminal commands, and file operations run against the remote Hermes host, not
 the computer displaying the Desktop UI.
 
 Remote gateways that sit behind an access proxy may require extra headers on
-every HTTP and WebSocket request. Until Settings exposes those fields, advanced
-deployments can add a `headers` object to Desktop's Electron
-`userData/connection.json` remote block:
+every HTTP and WebSocket request. Configure them per connection in Settings →
+Connections (Extra gateway headers), or add a `headers` object to Desktop's
+Electron `userData/connection.json` remote block:
 
 ```json
 {

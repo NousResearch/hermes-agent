@@ -31,6 +31,7 @@ import {
   hostLabelFromBaseUrl,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode
 } from './connection-config'
@@ -55,6 +56,11 @@ export interface RegistryConnection {
   authMode?: 'oauth' | 'token'
   /** remote: encrypted token envelope (opaque here; main.ts encrypts/decrypts). */
   token?: unknown
+  /** remote/cloud: extra gateway headers (Cloudflare Access etc.). Secret
+   * envelopes, same shape as `token`; names pre-filtered through
+   * normalizeRemoteHeaders. Optional and additive — v2 registries written
+   * before this field keep loading unchanged. */
+  headers?: Record<string, unknown>
   /** cloud: portal org slug/id the instance was discovered under. */
   org?: string
   /** ssh fields (normalizeSshConfig shapes). */
@@ -309,6 +315,7 @@ export interface ConnectionInput {
   url?: string
   authMode?: string
   token?: unknown
+  headers?: Record<string, unknown>
   org?: string
   host?: string
   user?: string
@@ -399,6 +406,18 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       entry.token = input.token
     }
 
+    // Extra gateway headers (access-proxy credentials) apply to any
+    // remote-shaped entry regardless of auth mode — Cloudflare Access sits in
+    // front of both token- and OAuth-gated gateways. Normalization drops
+    // transport-/Hermes-managed names; an empty result stores nothing.
+    if (input.headers !== undefined) {
+      const headers = normalizeRemoteHeaders(input.headers)
+
+      if (Object.keys(headers).length > 0) {
+        entry.headers = headers
+      }
+    }
+
     const org = String(input.org || '').trim()
 
     if (kind === 'cloud' && org) {
@@ -440,6 +459,10 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   inherit('keyPath')
   inherit('remoteHermesPath')
   inherit('remoteProfile')
+  // Headers inherit like other dial fields: an edit payload that omits the
+  // field keeps the stored set; an explicit payload (even {}) is
+  // authoritative so the editor can clear them.
+  inherit('headers')
 
   // ssh user/port: the editor shows ONE composite host field (user@host:port),
   // and normalizeSshConfig gives explicit user/port fields precedence over the
@@ -489,7 +512,13 @@ export function connectionDialFieldsChanged(before: RegistryConnection, after: R
   // Token envelopes are opaque here (main.ts encrypts). An edit that carries
   // no new token inherits the stored envelope verbatim, so structural
   // equality is exact for the label-only case.
-  return JSON.stringify(before.token ?? null) !== JSON.stringify(after.token ?? null)
+  if (JSON.stringify(before.token ?? null) !== JSON.stringify(after.token ?? null)) {
+    return true
+  }
+
+  // Headers are dial material too: a changed access-proxy credential means
+  // every open socket/backend authenticated with the OLD set.
+  return JSON.stringify(before.headers ?? null) !== JSON.stringify(after.headers ?? null)
 }
 
 // ── Registry-level operations (all pure: return a new registry) ────────────
@@ -562,6 +591,12 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
       if (entry.token !== undefined) {
         clean.token = entry.token
+      }
+
+      const storedHeaders = normalizeRemoteHeaders(entry.headers)
+
+      if (Object.keys(storedHeaders).length > 0) {
+        clean.headers = storedHeaders
       }
 
       const org = String(entry.org || '').trim()
@@ -644,6 +679,12 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
 
     if (block.token !== undefined) {
       entry.token = block.token
+    }
+
+    const v1Headers = normalizeRemoteHeaders(block.headers)
+
+    if (Object.keys(v1Headers).length > 0) {
+      entry.headers = v1Headers
     }
 
     const org = String(block.org || '').trim()

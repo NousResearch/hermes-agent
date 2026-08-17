@@ -820,7 +820,7 @@ class GatewaySlashCommandsMixin:
         # Resolve current-context size + window with cascading fallbacks.
         #   used  : compressor.last_prompt_tokens → SessionStore.last_prompt_tokens
         #   model : agent.model → SessionDB row model
-        #   window: compressor.context_length → get_model_context_length(model)
+        #   window: compressor.context_length → effective gateway model route
         used = 0
         context_length = 0
         if ctx is not None:
@@ -839,6 +839,26 @@ class GatewaySlashCommandsMixin:
                     model_name = _clean_str(row.get("model", ""))
             except Exception:
                 model_name = ""
+
+        if not context_length:
+            try:
+                from gateway.run import (
+                    _profile_runtime_scope,
+                    _resolve_gateway_model_context,
+                )
+
+                def _resolve_nonresident_context():
+                    if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                        profile_home = self._resolve_profile_home_for_source(source)
+                        with _profile_runtime_scope(profile_home):
+                            return _resolve_gateway_model_context(model_name or None)
+                    return _resolve_gateway_model_context(model_name or None)
+
+                resolved = await asyncio.to_thread(_resolve_nonresident_context)
+                model_name = model_name or resolved.model
+                context_length = _int_value(resolved.context_length)
+            except Exception:
+                context_length = 0
 
         if not context_length and model_name:
             try:

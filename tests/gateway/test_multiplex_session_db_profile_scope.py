@@ -170,3 +170,84 @@ def test_explicitly_pinned_handle_still_wins(multiplex_homes):
         assert store._db is None
     finally:
         reset_hermes_home_override(token)
+
+
+def test_close_all_db_handles_sweeps_every_profile_handle(multiplex_homes):
+    """Teardown must release every cached per-profile handle, not just the
+    one the tearing-down task's own scope resolves.
+
+    Follow-up hardening for the per-path cache: ``gateway/run.py``'s
+    teardown path closes ``store._db`` (root scope only); the sweep closes
+    the rest so secondary profiles' WAL locks are released before a
+    ``--replace`` restart reopens their stores.
+    """
+    root, profile = multiplex_homes
+    store = _make_store(root)
+
+    root_db = store._db
+    token = set_hermes_home_override(str(profile))
+    try:
+        profile_db = store._db
+    finally:
+        reset_hermes_home_override(token)
+    assert root_db is not profile_db
+
+    store.close_all_db_handles()
+
+    # Both handles are closed (connection released) and the cache is empty,
+    # so the next access opens a fresh handle rather than a dead one.
+    assert root_db._conn is None
+    assert profile_db._conn is None
+    assert store._db_handles == {}
+    fresh = store._db
+    assert fresh is not root_db
+    assert fresh._conn is not None
+    fresh.close()
+
+
+def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
+    """GatewayRunner._session_db is the same frozen-handle class of bug.
+
+    /resume, /title, /history and session search run inside
+    ``_profile_runtime_scope`` on a multiplexed gateway and must read the
+    serving profile's state.db.  Exercise the property on a bare runner shell
+    (full construction wires adapters and is irrelevant to the seam under
+    test).
+    """
+    import threading
+
+    from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
+
+    root, profile = multiplex_homes
+    runner = object.__new__(GatewayRunner)
+    runner._session_db_pinned = _SESSION_DB_UNPINNED
+    runner._session_db_handles = {}
+    runner._session_db_handles_lock = threading.Lock()
+
+    root_db = runner._session_db
+    assert Path(root_db._db.db_path) == root / "state.db"
+
+    token = set_hermes_home_override(str(profile))
+    try:
+        profile_db = runner._session_db
+        assert Path(profile_db._db.db_path) == profile / "state.db"
+        # Cached per path: same wrapper identity on re-access.
+        assert runner._session_db is profile_db
+    finally:
+        reset_hermes_home_override(token)
+
+    assert runner._session_db is root_db
+
+    # Pinning (how suites install fakes / disable the DB) wins across scopes.
+    runner._session_db = None
+    token = set_hermes_home_override(str(profile))
+    try:
+        assert runner._session_db is None
+    finally:
+        reset_hermes_home_override(token)
+    runner._session_db_pinned = _SESSION_DB_UNPINNED
+
+    runner.close_all_session_db_handles()
+    assert runner._session_db_handles == {}
+    assert root_db._db._conn is None
+    assert profile_db._db._conn is None

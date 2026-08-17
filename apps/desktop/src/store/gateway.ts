@@ -806,6 +806,43 @@ export function closeSecondaryGateways(): void {
   restoreActiveToPrimaryIfEvicted()
 }
 
+// A local profile can have two renderer-owned sockets: the legacy bare
+// profile scope and the explicit `local` registry scope. Profile deletion
+// stops their Electron backend processes, but a retained Secondary otherwise
+// sees that shutdown as a transient disconnect and starts its reconnect loop,
+// resurrecting the backend that was just deleted. Retire both local scopes
+// before the DELETE request while preserving same-named agents on remote,
+// cloud, or SSH connections.
+export function retireLocalProfileGateways(profile: string): void {
+  const name = String(profile || '').trim()
+
+  if (!name) {
+    return
+  }
+
+  const key = normKey(name)
+  const scopes = new Set([key, registryBackendScopeKey('local', key)])
+  let activeInvalidated = false
+
+  for (const scope of scopes) {
+    const entry = g.secondaries.get(scope)
+
+    if (!entry) {
+      continue
+    }
+
+    activeInvalidated ||= scope === g.activeKey
+    disposeSecondary(entry)
+    g.secondaries.delete(scope)
+  }
+
+  restoreActiveToPrimaryIfEvicted()
+
+  if (activeInvalidated) {
+    g.config?.onActiveConnectionInvalidated?.(g.primaryProfile, gatewayActivationEpoch())
+  }
+}
+
 // Registry lifecycle: a connection was removed or materially edited. Dispose
 // every secondary scoped to it (a removed remote/cloud source has no local
 // process to die, so without this its WebSocket stays open streaming ghost

@@ -51,6 +51,9 @@ const {
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
   ensureGatewayForAgent,
+  openGatewayForProfile,
+  reconnectSecondaryGateways,
+  retireLocalProfileGateways,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -142,6 +145,52 @@ describe('disposeSecondariesForConnection', () => {
     disposeSecondariesForConnection('ghost')
 
     expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+  })
+})
+
+describe('retireLocalProfileGateways', () => {
+  it('retires both local profile scopes without touching the same-named remote agent', async () => {
+    const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
+
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnection, getConnectionFor })
+
+    await openGatewayForProfile('selena')
+    await ensureGatewayForAgent('local', 'selena')
+    await ensureGatewayForAgent('homelab', 'selena')
+
+    expect(gatewayMocks.instances).toHaveLength(3)
+    const connectionCallsBeforeRetire = getConnection.mock.calls.length + getConnectionFor.mock.calls.length
+
+    retireLocalProfileGateways('selena')
+
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
+    expect(gatewayMocks.instances[1].close).toHaveBeenCalledOnce()
+    expect(gatewayMocks.instances[2].close).not.toHaveBeenCalled()
+
+    // A wake/reconnect sweep cannot redial either retired local scope. The
+    // homelab entry remains open and therefore also needs no extra dial.
+    reconnectSecondaryGateways()
+    await Promise.resolve()
+    expect(getConnection.mock.calls.length + getConnectionFor.mock.calls.length).toBe(connectionCallsBeforeRetire)
+  })
+
+  it('allows an explicit later access to create a fresh profile secondary', async () => {
+    const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('selena')
+    retireLocalProfileGateways('selena')
+    await openGatewayForProfile('selena')
+
+    expect(gatewayMocks.instances).toHaveLength(2)
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
+    expect(gatewayMocks.instances[1].close).not.toHaveBeenCalled()
   })
 })
 

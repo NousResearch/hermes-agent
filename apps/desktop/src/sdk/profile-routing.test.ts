@@ -87,12 +87,14 @@ vi.mock('@/store/gateway', async () => {
       method,
       params,
       profile
-    }))
+    })),
+    retireLocalProfileGateways: vi.fn()
   }
 })
 
 const { host } = await import('./index')
-const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
+const { deleteProfile } = await import('@/hermes')
+const { requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } = await import('@/store/gateway')
 const { $profiles, refreshProfiles } = await import('@/store/profile')
 
 const profile = (name: string): ProfileInfo => ({
@@ -112,6 +114,24 @@ afterEach(() => {
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('retires a profile gateway before deleting it', async () => {
+    const order: string[] = []
+
+    vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
+      order.push('retire')
+    })
+    vi.mocked(deleteProfile).mockImplementationOnce(async () => {
+      order.push('delete')
+
+      return { ok: true, path: '/profiles/worker' }
+    })
+
+    await host.deleteProfile('worker')
+
+    expect(order).toEqual(['retire', 'delete'])
+    expect(retireLocalProfileGateways).toHaveBeenCalledWith('worker')
+  })
+
   it('refreshes the profile inventory before asking Electron for routes', async () => {
     const getProfileRoutes = vi.fn(async () => [
       { connectionId: 'connection-local', mode: 'local', profile: 'desktop-primary', targetProfile: 'desktop-primary' },

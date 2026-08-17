@@ -3,6 +3,7 @@ import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile } from '@/hermes'
+import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -37,6 +38,10 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
+}))
+
+vi.mock('@/store/gateway', () => ({
+  retireLocalProfileGateways: vi.fn()
 }))
 
 const { $activeGatewayProfile: activeGateway, $profileColors } = vi.hoisted(() => {
@@ -126,6 +131,11 @@ describe('ProfilesView', () => {
   })
 
   it('re-homes to default when the active profile is deleted', async () => {
+    const deleteProfileMock = vi.mocked(deleteProfile)
+    const retireLocalProfileGatewaysMock = vi.mocked(retireLocalProfileGateways)
+
+    deleteProfileMock.mockClear()
+    retireLocalProfileGatewaysMock.mockClear()
     vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
     activeGateway.set(NAMED_PROFILE)
 
@@ -133,6 +143,10 @@ describe('ProfilesView', () => {
     await deleteTheNamedProfile()
 
     await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith(NAMED_PROFILE))
+    expect(retireLocalProfileGateways).toHaveBeenCalledWith(NAMED_PROFILE)
+    expect(retireLocalProfileGatewaysMock.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteProfileMock.mock.invocationCallOrder[0]
+    )
     await waitFor(() => expect(selectProfile).toHaveBeenCalledWith('default'))
     expect(setActiveProfile).toHaveBeenCalledWith('default')
   })

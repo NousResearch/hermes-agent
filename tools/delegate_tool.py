@@ -3718,6 +3718,19 @@ def delegate_task(
             return tuple(parts), in_tool
 
         _goals = [t["goal"] for t in task_list]
+        # creds is None when EVERY task resolved through a named capability
+        # (fix2 skips default-chain resolution). The batch metadata model is
+        # display-only: fall back to the first built child's model rather
+        # than crashing on creds["model"] (regression: 'NoneType' object is
+        # not subscriptable on every capability-only async dispatch).
+        _meta_model = creds["model"] if creds else next(
+            (
+                str(getattr(_c, "model", "") or "")
+                for _c in _child_agents
+                if getattr(_c, "model", None)
+            ),
+            None,
+        )
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -3725,7 +3738,7 @@ def delegate_task(
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
             role=top_role,
-            model=creds["model"],
+            model=_meta_model,
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             origin_session_id=_wake_sid,

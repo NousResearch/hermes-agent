@@ -392,7 +392,10 @@ test('pathWithGlobalRemoteProfile preserves cross-profile selectors when transla
   }
 
   assert.equal(pathWithGlobalRemoteProfile('/api/cron/jobs?profile=all', 'mara', opts), '/api/cron/jobs?profile=all')
-  assert.equal(pathWithGlobalRemoteProfile('/api/cron/jobs?profile=worker', 'mara', opts), '/api/cron/jobs?profile=worker')
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=worker', 'mara', opts),
+    '/api/cron/jobs?profile=worker'
+  )
 })
 
 // --- translateSelfProfileQuery (registry SSH-scoped hermes:api contract) ---

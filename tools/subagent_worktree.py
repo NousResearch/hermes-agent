@@ -172,6 +172,60 @@ def create_subagent_worktree(
     }
 
 
+def mark_worktree_payload_unproven(
+    payload: Dict[str, Any], reason: str
+) -> Dict[str, Any]:
+    """Flag a worktree result payload as un-inspected, in place (#88113).
+
+    A failed probe proves nothing about the tree, so ``commits``/``dirty`` keep
+    their defaults. The parent agent only ever sees this dict — it cannot read
+    logs — so the uncertainty has to travel *in the payload*, or "0 commits,
+    clean" reads as "the child produced nothing" and the work we just preserved
+    is never looked at.
+
+    Shared by ``finalize_subagent_worktree`` and ``delegate_tool``'s
+    finalize-raised fallback so the two producers of this schema cannot drift.
+    """
+    path = payload.get("path", "")
+    branch = payload.get("branch", "")
+    payload["inspection_failed"] = True
+    payload["note"] = (
+        f"git inspection failed ({reason}): 'commits' and 'dirty' are "
+        "UNKNOWN, not zero/clean. The worktree and branch were preserved "
+        f"— inspect {path} (branch {branch}) before assuming no work."
+    )
+    logger.warning(
+        "subagent worktree: git inspection failed (%s) — keeping %s "
+        "(branch %s) for manual review",
+        reason,
+        path,
+        branch,
+    )
+    return payload
+
+
+def unproven_worktree_payload(
+    info: Dict[str, str], reason: str
+) -> Dict[str, Any]:
+    """Build a complete un-inspected payload from creation-side *info*.
+
+    For callers that never got a payload back at all (``delegate_tool``'s
+    fallback when ``finalize_subagent_worktree`` itself raises). Emits exactly
+    the schema the parent expects — notably WITHOUT the creation-side
+    ``repo_root``/``base_commit`` internals.
+    """
+    return mark_worktree_payload_unproven(
+        {
+            "path": info.get("path", ""),
+            "branch": info.get("branch", ""),
+            "commits": 0,
+            "dirty": False,
+            "pruned": False,
+        },
+        reason,
+    )
+
+
 def finalize_subagent_worktree(
     info: Dict[str, str], *, prune: bool = True
 ) -> Dict[str, Any]:
@@ -206,58 +260,45 @@ def finalize_subagent_worktree(
         return payload
 
     def _unproven(reason: str) -> Dict[str, Any]:
-        """Flag the payload as un-inspected and keep the worktree (#88113).
+        return mark_worktree_payload_unproven(payload, reason)
 
-        A failed probe proves nothing about the tree, so ``commits``/``dirty``
-        are still their defaults. The parent agent only ever sees this dict —
-        it cannot read logs — so the uncertainty has to travel *in the
-        payload*, or "0 commits, clean" reads as "the child produced nothing"
-        and the work we just preserved is never looked at.
-        """
-        payload["inspection_failed"] = True
-        payload["note"] = (
-            f"git inspection failed ({reason}): 'commits' and 'dirty' are "
-            "UNKNOWN, not zero/clean. The worktree and branch were preserved "
-            f"— inspect {path} (branch {branch}) before assuming no work."
-        )
-        logger.warning(
-            "subagent worktree: git inspection failed (%s) — keeping %s "
-            "(branch %s) for manual review",
-            reason,
-            path,
-            branch,
-        )
-        return payload
+    # A worktree whose commit count was never measured must not be pruned
+    # either: the prune condition reads payload["commits"], and without a base
+    # commit that value is an unproven default, exactly the class of bug
+    # #88113 is about.
+    if not base_commit:
+        return _unproven("no base_commit recorded — commit count unmeasurable")
 
-    inspection_ok = True
+    failed: list = []
     try:
-        if base_commit:
-            counted = _run_git(
-                ["rev-list", "--count", f"{base_commit}..HEAD"], cwd=path
+        counted = _run_git(
+            ["rev-list", "--count", f"{base_commit}..HEAD"], cwd=path
+        )
+        if counted.returncode == 0:
+            payload["commits"] = int(counted.stdout.strip() or 0)
+        else:
+            failed.append(
+                f"rev-list exit {counted.returncode}: "
+                f"{counted.stderr.strip()[:200]}"
             )
-            if counted.returncode == 0:
-                payload["commits"] = int(counted.stdout.strip() or 0)
-            else:
-                inspection_ok = False
         status = _run_git(["status", "--porcelain"], cwd=path)
         if status.returncode == 0:
             payload["dirty"] = bool(status.stdout.strip())
         else:
-            inspection_ok = False
+            failed.append(
+                f"status exit {status.returncode}: "
+                f"{status.stderr.strip()[:200]}"
+            )
     except Exception as exc:
         # Same unknown state as a non-zero exit (timeout, OSError, or a
         # non-numeric rev-list stdout) — keep the worktree rather than risk
         # deleting work, and tell the caller the numbers are unproven.
         return _unproven(f"inspection raised: {exc}")
 
-    if not inspection_ok:
-        # Fail-safe (#88113): a non-zero git exit proves nothing about the
-        # tree — the payload defaults (0 commits, clean) were never
-        # overwritten, and pruning on them permanently deleted uncommitted
-        # child work. A destructive cleanup requires affirmative proof of
-        # "zero commits + clean tree"; otherwise keep the worktree and
-        # branch for manual inspection.
-        return _unproven("rev-list/status non-zero")
+    if failed:
+        # Fail-safe (#88113): a destructive cleanup requires affirmative proof
+        # of "zero commits + clean tree"; the defaults prove nothing.
+        return _unproven("; ".join(failed))
 
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         try:

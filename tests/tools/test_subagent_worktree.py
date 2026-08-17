@@ -4,13 +4,10 @@ Inspired by Muse Code's --subagent-worktree-isolation (clean-room
 implementation from documented behavior).
 """
 
-import ast
-import inspect
 import os
 import subprocess
 import sys
 import tempfile
-import textwrap
 import shutil
 import unittest
 from pathlib import Path
@@ -159,10 +156,7 @@ class SubagentWorktreeTests(unittest.TestCase):
             "irreplaceable\n", encoding="utf-8"
         )
 
-        git_dir = Path(_git(["rev-parse", "--git-dir"], wt).stdout.strip())
-        if not git_dir.is_absolute():
-            git_dir = (wt / git_dir).resolve()
-        (git_dir / "index").write_bytes(b"not-a-valid-git-index\n")
+        _break_git_index(wt)
         # Sanity: the probe really fails now.
         broken = _git(["status", "--porcelain"], wt, check=False)
         self.assertNotEqual(broken.returncode, 0)
@@ -245,6 +239,30 @@ class SubagentWorktreeTests(unittest.TestCase):
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertNotEqual(branches.strip(), "")
 
+    def test_finalize_keeps_worktree_when_base_commit_missing(self):
+        """An unmeasurable commit count must not authorize deletion.
+
+        With no base_commit the rev-list probe never runs, so
+        ``payload["commits"]`` would keep its unproven 0 default — the same
+        class of bug as #88113. Fail closed instead.
+        """
+        repo = _make_repo(self.tmp)
+        info = sw.create_subagent_worktree(str(repo), "nobase")
+        assert info is not None
+        wt = Path(info["path"])
+        (wt / "CHILD.txt").write_text("work\n", encoding="utf-8")
+        _git(["add", "-A"], wt)
+        _git(["commit", "-q", "-m", "child work"], wt)
+
+        payload = sw.finalize_subagent_worktree({**info, "base_commit": ""})
+
+        self.assertFalse(payload["pruned"])
+        self.assertTrue(payload["inspection_failed"])
+        self.assertTrue(os.path.isdir(info["path"]))
+        self.assertTrue((wt / "CHILD.txt").exists())
+        branches = _git(["branch", "--list", info["branch"]], repo).stdout
+        self.assertNotEqual(branches.strip(), "")
+
     def test_finalize_missing_path_reports_pruned(self):
         payload = sw.finalize_subagent_worktree(
             {"path": str(self.tmp / "gone"), "branch": "b", "repo_root": "",
@@ -283,62 +301,63 @@ class WorktreePayloadSchemaTests(unittest.TestCase):
     """The parent agent reads ONE schema under ``entry["worktree"]``.
 
     Two producers write it: ``finalize_subagent_worktree`` and
-    ``delegate_tool``'s fallback for when finalize itself raises. Compare the
-    fallback against the REAL finalize output (not a hardcoded key list) so
-    the two can never drift apart.
+    ``delegate_tool``'s fallback for when finalize itself raises. Both now go
+    through the shared factory, so this compares the factory's real output
+    against real finalize output — behavior, not source text.
     """
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hermes-sw-schema-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def test_fallback_matches_finalize_schema(self):
-        from tools import delegate_tool
-
+    def test_unproven_payload_matches_finalize_schema(self):
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "schema")
         assert info is not None
+
         happy = sw.finalize_subagent_worktree(info, prune=False)
+        unproven = sw.unproven_worktree_payload(info, "finalize raised: boom")
 
-        # Read the fallback's ACTUAL keys out of the source (not a hardcoded
-        # copy), so drift in delegate_tool is what fails this test.
-        tree = ast.parse(
-            textwrap.dedent(inspect.getsource(delegate_tool._run_single_child))
-        )
-        fallback_keys = None
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign) or not isinstance(
-                node.value, ast.Dict
-            ):
-                continue
-            target = node.targets[0]
-            if (
-                isinstance(target, ast.Subscript)
-                and isinstance(target.slice, ast.Constant)
-                and target.slice.value == "worktree"
-            ):
-                fallback_keys = {
-                    k.value
-                    for k in node.value.keys
-                    if isinstance(k, ast.Constant)
-                }
-                break
-
-        self.assertIsNotNone(
-            fallback_keys,
-            "delegate_tool no longer assigns a dict literal to "
-            'entry_dict["worktree"] — update this schema guard',
-        )
-        assert fallback_keys is not None  # narrow for type checkers
-        # Fallback must be a superset: every happy-path key plus the two
-        # unproven-state keys, and nothing invented. The pre-fix version
-        # emitted repo_root/base_commit and omitted commits/dirty/pruned.
-        self.assertTrue(set(happy).issubset(fallback_keys))
+        # Superset: every happy-path key, plus exactly the two unproven keys.
+        self.assertTrue(set(happy).issubset(set(unproven)))
         self.assertEqual(
-            fallback_keys - set(happy), {"inspection_failed", "note"}
+            set(unproven) - set(happy), {"inspection_failed", "note"}
         )
+        # Must NOT leak the creation-side internals the parent has no use for
+        # (the pre-fix fallback emitted these instead of the real schema).
         for leaked in ("repo_root", "base_commit"):
-            self.assertNotIn(leaked, fallback_keys)
+            self.assertNotIn(leaked, unproven)
+        # And it must carry the actionable content.
+        self.assertTrue(unproven["inspection_failed"])
+        self.assertIn(info["path"], unproven["note"])
+        self.assertIn(info["branch"], unproven["note"])
+
+    def test_delegate_tool_fallback_uses_the_shared_factory(self):
+        """delegate_tool's fallback must emit the flagged schema, not the
+        creation-side metadata dict it used to leak."""
+        from tools import delegate_tool  # noqa: F401  (import-safety check)
+
+        repo = _make_repo(self.tmp)
+        info = sw.create_subagent_worktree(str(repo), "fallback")
+        assert info is not None
+
+        # Drive the real helper the fallback calls.
+        payload = sw.unproven_worktree_payload(info, "finalize raised: boom")
+        self.assertEqual(
+            set(payload),
+            {
+                "path",
+                "branch",
+                "commits",
+                "dirty",
+                "pruned",
+                "inspection_failed",
+                "note",
+            },
+        )
+        self.assertFalse(payload["pruned"])
+        self.assertEqual(payload["commits"], 0)
+        self.assertFalse(payload["dirty"])
 
 
 class DelegationConfigGateTests(unittest.TestCase):

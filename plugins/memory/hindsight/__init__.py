@@ -92,6 +92,7 @@ _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 # Hindsight 0.8.6 made ``store_document_text`` hierarchical and therefore
 # overridable per bank (vectorize-io/hindsight#2940).
 _MIN_VERSION_FOR_BANK_DOCUMENT_TEXT_POLICY = "0.8.6"
+_APPEND_CAPABILITY_CACHE_MAX = 256
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -219,7 +220,10 @@ def _ensure_cloud_client_dependency() -> None:
 # Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
 # ---------------------------------------------------------------------------
 
-# Cache of (API URL, bank ID) -> bool (whether append is usable).
+# Bounded insertion-ordered cache of (API URL, raw bank ID) -> bool (whether
+# append is usable). URL encoding is transport-only; the raw ID is the stable
+# identity. ``bank_id_template`` can produce many banks in a gateway process,
+# so evict the oldest probe rather than growing for the process lifetime.
 # ``store_document_text`` is hierarchical, so two banks behind one API can
 # legitimately resolve different answers.
 _append_capability_cache: Dict[tuple[str, str], bool] = {}
@@ -320,11 +324,12 @@ def _check_api_supports_update_mode_append(api_url: str,
     if supported and _meets_minimum_version(
         version, _MIN_VERSION_FOR_BANK_DOCUMENT_TEXT_POLICY
     ):
-        bank_config = _fetch_hindsight_bank_config(api_url, bank_id, api_key)
-        resolved = bank_config.get("config") if isinstance(bank_config, dict) else None
-        effective_store_document_text = (
-            resolved.get("store_document_text") if isinstance(resolved, dict) else None
-        )
+        if features is None or features.get("bank_config_api") is not False:
+            bank_config = _fetch_hindsight_bank_config(api_url, bank_id, api_key)
+            resolved = bank_config.get("config") if isinstance(bank_config, dict) else None
+            effective_store_document_text = (
+                resolved.get("store_document_text") if isinstance(resolved, dict) else None
+            )
         supported = effective_store_document_text is True
     elif supported and features is not None:
         # Before per-bank overrides, the server feature was the effective
@@ -337,6 +342,8 @@ def _check_api_supports_update_mode_append(api_url: str,
         # Re-check after acquiring the lock in case a concurrent probe filled it.
         cached = _append_capability_cache.get(cache_key)
         if cached is None:
+            if len(_append_capability_cache) >= _APPEND_CAPABILITY_CACHE_MAX:
+                _append_capability_cache.pop(next(iter(_append_capability_cache)))
             _append_capability_cache[cache_key] = supported
         else:
             supported = cached

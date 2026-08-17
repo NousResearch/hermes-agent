@@ -1295,6 +1295,79 @@ class TestUpdateModeAppendCapability:
             None,
         )
 
+    def test_missing_resolved_storage_policy_falls_back_without_append(
+        self, provider, monkeypatch
+    ):
+        """A fetched config that omits the policy is still not proof append is safe."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.9.0",
+                {"store_document_text": True, "bank_config_api": True},
+            ),
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            lambda *a, **kw: {"config": {}, "overrides": {}},
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            provider._document_id,
+            None,
+        )
+
+    def test_disabled_bank_config_feature_skips_unavailable_probe(
+        self, provider, monkeypatch
+    ):
+        """An explicit feature flag avoids a guaranteed 404 and fails closed."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.9.0",
+                {"store_document_text": True, "bank_config_api": False},
+            ),
+        )
+        bank_probe = MagicMock(side_effect=AssertionError("bank config probe should be skipped"))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_bank_config",
+            bank_probe,
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            provider._document_id,
+            None,
+        )
+        bank_probe.assert_not_called()
+
+    def test_append_policy_cache_evicts_oldest_bank(self, provider, monkeypatch):
+        """Templated bank IDs must not grow the process-wide cache without bound."""
+        import plugins.memory.hindsight as hindsight_module
+
+        self._clear_capability_cache()
+        monkeypatch.setattr(hindsight_module, "_APPEND_CAPABILITY_CACHE_MAX", 2)
+        api_probe = MagicMock(return_value=("0.5.6", None))
+        monkeypatch.setattr(
+            hindsight_module,
+            "_fetch_hindsight_api_capabilities",
+            api_probe,
+        )
+
+        for bank_id in ("bank-a", "bank-b", "bank-c"):
+            assert hindsight_module._check_api_supports_update_mode_append(
+                "http://hindsight.test", bank_id
+            )
+
+        assert list(hindsight_module._append_capability_cache) == [
+            ("http://hindsight.test", "bank-b"),
+            ("http://hindsight.test", "bank-c"),
+        ]
+        assert hindsight_module._check_api_supports_update_mode_append(
+            "http://hindsight.test", "bank-a"
+        )
+        assert api_probe.call_count == 4
+
 
     def test_session_switch_flush_picks_capability_against_old_session(
         self, provider_with_config, monkeypatch

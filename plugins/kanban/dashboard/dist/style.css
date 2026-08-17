@@ -134,8 +134,8 @@
   border: 1px solid var(--color-border);
   color: var(--color-foreground);
   border-radius: var(--radius-sm, 0.25rem);
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 44px;
+  height: 44px;
   line-height: 1;
   font-size: 1rem;
   cursor: pointer;
@@ -403,8 +403,8 @@
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
-  width: 2.75rem;
-  min-height: 2.75rem;
+  width: 44px;
+  min-height: 44px;
   padding: 0;
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
@@ -662,7 +662,7 @@
 
 .hermes-kanban-bulk > button,
 .hermes-kanban-bulk-reassign > button {
-  min-height: 2.75rem !important;
+  min-height: 44px !important;
   padding: 0 0.5rem !important;
   font-size: 0.7rem !important;
   border: 1px solid var(--color-border);
@@ -1061,10 +1061,10 @@
     min-width: 0;
   }
   .hermes-kanban-toolbar-toggle {
-    min-height: 2.75rem;
+    min-height: 44px;
   }
   .hermes-kanban-toolbar > button {
-    min-height: 2.75rem;
+    min-height: 44px;
     flex: 1 1 auto;
   }
   .hermes-kanban-boardswitcher-inner > * {

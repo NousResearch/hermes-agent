@@ -2639,12 +2639,9 @@ function createCanonicalChat(name) {
         if (!opened && sid && typeof host.openSession === 'function') {
           await host.openSession(sid, { profile: name })
         }
-      } catch (err) {
-        if (sid) {
-          saveBotMeta(name, { chat: null })
-        }
-
-        throw err
+      } catch {
+        // The chat already exists. Keep the pin so the next click
+        // opens it instead of making a second Bot Chat.
       }
     }
 
@@ -2678,8 +2675,14 @@ async function openBotCanonicalChat(name, pinned) {
     }
 
     if (!rows.some(session => session.id === id)) {
-      id = rows[0].id
-      saveBotMeta(name, { chat: id })
+      const titled = rows.find(session => session.title === 'Bot Chat')
+
+      if (titled) {
+        id = titled.id
+        saveBotMeta(name, { chat: id })
+      }
+      // Pin is not in this page and there is no Bot Chat title.
+      // Try the stored pin as-is. Do not steal the newest session.
     }
   } catch {
     // Gateway hiccup — try the stored pin as-is. Without a pin we cannot

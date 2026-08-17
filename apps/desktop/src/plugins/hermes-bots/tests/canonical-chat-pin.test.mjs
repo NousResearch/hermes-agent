@@ -18,9 +18,10 @@ const fnSource = source.slice(start, end === -1 ? undefined : end)
 test('regression: a pinned canonical chat found in the list is opened, not replaced', () => {
   // The pin is opened directly with its own id under the bot's profile.
   assert.match(fnSource, /host\.openSession\(id, \{ profile: name \}\)/)
-  // Replacement (rows[0].id) only happens when the pin is NOT in the list...
+  // A missing pin looks for a session titled Bot Chat, not the newest row.
   assert.match(fnSource, /if \(!rows\.some\(session => session\.id === id\)\)/)
-  assert.match(fnSource, /id = rows\[0\]\.id/)
+  assert.match(fnSource, /session\.title === 'Bot Chat'/)
+  assert.doesNotMatch(fnSource, /id = rows\[0\]\.id/)
   // ...and an empty list clears the stale pin before recreating (the #28 fix),
   // rather than opening a known-bad id.
   assert.match(fnSource, /if \(!rows\.length\)/)

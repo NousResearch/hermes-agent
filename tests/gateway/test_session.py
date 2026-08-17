@@ -1540,6 +1540,81 @@ class TestRewriteTranscriptPreservesReasoning:
 
 
 class TestGatewaySessionDbRecovery:
+    def test_shared_whatsapp_recovery_uses_durable_profile_owner(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "dev"
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363001234567890@g.us",
+            chat_type="group",
+            user_id="15551230000",
+            user_name="Andrey",
+        )
+        isolated = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        legacy = isolated.get_or_create_session(source)
+        isolated._db.create_session(
+            legacy.session_id,
+            source="whatsapp",
+            profile_name="dev",
+        )
+        isolated.append_to_transcript(
+            legacy.session_id,
+            {"role": "user", "content": "legacy group context"},
+        )
+        assert isolated._db.get_session(legacy.session_id)["profile_name"] == "dev"
+        isolated._db.close()
+        (tmp_path / "sessions.json").unlink()
+
+        shared = SessionStore(
+            sessions_dir=tmp_path,
+            config=GatewayConfig(
+                platforms={
+                    Platform.WHATSAPP: PlatformConfig(
+                        enabled=True,
+                        extra={"group_sessions_per_user": False},
+                    )
+                }
+            ),
+        )
+
+        recovered = shared.get_or_create_session(source)
+
+        assert recovered.session_id == legacy.session_id
+        assert recovered.session_key == (
+            "agent:main:whatsapp:group:120363001234567890@g.us"
+        )
+        assert [
+            message["content"]
+            for message in shared._db.get_messages_as_conversation(
+                recovered.session_id
+            )
+        ] == ["legacy group context"]
+        shared._db.close()
+
+    def test_shared_recovery_rejects_durable_row_owned_by_another_profile(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "dev"
+        )
+        store = object.__new__(SessionStore)
+        store.config = GatewayConfig()
+        shared_key = "agent:main:whatsapp:group:120363001234567890@g.us"
+
+        assert not store._recovered_row_allowed_for_active_profile(
+            requested_session_key=shared_key,
+            recovered={
+                "session_key": shared_key,
+                "profile_name": "eva",
+            },
+        )
+
     def test_compression_closed_parent_reroutes_without_retry_queue(self, tmp_path):
         import threading
         from types import SimpleNamespace

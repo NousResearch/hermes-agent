@@ -55,6 +55,22 @@ def _legacy_login(email: str) -> str | None:
         return None
 
 
+def _case_collision(email: str) -> str | None:
+    """An existing mapping whose filename differs from `email` only in case.
+
+    Returns the colliding filename, or None. Exact matches are not collisions --
+    that is the ordinary "already mapped" path handled by the caller.
+    """
+    if not EMAILS_DIR.is_dir():
+        return None
+
+    folded = email.lower()
+    for entry in EMAILS_DIR.iterdir():
+        if entry.name != email and entry.name.lower() == folded:
+            return entry.name
+    return None
+
+
 def add_contributor(email: str, login: str, comment: str = "") -> int:
     email = email.strip()
     login = login.strip().lstrip("@")
@@ -67,6 +83,23 @@ def add_contributor(email: str, login: str, comment: str = "") -> int:
         return 2
 
     path = EMAILS_DIR / email
+
+    # One file per email means the FILENAME is the key, and on a
+    # case-insensitive filesystem (Windows, default macOS) two emails differing
+    # only in case are the same file. Creating both makes the repo impossible to
+    # check out cleanly there -- `git status` reports a phantom modification
+    # forever, because whichever file git wrote second wins on disk. Refuse for
+    # the same reason a conflicting login is refused: resolve it deliberately.
+    collision = _case_collision(email)
+    if collision is not None:
+        print(
+            f"error: {email} collides with existing mapping {collision} on "
+            "case-insensitive filesystems (Windows/macOS) — the two are the same "
+            "file there. Reuse that mapping, or resolve manually.",
+            file=sys.stderr,
+        )
+        return 1
+
     existing = read_mapping_file(path) if path.is_file() else None
     if existing is None:
         existing = _legacy_login(email)

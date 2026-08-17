@@ -116,3 +116,55 @@ def test_cli_entrypoint_end_to_end(tmp_path):
     assert proc.returncode == 0, proc.stderr
     out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")
     assert out.splitlines()[0] == "cliperson"
+
+
+# ── case-insensitive filename collisions ──────────────────────────────
+#
+# The mapping key IS the filename, so two emails differing only in case are the
+# same file on Windows and on default macOS. When both exist, git writes one and
+# then reports the other as modified in a FRESH clone, permanently: the repo can
+# never be checked out clean on those platforms.
+#
+# This pair is a real conflict in the tree today and needs a maintainer to say
+# which login is correct -- they point at different logins, so deleting either
+# silently reassigns commits. It is pinned here so the breakage is visible and,
+# more importantly, so it cannot spread.
+KNOWN_CASE_CONFLICTS = {
+    frozenset(
+        {
+            "agent@Agents-Mac-mini.local",
+            "agent@agents-Mac-mini.local",
+        }
+    )
+}
+
+EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
+
+
+def test_no_new_case_insensitive_mapping_collisions():
+    groups: dict[str, set[str]] = {}
+    for entry in EMAILS_DIR.iterdir():
+        if entry.is_file():
+            groups.setdefault(entry.name.lower(), set()).add(entry.name)
+
+    collisions = {frozenset(names) for names in groups.values() if len(names) > 1}
+    unexpected = collisions - KNOWN_CASE_CONFLICTS
+
+    assert not unexpected, (
+        "contributor mappings differing only in case cannot coexist on "
+        "case-insensitive filesystems (Windows, default macOS) — a fresh clone "
+        f"there is permanently dirty: {sorted(sorted(c) for c in unexpected)}"
+    )
+
+
+def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
+    d = tmp_path / "emails"
+    d.mkdir()
+    (d / "agent@Example-Host.local").write_text("someone\n")
+
+    import add_contributor as mod
+
+    monkeypatch.setattr(mod, "EMAILS_DIR", d)
+
+    assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
+    assert not (d / "agent@example-host.local").exists()

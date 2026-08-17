@@ -106,6 +106,7 @@ import {
   resolveRegistryLocalRoute,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
+  shouldRetrySshInventory,
   updateEligibility,
   upsertConnection
 } from './connection-registry'
@@ -12420,7 +12421,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     })
 
     if (result?.reachable) {
-      sshInventoryAttempted.delete(entry.id)
+      sshInventoryAttemptedAt.delete(entry.id)
       sshRosterCache.delete(entry.id)
       await probeSshProfileInventory(entry)
     }
@@ -12492,14 +12493,22 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // descriptor serves the enumeration like any remote. Last-known SSH profile
 // lists are reused so switching the window back to local does not empty Bot Mode.
 const sshRosterCache = new Map<string, string[]>()
-const sshInventoryAttempted = new Set<string>()
+const sshInventoryAttemptedAt = new Map<string, number>()
+const SSH_INVENTORY_RETRY_MS = 60_000
 
 async function probeSshProfileInventory(connection) {
-  if (sshRosterCache.has(connection.id) || sshInventoryAttempted.has(connection.id)) {
+  if (
+    !shouldRetrySshInventory(
+      sshRosterCache.has(connection.id),
+      sshInventoryAttemptedAt.get(connection.id),
+      Date.now(),
+      SSH_INVENTORY_RETRY_MS
+    )
+  ) {
     return
   }
 
-  sshInventoryAttempted.add(connection.id)
+  sshInventoryAttemptedAt.set(connection.id, Date.now())
 
   const sshConfig = normalizeSshConfig({
     mode: 'ssh',

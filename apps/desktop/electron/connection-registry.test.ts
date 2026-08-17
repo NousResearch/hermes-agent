@@ -28,6 +28,7 @@ import {
   REGISTRY_VERSION,
   rememberSshEnumeration,
   removeConnection,
+  shouldRetrySshInventory,
   resolveRegistryLocalRoute,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
@@ -222,6 +223,13 @@ test('rememberSshEnumeration: live list wins, cache then seed default', () => {
     profiles: null,
     error: 'connect-on-demand'
   })
+})
+
+test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retries', () => {
+  assert.equal(shouldRetrySshInventory(false, null, 1_000), true)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 30_000, 60_000), false)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 61_000, 60_000), true)
+  assert.equal(shouldRetrySshInventory(true, 1_000, 120_000, 60_000), false)
 })
 
 test('parseRemoteProfileListing: Mini/Spark dirs become roster names and drop rollbacks', () => {

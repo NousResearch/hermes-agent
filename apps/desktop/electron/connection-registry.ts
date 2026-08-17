@@ -284,6 +284,26 @@ export function rememberSshEnumeration(
   return enumeration
 }
 
+/** Whether an undialed SSH source should be inventoried again. Cached
+ *  successes never retry. Failures retry after `retryAfterMs` so a cold box
+ *  does not stay seeded as `default` until the user hits Test. */
+export function shouldRetrySshInventory(
+  hasCache: boolean,
+  lastAttemptMs: null | number | undefined,
+  nowMs: number,
+  retryAfterMs = 60_000
+): boolean {
+  if (hasCache) {
+    return false
+  }
+
+  if (lastAttemptMs == null) {
+    return true
+  }
+
+  return nowMs - lastAttemptMs >= retryAfterMs
+}
+
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/
 
 /** Turn `ls ~/.hermes/profiles` output into roster names. Always includes

@@ -6222,10 +6222,8 @@ def _prepare_delivery_artifact(job: dict, execution_id: str) -> tuple[Optional[P
     )
 
 
-def _recover_run_scoped_artifact_delivery(job: dict, response: str) -> Optional[str]:
+def _recover_run_scoped_artifact_delivery(job: dict, _response: str) -> Optional[str]:
     """Deliver only the artifact reserved for this exact scheduler execution."""
-    if response.strip():
-        return None
     raw_path = str(job.get("_active_delivery_artifact") or "").strip()
     artifact = Path(raw_path) if raw_path else None
     if artifact is None or not artifact.is_file() or artifact.stat().st_size == 0:
@@ -6492,17 +6490,16 @@ def _run_one_job_body(
             # filled its response with verification noise.
             stripped_to_silent = False
             if success and final_response:
-                stripped = _strip_verification_leak(final_response)
-                if stripped != final_response and not stripped.strip():
-                    recovered = _recover_run_scoped_artifact_delivery(job, stripped)
-                    if recovered:
-                        logger.info(
-                            "Job '%s': recovered this execution's report artifact after "
-                            "verification-only response",
-                            job.get("name", job["id"]),
-                        )
-                        final_response = recovered
-                    else:
+                recovered = _recover_run_scoped_artifact_delivery(job, final_response)
+                if recovered:
+                    logger.info(
+                        "Job '%s': delivering this execution's configured report artifact",
+                        job.get("name", job["id"]),
+                    )
+                    final_response = recovered
+                else:
+                    stripped = _strip_verification_leak(final_response)
+                    if stripped != final_response and not stripped.strip():
                         stripped_to_silent = True
                         # Log as deliberate silence so the cron shows ok status
                         logger.info(
@@ -6511,8 +6508,8 @@ def _run_one_job_body(
                             job.get("name", job["id"]), len(final_response),
                         )
                         final_response = SILENT_MARKER
-                else:
-                    final_response = stripped
+                    else:
+                        final_response = stripped
 
             # KENSEI CUSTOM — strip raw HTML blocks the model pastes into the
             # chat body. The report belongs in the .html file (attached via

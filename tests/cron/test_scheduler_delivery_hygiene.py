@@ -68,7 +68,7 @@ def test_prepares_run_scoped_artifact_and_recovers_only_that_run(tmp_path):
     stale.write_text("old", encoding="utf-8")
     artifact.write_text("current", encoding="utf-8")
 
-    recovered = S._recover_run_scoped_artifact_delivery(job, "")
+    recovered = S._recover_run_scoped_artifact_delivery(job, "old summary\nMEDIA:" + str(stale))
     assert recovered is not None
     assert "MEDIA:" + str(artifact) in recovered
     assert str(stale) not in recovered

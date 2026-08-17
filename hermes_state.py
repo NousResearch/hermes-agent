@@ -1854,22 +1854,55 @@ def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
 _MAX_PERSISTENT_REPAIR_ATTEMPTS = 3
 _MAX_MALFORMED_BACKUPS = 3
 
+# Head/tail bytes sampled by ``_db_fingerprint``. Enough to change whenever
+# the DB is genuinely repaired, truncated or restored (SQLite rewrites the
+# header on any real recovery), while staying O(1) on a multi-GB file.
+_FINGERPRINT_SAMPLE_BYTES = 65536
+
+# Free-space floor for the pre-repair forensic backup. The backup is a full
+# raw copy of the damaged DB, so a repair loop on a large state.db is a disk
+# amplifier: the reported incident wrote 98MB every ~10s until the volume was
+# nearly full, which would have taken down every agent on the host. Refuse
+# the copy unless the volume would still hold this much afterwards.
+_REPAIR_BACKUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
 
 def _repair_ledger_path(db_path: Path) -> Path:
     return db_path.with_name(db_path.name + ".repair-attempts.json")
 
 
 def _db_fingerprint(db_path: Path) -> "Optional[str]":
-    """Cheap identity for a damaged DB file: size + mtime_ns.
+    """Cheap identity for a damaged DB file: size + a bounded content sample.
 
-    Hashing a multi-GB corrupt file on every open is exactly the kind of
-    repeated cost this ledger exists to avoid; size+mtime is stable for a
-    file nothing can successfully write to, and any successful repair,
-    truncation or manual restore changes it (resetting the attempt count).
+    Deliberately EXCLUDES mtime. The original ledger keyed on
+    ``size:mtime_ns`` on the assumption that "nothing can successfully write
+    to a damaged file", but that does not hold for the malformed-schema
+    class: the DB still opens and accepts writes (only ``sqlite_master`` is
+    unreadable), so live writers, WAL checkpoints and the in-place repair
+    strategies themselves all move mtime between passes. Every pass then
+    looked like a NEW file — the attempt counter reset to 1 forever, never
+    reaching ``_MAX_PERSISTENT_REPAIR_ATTEMPTS``, and the ``_backup_db_file``
+    dedupe (which compares mtime too) never matched, so each pass wrote
+    another full-size forensic copy. Observed: a repair every ~10s, a fresh
+    98MB copy each time, 2.3GB in 20 minutes, disk heading to zero.
+
+    Hashing a multi-GB corrupt file on every open is the repeated cost this
+    ledger exists to avoid, so sample instead of digesting the whole file:
+    size plus the head/tail slices that any real repair, truncation or
+    restore necessarily changes. Stable across passes that merely touch
+    mtime; still resets the attempt count after genuine recovery.
     """
     try:
         st = db_path.stat()
-        return f"{st.st_size}:{st.st_mtime_ns}"
+        with open(db_path, "rb") as fh:
+            head = fh.read(_FINGERPRINT_SAMPLE_BYTES)
+            if st.st_size > _FINGERPRINT_SAMPLE_BYTES:
+                fh.seek(max(0, st.st_size - _FINGERPRINT_SAMPLE_BYTES))
+                tail = fh.read(_FINGERPRINT_SAMPLE_BYTES)
+            else:
+                tail = b""
+        digest = hashlib.sha256(head + tail).hexdigest()[:32]
+        return f"{st.st_size}:{digest}"
     except OSError:
         return None
 
@@ -2018,20 +2051,43 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
         # Dedupe (#86747): a repair loop used to copy the SAME damaged bytes
         # on every restart — ~900MB a pass, 89GB over 11 days in the
         # reporting install. If the newest existing backup already matches
-        # this file (size + mtime preserved by copy2), reuse it.
+        # this file, reuse it.
+        #
+        # Matching on mtime made this dedupe miss exactly when it mattered
+        # most: the malformed-SCHEMA class still accepts writes, so live
+        # writers and the in-place repair strategies move mtime between
+        # passes and every pass wrote another full-size copy (2.3GB in 20
+        # minutes). Compare the content fingerprint instead, which is stable
+        # while the damaged bytes are.
         try:
-            src_stat = db_path.stat()
+            src_fp = _db_fingerprint(db_path)
             for existing in _existing_malformed_backups(db_path)[:1]:
-                est = existing.stat()
-                if (
-                    est.st_size == src_stat.st_size
-                    and est.st_mtime_ns == src_stat.st_mtime_ns
-                ):
+                if src_fp is not None and _db_fingerprint(existing) == src_fp:
                     logger.info(
                         "Reusing existing forensic backup %s (identical to the "
                         "damaged DB).", existing,
                     )
                     return existing, None
+        except OSError:
+            pass
+        # Disk guard: this is a full raw copy of a possibly multi-GB DB. On a
+        # host whose volume is already nearly full — which a preceding repair
+        # loop may itself have caused — taking it can finish off the disk and
+        # take down every process on the machine. Refuse while there is still
+        # room to refuse in.
+        try:
+            src_size = db_path.stat().st_size
+            free = shutil.disk_usage(db_path.parent).free
+            if free - src_size < _REPAIR_BACKUP_MIN_FREE_BYTES:
+                reason = (
+                    f"only {free / 1e9:.1f}GB free on {db_path.parent}; copying "
+                    f"the {src_size / 1e9:.1f}GB damaged DB would leave less than "
+                    f"{_REPAIR_BACKUP_MIN_FREE_BYTES / 1e9:.1f}GB. Free disk space, "
+                    "then retry (or recover manually with `sqlite3 "
+                    f"{db_path} \".recover\"`)."
+                )
+                logger.error("Refusing forensic backup of %s: %s", db_path, reason)
+                return None, reason
         except OSError:
             pass
         shutil.copy2(db_path, backup_path)

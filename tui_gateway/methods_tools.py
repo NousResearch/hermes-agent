@@ -1699,15 +1699,19 @@ def _(rid, params: dict) -> dict:
         if action == "list":
             # Paused jobs are excluded by default, which reads as deletion in
             # any UI with an enable/disable toggle — forward the flag.
-            return _ok(
-                rid,
-                json.loads(
-                    cronjob(
-                        action="list",
-                        include_disabled=is_truthy_value(params.get("include_disabled", False)),
-                    )
-                ),
+            result = json.loads(
+                cronjob(
+                    action="list",
+                    include_disabled=is_truthy_value(params.get("include_disabled", False)),
+                )
             )
+            # This marker proves the gateway honored the optional profile
+            # scope. New clients may therefore treat every returned job as
+            # owned by that profile; older gateways omit it, preserving the
+            # safe [bot:<name>] compatibility filter.
+            if profile:
+                result["scoped"] = profile
+            return _ok(rid, result)
         if action == "add":
             return _ok(
                 rid,

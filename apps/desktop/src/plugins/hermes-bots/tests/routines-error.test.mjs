@@ -43,6 +43,45 @@ test('unit: a live list is filtered to the current bot', () => {
   assert.equal(shown[0].job_id, '1')
 })
 
+test('regression: a profile-scoped list shows every job owned by that bot profile', () => {
+  const profileJobs = [
+    { name: 'ordinary profile cronjob', job_id: 'legacy' },
+    { name: '[bot:ops] Bot Mode routine', job_id: 'routine' }
+  ]
+  const view = load().__api.selectRoutineJobs({ jobs: profileJobs, scoped: 'ops' }, null, [], 'ops')
+
+  assert.deepEqual(
+    Array.from(view.jobs, job => job.job_id),
+    ['legacy', 'routine']
+  )
+})
+
+test('compatibility: an unmarked list keeps tag filtering for older gateways', () => {
+  const profileJobs = [
+    { name: 'ordinary launch-profile cronjob', job_id: 'legacy' },
+    { name: '[bot:ops] Bot Mode routine', job_id: 'routine' }
+  ]
+  const view = load().__api.selectRoutineJobs({ jobs: profileJobs }, null, [], 'ops')
+
+  assert.deepEqual(
+    Array.from(view.jobs, job => job.job_id),
+    ['routine']
+  )
+})
+
+test('compatibility: a stale scope marker cannot leak another profile\'s jobs', () => {
+  const profileJobs = [
+    { name: 'ordinary research cronjob', job_id: 'research' },
+    { name: '[bot:ops] Bot Mode routine', job_id: 'routine' }
+  ]
+  const view = load().__api.selectRoutineJobs({ jobs: profileJobs, scoped: 'research' }, null, [], 'ops')
+
+  assert.deepEqual(
+    Array.from(view.jobs, job => job.job_id),
+    ['routine']
+  )
+})
+
 test('unit: a failed refresh keeps the last good list', () => {
   const view = load().__api.selectRoutineJobs(undefined, new Error('down'), jobs, 'ops')
   assert.equal(view.live, null)

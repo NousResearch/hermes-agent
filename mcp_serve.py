@@ -47,13 +47,16 @@ logger = logging.getLogger("hermes.mcp_serve")
 # Lazy MCP SDK import
 # ---------------------------------------------------------------------------
 
+# mcp 2.0 removed `mcp.server.fastmcp`; its decorator-driven server is now
+# `mcp.server.MCPServer` with the same `@server.tool()` / `run_stdio_async()`
+# surface (docstring -> tool description, signature -> input schema).
 _MCP_SERVER_AVAILABLE = False
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
     _MCP_SERVER_AVAILABLE = True
 except ImportError:
-    FastMCP = None  # type: ignore[assignment,misc]
+    MCPServer = None  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +80,22 @@ def _get_session_db():
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
         return None
+
+
+def _load_session_messages(session_id: str):
+    """Read one session and close the temporary database handle."""
+    db = _get_session_db()
+    if db is None:
+        return None, "Session database unavailable"
+    try:
+        return db.get_messages(session_id), None
+    except Exception as e:
+        return None, f"Failed to read messages: {e}"
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Failed to close MCP SessionDB", exc_info=True)
 
 
 def _load_sessions_index() -> dict:
@@ -298,6 +317,21 @@ class QueueEvent:
     data: dict = field(default_factory=dict)
 
 
+def _ts_float(ts) -> float:
+    """Normalize a message timestamp (epoch int/float or ISO string) to float."""
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str) and ts:
+        try:
+            return float(ts)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                return 0.0
+    return 0.0
+
+
 class EventBridge:
     """Background poller that watches SessionDB for new messages and
     maintains an in-memory event queue with waiter support.
@@ -324,6 +358,13 @@ class EventBridge:
         """Start the background polling thread."""
         if self._running:
             return
+        # Snapshot existing history BEFORE the poll loop starts so pre-existing
+        # messages are not replayed as new events on startup (#13414). Sessions
+        # that first appear afterwards are absent from the baseline and default
+        # to last_seen=0.0 in _poll_once, so new-conversation delivery is
+        # preserved. Unit tests that drive _poll_once directly bypass start()
+        # and still observe first-poll delivery.
+        self._establish_baseline()
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
@@ -425,6 +466,54 @@ class EventBridge:
                 self._queue.pop(0)
         self._new_event.set()
 
+    def _establish_baseline(self) -> None:
+        db = _get_session_db()
+        if not db:
+            return
+        try:
+            self._establish_baseline_with_db(db)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                logger.debug("Failed to close MCP baseline SessionDB", exc_info=True)
+
+    def _establish_baseline_with_db(self, db) -> None:
+        """Record the latest per-session message timestamp and the current
+        state.db mtime WITHOUT emitting events, so startup does not replay
+        history (#13414).
+
+        Only sessions that already exist at startup are baselined; a session
+        that first appears afterwards is absent here and defaults to
+        last_seen=0.0 in _poll_once, so a brand-new conversation's first
+        message is still delivered on its state.db-change tick.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            db_file = get_hermes_home() / "state.db"
+        except ImportError:
+            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+        try:
+            self._state_db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
+        except OSError:
+            self._state_db_mtime = 0.0
+        try:
+            self._cached_sessions_index = _load_sessions_index()
+        except Exception:
+            self._cached_sessions_index = {}
+        for session_key, entry in self._cached_sessions_index.items():
+            session_id = entry.get("session_id", "")
+            if not session_id:
+                continue
+            try:
+                messages = db.get_messages(session_id)
+            except Exception:
+                continue
+            all_ts = [_ts_float(m.get("timestamp", 0)) for m in (messages or ())]
+            if all_ts:
+                latest = max(all_ts)
+                if latest > 0.0:
+                    self._last_poll_timestamps[session_key] = latest
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages."""
         db = _get_session_db()
@@ -432,12 +521,18 @@ class EventBridge:
             logger.warning("EventBridge: SessionDB unavailable, event polling disabled")
             return
 
-        while self._running:
+        try:
+            while self._running:
+                try:
+                    self._poll_once(db)
+                except Exception as e:
+                    logger.debug("EventBridge poll error: %s", e)
+                time.sleep(POLL_INTERVAL)
+        finally:
             try:
-                self._poll_once(db)
-            except Exception as e:
-                logger.debug("EventBridge poll error: %s", e)
-            time.sleep(POLL_INTERVAL)
+                db.close()
+            except Exception:
+                logger.debug("Failed to close MCP polling SessionDB", exc_info=True)
 
     def _poll_once(self, db):
         """Check for new messages across all sessions.
@@ -486,23 +581,8 @@ class EventBridge:
             if not messages:
                 continue
 
-            # Normalize timestamps to float for comparison
-            def _ts_float(ts) -> float:
-                if isinstance(ts, (int, float)):
-                    return float(ts)
-                if isinstance(ts, str) and ts:
-                    try:
-                        return float(ts)
-                    except ValueError:
-                        # ISO string — parse to epoch
-                        try:
-                            from datetime import datetime
-                            return datetime.fromisoformat(ts).timestamp()
-                        except Exception:
-                            return 0.0
-                return 0.0
-
-            # Find messages newer than our last seen timestamp
+            # Find messages newer than our last seen timestamp (see the
+            # module-level _ts_float helper for timestamp normalization).
             new_messages = []
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))
@@ -540,7 +620,7 @@ class EventBridge:
 # MCP Server
 # ---------------------------------------------------------------------------
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
+def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
@@ -548,7 +628,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             f"Install with: {sys.executable} -m pip install 'mcp'"
         )
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "hermes",
         instructions=(
             "Hermes Agent messaging bridge. Use these tools to interact with "
@@ -675,14 +755,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         if not session_id:
             return json.dumps({"error": "No session ID for this conversation"})
 
-        db = _get_session_db()
-        if not db:
-            return json.dumps({"error": "Session database unavailable"})
-
-        try:
-            all_messages = db.get_messages(session_id)
-        except Exception as e:
-            return json.dumps({"error": f"Failed to read messages: {e}"})
+        all_messages, error = _load_session_messages(session_id)
+        if error:
+            return json.dumps({"error": error})
 
         filtered = []
         for msg in all_messages:
@@ -731,14 +806,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         if not session_id:
             return json.dumps({"error": "No session ID for this conversation"})
 
-        db = _get_session_db()
-        if not db:
-            return json.dumps({"error": "Session database unavailable"})
-
-        try:
-            all_messages = db.get_messages(session_id)
-        except Exception as e:
-            return json.dumps({"error": f"Failed to read messages: {e}"})
+        all_messages, error = _load_session_messages(session_id)
+        if error:
+            return json.dumps({"error": error})
 
         # Find the target message
         target_msg = None

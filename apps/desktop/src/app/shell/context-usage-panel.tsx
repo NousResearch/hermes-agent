@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
 import { useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
@@ -6,57 +6,22 @@ import { cn } from '@/lib/utils'
 import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
 
 interface ContextUsagePanelProps {
-  currentUsage: UsageStats
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-  sessionId: string | null
+  breakdown: ContextBreakdown | null
+  loading: boolean
+  usage: UsageStats
 }
 
-export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: ContextUsagePanelProps) {
+/** Presentational: the breakdown is fetched by the statusbar (see
+ *  `useContextBreakdown`) because the gauge's own label needs it, so the
+ *  popover opens with its numbers already in hand. `usage` is the gauge's
+ *  merged figure — measured occupancy when the backend has it, the estimate
+ *  otherwise — so the header and the bar can never disagree. */
+export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
-  const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (!sessionId) {
-      setBreakdown(null)
-      setLoading(false)
-
-      return
-    }
-
-    let cancelled = false
-    setLoading(true)
-
-    void requestGateway<ContextBreakdown>('session.context_breakdown', { session_id: sessionId })
-      .then(data => {
-        if (!cancelled) {
-          setBreakdown(data)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setBreakdown(null)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [requestGateway, sessionId])
-
-  const contextMax = breakdown?.context_max ?? currentUsage.context_max ?? 0
-  const contextUsed = breakdown?.context_used ?? currentUsage.context_used ?? 0
-
-  const contextPercent = Math.max(
-    0,
-    Math.min(100, Math.round(breakdown?.context_percent ?? currentUsage.context_percent ?? 0))
-  )
+  const contextMax = usage.context_max ?? 0
+  const contextUsed = usage.context_used ?? 0
+  const contextPercent = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
 
   const categories = useMemo(
     () =>
@@ -97,7 +62,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
         ))}
       </ul>
 
-      {loading && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
+      {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
     </div>

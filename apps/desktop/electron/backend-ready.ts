@@ -60,6 +60,7 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
       if (done) {
         return
       }
+
       done = true
       clearTimeout(timer)
       child.stdout.off('data', onData)
@@ -130,12 +131,14 @@ function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnno
       if (done) {
         return
       }
+
       done = true
       clearTimeout(timer)
 
       if (interval) {
         clearInterval(interval)
       }
+
       child.off('exit', onExit)
       child.off('error', onError)
     }
@@ -171,6 +174,7 @@ function waitForDashboardReadyFile(readyFile, child, timeoutMs = resolvePortAnno
     if (typeof interval.unref === 'function') {
       interval.unref()
     }
+
     check()
   })
 }

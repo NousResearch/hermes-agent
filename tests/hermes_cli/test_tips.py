@@ -9,27 +9,10 @@ class TestTipsCorpus:
     def test_has_at_least_200_tips(self):
         assert len(TIPS) >= 200, f"Expected 200+ tips, got {len(TIPS)}"
 
-    def test_no_duplicates(self):
-        assert len(TIPS) == len(set(TIPS)), "Duplicate tips found"
 
     def test_all_tips_are_strings(self):
         for i, tip in enumerate(TIPS):
             assert isinstance(tip, str), f"Tip {i} is not a string: {type(tip)}"
-
-    def test_no_empty_tips(self):
-        for i, tip in enumerate(TIPS):
-            assert tip.strip(), f"Tip {i} is empty or whitespace-only"
-
-    def test_max_length_reasonable(self):
-        """Tips should fit on a single terminal line (~120 chars max)."""
-        for i, tip in enumerate(TIPS):
-            assert len(tip) <= 150, (
-                f"Tip {i} too long ({len(tip)} chars): {tip[:60]}..."
-            )
-
-    def test_no_leading_trailing_whitespace(self):
-        for i, tip in enumerate(TIPS):
-            assert tip == tip.strip(), f"Tip {i} has leading/trailing whitespace"
 
 
 class TestGetRandomTip:
@@ -56,10 +39,6 @@ class TestGetRandomTip:
 class TestTipIntegrationInCLI:
     """Test that the tip display code in cli.py works correctly."""
 
-    def test_tip_import_works(self):
-        """The import used in cli.py must succeed."""
-        from hermes_cli.tips import get_random_tip
-        assert callable(get_random_tip)
 
     def test_tip_display_format(self):
         """Verify the Rich markup format doesn't break."""

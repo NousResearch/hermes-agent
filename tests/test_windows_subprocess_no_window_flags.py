@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -35,244 +37,146 @@ def _spawns(captured, *needles):
     ]
 
 
-def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
-    from tui_gateway import git_probe
+def _is_git_spawn(cmd) -> bool:
+    """True only for a ``git -C <cwd> ...`` spawn.
 
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="main\n")
-
-    monkeypatch.setattr(git_probe, "IS_WINDOWS", True)
-    monkeypatch.setattr(git_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(git_probe.subprocess, "run", fake_run)
-
-    assert git_probe.run_git("C:/repo", "branch", "--show-current") == "main"
-
-    git_calls = _spawns(captured, "branch", "--show-current")
-    assert git_calls == [
-        (
-            ["git", "-C", "C:/repo", "branch", "--show-current"],
-            {
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": git_probe._GIT_TIMEOUT,
-                "check": False,
-                "stdin": subprocess.DEVNULL,
-                "creationflags": _CREATE_NO_WINDOW,
-            },
-        )
-    ]
+    ``bounded_git_probe`` lives in ``hermes_cli._subprocess_compat`` and both
+    probe call sites delegate to it, so these tests patch
+    ``_subprocess_compat.subprocess.Popen`` — which is the shared ``subprocess``
+    module singleton, i.e. a process-wide patch. Any unrelated daemon spawn
+    (e.g. an import-time update-check thread) must stay benign and out of the
+    recorded spawns, mirroring the ``_spawns`` scoping the other tests use.
+    """
+    return bool(cmd) and cmd[:2] == ["git", "-C"]
 
 
-def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):
+def _make_fake_popen(spawns, *, stdout="ok\n", returncode=0):
+    """Fast-path Popen stand-in: git returns within the budget."""
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            if _is_git_spawn(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = returncode
+
+        def communicate(self, timeout=None):
+            return (stdout, "")
+
+        def kill(self):  # pragma: no cover - never reached on the fast path
+            raise AssertionError("kill() must not run when git returns in time")
+
+    return _FakePopen
+
+
+@pytest.mark.windows_only
+def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
+    """The normal-path spawn contract survives the run()->Popen rewrite:
+    PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on Windows.
+
+    ``windows_only``: the ``creationflags`` assertion is the point, and
+    ``bounded_git_probe`` only sets that key when ``IS_WINDOWS`` — which the
+    helper caches from the real platform at import. ``windows_hide_flags`` is
+    still stubbed so the expected value is a fixed constant rather than
+    whatever bundle the helper currently returns.
+    """
     from hermes_cli import _subprocess_compat
-    from tui_gateway import server
 
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        if cmd[-1] == "--show-toplevel":
-            return _Completed(stdout=b"C:/repo\n")
-        return _Completed(stdout=b"src/main.py\0README.md\0")
-
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    spawns = []
     monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(server.subprocess, "run", fake_run)
-    server._fuzzy_cache.clear()
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
 
-    assert server._list_repo_files("C:/repo") == ["src/main.py", "README.md"]
-
-    toplevel = _spawns(captured, "rev-parse", "--show-toplevel")
-    ls_files = _spawns(captured, "ls-files")
-    assert len(toplevel) == 1 and len(ls_files) == 1, captured
-    assert toplevel[0][1].get("creationflags") == _CREATE_NO_WINDOW
-    assert ls_files[0][1].get("creationflags") == _CREATE_NO_WINDOW
-
-
-def test_coding_context_git_hides_git_windows(monkeypatch):
-    from agent import coding_context
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="clean\n")
-
-    monkeypatch.setattr(coding_context, "IS_WINDOWS", True)
-    monkeypatch.setattr(coding_context, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(coding_context.subprocess, "run", fake_run)
-
-    assert coding_context._git(Path("C:/repo"), "status", "--short") == "clean"
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
-
-
-def test_context_reference_git_and_rg_hide_windows(monkeypatch):
-    from agent import context_references
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        if cmd[0] == "rg":
-            return _Completed(stdout="src/main.py\n")
-        return _Completed(stdout="diff --git a/src/main.py b/src/main.py\n")
-
-    monkeypatch.setattr(context_references, "IS_WINDOWS", True)
-    monkeypatch.setattr(context_references, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(context_references.subprocess, "run", fake_run)
-
-    ref = context_references.ContextReference(
-        raw="@diff",
-        kind="diff",
-        target="",
-        start=0,
-        end=5,
+    out = _subprocess_compat.bounded_git_probe(
+        ["git", "-C", "C:/repo", "branch", "--show-current"], timeout=1.5
     )
-    warning, block = context_references._expand_git_reference(
-        ref,
-        Path("C:/repo"),
-        ["diff"],
-        "git diff",
+    assert out == "main"
+    assert len(spawns) == 1, spawns
+    cmd, kwargs = spawns[0]
+    assert cmd == ["git", "-C", "C:/repo", "branch", "--show-current"]
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+
+
+
+
+def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
+    from hermes_cli import _subprocess_compat
+
+    spawns = []
+    monkeypatch.setattr(
+        _subprocess_compat.subprocess,
+        "Popen",
+        _make_fake_popen(spawns, stdout="garbage-should-not-leak\n", returncode=1),
     )
-    assert warning is None
-    assert block is not None
-    assert "git diff" in block
-    assert context_references._rg_files(Path("C:/repo/src"), Path("C:/repo"), 10) == [
-        Path("src/main.py")
-    ]
 
-    git_calls = _spawns(captured, "diff")
-    rg_calls = _spawns(captured, "rg")
-    assert len(git_calls) == 1 and len(rg_calls) == 1, captured
-    assert git_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
-    assert rg_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
 
 
-def test_copilot_gh_cli_probe_hides_gh_windows(monkeypatch):
-    from hermes_cli import copilot_auth
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="gho_from_cli\n")
-
-    monkeypatch.setattr(copilot_auth, "IS_WINDOWS", True)
-    monkeypatch.setattr(copilot_auth, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["gh"])
-    monkeypatch.setattr(copilot_auth.subprocess, "run", fake_run)
-
-    assert copilot_auth._try_gh_cli_token() == "gho_from_cli"
-    assert captured[0][0] == ["gh", "auth", "token"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
-def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
-    from hermes_cli import gateway
+
+
+
+
+
+
+
+
+def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
+    """A spawn failure (git not on PATH) fails open to ""."""
     from hermes_cli import _subprocess_compat
 
-    captured = []
+    def boom(cmd, **kwargs):
+        raise FileNotFoundError("git not found")
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        if cmd[0] == "wmic":
-            return _Completed(stdout="", returncode=1)
-        return _Completed(stdout="CommandLine=hermes gateway\nProcessId=123\n")
+    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", boom)
 
-    monkeypatch.setattr(gateway, "is_windows", lambda: True)
-    monkeypatch.setattr(gateway.shutil, "which", lambda name: name)
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
-
-    assert gateway._scan_gateway_pids(set()) == [123]
-    # The wmic probe and the PowerShell fallback are the two console spawns
-    # this scan makes on Windows; both must hide the window via
-    # ``creationflags``. Filter to those two commands (rather than indexing a
-    # positional list) so the contract — "every Windows pid-scan spawn is
-    # windowless" — is asserted directly and can't be tripped by an unrelated
-    # captured call leaking in from prior module-state churn in the same
-    # process. ``.get`` keeps a stray non-windowed call from masking the real
-    # assertion behind a bare KeyError.
-    scan_spawns = [
-        kwargs
-        for cmd, kwargs in captured
-        if cmd and cmd[0] in {"wmic", "powershell", "pwsh"}
-    ]
-    assert len(scan_spawns) == 2, captured
-    assert [kwargs.get("creationflags") for kwargs in scan_spawns] == [
-        _CREATE_NO_WINDOW,
-        _CREATE_NO_WINDOW,
-    ]
+    assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
 
 
-def test_stale_dashboard_windows_scan_hides_wmic(monkeypatch):
-    from hermes_cli import main
-    from hermes_cli import _subprocess_compat
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="CommandLine=hermes dashboard\nProcessId=123\n")
-
-    monkeypatch.setattr(main.sys, "platform", "win32")
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(main.subprocess, "run", fake_run)
-
-    assert main._find_stale_dashboard_pids() == [123]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
-def test_gateway_force_kill_hides_taskkill_window(monkeypatch):
-    from gateway import status
-    from hermes_cli import _subprocess_compat
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="")
-
-    monkeypatch.setattr(status, "_IS_WINDOWS", True)
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(status.subprocess, "run", fake_run)
-
-    status.terminate_pid(123, force=True)
-
-    kill_calls = _spawns(captured, "taskkill")
-    assert kill_calls == [
-        (
-            ["taskkill", "/PID", "123", "/T", "/F"],
-            {
-                "capture_output": True,
-                "text": True,
-                "timeout": 10,
-                "creationflags": _CREATE_NO_WINDOW,
-            },
-        )
-    ]
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@pytest.mark.windows_only
 def test_shell_hooks_hide_hook_command_windows(monkeypatch):
+    """``windows_only``: ``shell_hooks._spawn`` only adds ``creationflags``
+    under its module-level ``IS_WINDOWS``, so on Linux the flag patch was
+    what created the thing being asserted."""
     from agent import shell_hooks
 
     captured = []
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    class FakeProc:
+        returncode = 0
 
-    monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
+        def communicate(self, input=None, timeout=None):
+            return "{}", ""
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return FakeProc()
+
     monkeypatch.setattr(shell_hooks, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(shell_hooks.subprocess, "run", fake_run)
+    monkeypatch.setattr(shell_hooks.subprocess, "Popen", fake_popen)
 
     result = shell_hooks._spawn(
         shell_hooks.ShellHookSpec(event="post_tool_call", command="hook-bin --flag"),
@@ -281,121 +185,246 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
 
     assert result["returncode"] == 0
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    # The POSIX-only process_group kwarg must NOT reach a Windows spawn.
+    assert "process_group" not in captured[0][1]
 
 
-def test_inline_skill_shell_hides_bash_window(monkeypatch):
-    from agent import skill_preprocessing
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
-
-    monkeypatch.setattr(skill_preprocessing, "IS_WINDOWS", True)
-    monkeypatch.setattr(skill_preprocessing, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(skill_preprocessing.subprocess, "run", fake_run)
-
-    assert skill_preprocessing.run_inline_shell("echo ok", cwd=None, timeout=5) == "ok"
-    assert captured[0][0] == ["bash", "-c", "echo ok"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
-
-
-def test_tts_opus_conversion_hides_ffmpeg_window(monkeypatch, tmp_path):
-    from tools import tts_tool
+def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
+    """warm_agent_browser_npx_cache spawns via subprocess.Popen (not .run,
+    since the T3 security-hardening rewrite added process-tree containment
+    via Popen + communicate()) — the console-hiding flag must still survive
+    that rewrite. On Windows the real implementation now ORs in
+    CREATE_NEW_PROCESS_GROUP alongside windows_hide_flags()'s bits (for
+    _kill_process_tree's taskkill /T to have a coherent tree to kill), so
+    this checks the CREATE_NO_WINDOW bit is present rather than exact
+    equality with the whole creationflags value."""
+    from tools import browser_tool
 
     captured = []
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(returncode=0)
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            self.returncode = 0
 
-    monkeypatch.setattr(tts_tool, "_has_ffmpeg", lambda: True)
-    monkeypatch.setattr(tts_tool, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+        def communicate(self, timeout=None):
+            return ("1.2.3\n", "")
 
-    tts_tool._convert_to_opus(str(tmp_path / "v.mp3"))
+    monkeypatch.setattr(
+        browser_tool.shutil, "which",
+        lambda name, path=None: "/usr/bin/npx",
+    )
+    monkeypatch.setattr(browser_tool, "node_tool_runnable", lambda p: True)
+    monkeypatch.setattr(browser_tool, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(browser_tool.subprocess, "Popen", _FakePopen)
 
-    assert captured[0][0][0] == "ffmpeg"
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
-
-
-def test_local_stt_audio_prep_hides_ffmpeg_window(monkeypatch, tmp_path):
-    from tools import transcription_tools
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(returncode=0)
-
-    monkeypatch.setattr(transcription_tools, "_find_ffmpeg_binary", lambda: "ffmpeg")
-    monkeypatch.setattr(transcription_tools, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(transcription_tools.subprocess, "run", fake_run)
-
-    transcription_tools._prepare_local_audio(str(tmp_path / "in.m4a"), str(tmp_path))
-
-    assert captured[0][0][0] == "ffmpeg"
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
-
-def test_checkpoint_manager_git_hides_windows(monkeypatch):
-    from tools import checkpoint_manager
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="clean\n")
-
-    monkeypatch.setattr(checkpoint_manager, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(checkpoint_manager.subprocess, "run", fake_run)
-
-    ok, _, _ = checkpoint_manager._run_git(["status", "--short"], Path("C:/store"), ".")
-    assert ok
-    assert captured[0][0][0] == "git"
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    assert browser_tool.warm_agent_browser_npx_cache() is True
+    assert captured[0][0][0] == "/usr/bin/npx"
+    assert captured[0][1]["creationflags"] & _CREATE_NO_WINDOW == _CREATE_NO_WINDOW
 
 
-def test_skills_hub_gh_token_hides_windows(monkeypatch):
-    from tools import skills_hub
-
-    captured = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="gho_from_cli\n")
-
-    monkeypatch.setattr(skills_hub, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(skills_hub.subprocess, "run", fake_run)
-
-    auth = skills_hub.GitHubAuth.__new__(skills_hub.GitHubAuth)
-    assert auth._try_gh_cli() == "gho_from_cli"
-    assert captured[0][0] == ["gh", "auth", "token"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
-def test_tui_slash_worker_hides_python_window(monkeypatch):
-    from tui_gateway import server
+# ── #56747 GUI-reachable exec paths + provider transports (PR #56877) ──────
+#
+# These six sites are the desktop-GUI-reachable spawns that still flashed a
+# console on Windows after the #54220 sweep: the TUI gateway's cli.exec /
+# shell.exec / quick-command exec RPCs, the interactive CLI's quick-command
+# exec handler, and the Copilot ACP + Codex app-server stdio transports.
+# All are hide-only (creationflags) — PIPE stdio must stay intact.
 
-    captured = []
 
-    class _Proc:
-        stdin = SimpleNamespace()
-        stdout = []
-        stderr = []
+def _patch_hide_flags(monkeypatch):
+    """Pin ``windows_hide_flags()`` to a known constant.
 
-    def fake_popen(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Proc()
-
-    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
-
+    The spawn sites these tests cover call ``windows_hide_flags()``
+    unconditionally and pass the result straight through, so what is under
+    test is the WIRING — that the site threads the helper's value into
+    ``creationflags`` — not the platform. Stubbing only the helper keeps that
+    coverage on the Linux lane; no ``IS_WINDOWS`` fake is needed or wanted.
+    """
     import hermes_cli._subprocess_compat as subprocess_compat
 
     monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
 
-    server._SlashWorker("session-key", "model-x")
 
-    assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tui_shell_exec_rpc_hides_console_window(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="ok\n")
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {"id": "2", "method": "shell.exec", "params": {"command": "echo shellexec-56747"}}
+    )
+    assert resp["result"]["code"] == 0
+
+    spawns = _spawns(captured, "shellexec-56747")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+
+
+
+
+
+
+
+
+# ── #47971 LSP spawn + installer paths (salvage) ────────────────────────────
+#
+# The LSP language-server spawn (agent/lsp/client.py::_spawn) and the
+# npm/go LSP auto-installers (agent/lsp/install.py) are reachable from
+# console-less parents — a VS Code/Zed extension host running the ACP
+# adapter — where a .cmd-wrapped server (pyright-langserver.CMD via
+# cmd.exe /c) or an npm/go console app flashes a window on Windows.
+# All are hide-only (creationflags); PIPE stdio must stay intact and the
+# POSIX start_new_session detach must be preserved on the client spawn.
+
+
+def test_lsp_client_spawn_hides_console_window(monkeypatch):
+    import asyncio
+
+    from agent.lsp import client as lsp_client
+
+    captured = []
+
+    class _FakeProc:
+        stdin = None
+        stdout = None
+        stderr = None
+
+    async def fake_exec(*cmd, **kwargs):
+        captured.append((list(cmd), kwargs))
+        return _FakeProc()
+
+    monkeypatch.setattr(lsp_client, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(
+        lsp_client.asyncio, "create_subprocess_exec", fake_exec
+    )
+
+    client = lsp_client.LSPClient(
+        server_id="test-server",
+        workspace_root="/tmp/ws",
+        command=["fake-langserver", "--stdio"],
+    )
+    asyncio.run(client._spawn())
+
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["fake-langserver", "--stdio"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # Hide-only: the LSP wire still needs its pipes, and the POSIX
+    # process-group detach (mcp orphan-sweep guard) must survive.
+    assert kwargs["stdin"] == asyncio.subprocess.PIPE
+    assert kwargs["stdout"] == asyncio.subprocess.PIPE
+    assert kwargs["start_new_session"] is True
+
+
+
+
+
+
+# ── #67690 env probes, lazy installs, platform.win32_ver() (@m4r13y) ───────
+#
+# Windowless processes (pythonw gateway + kanban workers) flashed consoles
+# from three more spawn families: tools/env_probe._run's interpreter/pip
+# probes, tools/lazy_deps' uv→pip→ensurepip install ladder, and CPython
+# 3.11/3.12's platform.win32_ver() which shells out `cmd /c ver` with
+# shell=True and no CREATE_NO_WINDOW. All are hide-only (creationflags);
+# win32_ver is neutralized by stubbing platform._syscmd_ver so the
+# documented ValueError fallback reads sys.getwindowsversion() instead.
+
+
+def test_env_probe_run_hides_console_window(monkeypatch):
+    from tools import env_probe
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="", returncode=0)
+
+    monkeypatch.setattr(env_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(env_probe.subprocess, "run", fake_run)
+
+    rc, out, err = env_probe._run(["python3", "--version"], timeout=1.0)
+
+    assert rc == 0
+    assert len(captured) == 1, captured
+    cmd, kwargs = captured[0]
+    assert cmd == ["python3", "--version"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    # The temp-file capture contract (#67964) must survive: stdout/stderr are
+    # file objects (not PIPE) so a lingering grandchild can't wedge the probe.
+    assert kwargs["stdout"] is not None and kwargs["stdout"] != subprocess.PIPE
+    assert kwargs["stderr"] is not None and kwargs["stderr"] != subprocess.PIPE
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
+    from tools import lazy_deps
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="installed", returncode=0)
+
+    monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
+    monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
+    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    res = lazy_deps._venv_pip_install(("left-pad",))
+
+    assert res.success
+    spawns = _spawns(captured, "pip", "install", "left-pad")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
+    assert cmd[:3] == ["/usr/bin/uv", "pip", "install"]
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+
+
+
+
+
+
+@pytest.mark.windows_only
+def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
+    """``_syscmd_ver`` is replaced by an in-process echo stub so win32_ver()
+    takes its ValueError fallback instead of shelling out to `cmd /c ver`.
+
+    ``windows_only``: ``suppress_platform_ver_console()`` is a no-op unless
+    ``IS_WINDOWS``, and the console flash it prevents (``cmd /c ver``) only
+    exists on Windows — the old flag patch installed the stub on a host where
+    ``win32_ver`` is never consulted at all.
+    """
+    import platform
+
+    from hermes_cli import _subprocess_compat
+
+    # Register the original with monkeypatch so it gets restored after.
+    monkeypatch.setattr(platform, "_syscmd_ver", platform._syscmd_ver)
+
+    _subprocess_compat.suppress_platform_ver_console()
+
+    # The stub echoes its inputs — win32_ver() treats the unparseable value
+    # as the documented ValueError path and falls back to
+    # sys.getwindowsversion().platform_version (no subprocess, no window).
+    assert platform._syscmd_ver("s", "r", "v") == ("s", "r", "v")
+    # Idempotent + never raises on repeat calls.
+    _subprocess_compat.suppress_platform_ver_console()
+    assert platform._syscmd_ver() == ("", "", "")

@@ -129,8 +129,14 @@ export const hu: Translations = {
     title: "Munkamenetek",
     history: "Előzmények",
     overview: "Áttekintés",
+    filterChats: "Csevegések",
+    filterAutomation: "Automatizálás",
+    filterAll: "Összes",
+    sourceFilter: "Munkamenet forrása",
+    anySource: "Bármely forrás",
     searchPlaceholder: "Keresés üzenettartalomban...",
     noSessions: "Még nincsenek munkamenetek",
+    noSessionsInFilter: "Nincs munkamenet ebben a szűrőben",
     noMatch: "Nincs a keresésnek megfelelő munkamenet",
     startConversation: "Indítson egy beszélgetést, hogy itt megjelenjen",
     noMessages: "Nincsenek üzenetek",
@@ -612,6 +618,12 @@ export const hu: Translations = {
       "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat — egyet projektenként, repónként vagy területenként. Az egyik tábla workerei sosem látják a másik tábla feladatait.",
     slug: "Slug",
     slugHint: "— kisbetűk, kötőjelek, pl. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Megjelenítendő név",
     displayNameHint: "(opcionális)",
     description: "Leírás",

@@ -25,9 +25,18 @@ export function useLiveCompletionAdapter(options: {
   enabled: boolean
   debounceMs?: number
   fetcher: (query: string) => Promise<CompletionPayload>
+  /** True when `fetcher` will answer this query from cache. Such a query skips
+   *  both the debounce and the loading state — the debounce exists to avoid a
+   *  request per keystroke, and a spinner over an answer we already hold reads
+   *  as latency the user isn't actually paying. */
+  isCached?: (query: string) => boolean
+  /** Bump to declare the held answer stale. Without it a popover left open on
+   *  an unchanged query would keep serving what it fetched before the source
+   *  changed, because the adapter de-dupes on the query alone. */
+  epoch?: number
   toItem: (entry: CompletionEntry, index: number) => Unstable_TriggerItem
 }): { adapter: Unstable_TriggerAdapter; loading: boolean } {
-  const { enabled, debounceMs = 60, fetcher, toItem } = options
+  const { enabled, debounceMs = 60, epoch = 0, fetcher, isCached, toItem } = options
 
   const [state, setState] = useState<{ query: string; items: Unstable_TriggerItem[] }>({
     query: EMPTY_QUERY,
@@ -49,6 +58,7 @@ export function useLiveCompletionAdapter(options: {
 
   useEffect(() => () => cancelTimer(), [cancelTimer])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (enabled) {
       return
@@ -60,6 +70,16 @@ export function useLiveCompletionAdapter(options: {
     setLoading(false)
     setState({ query: EMPTY_QUERY, items: [] })
   }, [cancelTimer, enabled])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    // Invalidate by forgetting which query the held items answer, so the next
+    // search() re-fetches. The items themselves stay until the new answer
+    // lands — an open popover must not blink empty on a background refresh.
+    // On mount this is already the state, so the first run is a no-op.
+    pendingQueryRef.current = null
+    setState(current => (current.query === EMPTY_QUERY ? current : { ...current, query: EMPTY_QUERY }))
+  }, [epoch])
 
   const scheduleFetch = useCallback(
     (query: string) => {
@@ -74,9 +94,13 @@ export function useLiveCompletionAdapter(options: {
       pendingQueryRef.current = query
       cancelTimer()
       const token = ++tokenRef.current
-      setLoading(true)
+      const cached = isCached?.(query) ?? false
 
-      timerRef.current = window.setTimeout(() => {
+      if (!cached) {
+        setLoading(true)
+      }
+
+      const run = () => {
         timerRef.current = null
 
         fetcher(query)
@@ -102,9 +126,13 @@ export function useLiveCompletionAdapter(options: {
               setLoading(false)
             }
           })
-      }, debounceMs)
+      }
+
+      // A cached answer resolves in a microtask, so debouncing it would only
+      // add a frame of empty popover on every keystroke.
+      cached ? run() : (timerRef.current = window.setTimeout(run, debounceMs))
     },
-    [cancelTimer, debounceMs, enabled, fetcher, toItem]
+    [cancelTimer, debounceMs, enabled, fetcher, isCached, toItem]
   )
 
   const adapter = useMemo<Unstable_TriggerAdapter>(

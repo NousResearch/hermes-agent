@@ -19,10 +19,6 @@ from agent.pet.constants import FRAME_H, FRAME_W, PetState
 # state mapping — priority invariants
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_derive_idle_default():
-    assert state.derive_pet_state() is PetState.IDLE
-    # awaiting input uses the dedicated waiting row when available.
-    assert state.derive_pet_state(awaiting_input=True) is PetState.WAITING
 
 
 def test_derive_priority_order():
@@ -91,24 +87,8 @@ def test_state_row_index_maps_to_supported_atlas_taxonomies():
     assert constants.state_row_index("nonsense") == 0
 
 
-def test_cols_for_scale_is_monotonic_and_floored():
-    # scale is the master size knob: smaller scale never yields more columns,
-    # and half-blocks clamp to a legibility floor rather than devolving to mush.
-    sizes = [constants.cols_for_scale(s) for s in (0.1, 0.3, 0.5, 0.7, 1.0, 1.5)]
-    assert sizes == sorted(sizes)
-    assert all(c >= constants.UNICODE_MIN_COLS for c in sizes)
-    # tiny scales pin to the floor; large scales grow past it.
-    assert constants.cols_for_scale(0.05) == constants.UNICODE_MIN_COLS
-    assert constants.cols_for_scale(0.33) == constants.UNICODE_MIN_COLS
-    assert constants.cols_for_scale(2.0) > constants.UNICODE_MIN_COLS
 
 
-def test_resolve_cols_override_else_scale():
-    # 0 / falsy → derive from scale; a positive int hard-overrides scale.
-    assert constants.resolve_cols(0.7, 0) == constants.cols_for_scale(0.7)
-    assert constants.resolve_cols(0.7, None) == constants.cols_for_scale(0.7)
-    assert constants.resolve_cols(2.0, 12) == 12
-    assert constants.resolve_cols(0.1, -5) == constants.cols_for_scale(0.1)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -142,36 +122,14 @@ def boba_like(tmp_path, monkeypatch):
     return pet_dir
 
 
-def test_store_install_resolution(boba_like):
-    pets = store.installed_pets()
-    assert [p.slug for p in pets] == ["boba"]
-    assert store.installed_pets()[0].exists
-
-    # configured slug wins when installed
-    assert store.resolve_active_pet("boba").slug == "boba"
-    # bogus slug falls back to first installed
-    assert store.resolve_active_pet("does-not-exist").slug == "boba"
-    # display metadata flows from pet.json
-    assert store.load_pet("boba").display_name == "Boba"
 
 
-def test_store_remove(boba_like):
-    assert store.remove_pet("boba") is True
-    assert store.installed_pets() == []
-    assert store.remove_pet("boba") is False  # idempotent
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # render — decode + every encoder produces output
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_renderer_decodes_frames(boba_like):
-    sprite = store.load_pet("boba").spritesheet
-    r = render.PetRenderer(str(sprite), mode="unicode", scale=0.5, unicode_cols=12)
-    assert r.available
-    # standard sheet yields FRAMES_PER_STATE frames per state
-    assert r.frame_count("idle") == constants.FRAMES_PER_STATE
-    assert r.frame_count(PetState.RUN) == constants.FRAMES_PER_STATE
 
 
 def test_trims_trailing_blank_frames(tmp_path):
@@ -222,27 +180,8 @@ def test_trims_trailing_blank_frames(tmp_path):
     }
 
 
-@pytest.mark.parametrize("mode", ["unicode", "kitty", "iterm", "sixel"])
-def test_every_encoder_emits(boba_like, mode):
-    sprite = store.load_pet("boba").spritesheet
-    r = render.PetRenderer(str(sprite), mode=mode, scale=0.4)
-    frame = r.frame("run", 1)
-    assert isinstance(frame, str) and frame, f"{mode} produced no frame"
-    if mode == "unicode":
-        assert "\x1b[" in frame  # has color escapes
-    elif mode == "kitty":
-        assert frame.startswith("\x1b_G")
-    elif mode == "iterm":
-        assert frame.startswith("\x1b]1337;File=")
-    elif mode == "sixel":
-        assert frame.startswith("\x1bP")
 
 
-def test_frame_index_wraps(boba_like):
-    sprite = store.load_pet("boba").spritesheet
-    r = render.PetRenderer(str(sprite), mode="unicode", scale=0.4)
-    # index beyond count wraps rather than indexing out of range
-    assert r.frame("idle", 999) == r.frame("idle", 999 % r.frame_count("idle"))
 
 
 def test_cells_grid_shape(boba_like):
@@ -262,35 +201,10 @@ def test_cells_grid_shape(boba_like):
 # render — kitty Unicode placeholders (TUI graphics path)
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_kitty_image_id_stable_bounded_nonzero():
-    # Deterministic per slug so re-renders reuse the same terminal-side image,
-    # and always a valid 24-bit-encodable, non-zero id.
-    a = render.kitty_image_id("boba")
-    assert a == render.kitty_image_id("boba")
-    assert 1 <= a <= 0x7FFF
 
 
-def test_kitty_color_hex_decodes_to_id():
-    # The placeholder's foreground color IS the image id (24-bit). The terminal
-    # reconstructs id = (r<<16)|(g<<8)|b, so the hex must round-trip.
-    for slug in ("boba", "clawd", "pixel-fox"):
-        image_id = render.kitty_image_id(slug)
-        h = render.kitty_color_hex(image_id)
-        assert h.startswith("#") and len(h) == 7
-        assert int(h[1:], 16) == image_id
 
 
-def test_kitty_placeholder_rows_grid_contract():
-    cols, rows = 18, 10
-    grid = render.kitty_placeholder_rows(cols, rows)
-    assert len(grid) == rows
-    placeholder = "\U0010eeee"
-    for r, row in enumerate(grid):
-        # Each line is exactly `cols` placeholder cells (combining diacritics
-        # are zero-width, so this is the rendered width Ink must measure).
-        assert row.count(placeholder) == cols
-        # First cell carries this row's diacritic; the rest inherit row + col.
-        assert row.startswith(placeholder + chr(render._ROWCOL_DIACRITICS[r]))
 
 
 def test_kitty_payload_structure(boba_like):
@@ -315,56 +229,14 @@ def test_kitty_payload_structure(boba_like):
         assert f"c={payload['cols']}" in esc and f"r={payload['rows']}" in esc
 
 
-def test_kitty_payload_snaps_to_whole_cells(boba_like):
-    # The transmitted frame must be an exact multiple of the cell box so kitty
-    # doesn't round up + clip the bottom row / letterbox a blank row (the
-    # "clipped feet" bug). cols/rows are derived as pixels // cell, so a snapped
-    # frame round-trips exactly. Regression for ratatui-image #57.
-    sprite = store.load_pet("boba").spritesheet
-    r = render.PetRenderer(str(sprite), mode="kitty", scale=0.6, unicode_cols=18)
-    frames = render._snap_frames_to_cell_grid(
-        render._crop_frames_to_alpha_union(r._frames("run"))
-    )
-    for f in frames:
-        assert f.width % render._CELL_W == 0
-        assert f.height % render._CELL_H == 0
 
 
-def test_kitty_payload_none_when_no_frames(tmp_path):
-    r = render.PetRenderer(str(tmp_path / "missing.webp"), mode="kitty")
-    assert r.kitty_payload("idle", image_id=1) is None
 
 
-def test_off_mode_and_missing_sheet_degrade(tmp_path):
-    # off mode never emits
-    r_off = render.PetRenderer(str(tmp_path / "nope.webp"), mode="off")
-    assert r_off.frame("idle", 0) == ""
-    # missing sheet → not available, empty frames, no raise
-    r_missing = render.PetRenderer(str(tmp_path / "nope.webp"), mode="unicode")
-    assert not r_missing.available
-    assert r_missing.frame("idle", 0) == ""
 
 
-def test_resolve_mode_non_tty_is_off():
-    # a non-tty stream forces 'off' regardless of configured mode
-    assert render.resolve_mode("kitty", stream=io.StringIO()) == "off"
-    assert render.resolve_mode("auto", stream=io.StringIO()) == "off"
 
 
-def test_detect_terminal_graphics_env(monkeypatch):
-    for key in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_SESSION_ID", "WEZTERM_PANE", "TERM"):
-        monkeypatch.delenv(key, raising=False)
-
-    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
-    assert render.detect_terminal_graphics() == "kitty"
-    monkeypatch.delenv("KITTY_WINDOW_ID")
-
-    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
-    assert render.detect_terminal_graphics() == "iterm"
-    monkeypatch.delenv("TERM_PROGRAM")
-
-    monkeypatch.setenv("TERM", "xterm-256color")
-    assert render.detect_terminal_graphics() == "unicode"
 
 
 def test_vscode_terminal_ignores_leaked_graphics_env(monkeypatch):

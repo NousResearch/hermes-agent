@@ -125,9 +125,11 @@ normalization alike. Learn the shape, not a snapshot of the current rungs.
 Two auth-flavored corollaries worth naming because they are easy to get wrong:
 
 - **One-time credentials are never reused.** An OAuth gateway connection mints a
-  fresh WebSocket ticket on every dial; a mint failure means reauthentication,
-  not "fall back to the cached URL." Only long-lived token/local auth may reuse
-  a cached URL as a lower rung.
+  fresh WebSocket ticket on every dial and never falls back to the cached URL.
+  Only a confirmed 401/403 (or an explicitly tagged auth rejection) means
+  reauthentication; timeout, network, malformed-response, and server failures
+  remain connectivity errors. Only long-lived token/local auth may reuse a
+  cached URL as a lower rung.
 - **A connection test must exercise the leg you'll actually use.** An HTTP
   status probe passing while the WebSocket/auth leg fails is a false positive
   that ships as "it said connected but nothing works."
@@ -150,6 +152,14 @@ universal extension system, a manifest, or a plugin adapter for a single
 consumer. Design a shared contract only once more than one real consumer proves
 its shape. "Plugin" means several unrelated things across Hermes — do not assume
 one surface's extension model runs in another.
+
+When the new capability is an **agent-callable** one — a tool that acts on this
+renderer (open a pane, read the in-app browser, react to a message) — it is a
+property of the SESSION's client, not of the backend host. Wire its
+availability off the session source the app already sends on `session.create`
+(`source: 'desktop'`), never off an env var on the backend process: that
+process might be a remote or cloud gateway this app merely connected to. See
+the root AGENTS.md, "Surface capability is a property of the SESSION."
 
 ## Respect the person using it
 

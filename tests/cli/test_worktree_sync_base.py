@@ -10,7 +10,9 @@ works offline in the hermetic sandbox), proving the worktree includes commits
 that exist on the remote but not on the stale local HEAD.
 """
 
+import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -90,6 +92,99 @@ class TestResolveWorktreeBase:
         _run(["git", "config", "user.email", "t@t.com"], repo)
         _run(["git", "config", "user.name", "T"], repo)
         _commit(repo, "README.md", "only commit")
+        base_ref, label = cli._resolve_worktree_base(str(repo))
+        assert base_ref == "HEAD"
+        assert "HEAD" in label
+
+
+class TestResolveWorktreeBaseStartupCost:
+    """The fetch on the -w startup path must be cheap and stall-proof.
+
+    A flaky smart-HTTP connection used to stall ``hermes -w`` for 30-60s
+    (30s fetch timeout in step 1, then a SECOND 30s fetch in step 2).
+    """
+
+    def test_fresh_fetch_head_skips_the_fetch(self, remote_and_clone, monkeypatch):
+        """FETCH_HEAD younger than the freshness window -> no fetch at all."""
+        clone, remote_head, _ = remote_and_clone
+        # Prime FETCH_HEAD (and the origin/main tracking ref) with a real fetch.
+        _run(["git", "fetch", "origin", "main"], clone)
+
+        calls = []
+        real_run = subprocess.run
+
+        def spy(args, **kw):
+            if isinstance(args, (list, tuple)) and "fetch" in args:
+                calls.append(list(args))
+            return real_run(args, **kw)
+
+        monkeypatch.setattr(subprocess, "run", spy)
+        base_ref, label = cli._resolve_worktree_base(str(clone))
+        assert base_ref == "origin/main"
+        assert "fetched" in label and "ago" in label
+        assert calls == [], "fresh FETCH_HEAD must skip the network fetch"
+        # And the skipped-fetch ref still points at the remote tip.
+        resolved = _run(["git", "rev-parse", base_ref], clone).stdout.strip()
+        assert resolved == remote_head
+
+    def test_stale_fetch_head_refetches(self, remote_and_clone):
+        """FETCH_HEAD older than the window -> a real fetch happens."""
+        clone, remote_head, _ = remote_and_clone
+        _run(["git", "fetch", "origin", "main"], clone)
+        fetch_head = Path(clone) / ".git" / "FETCH_HEAD"
+        old = time.time() - 3600
+        os.utime(fetch_head, (old, old))
+        base_ref, label = cli._resolve_worktree_base(str(clone))
+        assert base_ref == "origin/main"
+        assert label == "origin/main (fetched)"
+
+    def test_fetch_timeout_falls_back_to_cached_ref(self, remote_and_clone, monkeypatch):
+        """A stalled fetch must yield the locally-cached tracking ref, fast —
+        not cascade into a second fetch or blow up."""
+        clone, remote_head, stale_local_head = remote_and_clone
+
+        real_run = subprocess.run
+        fetches = []
+
+        def stall_fetches(args, **kw):
+            if isinstance(args, (list, tuple)) and "fetch" in args:
+                fetches.append(list(args))
+                raise subprocess.TimeoutExpired(cmd=args, timeout=kw.get("timeout", 5))
+            return real_run(args, **kw)
+
+        monkeypatch.setattr(subprocess, "run", stall_fetches)
+        start = time.monotonic()
+        base_ref, label = cli._resolve_worktree_base(str(clone))
+        elapsed = time.monotonic() - start
+        # Cached tracking ref, single fetch attempt, no step-2 cascade.
+        assert base_ref == "origin/main"
+        assert "cached" in label and "timed out" in label
+        assert len(fetches) == 1, "timeout must not cascade into a second fetch"
+        assert elapsed < 5, f"fallback path took {elapsed:.1f}s — must be fast"
+        # The cached ref is the clone-time origin/main (pre-advance), which is
+        # still a valid base — staleness is backstopped by the pre-push gate.
+        resolved = _run(["git", "rev-parse", base_ref], clone).stdout.strip()
+        assert resolved == stale_local_head
+
+    def test_fetch_timeout_without_cached_ref_falls_back_to_head(
+        self, tmp_path, monkeypatch
+    ):
+        """No usable tracking ref + failed fetch -> HEAD, never a bogus ref."""
+        # A repo whose branch claims an upstream that has no tracking ref.
+        repo = tmp_path / "broken-upstream"
+        repo.mkdir()
+        _run(["git", "init"], repo)
+        _run(["git", "config", "user.email", "t@t.com"], repo)
+        _run(["git", "config", "user.name", "T"], repo)
+        _run(["git", "checkout", "-b", "main"], repo)
+        _commit(repo, "README.md", "base")
+        _run(["git", "remote", "add", "origin", str(tmp_path / "nonexistent.git")], repo)
+        _run(
+            ["git", "config", "branch.main.remote", "origin"], repo
+        )
+        _run(
+            ["git", "config", "branch.main.merge", "refs/heads/main"], repo
+        )
         base_ref, label = cli._resolve_worktree_base(str(repo))
         assert base_ref == "HEAD"
         assert "HEAD" in label

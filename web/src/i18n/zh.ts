@@ -128,8 +128,14 @@ export const zh: Translations = {
     title: "会话",
     history: "历史",
     overview: "概览",
+    filterChats: "聊天",
+    filterAutomation: "自动化",
+    filterAll: "全部",
+    sourceFilter: "会话来源",
+    anySource: "任意来源",
     searchPlaceholder: "搜索消息内容...",
     noSessions: "暂无会话",
+    noSessionsInFilter: "此筛选条件下暂无会话",
     noMatch: "没有匹配的会话",
     startConversation: "开始对话后将显示在此处",
     noMessages: "暂无消息",
@@ -607,6 +613,12 @@ export const zh: Translations = {
       "看板可以将不相关的工作流分开——每个项目、代码库或域一个看板。一个看板上的工作者不会看到另一个看板的任务。",
     slug: "标识",
     slugHint: "— 小写字母、连字符，例如 atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "显示名称",
     displayNameHint: "（可选）",
     description: "描述",

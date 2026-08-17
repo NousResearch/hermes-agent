@@ -10,7 +10,8 @@
  */
 
 import assert from 'node:assert/strict'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 
@@ -130,4 +131,50 @@ test('probe reports unavailable when no WebSocket implementation is provided', a
   const result = await probeGatewayWebSocket('ws://host/api/ws', { WebSocketImpl: undefined })
   assert.equal(result.ok, false)
   assert.match(result.reason, /not available/)
+})
+
+test('probe passes extra upgrade headers to the WebSocket constructor (Cloudflare Access)', async () => {
+  const { FakeWs, instances } = makeFakeWs()
+  const seen: any[] = []
+
+  class HeaderFakeWs extends FakeWs {
+    constructor(url, options?) {
+      super(url)
+      seen.push(options)
+    }
+  }
+
+  const headers = { 'CF-Access-Client-Id': 'id', 'CF-Access-Client-Secret': 'secret' }
+
+  const pending = probeGatewayWebSocket('wss://x/api/ws?token=t', {
+    WebSocketImpl: HeaderFakeWs,
+    headers,
+    readyGraceMs: 1
+  })
+
+  instances[0].emit('open', {})
+  instances[0].emit('message', {})
+
+  const result = await pending
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(seen[0], { headers })
+
+  // No headers → the constructor is called with the URL alone (browser-safe).
+  const bare = makeFakeWs()
+  const seenBare: any[] = []
+
+  class BareWs extends bare.FakeWs {
+    constructor(url, options?) {
+      super(url)
+      seenBare.push(options)
+    }
+  }
+
+  const barePending = probeGatewayWebSocket('wss://x/api/ws?token=t', { WebSocketImpl: BareWs, readyGraceMs: 1 })
+
+  bare.instances[0].emit('open', {})
+  bare.instances[0].emit('message', {})
+  await barePending
+  assert.equal(seenBare[0], undefined)
 })

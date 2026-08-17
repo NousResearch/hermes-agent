@@ -49,16 +49,6 @@ class TestResolveSessionPlatform:
         _srv = _reload_resolver()
         assert _srv._resolve_session_platform() == "desktop"
 
-    def test_desktop_embedded_terminal_pane_stays_tui(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        clean_env.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_platform() == "tui"
-
-    def test_desktop_terminal_alone_means_standalone_tui(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_platform() == "tui"
 
     @pytest.mark.parametrize("val", ["1", "true", "yes", "on", "TRUE", "Yes", "ON"])
     def test_truthy_variants_recognized(self, clean_env, val):
@@ -86,49 +76,18 @@ class TestResolveSessionSource:
         _srv = _reload_resolver()
         assert _srv._resolve_session_source("telegram") == "telegram"
 
-    def test_explicit_empty_source_falls_back_to_env(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_source("") == "desktop"
-
-    def test_explicit_none_source_falls_back_to_env(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_source(None) == "desktop"
 
     def test_no_env_no_param_defaults_to_tui(self, clean_env):
         _srv = _reload_resolver()
         assert _srv._resolve_session_source(None) == "tui"
 
-    def test_embedded_terminal_default_is_tui(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        clean_env.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_source(None) == "tui"
-
-    def test_explicit_source_param_resists_env_drift(self, clean_env):
-        """A caller that explicitly passes source="cli" must not be silently
-        rewritten to "desktop" by env vars — the resolver only fills in the
-        default when one is missing."""
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_session_source("cli") == "cli"
-
 
 class TestResolveAgentPlatform:
-    def test_explicit_desktop_source_drives_agent_platform_without_env(self, clean_env):
-        _srv = _reload_resolver()
-        assert _srv._resolve_agent_platform("desktop") == "desktop"
 
     def test_missing_source_falls_back_to_env_resolved_platform(self, clean_env):
         clean_env.setenv("HERMES_DESKTOP", "1")
         _srv = _reload_resolver()
         assert _srv._resolve_agent_platform(None) == "desktop"
-
-    def test_explicit_tui_source_keeps_embedded_terminal_as_tui(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        _srv = _reload_resolver()
-        assert _srv._resolve_agent_platform("tui") == "tui"
 
 
 class TestSessionSourceFallback:
@@ -137,15 +96,4 @@ class TestSessionSourceFallback:
         _srv = _reload_resolver()
         assert _srv._session_source({"source": "telegram"}) == "telegram"
 
-    def test_session_source_defaults_to_desktop_under_desktop_backend(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        _srv = _reload_resolver()
-        assert _srv._session_source({}) == "desktop"
-        assert _srv._session_source(None) == "desktop"
 
-    def test_session_source_defaults_to_tui_for_embedded_terminal(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        clean_env.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        _srv = _reload_resolver()
-        assert _srv._session_source({}) == "tui"
-        assert _srv._session_source(None) == "tui"

@@ -44,11 +44,14 @@ const DA2_RE = /^\x1b\[>([\d;]*)c$/
 // (private ? marker distinguishes from CSI u key events)
 // eslint-disable-next-line no-control-regex
 const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/
-// DECXCPR cursor position: CSI ? row ; col R
-// The ? marker disambiguates from modified F3 keys (Shift+F3 = CSI 1;2 R,
-// Ctrl+F3 = CSI 1;5 R, etc.) — plain CSI row;col R is genuinely ambiguous.
+// Cursor position report: CSI [?] row ; col R
+// DECXCPR (CSI ? row;col R) is unambiguous and always matched.
+// Standard DSR (CSI row;col R, no ?) is also matched, but only when
+// row > 1 — modified F3 keys use CSI 1;modifier R (Shift+F3 = CSI 1;2 R,
+// Ctrl+F3 = CSI 1;5 R, etc.), and F3 always has row 1. Reports at row 1
+// without the ? marker fall through to parseKeypress to preserve F3.
 // eslint-disable-next-line no-control-regex
-const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/
+const CURSOR_POSITION_RE = /^\x1b\[(\??)(\d+);(\d+)R$/
 // OSC response: OSC code ; data (BEL|ST)
 // eslint-disable-next-line no-control-regex
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
@@ -145,10 +148,23 @@ function parseTerminalResponse(s: string): TerminalResponse | null {
     }
 
     if ((m = CURSOR_POSITION_RE.exec(s))) {
+      const hasPrivateMarker = m[1] === '?'
+      const row = parseInt(m[2]!, 10)
+
+      // Without the DEC-private '?' marker, CSI row;col R is ambiguous with
+      // modified F3 keys (Shift+F3 = CSI 1;2 R, etc.). F3 always uses row 1,
+      // so only treat the standard form as a cursor position report when
+      // row > 1. Row <= 1 reports without '?' fall through to parseKeypress:
+      // row 1 preserves F3, and row 0 is an invalid DSR report (terminal
+      // coordinates are 1-indexed) that should remain unclassified.
+      if (!hasPrivateMarker && row <= 1) {
+        return null
+      }
+
       return {
         type: 'cursorPosition',
-        row: parseInt(m[1]!, 10),
-        col: parseInt(m[2]!, 10)
+        row,
+        col: parseInt(m[3]!, 10)
       }
     }
 
@@ -182,6 +198,58 @@ function splitNumericParams(params: string): number[] {
   }
 
   return params.split(';').map(p => parseInt(p, 10))
+}
+
+// A text token can carry stray control bytes fused with printable input —
+// most commonly when a third-party IME (Vietnamese Telex via OpenKey/Unikey/
+// EVKey, etc.) recomposes a syllable by emitting an erase control byte
+// immediately followed by the finished character(s) in a single stdin read
+// (e.g. "\x7fô", "ab\bç"). parseKeypress only recognizes a control key when
+// the WHOLE string is exactly that control byte, so a mixed chunk falls
+// through every branch and returns name:"" with a non-printable sequence,
+// which the composer's PRINTABLE gate then discards — taking the surrounding
+// letters down with it. Split the token so every control byte becomes its own
+// keypress and the printable runs between them survive.
+//
+// CR (\r) and LF (\n) are deliberately NOT treated as split points: a lone
+// Enter already arrives as its own read, while a newline embedded in a text
+// token only happens for non-bracketed paste, where peeling it into a
+// `return` keypress would prematurely submit the composer. Leaving them in
+// the token preserves the existing paste/return handling byte-for-byte.
+function isControlChar(ch: string): boolean {
+  const code = ch.charCodeAt(0)
+
+  if (code === 0x0a || code === 0x0d) {
+    return false
+  }
+
+  return code < 0x20 || code === 0x7f
+}
+
+function parseTextKeypresses(text: string): ParsedKey[] {
+  const keys: ParsedKey[] = []
+  let textStart = 0
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+
+    if (!isControlChar(ch)) {
+      continue
+    }
+
+    if (i > textStart) {
+      keys.push(parseKeypress(text.slice(textStart, i)))
+    }
+
+    keys.push(parseKeypress(ch))
+    textStart = i + 1
+  }
+
+  if (textStart < text.length) {
+    keys.push(parseKeypress(text.slice(textStart)))
+  }
+
+  return keys
 }
 
 export type KeyParseState = {
@@ -224,7 +292,7 @@ export function parseMultipleKeypresses(
   const inputString = isFlush ? '' : inputToString(input)
 
   // Get or create tokenizer
-  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true })
+  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true, legacyAltEnter: true })
 
   // Tokenize the input
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
@@ -278,7 +346,7 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        keys.push(...parseTextKeypresses(token.value))
       }
     }
   }
@@ -728,9 +796,10 @@ function parseKeypress(s: string = ''): ParsedKey {
     return createNavKey(s, 'mouse', false)
   }
 
-  if (s === '\r' || s === '\n') {
+  if (s === '\r' || s === '\n' || s === '\x1b\r' || s === '\x1b\n') {
     key.raw = undefined
     key.name = 'return'
+    key.meta = s.startsWith('\x1b')
   } else if (s === '\t') {
     key.name = 'tab'
   } else if (s === '\b' || s === '\x1b\b') {

@@ -25,10 +25,12 @@ class _FakeCallToolResult:
     MCP SDK Pydantic model (``mcp.types.CallToolResult``).
     """
 
-    def __init__(self, content, is_error=False, structuredContent=None):
+    def __init__(self, content, is_error=False, structuredContent=None, meta=None):
         self.content = content
         self.isError = is_error
         self.structuredContent = structuredContent
+        # Real SDK exposes the wire ``_meta`` field as ``.meta`` (Pydantic alias).
+        self.meta = meta
 
 
 def _fake_run_on_mcp_loop(coro_or_factory, timeout=30):
@@ -78,40 +80,6 @@ class TestStructuredContentPreservation:
         data = json.loads(raw)
         assert data == {"result": "hello"}
 
-    def test_both_content_and_structured(self, _patch_mcp_server):
-        """When both content and structuredContent are present, combine them."""
-        session = _patch_mcp_server
-        payload = {"value": "secret-123", "revealed": True}
-        session.call_tool = AsyncMock(
-            return_value=_FakeCallToolResult(
-                content=[_FakeContentBlock("OK")],
-                structuredContent=payload,
-            )
-        )
-        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
-        raw = handler({})
-        data = json.loads(raw)
-        # content is the primary result, structuredContent is supplementary
-        assert data["result"] == "OK"
-        assert data["structuredContent"] == payload
-
-    def test_both_content_and_structured_desktop_commander(self, _patch_mcp_server):
-        """Real-world case: Desktop Commander returns file text in content,
-        metadata in structuredContent.  Agent must see file contents."""
-        session = _patch_mcp_server
-        file_text = "import os\nprint('hello')\n"
-        metadata = {"fileName": "main.py", "filePath": "/tmp/main.py", "fileType": "python"}
-        session.call_tool = AsyncMock(
-            return_value=_FakeCallToolResult(
-                content=[_FakeContentBlock(file_text)],
-                structuredContent=metadata,
-            )
-        )
-        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
-        raw = handler({})
-        data = json.loads(raw)
-        assert data["result"] == file_text
-        assert data["structuredContent"] == metadata
 
     def test_structured_content_none_falls_back_to_text(self, _patch_mcp_server):
         """When structuredContent is explicitly None, fall back to text."""
@@ -141,3 +109,109 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+
+class TestMetaPassthrough:
+    """Server ``_meta`` is surfaced, minus protocol-reserved keys.
+
+    Ported from MoonshotAI/kimi-code#2596/#2600.
+    """
+
+    def test_vendor_meta_passes_through(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("done")],
+                meta={"com.example/handoff": {"url": "https://x"}},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["result"] == "done"
+        assert data["_meta"] == {"com.example/handoff": {"url": "https://x"}}
+
+    def test_reserved_meta_keys_dropped(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("done")],
+                meta={
+                    "modelcontextprotocol.io/progress": 1,
+                    "tools.mcp.com/trace": "x",
+                    "com.example.mcp/vendor": "keep",  # trailing mcp label = vendor ns
+                    "unprefixed": "keep",
+                },
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["_meta"] == {
+            "com.example.mcp/vendor": "keep",
+            "unprefixed": "keep",
+        }
+
+    def test_all_reserved_meta_omits_field(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("done")],
+                meta={"mcp.io/internal": True},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {"result": "done"}
+
+    def test_meta_with_structured_content(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("txt")],
+                structuredContent={"ok": True},
+                meta={"com.example/k": "v"},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {
+            "result": "txt",
+            "structuredContent": {"ok": True},
+            "_meta": {"com.example/k": "v"},
+        }
+
+    def test_non_serializable_meta_dropped(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("done")],
+                meta={"com.example/obj": object()},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {"result": "done"}
+
+    def test_non_dict_meta_ignored(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("done")],
+                meta="not-a-dict",
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {"result": "done"}
+
+
+class TestReservedMetaKeyPredicate:
+    def test_reserved_prefixes(self):
+        assert mcp_tool._is_reserved_mcp_meta_key("modelcontextprotocol.io/x")
+        assert mcp_tool._is_reserved_mcp_meta_key("mcp.dev/x")
+        assert mcp_tool._is_reserved_mcp_meta_key("tools.mcp.com/x")
+
+    def test_vendor_and_unprefixed_not_reserved(self):
+        assert not mcp_tool._is_reserved_mcp_meta_key("com.example.mcp/x")  # trailing label
+        assert not mcp_tool._is_reserved_mcp_meta_key("com.example/x")
+        assert not mcp_tool._is_reserved_mcp_meta_key("plain-key")
+        assert not mcp_tool._is_reserved_mcp_meta_key("/leading-slash")

@@ -129,8 +129,14 @@ export const pt: Translations = {
     title: "Sessões",
     history: "Histórico",
     overview: "Visão geral",
+    filterChats: "Conversas",
+    filterAutomation: "Automação",
+    filterAll: "Todas",
+    sourceFilter: "Origem da sessão",
+    anySource: "Qualquer origem",
     searchPlaceholder: "Pesquisar conteúdo das mensagens...",
     noSessions: "Ainda não há sessões",
+    noSessionsInFilter: "Nenhuma sessão neste filtro",
     noMatch: "Nenhuma sessão corresponde à pesquisa",
     startConversation: "Inicie uma conversa para a ver aqui",
     noMessages: "Sem mensagens",
@@ -613,6 +619,12 @@ export const pt: Translations = {
       "Os quadros permitem-lhe separar fluxos de trabalho não relacionados — um por projeto, repositório ou domínio. Os workers de um quadro nunca veem as tarefas de outro quadro.",
     slug: "Slug",
     slugHint: "— minúsculas, hífenes, p. ex. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nome a apresentar",
     displayNameHint: "(opcional)",
     description: "Descrição",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,12 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
         # A readiness probe must never compete with normal state writers. A
         # read-only schema query still catches unreadable/corrupt databases
         # without taking a write reservation on every health poll.
+        # ``closing(...)`` is required: sqlite3's connection context manager
+        # only commits/rolls back — it never closes, so a bare ``with
+        # sqlite3.connect(...)`` leaks one connection (and its fds) per
+        # health poll in the long-running gateway (#69678/#69567 bug class).
         uri = f"file:{path.as_posix()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
+        with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
             conn.execute("PRAGMA query_only = ON")
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
         return _check("ok")

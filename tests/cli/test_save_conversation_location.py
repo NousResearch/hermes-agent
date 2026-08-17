@@ -61,7 +61,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     ])
 
     # Call the unbound method against our stub.
-    cli.HermesCLI.save_conversation(stub)
+    cli.HermesCLI.save_conversation(stub, "/save json")
 
     # File must NOT be in CWD
     cwd_leak = list(work.glob("hermes_conversation_*.json"))
@@ -75,7 +75,9 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
 
     payload = json.loads(files[0].read_text())
     assert payload["model"] == "test-model"
-    assert payload["session_id"] == "20260101_120000_abc123"
+    # /save now emits the canonical export_session shape: the session id
+    # lives under "id" (was "session_id" in the legacy snapshot format).
+    assert payload["id"] == "20260101_120000_abc123"
     assert payload["messages"] == [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
@@ -93,9 +95,40 @@ def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
     import cli
 
     stub = _make_stub_cli([])
-    cli.HermesCLI.save_conversation(stub)
+    cli.HermesCLI.save_conversation(stub, "/save json")
 
     saved_dir = hermes_home / "sessions" / "saved"
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     assert "No conversation to save" in out
+
+
+def test_save_conversation_bare_shows_usage(hermes_home, capsys):
+    """Bare /save prints the usage card and writes nothing."""
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
+        sys.modules.pop(mod, None)
+    import cli
+
+    stub = _make_stub_cli([{"role": "user", "content": "hi"}])
+    cli.HermesCLI.save_conversation(stub, "/save")
+
+    saved_dir = hermes_home / "sessions" / "saved"
+    assert not saved_dir.exists() or not list(saved_dir.iterdir())
+    out = capsys.readouterr().out
+    # Usage card lists every format and the redact option
+    for token in ("json", "md", "html", "redact", "Usage:"):
+        assert token in out, (token, out)
+
+
+def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
+        sys.modules.pop(mod, None)
+    import cli
+
+    stub = _make_stub_cli([{"role": "user", "content": "hi"}])
+    cli.HermesCLI.save_conversation(stub, "/save pdf")
+
+    saved_dir = hermes_home / "sessions" / "saved"
+    assert not saved_dir.exists() or not list(saved_dir.iterdir())
+    out = capsys.readouterr().out
+    assert "Usage:" in out

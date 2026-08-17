@@ -163,3 +163,35 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
     )
 
     assert response == text
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path):
+    """Gateway hooks receive the actual model/provider for post-turn routing."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "done",
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "model": "gpt-5.6-terra",
+        "provider": "openai-codex",
+    })
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    end_context = next(
+        call.args[1]
+        for call in runner.hooks.emit.await_args_list
+        if call.args[0] == "agent:end"
+    )
+    assert end_context["model"] == "gpt-5.6-terra"
+    assert end_context["provider"] == "openai-codex"

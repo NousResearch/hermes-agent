@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - exercised via stdlib fallback
 
 DEFAULT_LOCAL_HOST = "http://127.0.0.1:8188"
 DEFAULT_CLOUD_HOST = "https://cloud.comfy.org"
-ENV_API_KEY = "COMFY_CLOUD_API_KEY"
+ENV_API_KEY = "COMFY_CLOUD_API_KEY"  # env var NAME (placeholder, not a secret value)
 
 # Connection / retry defaults
 DEFAULT_HTTP_TIMEOUT = 60          # seconds — single-attempt request timeout

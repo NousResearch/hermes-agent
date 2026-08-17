@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,12 @@ def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
         info["reason"] = "no cron/jobs.json present"
         return info
     try:
-        raw = src.read_text(encoding="utf-8")
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — a UTF-8 BOM left
+        # by Windows editors otherwise survives decoding as U+FEFF, breaks
+        # json.loads below, and misreports jobs_count as 0 with a spurious
+        # parse warning. The BOM-less text is also what gets written to the
+        # backup, so a later rollback restores a loadable file.
+        raw = src.read_text(encoding="utf-8-sig")
     except OSError as e:
         logger.debug("Failed to read cron/jobs.json for backup: %s", e)
         info["reason"] = f"read error: {e}"
@@ -142,8 +148,8 @@ def _utc_id(now: Optional[datetime] = None) -> str:
 
 def _load_config() -> Dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
     except Exception as e:
         logger.debug("Failed to load config for curator backup: %s", e)
         return {}
@@ -536,6 +542,33 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 
+def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
+    """Move staged entries back to their original paths.
+
+    ``shutil.move`` moves *into* an existing destination directory rather than
+    replacing it, so a partially-completed extract leaves debris that would
+    otherwise bury the user's real skill one level deeper
+    (``skills/foo/foo/``) while the tree still looks populated. Clear whatever
+    the failed extract created at each original path first. The staged copy is
+    authoritative, and the pre-rollback safety snapshot is the undo handle for
+    the extract's own output.
+
+    Returns the names that could not be restored, so the caller can report an
+    incomplete recovery instead of claiming the state was restored.
+    """
+    failed: List[str] = []
+    for orig, dest in moved:
+        try:
+            if orig.is_dir() and not orig.is_symlink():
+                shutil.rmtree(orig)
+            elif orig.exists() or orig.is_symlink():
+                orig.unlink()
+            shutil.move(str(dest), str(orig))
+        except OSError:
+            failed.append(orig.name)
+    return failed
+
+
 def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot.
 
@@ -577,12 +610,19 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         # Protect the target from this snapshot's prune step: at the steady
         # keep limit, pruning the oldest snapshot would otherwise delete the
         # very snapshot we are about to extract from.
-        snapshot_skills(
+        safety_snapshot = snapshot_skills(
             reason=f"pre-rollback to {target.name}",
             protect_ids={target.name},
         )
     except Exception as e:
         return (False, f"pre-rollback safety snapshot failed: {e}", None)
+    if safety_snapshot is None:
+        return (
+            False,
+            "pre-rollback safety snapshot failed; backups may be disabled "
+            "or unavailable, and current skills were not changed",
+            None,
+        )
 
     # Additionally move current entries into an internal staging dir so
     # the extract happens into an empty skills tree (predictable result).
@@ -604,11 +644,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
             moved.append((entry, dest))
     except OSError as e:
         # Best-effort rollback of the move
-        for orig, dest in moved:
-            try:
-                shutil.move(str(dest), str(orig))
-            except OSError:
-                pass
+        _unstage(moved)
         try:
             shutil.rmtree(staged, ignore_errors=True)
         except OSError:
@@ -633,12 +669,30 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
                 # Python < 3.12 — no filter kwarg
                 tf.extractall(str(skills))
     except (OSError, tarfile.TarError) as e:
-        # Best-effort recover: move staged contents back
-        for orig, dest in moved:
+        # Best-effort recover. A partial extract can leave entries the
+        # original tree never had, so drop those first, otherwise the
+        # "restored" tree is the user's skills plus a slice of the snapshot.
+        staged_names = {orig.name for orig, _ in moved}
+        for entry in list(skills.iterdir()):
+            if entry.name in _EXCLUDE_TOP_LEVEL or entry.name in staged_names:
+                continue
             try:
-                shutil.move(str(dest), str(orig))
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
             except OSError:
                 pass
+        unrestored = _unstage(moved)
+        if unrestored:
+            # Do not claim a clean restore we did not achieve, and keep the
+            # staging dir so the entries can be recovered by hand.
+            return (
+                False,
+                f"snapshot extract failed: {e} - could not restore "
+                f"{', '.join(sorted(unrestored))}; staged copies kept at {staged}",
+                None,
+            )
         try:
             shutil.rmtree(staged, ignore_errors=True)
         except OSError:
@@ -687,13 +741,6 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
 # Human-readable summary for CLI
 # ---------------------------------------------------------------------------
 
-def format_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
-        n /= 1024
-    return f"{n:.1f} GB"
-
 
 def summarize_backups() -> str:
     rows = list_backups()
@@ -706,6 +753,6 @@ def summarize_backups() -> str:
             f"{r.get('id','?'):<24}  "
             f"{(r.get('reason','?') or '?')[:40]:<40}  "
             f"{r.get('skill_files', 0):>6}  "
-            f"{format_size(int(r.get('archive_bytes', 0))):>8}"
+            f"{format_bytes(int(r.get('archive_bytes', 0))):>8}"
         )
     return "\n".join(lines)

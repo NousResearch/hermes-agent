@@ -3,9 +3,19 @@
 This is the gateway-side BEHAVIOUR layer that consumes the relay scale-to-zero
 PRIMITIVES (gateway-gateway Phase 5: the buffered-flip, the durable per-instance
 buffer, the wakeUrl poke, the reconnect supervisor). It owns the *decision* to go
-idle and drives the relay transport's ``go_dormant()`` (D12) — it does NOT itself
-suspend the machine. On Fly, the now-traffic-idle machine is suspended by
-``autostop:"suspend"`` and woken by autostart-on-wakeUrl (decisions.md Q3=C′).
+idle, drives the relay transport's ``go_dormant()`` (D12), and then SUSPENDS the
+machine itself through the local Fly Machines API socket. Wake stays platform-side:
+autostart-on-wakeUrl (decisions.md Q3=C′).
+
+Why the gateway self-suspends instead of relying on ``autostop:"suspend"``: Fly
+Proxy judges idle exclusively on INBOUND proxied connections — it cannot see an
+in-flight agent turn (outbound-only LLM traffic) and there is no way for the app
+to signal "not ready to suspend". Mid-2026 the proxy also stopped treating open
+OUTBOUND sockets as activity, so the relay WebSocket no longer masks the race:
+Fly would suspend a machine mid-job, and could suspend BEFORE ``go_dormant()``
+flipped the relay destination (the buffered-event black hole). Owning the suspend
+call closes both: it only ever fires after the idle predicate (no running agents,
+no live background work, inbound-quiet) holds AND the dormant quiesce completed.
 
 Design constraints (decisions.md):
   - Per-instance enable is gated SOLELY by the NAS "Labs" toggle, carried to the
@@ -28,12 +38,29 @@ inputs so they unit-test without a live gateway.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import socket
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 # Env flag stamped by NAS when the scaleToZero Labs toggle is on (D11/Q8=A),
 # mirroring how the `relay` feature stamps GATEWAY_RELAY_URL. Truthy values only.
 SCALE_TO_ZERO_ENV = "HERMES_SCALE_TO_ZERO"
+
+# Fly-injected machine identity (present on every Fly machine). Used by the
+# self-suspend call; both must be present for self_suspend_available().
+FLY_APP_NAME_ENV = "FLY_APP_NAME"
+FLY_MACHINE_ID_ENV = "FLY_MACHINE_ID"
+
+# The local flaps (Fly Machines API) unix socket, available inside every Fly
+# machine. A POST to /v1/apps/{app}/machines/{id}/suspend snapshots RAM and
+# suspends THIS machine — the Fly-endorsed replacement for proxy autostop when
+# the app must own the idle decision (https://fly.io/docs/reference/suspend-resume/).
+FLY_API_SOCKET = "/.fly/api"
+
 
 # config.yaml default (D2). Behavioural setting -> config, not env.
 DEFAULT_IDLE_TIMEOUT_MINUTES = 5
@@ -122,3 +149,84 @@ def is_idle(
     if has_live_background_work:
         return False
     return seconds_since_last_inbound >= idle_timeout_seconds
+
+
+def self_suspend_available(environ: Optional[dict] = None) -> bool:
+    """Whether this process can suspend its own machine via the flaps socket.
+
+    True iff the Fly-injected machine identity is present AND the local Machines
+    API socket exists. Off-Fly (local dev, Azure ACA, tests) this is False and
+    the watcher simply skips the suspend step — dormancy still happens, the
+    platform just never freezes the process.
+    """
+    env = environ if environ is not None else os.environ
+    return bool(
+        str(env.get(FLY_APP_NAME_ENV, "")).strip()
+        and str(env.get(FLY_MACHINE_ID_ENV, "")).strip()
+        and os.path.exists(FLY_API_SOCKET)
+    )
+
+
+def suspend_self(
+    environ: Optional[dict] = None,
+    *,
+    socket_path: str = FLY_API_SOCKET,
+    timeout: float = 10.0,
+) -> bool:
+    """POST /v1/apps/{app}/machines/{id}/suspend on the local flaps socket.
+
+    Fly's in-machine Machines API needs no token — the socket itself is the
+    credential. Equivalent to:
+        curl --unix-socket /.fly/api -X POST \\
+          http://flaps/v1/apps/$FLY_APP_NAME/machines/$FLY_MACHINE_ID/suspend
+
+    Returns True when flaps accepted the request (2xx). The caller should treat
+    this as fire-and-forget: on success the kernel freezes this process shortly
+    after, so there may be nothing meaningful to run afterwards. Never raises —
+    a failed suspend just leaves the machine running (fail-awake, never
+    fail-frozen), which costs money but loses no work.
+
+    stdlib-only on purpose: a plain unix-socket HTTP/1.1 request, no httpx/
+    requests dependency in the hot path and no async plumbing to freeze
+    mid-await.
+    """
+    env = environ if environ is not None else os.environ
+    app = str(env.get(FLY_APP_NAME_ENV, "")).strip()
+    machine_id = str(env.get(FLY_MACHINE_ID_ENV, "")).strip()
+    if not app or not machine_id:
+        logger.warning("scale-to-zero: suspend_self called without Fly machine identity")
+        return False
+    request = (
+        f"POST /v1/apps/{app}/machines/{machine_id}/suspend HTTP/1.1\r\n"
+        "Host: flaps\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(socket_path)
+            sock.sendall(request.encode("ascii"))
+            response = b""
+            while len(response) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+    except OSError as exc:
+        logger.warning("scale-to-zero: flaps suspend request failed: %s", exc)
+        return False
+    status_line = response.split(b"\r\n", 1)[0].decode("ascii", "replace")
+    parts = status_line.split()
+    ok = len(parts) >= 2 and parts[1].isdigit() and 200 <= int(parts[1]) < 300
+    if ok:
+        logger.info("scale-to-zero: machine suspend accepted by flaps (%s)", status_line)
+    else:
+        body = response.split(b"\r\n\r\n", 1)[-1][:500].decode("utf-8", "replace")
+        logger.warning(
+            "scale-to-zero: flaps suspend rejected: %s %s",
+            status_line,
+            json.dumps(body)[:500],
+        )
+    return ok

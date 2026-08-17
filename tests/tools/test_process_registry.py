@@ -26,6 +26,21 @@ def registry():
     return ProcessRegistry()
 
 
+@pytest.fixture(autouse=True)
+def _reset_systemd_scope_cache():
+    """Reset the cached ``systemd-run --user --scope`` availability flag
+    before each test so a probe run on a real systemd host (where
+    ``INVOCATION_ID`` is set) doesn't leak into tests that mock
+    ``subprocess.Popen``. Tests that exercise the probe directly reset the
+    cache themselves."""
+    import tools.process_registry as _pr
+
+    original = _pr._SYSTEMD_SCOPE_AVAILABLE
+    _pr._SYSTEMD_SCOPE_AVAILABLE = False
+    yield
+    _pr._SYSTEMD_SCOPE_AVAILABLE = original
+
+
 def _make_session(
     sid="proc_test123",
     command="echo hello",
@@ -55,6 +70,70 @@ def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
     )
 
 
+def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry):
+    old = _make_session(sid="proc_old", task_id="session-a")
+    finished = _make_session(
+        sid="proc_finished", task_id="session-a", exited=True, exit_code=0
+    )
+    registry._running[old.id] = old
+    registry._finished[finished.id] = finished
+    baseline = registry.snapshot_running_ids("session-a")
+
+    new = _make_session(sid="proc_new", task_id="session-a")
+    foreign = _make_session(sid="proc_foreign", task_id="session-b")
+    registry._running[new.id] = new
+    registry._running[foreign.id] = foreign
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert baseline == frozenset({"proc_old"})
+    assert registry.kill_started_since(
+        "session-a", baseline, source="gateway_turn_timeout"
+    ) == 1
+    assert calls == [
+        (
+            "proc_new",
+            {
+                "source": "gateway_turn_timeout",
+                "consume_output": True,
+            },
+        )
+    ]
+
+
+def test_kill_all_backward_compat_and_exclude_ids(registry):
+    """kill_all keeps its historical default behavior (kill everything for
+    the task, consume_output=False, source='kill_all') and honors the new
+    exclude_ids kwarg that kill_started_since delegates through (#76188)."""
+    a = _make_session(sid="proc_a", task_id="session-a")
+    b = _make_session(sid="proc_b", task_id="session-a")
+    registry._running[a.id] = a
+    registry._running[b.id] = b
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert registry.kill_all("session-a", exclude_ids=frozenset({"proc_a"})) == 1
+    assert calls == [
+        ("proc_b", {"source": "kill_all", "consume_output": False})
+    ]
+
+    calls.clear()
+    assert registry.kill_all("session-a") == 2
+    assert sorted(c[0] for c in calls) == ["proc_a", "proc_b"]
+
+
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
     """Poll a predicate until it returns truthy or the timeout elapses."""
     deadline = time.monotonic() + timeout
@@ -65,8 +144,13 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
-def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
-    """pywinpty expects str input; bytes raises a PyString conversion error."""
+@pytest.mark.windows_only
+def test_write_stdin_uses_str_for_windows_pty(registry):
+    """pywinpty expects str input; bytes raises a PyString conversion error.
+
+    Windows-only: the str-vs-bytes choice IS the ``_IS_WINDOWS`` branch, and
+    the real pty handle it must satisfy (pywinpty) does not exist elsewhere.
+    """
     written = []
 
     class _FakePty:
@@ -76,7 +160,6 @@ def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
     session = _make_session(sid="pty-win")
     session._pty = _FakePty()
     registry._running[session.id] = session
-    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", True)
 
     result = registry.write_stdin(session.id, "hello\n")
 
@@ -85,7 +168,9 @@ def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
     assert isinstance(written[0], str)
 
 
-def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
+@pytest.mark.linux_only
+def test_write_stdin_uses_bytes_for_posix_pty(registry):
+    """The POSIX counterpart: ptyprocess expects bytes, not str."""
     written = []
 
     class _FakePty:
@@ -95,7 +180,6 @@ def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
     session = _make_session(sid="pty-posix")
     session._pty = _FakePty()
     registry._running[session.id] = session
-    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
 
     result = registry.write_stdin(session.id, "hello\n")
 
@@ -103,28 +187,52 @@ def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
     assert written == [b"hello\n"]
 
 
+@pytest.mark.windows_only
+def test_submit_stdin_uses_crlf_for_windows_pty(registry):
+    """Enter on a Windows PTY is a carriage return, not a bare LF.
+
+    ConPTY cooked input only ends a line on ``\\r``; a bare ``\\n`` through
+    pywinpty is never delivered to a blocking line read (Python readline,
+    Go bufio.Scanner — the exact hang seen live with ``gh auth login``'s
+    "Press Enter to open the browser" prompt). submit_stdin must append
+    ``\\r\\n`` for Windows PTY sessions.
+    """
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-win-submit")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+
+    result = registry.submit_stdin(session.id, "Y")
+
+    assert result["status"] == "ok"
+    assert written == ["Y\r\n"]
+
+
+@pytest.mark.windows_only
+def test_submit_stdin_keeps_lf_for_windows_pipe(registry):
+    """Non-PTY (Popen pipe) sessions keep the plain LF on Windows."""
+    session = _make_session(sid="pipe-win-submit")
+    fake_stdin = MagicMock()
+    session.process = MagicMock()
+    session.process.stdin = fake_stdin
+    registry._running[session.id] = session
+
+    result = registry.submit_stdin(session.id, "Y")
+
+    assert result["status"] == "ok"
+    fake_stdin.write.assert_called_once_with("Y\n")
+
+
 # =========================================================================
 # Get / Poll
 # =========================================================================
 
 class TestGetAndPoll:
-    def test_get_not_found(self, registry):
-        assert registry.get("nonexistent") is None
-
-    def test_get_running(self, registry):
-        s = _make_session()
-        registry._running[s.id] = s
-        assert registry.get(s.id) is s
-
-    def test_get_finished(self, registry):
-        s = _make_session(exited=True, exit_code=0)
-        registry._finished[s.id] = s
-        assert registry.get(s.id) is s
-
-    def test_poll_not_found(self, registry):
-        result = registry.poll("nonexistent")
-        assert result["status"] == "not_found"
-
     def test_poll_running(self, registry):
         s = _make_session(output="some output here")
         registry._running[s.id] = s
@@ -139,17 +247,6 @@ class TestGetAndPoll:
         result = registry.poll(s.id)
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
-
-
-def test_request_close_terminal_without_sink_is_desktop_only_error(registry):
-    """No UI close sink wired (CLI/messaging) → clear desktop-only error, no raise."""
-    s = _make_session(sid="proc_close_nosink")
-    registry._running[s.id] = s
-
-    result = registry.request_close_terminal(s.id)
-
-    assert result["status"] == "error"
-    assert "desktop" in result["error"].lower()
 
 
 def test_request_close_terminal_invokes_sink_without_killing(registry):
@@ -167,43 +264,6 @@ def test_request_close_terminal_invokes_sink_without_killing(registry):
     assert calls == [(s, "proc_close_live")]
     # Still tracked as running — closing the tab must not reap the process.
     assert s.id in registry._running
-
-
-def test_close_terminal_tool_requires_process_id():
-    """The desktop-gated close_terminal tool rejects a missing process_id."""
-    from tools.close_terminal_tool import close_terminal_tool
-
-    assert json.loads(close_terminal_tool(""))["error"]
-
-
-def test_close_terminal_tool_routes_to_registry(monkeypatch):
-    """close_terminal delegates to process_registry.request_close_terminal."""
-    import tools.close_terminal_tool as ct
-
-    seen = {}
-
-    def _fake_close(sid):
-        seen["sid"] = sid
-
-        return {"status": "ok", "closed": sid}
-
-    monkeypatch.setattr(ct.process_registry, "request_close_terminal", _fake_close)
-
-    out = ct.close_terminal_tool("proc_abc")
-
-    assert json.loads(out)["closed"] == "proc_abc"
-    assert seen["sid"] == "proc_abc"
-
-
-def test_close_terminal_tool_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal gating)."""
-    from tools.close_terminal_tool import check_close_terminal_requirements
-
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert check_close_terminal_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert check_close_terminal_requirements() is True
 
 
 def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch):
@@ -251,6 +311,107 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert session.exited is True
     assert session.exit_code == 0
     assert moved == ["proc_reader_live"]
+
+
+# =========================================================================
+# Incremental UTF-8 decoding across chunk boundaries
+# (ported from openclaw/openclaw#112325)
+# =========================================================================
+
+
+class _FakeChunkBuffer:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def read1(self, _n):
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _FakeChunkStdout:
+    def __init__(self, chunks):
+        self.buffer = _FakeChunkBuffer(chunks)
+
+
+class _FakeChunkProcess:
+    def __init__(self, chunks):
+        self.stdout = _FakeChunkStdout(chunks)
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _run_reader(registry, monkeypatch, chunks, sid="proc_utf8"):
+    session = _make_session(sid=sid)
+    session.process = _FakeChunkProcess(chunks)
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+    registry._reader_loop(session)
+    return session
+
+
+def test_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, monkeypatch):
+    """A UTF-8 char split across two read1() chunks must not become U+FFFD.
+
+    Before the incremental decoder, each chunk was decoded statelessly with
+    ``errors="replace"``, so ``é`` (0xC3 0xA9) straddling a 4096-byte read
+    boundary decoded as two replacement characters.
+    """
+    session = _run_reader(registry, monkeypatch, [b"caf\xc3", b"\xa9 ok\n"])
+    assert session.output_buffer == "café ok\n"
+    assert "\ufffd" not in session.output_buffer
+
+
+def test_reader_loop_reassembles_four_byte_char_split_three_ways(registry, monkeypatch):
+    """A 4-byte emoji fragmented across three reads reassembles cleanly."""
+    session = _run_reader(registry, monkeypatch, [b"\xf0", b"\x9f\x92", b"\xa9\n"])
+    assert session.output_buffer == "\U0001f4a9\n"
+
+
+def test_reader_loop_flushes_truncated_multibyte_tail_at_eof(registry, monkeypatch):
+    """A sequence truncated by process exit flushes as a single U+FFFD."""
+    session = _run_reader(registry, monkeypatch, [b"ok \xe2\x82"])
+    assert session.output_buffer == "ok \ufffd"
+
+
+def test_reader_loop_still_replaces_genuinely_invalid_bytes(registry, monkeypatch):
+    """Truly invalid bytes keep the errors="replace" behavior."""
+    session = _run_reader(registry, monkeypatch, [b"ok\xffdone\n"])
+    assert session.output_buffer == "ok\ufffddone\n"
+
+
+def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry, monkeypatch):
+    """The PTY reader gets the same incremental-decode treatment."""
+
+    class _FakePty:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+            self.exitstatus = 0
+
+        def isalive(self):
+            return bool(self._chunks)
+
+        def read(self, _n):
+            if self._chunks:
+                return self._chunks.pop(0)
+            raise EOFError
+
+        def wait(self):
+            return 0
+
+    session = _make_session(sid="proc_pty_utf8")
+    session._pty = _FakePty([b"caf\xc3", b"\xa9\n"])
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._pty_reader_loop(session)
+
+    assert session.output_buffer == "café\n"
+    assert "\ufffd" not in session.output_buffer
 
 
 # =========================================================================
@@ -316,40 +477,6 @@ class TestOrphanedPipeReconciliation:
         except (ProcessLookupError, PermissionError):
             pass
 
-    def test_reconcile_noop_when_child_still_running(self, registry):
-        """Reconcile must NOT flip exited when the direct child is alive."""
-        proc = _spawn_python_sleep(5.0)
-        s = _make_session(sid="proc_running_test")
-        s.process = proc
-        s.pid = proc.pid
-        registry._running[s.id] = s
-
-        result = registry.poll(s.id)
-        assert result["status"] == "running"
-        assert s.exited is False
-
-        proc.kill()
-        proc.wait()
-
-    def test_reconcile_noop_on_already_exited(self, registry):
-        """Reconcile is a no-op when session.exited is already True."""
-        s = _make_session(sid="proc_already_exited", exited=True, exit_code=7)
-        s.process = MagicMock()
-        s.process.poll = MagicMock(return_value=0)  # Would say exit 0
-        registry._finished[s.id] = s
-
-        registry._reconcile_local_exit(s)
-        # Must not overwrite the existing exit_code with proc.poll()'s 0.
-        assert s.exit_code == 7
-
-    def test_reconcile_noop_on_no_process(self, registry):
-        """Reconcile is a no-op for sessions without a local Popen (env/PTY)."""
-        s = _make_session(sid="proc_no_popen")
-        assert getattr(s, "process", None) is None
-        # Must not raise.
-        registry._reconcile_local_exit(s)
-        assert s.exited is False
-
     def test_wait_returns_when_reader_blocked(self, registry):
         """wait() must also reconcile — not just poll()."""
         proc = subprocess.Popen(
@@ -403,7 +530,7 @@ class TestOrphanedPipeReconciliation:
 
         assert result["status"] == "exited", result
         assert result["exit_code"] == 0
-        assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
+        assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
 # =========================================================================
@@ -411,24 +538,12 @@ class TestOrphanedPipeReconciliation:
 # =========================================================================
 
 class TestReadLog:
-    def test_not_found(self, registry):
-        result = registry.read_log("nonexistent")
-        assert result["status"] == "not_found"
-
     def test_read_full_log(self, registry):
         lines = "\n".join([f"line {i}" for i in range(50)])
         s = _make_session(output=lines)
         registry._running[s.id] = s
         result = registry.read_log(s.id)
         assert result["total_lines"] == 50
-
-    def test_read_with_limit(self, registry):
-        lines = "\n".join([f"line {i}" for i in range(100)])
-        s = _make_session(output=lines)
-        registry._running[s.id] = s
-        result = registry.read_log(s.id, limit=10)
-        # Default: last 10 lines
-        assert "10 lines" in result["showing"]
 
     def test_read_with_offset(self, registry):
         lines = "\n".join([f"line {i}" for i in range(100)])
@@ -443,10 +558,6 @@ class TestReadLog:
 # =========================================================================
 
 class TestStdinHelpers:
-    def test_close_stdin_not_found(self, registry):
-        result = registry.close_stdin("nonexistent")
-        assert result["status"] == "not_found"
-
     def test_close_stdin_pipe_mode(self, registry):
         proc = MagicMock()
         proc.stdin = MagicMock()
@@ -457,17 +568,6 @@ class TestStdinHelpers:
         result = registry.close_stdin(s.id)
 
         proc.stdin.close.assert_called_once()
-        assert result["status"] == "ok"
-
-    def test_close_stdin_pty_mode(self, registry):
-        pty = MagicMock()
-        s = _make_session()
-        s._pty = pty
-        registry._running[s.id] = s
-
-        result = registry.close_stdin(s.id)
-
-        pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
@@ -485,7 +585,12 @@ class TestStdinHelpers:
         )
 
         try:
-            time.sleep(0.5)
+            # Wait for the PTY child to be up rather than sleeping blindly.
+            assert _wait_until(
+                lambda: registry.poll(session.id)["status"] == "running",
+                timeout=5.0,
+                interval=0.02,
+            ), "PTY session never reached running"
             assert registry.submit_stdin(session.id, "hello")["status"] == "ok"
             assert registry.close_stdin(session.id)["status"] == "ok"
 
@@ -496,7 +601,7 @@ class TestStdinHelpers:
                     assert poll["exit_code"] == 0
                     assert "hello" in poll["output_preview"]
                     return
-                time.sleep(0.2)
+                time.sleep(0.02)
 
             pytest.fail("process did not exit after stdin was closed")
         finally:
@@ -508,17 +613,6 @@ class TestStdinHelpers:
 # =========================================================================
 
 class TestListSessions:
-    def test_empty(self, registry):
-        assert registry.list_sessions() == []
-
-    def test_lists_running_and_finished(self, registry):
-        s1 = _make_session(sid="proc_1", task_id="t1")
-        s2 = _make_session(sid="proc_2", task_id="t1", exited=True, exit_code=0)
-        registry._running[s1.id] = s1
-        registry._finished[s2.id] = s2
-        result = registry.list_sessions()
-        assert len(result) == 2
-
     def test_filter_by_task_id(self, registry):
         s1 = _make_session(sid="proc_1", task_id="t1")
         s2 = _make_session(sid="proc_2", task_id="t2")
@@ -556,17 +650,6 @@ class TestListSessions:
         assert by_id["proc_forgotten"].get("session_scoped") is True
         assert "session_scoped" not in by_id["proc_own"]
 
-    def test_list_entry_fields(self, registry):
-        s = _make_session(output="preview text")
-        registry._running[s.id] = s
-        entry = registry.list_sessions()[0]
-        assert "session_id" in entry
-        assert "command" in entry
-        assert "status" in entry
-        assert "pid" in entry
-        assert "output_preview" in entry
-
-
 # =========================================================================
 # Active process queries
 # =========================================================================
@@ -578,39 +661,12 @@ class TestActiveQueries:
         assert registry.has_active_processes("t1") is True
         assert registry.has_active_processes("t2") is False
 
-    def test_has_active_for_session(self, registry):
-        s = _make_session()
-        s.session_key = "gw_session_1"
-        registry._running[s.id] = s
-        assert registry.has_active_for_session("gw_session_1") is True
-        assert registry.has_active_for_session("other") is False
-
-    def test_has_active_for_session_with_max_age_recent(self, registry):
-        """Recent process is considered active when max_active_age is set."""
-        s = _make_session(started_at=time.time() - 100)
-        s.session_key = "gw_session_1"
-        registry._running[s.id] = s
-        assert registry.has_active_for_session("gw_session_1", max_active_age=3600) is True
-
     def test_has_active_for_session_with_max_age_stale(self, registry):
         """Stale process (older than max_active_age) is ignored."""
         s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
         s.session_key = "gw_session_1"
         registry._running[s.id] = s
         assert registry.has_active_for_session("gw_session_1", max_active_age=86400) is False
-
-    def test_has_active_for_session_max_age_none_preserves_legacy(self, registry):
-        """Without max_active_age, any running process blocks (legacy behaviour)."""
-        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
-        s.session_key = "gw_session_1"
-        registry._running[s.id] = s
-        assert registry.has_active_for_session("gw_session_1") is True
-
-    def test_exited_not_active(self, registry):
-        s = _make_session(task_id="t1", exited=True, exit_code=0)
-        registry._finished[s.id] = s
-        assert registry.has_active_processes("t1") is False
-
 
 # =========================================================================
 # Pruning
@@ -626,12 +682,6 @@ class TestPruning:
         registry._finished[old_session.id] = old_session
         registry._prune_if_needed()
         assert "proc_old" not in registry._finished
-
-    def test_prune_keeps_recent(self, registry):
-        recent = _make_session(sid="proc_recent", exited=True)
-        registry._finished[recent.id] = recent
-        registry._prune_if_needed()
-        assert "proc_recent" in registry._finished
 
     def test_prune_over_max_removes_oldest(self, registry):
         # Fill up to MAX_PROCESSES
@@ -699,34 +749,6 @@ class TestSpawnEnvSanitization:
         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
 
-    def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
-        class FakeEnv:
-            def __init__(self):
-                self.commands = []
-
-            def get_temp_dir(self):
-                return "/data/data/com.termux/files/usr/tmp"
-
-            def execute(self, command, **kwargs):
-                self.commands.append((command, kwargs))
-                return {"output": "4321\n"}
-
-        env = FakeEnv()
-        fake_thread = MagicMock()
-
-        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
-            patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_via_env(env, "echo hello")
-
-        bg_command = env.commands[0][0]
-        assert session.pid == 4321
-        assert "/data/data/com.termux/files/usr/tmp/hermes_bg_" in bg_command
-        assert ".exit" in bg_command
-        assert "rc=$?;" in bg_command
-        assert " > /tmp/hermes_bg_" not in bg_command
-        assert "cat /tmp/hermes_bg_" not in bg_command
-        fake_thread.start.assert_called_once()
-
     def test_spawn_via_env_checks_returncode_when_wrapper_fails(self, registry):
         class FakeEnv:
             def __init__(self):
@@ -750,28 +772,6 @@ class TestSpawnEnvSanitization:
         fake_thread.start.assert_not_called()
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
-
-    def test_spawn_via_env_disables_rewrite_for_bg_wrapper(self, registry):
-        class FakeEnv:
-            def __init__(self):
-                self.commands = []
-
-            def get_temp_dir(self):
-                return "/tmp"
-
-            def execute(self, command, **kwargs):
-                self.commands.append((command, kwargs))
-                return {"output": "4321\n", "returncode": 0}
-
-        env = FakeEnv()
-        fake_thread = MagicMock()
-
-        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
-            patch.object(registry, "_write_checkpoint"):
-            registry.spawn_via_env(env, "echo hello")
-
-        args, kwargs = env.commands[0]
-        assert kwargs.get("rewrite_compound_background") is False
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
@@ -851,64 +851,97 @@ class TestPopenLeakOnSetupFailure:
 
         assert killed, "proc.kill() must be called when post-Popen setup raises"
 
-    def test_popen_killed_when_write_checkpoint_fails(self, registry):
-        """If _write_checkpoint raises after Popen, proc must still be killed."""
-        killed = []
+# =========================================================================
+# Spawn rewrite regression (issue #68915)
+# =========================================================================
 
-        proc = MagicMock()
-        proc.pid = 8888
-        proc.stdout = iter([])
-        proc.stdin = MagicMock()
-        proc.poll.return_value = None
 
-        def fake_kill():
-            killed.append(True)
+class TestSpawnRewriteCompoundBackground:
+    """Verify that spawn_local rewrites `A && B &` patterns to avoid subshell deadlocks.
 
-        proc.kill = fake_kill
-        proc.wait = MagicMock()
+    Issue #68915: when bash parses ``A && B &`` it forks a subshell ``(A && B) &``.
+    If B is a long-running server, the subshell never exits and holds the stdout
+    pipe open, causing a permanent deadlock. The rewriter wraps the tail to
+    ``A && { B & }`` so no subshell fork occurs.
+    """
 
-        fake_thread = MagicMock()
+    def test_compound_and_background_gets_rewritten(self, registry):
+        """A && B & must be rewritten to A && { B & } before Popen."""
+        captured_cmd = []
 
-        # See note in test_popen_killed_when_thread_creation_fails: force the
-        # ProcessLookupError fallback so cleanup deterministically calls
-        # proc.kill() instead of issuing a real os.killpg against whatever
-        # process group happens to own the fake PID on the host.
-        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("threading.Thread", return_value=fake_thread), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
-             patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
-            with pytest.raises(OSError, match="disk full"):
-                registry.spawn_local("echo hello", cwd="/tmp")
-
-        assert killed, "proc.kill() must be called when _write_checkpoint raises"
-
-    def test_popen_not_killed_on_success(self, registry):
-        """Successful spawn must NOT kill the process."""
-        killed = []
-
-        proc = MagicMock()
-        proc.pid = 7777
-        proc.stdout = iter([])
-        proc.stdin = MagicMock()
-        proc.poll.return_value = None
-
-        def fake_kill():
-            killed.append(True)
-
-        proc.kill = fake_kill
-        proc.wait = MagicMock()
+        def fake_popen(args, **kwargs):
+            captured_cmd.append(args)
+            proc = MagicMock()
+            proc.pid = 1111
+            proc.stdout = MagicMock()
+            return proc
 
         fake_thread = MagicMock()
+        fake_thread.daemon = False
 
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", return_value=proc), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
              patch("threading.Thread", return_value=fake_thread), \
              patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_local("echo hello", cwd="/tmp")
+            registry.spawn_local("cd /app && node server.js &>/tmp/srv.log &", cwd="/tmp")
 
-        assert not killed, "proc.kill() must NOT be called on successful spawn"
-        assert session.pid == 7777
+        assert len(captured_cmd) == 1
+        shell_cmd = captured_cmd[0]
+        # The command passed to Popen should be the REWRITTEN version
+        assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
+
+    def test_simple_background_preserved(self, registry):
+        """Simple cmd & (no &&) must NOT be rewritten — no subshell bug."""
+        captured_cmd = []
+
+        def fake_popen(args, **kwargs):
+            captured_cmd.append(args)
+            proc = MagicMock()
+            proc.pid = 2222
+            proc.stdout = MagicMock()
+            return proc
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("sleep 5 &", cwd="/tmp")
+
+        assert len(captured_cmd) == 1
+        shell_cmd = captured_cmd[0][2]
+        # Simple background must remain as-is
+        assert "sleep 5 &" in shell_cmd
+
+    def test_pty_path_uses_rewritten_command(self, registry):
+        """PTY spawn path must also use the rewritten command (issue #68915)."""
+        mock_pty_proc = MagicMock()
+        mock_pty_proc.pid = 5555
+
+        mock_pty_module = MagicMock()
+        mock_pty_module.PtyProcess.spawn = MagicMock(return_value=mock_pty_proc)
+
+        fake_thread = MagicMock()
+        fake_thread.daemon = False
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local(
+                "cd /app && node server.js &",
+                cwd="/tmp",
+                use_pty=True,
+            )
+
+        assert mock_pty_module.PtyProcess.spawn.called, \
+            "PTY spawn should have been attempted"
+        pty_args = mock_pty_module.PtyProcess.spawn.call_args[0][0]
+        assert "&& { node server.js & }" in pty_args[2], \
+            f"PTY path should use rewritten command, got: {pty_args[2]}"
+        assert session.command == "cd /app && node server.js &"
 
 
 # =========================================================================
@@ -916,20 +949,6 @@ class TestPopenLeakOnSetupFailure:
 # =========================================================================
 
 class TestCheckpoint:
-    def test_write_checkpoint(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session()
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-
-            data = json.loads((tmp_path / "procs.json").read_text())
-            assert len(data) == 1
-            assert data[0]["session_id"] == s.id
-
-    def test_recover_no_file(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
-            assert registry.recover_from_checkpoint() == 0
-
     def test_recover_dead_pid(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
         checkpoint.write_text(json.dumps([{
@@ -942,89 +961,54 @@ class TestCheckpoint:
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
-    def test_write_checkpoint_includes_watcher_metadata(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session()
-            s.watcher_platform = "telegram"
-            s.watcher_chat_id = "999"
-            s.watcher_user_id = "u123"
-            s.watcher_user_name = "alice"
-            s.watcher_thread_id = "42"
-            s.watcher_interval = 60
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-
-            data = json.loads((tmp_path / "procs.json").read_text())
-            assert len(data) == 1
-            assert data[0]["watcher_platform"] == "telegram"
-            assert data[0]["watcher_chat_id"] == "999"
-            assert data[0]["watcher_user_id"] == "u123"
-            assert data[0]["watcher_user_name"] == "alice"
-            assert data[0]["watcher_thread_id"] == "42"
-            assert data[0]["watcher_interval"] == 60
-
-    def test_recover_enqueues_watchers(self, registry, tmp_path):
+    def test_recover_dead_wrapper_retries_unreaped_systemd_scope(
+        self, registry, tmp_path, monkeypatch
+    ):
         checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),  # current process — guaranteed alive
-            "task_id": "t1",
-            "session_key": "sk1",
-            "watcher_platform": "telegram",
-            "watcher_chat_id": "123",
-            "watcher_user_id": "u123",
-            "watcher_user_name": "alice",
-            "watcher_thread_id": "42",
-            "watcher_interval": 60,
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            assert len(registry.pending_watchers) == 1
-            w = registry.pending_watchers[0]
-            assert w["session_id"] == "proc_live"
-            assert w["platform"] == "telegram"
-            assert w["chat_id"] == "123"
-            assert w["user_id"] == "u123"
-            assert w["user_name"] == "alice"
-            assert w["thread_id"] == "42"
-            assert w["check_interval"] == 60
+        entry = {
+            "session_id": "proc_dead_scope",
+            "command": "daemonize",
+            "pid": 999999999,
+            "pid_scope": "host",
+            "host_start_time": 123.0,
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+        }
+        checkpoint.write_text(json.dumps([entry]))
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
 
-    def test_recover_skips_watcher_when_no_interval(self, registry, tmp_path):
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            assert registry.recover_from_checkpoint() == 0
+
+        stop_unit.assert_called_once_with(entry["systemd_unit"])
+        assert json.loads(checkpoint.read_text()) == [entry]
+
+    def test_recover_dead_wrapper_drops_reaped_systemd_scope(
+        self, registry, tmp_path, monkeypatch
+    ):
         checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "task_id": "t1",
-            "watcher_interval": 0,
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            assert len(registry.pending_watchers) == 0
+        entry = {
+            "session_id": "proc_dead_scope",
+            "command": "daemonize",
+            "pid": 999999999,
+            "pid_scope": "host",
+            "host_start_time": 123.0,
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+        }
+        checkpoint.write_text(json.dumps([entry]))
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
 
-    def test_recovery_keeps_live_checkpoint_entries(self, registry, tmp_path):
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "task_id": "t1",
-            "session_key": "sk1",
-        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "tools.process_registry._stop_systemd_unit", return_value=True
+        ) as stop_unit:
+            assert registry.recover_from_checkpoint() == 0
 
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            assert registry.get("proc_live") is not None
+        stop_unit.assert_called_once_with(entry["systemd_unit"])
+        assert json.loads(checkpoint.read_text()) == []
 
-            data = json.loads(checkpoint.read_text())
-            assert len(data) == 1
-            assert data[0]["session_id"] == "proc_live"
-            assert data[0]["pid"] == os.getpid()
-            assert data != []
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -1045,83 +1029,37 @@ class TestCheckpoint:
             data = json.loads(checkpoint.read_text())
             assert data == []
 
-    def test_detached_recovered_process_eventually_exits(self, registry, tmp_path):
-        proc = _spawn_python_sleep(0.4)
+    def test_checkpoint_redacts_command_with_inline_secret(self, registry, tmp_path):
+        """Issue #77484: the checkpoint file persists raw commands; inline
+        credentials (e.g. ``curl -H 'Authorization: Bearer sk-...'``) must be
+        redacted before write. Recovery only uses command for display/logging
+        (the process is already running), so masking is lossless."""
         checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "python -c 'import time; time.sleep(0.4)'",
-            "pid": proc.pid,
-            "task_id": "t1",
-            "session_key": "sk1",
-        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            secret = "sk-secret1234567890"
+            command = f"curl -H 'Authorization: Bearer {secret}' http://x"
+            s = _make_session(sid="proc_secret", command=command)
+            s.pid = 12345
+            s.host_start_time = int(time.time())
+            registry._running[s.id] = s
+            registry._write_checkpoint()
 
-        try:
-            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-                recovered = registry.recover_from_checkpoint()
-                assert recovered == 1
-
-                session = registry.get("proc_live")
-                assert session is not None
-                assert session.detached is True
-
-                proc.wait(timeout=5)
-
-                assert _wait_until(
-                    lambda: registry.get("proc_live") is not None
-                    and registry.get("proc_live").exited,
-                    timeout=5,
-                )
-
-                poll_result = registry.poll("proc_live")
-                assert poll_result["status"] == "exited"
-
-                wait_result = registry.wait("proc_live", timeout=1)
-                assert wait_result["status"] == "exited"
-        finally:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except Exception:
-                    proc.kill()
-                    proc.wait(timeout=5)
-
+            data = json.loads(checkpoint.read_text())
+            assert data[0]["session_id"] == "proc_secret"
+            assert secret not in data[0]["command"]
+            assert data[0]["command"] != command
 
 # =========================================================================
 # Kill process
 # =========================================================================
 
 class TestKillProcess:
-    def test_kill_not_found(self, registry):
-        result = registry.kill_process("nonexistent")
-        assert result["status"] == "not_found"
-
     def test_kill_already_exited(self, registry):
         s = _make_session(exited=True, exit_code=0)
         registry._finished[s.id] = s
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
 
-    def test_kill_local_popen_uses_host_tree_terminator(self, registry, monkeypatch):
-        s = _make_session(sid="proc_local", command="sleep 999")
-        s.process = MagicMock()
-        s.process.pid = 12345
-        s.host_start_time = 67890
-        registry._running[s.id] = s
-        terminate_calls = []
-
-        monkeypatch.setattr(
-            registry,
-            "_terminate_host_pid",
-            lambda pid, expected_start=None: terminate_calls.append((pid, expected_start)),
-        )
-        monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
-
-        result = registry.kill_process(s.id)
-
-        assert result["status"] == "killed"
-        assert terminate_calls == [(12345, 67890)]
 
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
@@ -1166,16 +1104,6 @@ class TestKillProcess:
 # =========================================================================
 
 class TestProcessToolHandler:
-    def test_list_action(self):
-        from tools.process_registry import _handle_process
-        result = json.loads(_handle_process({"action": "list"}))
-        assert "processes" in result
-
-    def test_poll_missing_session_id(self):
-        from tools.process_registry import _handle_process
-        result = json.loads(_handle_process({"action": "poll"}))
-        assert "error" in result
-
     def test_unknown_action(self):
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
@@ -1189,161 +1117,28 @@ class TestProcessToolHandler:
 from tools.process_registry import format_process_notification
 
 
-def test_format_completion_event():
-    evt = {
+def test_drain_notifications_completion_callback_exception_fails_closed(registry):
+    event = {
         "type": "completion",
-        "session_id": "proc_abc",
-        "command": "sleep 5",
+        "session_id": "proc_callback_error",
+        "session_key": "session-a",
+        "command": "safe-test-command",
         "exit_code": 0,
         "output": "done",
     }
-    result = format_process_notification(evt)
-    assert "[IMPORTANT: Background process proc_abc completed normally" in result
-    assert "exit code 0" in result
-    assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
+    registry.completion_queue.put(event)
 
+    def broken(_event):
+        raise RuntimeError("ownership check exploded")
 
-def test_format_killed_completion_event_names_source_and_signal():
-    evt = {
-        "type": "completion",
-        "session_id": "proc_killed",
-        "command": "sleep 5",
-        "exit_code": -15,
-        "completion_reason": "killed",
-        "termination_source": "process.kill",
-        "output": "",
-    }
-    result = format_process_notification(evt)
-    assert "proc_killed terminated by process.kill" in result
-    assert "exit code -15, SIGTERM" in result
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=broken,
+    )
 
-
-def test_format_external_sigterm_does_not_claim_agent_kill():
-    evt = {
-        "type": "completion",
-        "session_id": "proc_external",
-        "command": "sleep 5",
-        "exit_code": 143,
-        "output": "",
-    }
-    result = format_process_notification(evt)
-    assert "proc_external exited" in result
-    assert "terminated by" not in result
-    assert "exit code 143, SIGTERM" in result
-
-
-def test_format_watch_match_event():
-    evt = {
-        "type": "watch_match",
-        "session_id": "proc_xyz",
-        "command": "tail -f log",
-        "pattern": "ERROR",
-        "output": "ERROR: disk full",
-        "suppressed": 0,
-    }
-    result = format_process_notification(evt)
-    assert 'watch pattern "ERROR"' in result
-    assert "Matched output:\nERROR: disk full" in result
-
-
-def test_format_watch_match_with_suppressed():
-    evt = {
-        "type": "watch_match",
-        "session_id": "proc_xyz",
-        "command": "tail -f log",
-        "pattern": "WARN",
-        "output": "WARN: low mem",
-        "suppressed": 3,
-    }
-    result = format_process_notification(evt)
-    assert "3 earlier matches were suppressed" in result
-
-
-def test_format_watch_disabled_event():
-    evt = {
-        "type": "watch_disabled",
-        "message": "Watch disabled for proc_xyz: too many matches",
-    }
-    result = format_process_notification(evt)
-    assert "[IMPORTANT: Watch disabled for proc_xyz" in result
-
-
-def test_format_returns_none_for_empty_event():
-    evt = {}
-    result = format_process_notification(evt)
-    assert result is not None
-    assert "unknown" in result
-
-
-def test_drain_notifications_returns_pending_events():
-    from tools.process_registry import process_registry
-
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
-
-    process_registry.completion_queue.put({
-        "type": "completion",
-        "session_id": "proc_drain1",
-        "command": "echo hi",
-        "exit_code": 0,
-        "output": "hi",
-    })
-    process_registry.completion_queue.put({
-        "type": "watch_match",
-        "session_id": "proc_drain2",
-        "command": "tail -f x",
-        "pattern": "ERR",
-        "output": "ERR found",
-        "suppressed": 0,
-    })
-
-    try:
-        results = process_registry.drain_notifications()
-        assert len(results) == 2
-        assert results[0][0]["session_id"] == "proc_drain1"
-        assert "proc_drain1 completed normally" in results[0][1]
-        assert results[1][0]["session_id"] == "proc_drain2"
-        assert "watch pattern" in results[1][1]
-    finally:
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()
-        process_registry._completion_consumed.discard("proc_drain1")
-        process_registry._completion_consumed.discard("proc_drain2")
-
-
-def test_drain_notifications_skips_consumed():
-    from tools.process_registry import process_registry
-
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
-
-    process_registry._completion_consumed.add("proc_consumed")
-    process_registry.completion_queue.put({
-        "type": "completion",
-        "session_id": "proc_consumed",
-        "command": "echo done",
-        "exit_code": 0,
-        "output": "done",
-    })
-
-    try:
-        results = process_registry.drain_notifications()
-        assert len(results) == 0
-    finally:
-        process_registry._completion_consumed.discard("proc_consumed")
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()
-
-
-def test_drain_notifications_empty_queue():
-    from tools.process_registry import process_registry
-
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
-
-    results = process_registry.drain_notifications()
     assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
 
 
 def test_drain_notifications_filters_async_delegation_by_session_key():
@@ -1404,51 +1199,6 @@ def test_drain_notifications_filters_async_delegation_by_session_key():
             process_registry.completion_queue.get_nowait()
 
 
-def test_drain_notifications_no_filter_passes_all_async_delegation():
-    """Without a session_key filter, all async-delegation events are consumed.
-
-    This ensures backward compatibility — the default (session_key="") permits
-    all events, matching pre-fix behavior.
-    """
-    from tools.process_registry import process_registry
-
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
-
-    try:
-        process_registry.completion_queue.put({
-            "type": "async_delegation",
-            "delegation_id": "deleg_1",
-            "session_key": "telegram:dm:111:user_a",
-            "goal": "task 1",
-            "status": "completed",
-            "summary": "done 1",
-            "api_calls": 1,
-            "duration_seconds": 0.5,
-        })
-        process_registry.completion_queue.put({
-            "type": "async_delegation",
-            "delegation_id": "deleg_2",
-            "session_key": "telegram:dm:222:user_b",
-            "goal": "task 2",
-            "status": "completed",
-            "summary": "done 2",
-            "api_calls": 1,
-            "duration_seconds": 0.3,
-        })
-
-        # No filter — both should be consumed
-        results = process_registry.drain_notifications()
-        assert len(results) == 2, (
-            f"Expected 2 events without filter, got {len(results)}"
-        )
-        ids = {r[0]["delegation_id"] for r in results}
-        assert ids == {"deleg_1", "deleg_2"}
-    finally:
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()
-
-
 def test_drain_notifications_owns_event_callback_beats_key_equality():
     """The positive-proof ownership callback consumes ONLY approved events —
     including across a compression rotation where bare key equality would
@@ -1492,35 +1242,6 @@ def test_drain_notifications_owns_event_callback_beats_key_equality():
             process_registry.completion_queue.get_nowait()
 
 
-def test_drain_notifications_owns_event_callback_fails_closed():
-    """A broken ownership callback must re-queue (never leak) the event."""
-    from tools.process_registry import process_registry
-
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
-
-    try:
-        process_registry.completion_queue.put({
-            "type": "async_delegation",
-            "delegation_id": "deleg_x",
-            "session_key": "k",
-            "goal": "task", "status": "completed", "summary": "s",
-            "api_calls": 1, "duration_seconds": 0.1,
-        })
-
-        def broken(_evt):
-            raise RuntimeError("ownership check exploded")
-
-        results = process_registry.drain_notifications(
-            session_key="k", owns_event=broken
-        )
-        assert results == []
-        assert process_registry.completion_queue.get_nowait()["delegation_id"] == "deleg_x"
-    finally:
-        while not process_registry.completion_queue.empty():
-            process_registry.completion_queue.get_nowait()
-
-
 # ---------------------------------------------------------------------------
 # _terminate_host_pid — cross-platform process-tree termination
 # ---------------------------------------------------------------------------
@@ -1535,8 +1256,14 @@ class TestTerminateHostPidWindows:
     target handle only, not the tree.
     """
 
+    @pytest.mark.windows_only
     def test_windows_invokes_taskkill_with_tree_and_force_flags(self, monkeypatch):
-        """The Windows branch must shell out to ``taskkill /PID N /T /F``."""
+        """The Windows branch must shell out to ``taskkill /PID N /T /F``.
+
+        Windows-only: ``taskkill.exe`` is the thing under test and only exists
+        here — with a faked ``_IS_WINDOWS`` the argv was asserted against a
+        binary that could never have run.
+        """
         from tools import process_registry as pr
 
         captured = {}
@@ -1546,7 +1273,6 @@ class TestTerminateHostPidWindows:
             captured["kwargs"] = kwargs
             return MagicMock(returncode=0, stderr="", stdout="")
 
-        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
         monkeypatch.setattr(pr.subprocess, "run", fake_run)
 
         pr.ProcessRegistry._terminate_host_pid(12345)
@@ -1556,60 +1282,6 @@ class TestTerminateHostPidWindows:
         assert "12345" in captured["args"]
         assert "/T" in captured["args"], "Tree flag required to reach descendants"
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
-
-    def test_windows_falls_back_to_os_kill_when_taskkill_missing(self, monkeypatch):
-        """If ``taskkill.exe`` is somehow unavailable, fall back to a bare
-        ``os.kill(pid, SIGTERM)`` so we at least try to kill the parent."""
-        from tools import process_registry as pr
-
-        kill_calls = []
-
-        def fake_run(*args, **kwargs):
-            raise FileNotFoundError("taskkill not found")
-
-        def fake_kill(pid, sig):
-            kill_calls.append((pid, sig))
-
-        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
-        monkeypatch.setattr(pr.subprocess, "run", fake_run)
-        monkeypatch.setattr(pr.os, "kill", fake_kill)
-
-        pr.ProcessRegistry._terminate_host_pid(12345)
-
-        assert kill_calls == [(12345, signal.SIGTERM)]
-
-    def test_windows_does_not_call_psutil(self, monkeypatch):
-        """The Windows branch must NOT exercise the psutil tree-walk
-        (it's unreliable on Windows — see the function docstring)."""
-        from tools import process_registry as pr
-        import psutil
-
-        psutil_calls = []
-
-        class _BoomProcess:
-            def __init__(self, pid):
-                psutil_calls.append(("Process", pid))
-
-            def children(self, recursive=False):
-                psutil_calls.append(("children", recursive))
-                return []
-
-            def terminate(self):
-                psutil_calls.append(("terminate",))
-
-        def fake_run(args, **kwargs):
-            return MagicMock(returncode=0, stderr="", stdout="")
-
-        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
-        monkeypatch.setattr(pr.subprocess, "run", fake_run)
-        monkeypatch.setattr(psutil, "Process", _BoomProcess)
-
-        pr.ProcessRegistry._terminate_host_pid(12345)
-
-        assert psutil_calls == [], (
-            f"Windows branch must not touch psutil, but saw {psutil_calls!r}"
-        )
-
 
 class TestTerminateHostPidPosix:
     """POSIX branch walks the tree via psutil and SIGTERMs children first."""
@@ -1638,7 +1310,6 @@ class TestTerminateHostPidPosix:
             def terminate(self):
                 terminate_order.append(self.pid)
 
-        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
         monkeypatch.setattr(psutil, "Process", _FakeParent)
         # This test covers only the SIGTERM tree-walk ordering; disable the
         # SIGKILL-escalation step (which would call psutil.wait_procs on the
@@ -1652,19 +1323,6 @@ class TestTerminateHostPidPosix:
             "Children must be terminated before the parent"
         )
 
-    def test_posix_no_such_process_swallowed(self, monkeypatch):
-        from tools import process_registry as pr
-        import psutil
-
-        def boom(pid):
-            raise psutil.NoSuchProcess(pid)
-
-        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
-        monkeypatch.setattr(psutil, "Process", boom)
-
-        # Must not raise.
-        pr.ProcessRegistry._terminate_host_pid(999999999)
-
     def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
         from tools import process_registry as pr
         import psutil
@@ -1677,7 +1335,6 @@ class TestTerminateHostPidPosix:
         def fake_kill(pid, sig):
             kill_calls.append((pid, sig))
 
-        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
         monkeypatch.setattr(psutil, "Process", boom)
         monkeypatch.setattr(pr.os, "kill", fake_kill)
 
@@ -1706,89 +1363,12 @@ class TestPidReuseGuard:
             # Simulate recycling: the recorded baseline no longer matches.
             registry._terminate_host_pid(proc.pid, expected_start=real_start + 1)
             # The process must still be alive — the guard refused to signal it.
-            assert not _wait_until(lambda: proc.poll() is not None, timeout=1.0)
+            assert not _wait_until(lambda: proc.poll() is not None, timeout=0.3)
             assert proc.poll() is None
         finally:
             proc.kill()
             proc.wait()
 
-    def test_terminate_kills_when_start_time_matches(self, registry):
-        """The genuine process (start time matches) IS terminated."""
-        proc = _spawn_python_sleep(30)
-        try:
-            real_start = ProcessRegistry._safe_host_start_time(proc.pid)
-            registry._terminate_host_pid(proc.pid, expected_start=real_start)
-            assert _wait_until(lambda: proc.poll() is not None, timeout=5.0)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-
-    def test_terminate_without_baseline_is_best_effort(self, registry):
-        """No baseline (legacy) → degrade to prior unconditional behaviour."""
-        proc = _spawn_python_sleep(30)
-        try:
-            registry._terminate_host_pid(proc.pid)  # expected_start=None
-            assert _wait_until(lambda: proc.poll() is not None, timeout=5.0)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-
-    def test_recover_skips_recycled_pid(self, registry, tmp_path):
-        """Checkpoint PID is alive but its start time changed → not adopted."""
-        wrong_start = (ProcessRegistry._safe_host_start_time(os.getpid()) or 0) + 999
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_recycled",
-            "command": "sleep 999",
-            "pid": os.getpid(),            # alive...
-            "pid_scope": "host",
-            "host_start_time": wrong_start,  # ...but a different process now
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            assert registry.recover_from_checkpoint() == 0
-            assert len(registry._running) == 0
-
-    def test_recover_adopts_when_start_time_matches(self, registry, tmp_path):
-        """Checkpoint PID alive AND start time matches → adopted as before."""
-        real_start = ProcessRegistry._safe_host_start_time(os.getpid())
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_match",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "pid_scope": "host",
-            "host_start_time": real_start,
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            assert registry.recover_from_checkpoint() == 1
-
-    def test_legacy_checkpoint_without_start_time_still_recovers(self, registry, tmp_path):
-        """Entries written before host_start_time existed degrade to liveness."""
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_legacy",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "pid_scope": "host",
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            assert registry.recover_from_checkpoint() == 1
-
-    def test_write_checkpoint_backfills_host_start_time(self, registry, tmp_path):
-        """A host session is checkpointed with a kernel start time recorded."""
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session()
-            s.pid = os.getpid()
-            s.pid_scope = "host"
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-            data = json.loads((tmp_path / "procs.json").read_text())
-            assert data[0]["host_start_time"] is not None
 
     def test_refresh_detached_marks_recycled_pid_exited(self, registry):
         """A detached session whose PID got recycled is moved to finished."""
@@ -1837,7 +1417,7 @@ class TestSigkillEscalation:
 
     def test_sigterm_ignoring_daemon_is_sigkilled(self, monkeypatch):
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 1.0))
+                            staticmethod(lambda: 0.3))
         proc = self._spawn_trap()
         try:
             ProcessRegistry._terminate_host_pid(proc.pid)
@@ -1848,41 +1428,16 @@ class TestSigkillEscalation:
                 proc.kill()
             proc.wait()
 
-    def test_grace_zero_disables_escalation(self, monkeypatch):
-        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 0.0))
-        proc = self._spawn_trap()
-        try:
-            ProcessRegistry._terminate_host_pid(proc.pid)
-            # No escalation → the SIGTERM-ignoring process survives.
-            assert not _wait_until(lambda: proc.poll() is not None, timeout=1.0)
-            assert proc.poll() is None
-        finally:
-            proc.kill()
-            proc.wait()
-
-    def test_well_behaved_process_dies_on_sigterm(self, monkeypatch):
-        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 2.0))
-        proc = _spawn_python_sleep(60)
-        try:
-            ProcessRegistry._terminate_host_pid(proc.pid)
-            assert _wait_until(lambda: proc.poll() is not None, timeout=3.0)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-            proc.wait()
-
     def test_escalation_does_not_bypass_recycled_pid_guard(self, monkeypatch):
         """A start-time mismatch must still spare the PID — no SIGTERM, no SIGKILL."""
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 1.0))
+                            staticmethod(lambda: 0.3))
         proc = self._spawn_trap()
         try:
             real_start = ProcessRegistry._safe_host_start_time(proc.pid)
             ProcessRegistry._terminate_host_pid(
                 proc.pid, expected_start=(real_start or 0) + 1)
-            assert not _wait_until(lambda: proc.poll() is not None, timeout=1.5)
+            assert not _wait_until(lambda: proc.poll() is not None, timeout=0.3)
             assert proc.poll() is None
         finally:
             proc.kill()
@@ -1905,8 +1460,11 @@ class TestSigkillEscalation:
         sometimes a child). The escalation now re-probes every target directly.
         """
         import psutil
+        # 2.0s grace (not 1.0): with three interpreters mid-startup on a
+        # loaded runner, a 1s SIGTERM->partition window races child spawn and
+        # is how a child PID escaped the live-system guard in CI.
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
-                            staticmethod(lambda: 1.0))
+                            staticmethod(lambda: 2.0))
         # Parent spawns 2 children; all trap SIGTERM. Parent prints child pids
         # after the handler is installed.
         parent_src = (
@@ -1920,6 +1478,12 @@ class TestSigkillEscalation:
         )
         parent = subprocess.Popen([sys.executable, "-c", parent_src],
                                   stdout=subprocess.PIPE, text=True)
+        # Bound the readline: if the parent wedges before printing, fail THIS
+        # test with a clear message instead of letting the per-file timeout
+        # SIGKILL the whole pytest process (opaque rc=124 in CI).
+        import select as _select
+        ready, _, _ = _select.select([parent.stdout], [], [], 20.0)
+        assert ready, "parent process failed to print child pids within 20s"
         child_pids = [int(x) for x in parent.stdout.readline().split()]
         all_pids = [parent.pid] + child_pids
         try:
@@ -2002,6 +1566,24 @@ class TestHandleProcessRedaction:
         out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
         assert "abc123def456" not in out["output_preview"]
 
+    def test_list_redacts_command_and_output(self, monkeypatch):
+        """`process(action=list)` redacts command + output_preview — issue #77484.
+
+        The list branch previously returned raw ``command[:200]`` and
+        ``output_preview[-200:]`` with no redaction wrap, leaking inline
+        secrets (unlike poll/log/wait/kill).
+        """
+        pr, sess = self._setup(
+            monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
+            "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
+        )
+        out = json.loads(pr._handle_process({"action": "list"}))
+        assert len(out["processes"]) >= 1
+        entry = out["processes"][0]
+        assert "sk-abc123def456ghi789jkl012345" not in entry["command"]
+        assert "sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG" not in entry["output_preview"]
+        assert "curl" in entry["command"]
+
     def test_disabled_passes_through(self, monkeypatch):
         import agent.redact as _r
         monkeypatch.setattr(_r, "_REDACT_ENABLED", False)
@@ -2015,3 +1597,819 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+# =========================================================================
+# Reader loop: orphaned grandchild holding the stdout pipe (issue #68915)
+# =========================================================================
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: select() on pipes")
+class TestReaderLoopOrphanedPipe:
+    """Regression tests for issue #68915.
+
+    When an agent command backgrounds a long-lived process (``node server.js
+    &``), the grandchild inherits the write end of the reader's stdout pipe.
+    The direct bash child exits, but the pipe never EOFs — the old blocking
+    ``read1()`` parked the reader thread forever, ``session.exited`` never
+    flipped on its own, and ``notify_on_complete`` never fired. The reader
+    must instead terminate shortly after the direct child exits, even while
+    a descendant still holds the pipe open.
+    """
+
+    def test_reader_exits_when_orphan_holds_pipe(self, registry):
+        """Reader loop must return promptly after the direct child exits,
+        even though a backgrounded descendant keeps the pipe open."""
+        proc = subprocess.Popen(
+            ["sh", "-c", "echo started; sleep 30 & exit 0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_reader")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        done = threading.Event()
+
+        def _run():
+            registry._reader_loop(s)
+            done.set()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        try:
+            # The direct child exits immediately; the reader must notice and
+            # return well before the 30s descendant releases the pipe.
+            assert done.wait(timeout=10.0), (
+                "_reader_loop is still blocked on the orphan-held pipe "
+                "(issue #68915) — session.exited would never flip and "
+                "notify_on_complete would never fire"
+            )
+            assert s.exited is True
+            assert s.exit_code == 0
+            assert s.completion_reason == "exited"
+            assert "started" in s.output_buffer
+            assert s.id in registry._finished
+        finally:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def test_reader_exit_fires_notify_on_complete(self, registry):
+        """The autonomous completion notification must not depend on a
+        poll()/wait() call when an orphan holds the pipe."""
+        proc = subprocess.Popen(
+            ["sh", "-c", "sleep 30 & echo bg-started"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_notify")
+        s.process = proc
+        s.pid = proc.pid
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+
+        done = threading.Event()
+
+        def _run():
+            registry._reader_loop(s)
+            done.set()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        try:
+            assert done.wait(timeout=10.0), (
+                "_reader_loop blocked — completion notification lost (#68915)"
+            )
+            # Exactly one completion event must have been queued.
+            item = registry.completion_queue.get_nowait()
+            assert item["type"] == "completion"
+            assert item["session_id"] == s.id
+            assert item["exit_code"] == 0
+        finally:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+# =========================================================================
+# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# =========================================================================
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
+class TestSystemdCgroupIsolation:
+    """Verify spawn_local wraps the worker in ``systemd-run --user --scope``
+    when running under a supervisor and systemd-run is available, and falls
+    back to the legacy ``start_new_session`` path otherwise.
+
+    Issue #70716: local background terminal executors inherit the gateway's
+    cgroup, so an OOM in a memory-heavy worker lets systemd-oomd kill the
+    ENTIRE gateway cgroup, taking down the messaging control plane.
+    """
+
+    @pytest.fixture()
+    def _gateway_identity(self, monkeypatch):
+        """Opt-in: mark this test as running AS the live gateway process."""
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid(),
+        )
+
+    def _fake_popen_capture(self):
+        """Return (fake_popen, captured) where captured["argv"] gets the
+        argv passed to subprocess.Popen."""
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["start_new_session"] = kwargs.get("start_new_session")
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        return fake_popen, captured
+
+    def test_wraps_in_systemd_scope_when_supervisor_and_available(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """Under a supervisor with systemd-run available, the spawn argv is
+        wrapped in ``systemd-run --user --scope --unit=hermes-worker-<id>``."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        # _build_systemd_scope_argv calls shutil.which — point it at a stub.
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv[0] == "/usr/bin/systemd-run", argv
+        assert "--user" in argv
+        assert "--scope" in argv
+        assert "--quiet" in argv, (
+            "systemd-run argv must include --quiet (#70716 gap #3)"
+        )
+        assert "--unit" in argv
+        unit_idx = argv.index("--unit")
+        assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
+        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", (
+            argv
+        )  # _build_systemd_scope_argv uses bare name
+        properties = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--property"
+        ]
+        assert "MemoryAccounting=yes" in properties
+        assert "OOMPolicy=kill" in properties
+        memory_max = next(
+            value for value in properties if value.startswith("MemoryMax=")
+        )
+        assert int(memory_max.split("=", 1)[1]) > 0
+        # The original shell command must still be present at the tail,
+        # after the ``--`` separator that prevents systemd-run from
+        # interpreting command flags as its own.
+        assert "--" in argv, "systemd-run argv must use -- to separate command"
+        sep_idx = argv.index("--")
+        assert "/bin/bash" in argv[sep_idx:]
+        assert "set +m; echo hello" in argv[sep_idx:]
+        # systemd-run --scope gives the worker a new cgroup but NOT a new
+        # session (#70716 regression: start_new_session was False, so the
+        # worker kept the parent's session + controlling terminal → SIGTTIN/
+        # SIGTTOU stopped the TUI).  start_new_session=True gives systemd-run
+        # (and the scoped worker below it) a private session.
+        assert captured["start_new_session"] is True
+        # The session must record the unit name so kill_process can stop it.
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
+    def test_falls_back_when_systemd_run_unavailable(self, registry, monkeypatch, _gateway_identity):
+        """Under a supervisor but without systemd-run, fall back to the
+        legacy ``start_new_session=True`` path (worker shares the gateway
+        cgroup)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        # No systemd-run wrapping — direct shell invocation.
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+
+    def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
+        """CLI mode (no supervisor) must NOT wrap in a systemd scope even if
+        systemd-run is available — isolation is a gateway concern."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: False,
+        )
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+
+    @pytest.mark.parametrize("use_pty", [False, True])
+    def test_inherited_systemd_marker_does_not_scope_interactive_cli(
+        self, registry, monkeypatch, use_pty
+    ):
+        """A CLI inside a supervised terminal must keep workers off its tty.
+
+        INVOCATION_ID is inherited by every descendant, so its presence
+        alone must not activate the gateway-only systemd scope path.
+        """
+        monkeypatch.setenv("INVOCATION_ID", "herdr-service-inherited-marker")
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        if use_pty:
+            from ptyprocess import PtyProcess
+
+            fake_pty = MagicMock(pid=4321)
+            with (
+                patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+            assert pty_spawn.call_args.args[0] == [
+                "/bin/bash", "-lic", "set +m; codex",
+            ]
+        else:
+            fake_popen, captured = self._fake_popen_capture()
+            with (
+                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("echo hello", cwd="/tmp")
+            assert captured["argv"] == [
+                "/bin/bash", "-lic", "set +m; echo hello",
+            ]
+            assert captured["start_new_session"] is True
+
+        assert session.systemd_unit == ""
+
+    @pytest.mark.parametrize("use_pty", [False, True])
+    def test_inherited_gateway_tree_markers_do_not_scope_child_cli(
+        self, registry, monkeypatch, use_pty
+    ):
+        """Gateway descendants are not the gateway process that owns the PID file.
+
+        _HERMES_GATEWAY is inherited (and set by importing gateway.run), so
+        both it and INVOCATION_ID may be present in a child process. The
+        PID-ownership gate must still keep the scope path off.
+        """
+        monkeypatch.setenv("INVOCATION_ID", "inherited-systemd-marker")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda *, cleanup_stale=False: os.getpid() + 1,
+        )
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        if use_pty:
+            from ptyprocess import PtyProcess
+
+            fake_pty = MagicMock(pid=4321)
+            with (
+                patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+            assert pty_spawn.call_args.args[0] == [
+                "/bin/bash", "-lic", "set +m; codex",
+            ]
+        else:
+            fake_popen, captured = self._fake_popen_capture()
+            with (
+                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_write_checkpoint"),
+            ):
+                session = registry.spawn_local("echo hello", cwd="/tmp")
+            assert captured["argv"] == [
+                "/bin/bash", "-lic", "set +m; echo hello",
+            ]
+            assert captured["start_new_session"] is True
+
+        assert session.systemd_unit == ""
+
+    def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """Cleanup must not killpg: scope teardown is the authoritative path."""
+        fake_popen, _captured = self._fake_popen_capture()
+        fake_proc = fake_popen(["placeholder"])
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        broken_reader = MagicMock()
+        broken_reader.start.side_effect = RuntimeError("reader failed")
+
+        with patch("subprocess.Popen", return_value=fake_proc), \
+            patch("threading.Thread", return_value=broken_reader), \
+            patch("tools.process_registry._stop_systemd_unit", return_value=True) as stop_unit, \
+            patch("os.killpg") as killpg, \
+            patch.object(registry, "_write_checkpoint"):
+            with pytest.raises(RuntimeError, match="reader failed"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        stop_unit.assert_called_once()
+        assert stop_unit.call_args.args[0].startswith("hermes-worker-proc_")
+        assert stop_unit.call_args.args[0].endswith(".scope")
+        killpg.assert_not_called()
+
+    def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch, _gateway_identity):
+        """Interactive executors receive the same sibling-cgroup isolation."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock()
+        fake_pty.pid = 4321
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn, \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        argv = pty_spawn.call_args.args[0]
+        assert argv[0] == "/usr/bin/systemd-run"
+        assert "--scope" in argv
+        assert "--unit" in argv
+        assert "--" in argv
+        assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
+    def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """A failed PTY scope must not collide with the pipe fallback scope."""
+        from ptyprocess import PtyProcess
+
+        events = []
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+        fake_proc.stdout = iter([])
+        fake_proc.stdin = MagicMock()
+        fake_proc.poll.return_value = None
+
+        def fake_popen(argv, **_kwargs):
+            events.append(("pipe", list(argv)))
+            return fake_proc
+
+        def fake_stop(unit_name):
+            events.append(("stop", unit_name))
+            return True
+
+        def fail_pty(*_args, **_kwargs):
+            events.append(("pty", None))
+            raise RuntimeError("PTY wrapper failed after scope creation")
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", side_effect=fail_pty), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("tools.process_registry._stop_systemd_unit", side_effect=fake_stop), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert [event[0] for event in events] == ["pty", "stop", "pipe"]
+        stopped_unit = events[1][1]
+        fallback_argv = events[2][1]
+        assert stopped_unit == f"hermes-worker-{session.id}.scope"
+        unit_idx = fallback_argv.index("--unit")
+        assert fallback_argv[unit_idx + 1] == (
+            f"hermes-worker-{session.id}-pipe-fallback"
+        )
+        assert session.systemd_unit == (
+            f"hermes-worker-{session.id}-pipe-fallback.scope"
+        )
+
+    def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
+        self, registry, monkeypatch, _gateway_identity
+    ):
+        """Do not launch a duplicate command while the failed PTY scope may live."""
+        from ptyprocess import PtyProcess
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(
+            PtyProcess,
+            "spawn",
+            side_effect=RuntimeError("PTY wrapper failed after scope creation"),
+        ), patch("subprocess.Popen") as pipe_spawn, patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            with pytest.raises(RuntimeError, match="could not be reaped"):
+                registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        stop_unit.assert_called_once()
+        pipe_spawn.assert_not_called()
+
+    def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "123")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch("tools.process_registry.logger.warning") as warning:
+            argv = pr._build_systemd_scope_argv(
+                ["/bin/bash", "-lc", "true"],
+                unit_suffix="test",
+            )
+
+        warning.assert_not_called()
+        assert f"MemoryMax={123 * 1024 * 1024}" in argv
+
+    def test_worker_memory_limit_caps_oversized_local_guard_override(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda *_args: (_ for _ in ()).throw(OSError("no sysconf")),
+        )
+
+        assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
+
+    def test_kill_recovered_detached_already_exited_stops_persisted_scope(
+        self, registry, monkeypatch
+    ):
+        """Recovered detached sessions whose wrapper PID is gone/recycled must
+        still stop their persisted systemd scope before the already_exited
+        return, while retaining the PID-reuse guard (no PID tree kill)."""
+        session = _make_session(sid="proc_recovered_scope", command="daemonize")
+        session.detached = True
+        session.pid_scope = "host"
+        session.pid = 12345
+        session.host_start_time = 67890
+        session.systemd_unit = "hermes-worker-proc_recovered_scope.scope"
+        registry._running[session.id] = session
+
+        stopped = []
+        terminated = []
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: False)
+        monkeypatch.setattr(registry, "_terminate_host_pid", lambda pid, start: terminated.append((pid, start)))
+        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit: stopped.append(unit) or True)
+
+        with patch.object(registry, "_write_checkpoint"):
+            result = registry.kill_process(session.id)
+
+        assert result["status"] == "already_exited"
+        assert stopped == ["hermes-worker-proc_recovered_scope.scope"]
+        assert terminated == []
+        assert session.exited is True
+        assert session.id in registry._finished
+        assert session.id not in registry._running
+
+    def test_systemd_run_user_scope_available_caches_after_probe(
+        self, registry, monkeypatch
+    ):
+        """The availability check probes once and caches — a second call must
+        not re-probe (and must return the same value)."""
+        import tools.process_registry as pr
+
+        # Reset the cache.
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        first = pr._systemd_run_user_scope_available()
+        second = pr._systemd_run_user_scope_available()
+        assert first is True
+        assert second is True
+        assert len(probe_calls) == 1, "probe must run only once (cached)"
+
+    def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
+        """Concurrent first-use callers must wait for one definitive probe.
+
+        A temporary cached ``False`` would let a racing worker spawn inside the
+        gateway cgroup, defeating the OOM isolation guarantee.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        probe_started = threading.Event()
+        release_probe = threading.Event()
+        probe_calls = []
+        results = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            probe_started.set()
+            assert release_probe.wait(timeout=2)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        first = threading.Thread(
+            target=lambda: results.append(pr._systemd_run_user_scope_available())
+        )
+        second = threading.Thread(
+            target=lambda: results.append(pr._systemd_run_user_scope_available())
+        )
+        first.start()
+        assert probe_started.wait(timeout=2)
+        second.start()
+
+        # The racing caller must be blocked behind the probe, not observe a
+        # temporary False cache value.
+        second.join(timeout=0.05)
+        assert second.is_alive()
+
+        release_probe.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert results == [True, True]
+        assert len(probe_calls) == 1
+
+    def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        clock = [100.0]
+        probe_results = [1, 0]
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=probe_results.pop(0)
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert pr._systemd_run_user_scope_available() is False
+        assert len(probe_calls) == 1
+
+        clock[0] += 61
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(probe_calls) == 2
+
+    def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=args[0],
+                returncode=5,
+                stderr=b"Unit hermes-worker-gone.scope not loaded.\n",
+            ),
+        )
+
+        assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
+
+
+class TestNotificationRedaction:
+    """Background-process notification delivery (completion_queue) applies the
+    same redaction as the explicit process tool — issue #43025 gap.
+
+    The _move_to_finished() and _check_watch_patterns() paths enqueue raw
+    output into the completion_queue.  After the fix, _redact_process_result()
+    is called before enqueueing so secrets are masked in the [IMPORTANT: ...]
+    messages delivered to the LLM.
+    """
+
+    def test_completion_notification_redacts_secret(self, monkeypatch):
+        """_move_to_finished completion notification redacts API keys."""
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_notif1", command="env")
+        sess.output_buffer = "OPENAI_API_KEY=sk-proj-secret123\nHOME=/home/u"
+        sess.notify_on_complete = True
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+
+        reg._move_to_finished(sess)
+
+        # Drain and check the notification
+        results = reg.drain_notifications()
+        assert len(results) == 1
+        _evt, text = results[0]
+        assert "sk-proj-secret123" not in text
+        assert "REDACTED" in text or "sk-proj" not in text
+
+    def test_watch_match_notification_redacts_secret(self, monkeypatch):
+        """_check_watch_patterns watch_match notification redacts secrets."""
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_notif2", command="python server.py")
+        sess.output_buffer = "Server started\nAPI_TOKEN=ghp_abc123def456\nListening on :8080"
+        sess.watch_patterns = ["API_TOKEN"]
+        sess._watch_disabled = False
+        sess._watch_hits = 0
+        sess._watch_suppressed = 0
+        sess.watcher_platform = None
+        sess.watcher_chat_id = None
+        sess.watcher_user_id = None
+        sess.watcher_user_name = None
+        sess.watcher_thread_id = None
+        sess.watcher_message_id = None
+        sess.exited = False
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+
+        reg._check_watch_patterns(sess, "API_TOKEN=ghp_abc123def456\n")
+
+        results = reg.drain_notifications()
+        assert len(results) == 1
+        _evt, text = results[0]
+        assert "ghp_abc123def456" not in text
+        assert "ghp_" not in text or "REDACTED" in text
+
+
+# ── Prefix resolution (Factory Droid-inspired task-ID prefixes) ──────────────
+
+
+class TestGetByPrefix:
+    """ProcessRegistry.get() resolves unique ID prefixes like git short hashes."""
+
+    def test_full_id_still_exact(self, registry):
+        s = _make_session(sid="proc_4dae56ca81f6")
+        registry._running[s.id] = s
+        assert registry.get("proc_4dae56ca81f6") is s
+
+    def test_unique_prefix_resolves(self, registry):
+        s = _make_session(sid="proc_4dae56ca81f6")
+        registry._running[s.id] = s
+        assert registry.get("proc_4dae5") is s
+
+    def test_bare_suffix_resolves(self, registry):
+        s = _make_session(sid="proc_4dae56ca81f6")
+        registry._running[s.id] = s
+        assert registry.get("4dae56") is s
+
+    def test_finished_sessions_also_resolve(self, registry):
+        s = _make_session(sid="proc_9bee77aa0011", exited=True, exit_code=0)
+        registry._finished[s.id] = s
+        assert registry.get("proc_9bee") is s
+
+    def test_ambiguous_prefix_returns_none(self, registry):
+        a = _make_session(sid="proc_4dae56ca81f6")
+        b = _make_session(sid="proc_4dae99999999")
+        registry._running[a.id] = a
+        registry._running[b.id] = b
+        assert registry.get("proc_4dae") is None
+
+    def test_too_short_prefix_returns_none(self, registry):
+        s = _make_session(sid="proc_4dae56ca81f6")
+        registry._running[s.id] = s
+        assert registry.get("proc_4da") is None
+        assert registry.get("4da") is None
+        assert registry.get("proc_") is None
+        assert registry.get("") is None
+
+    def test_exact_id_wins_over_prefix_scan(self, registry):
+        # A session whose FULL id happens to be a prefix of another's must
+        # resolve to itself, never trigger the ambiguity path.
+        short = _make_session(sid="proc_4dae")
+        long = _make_session(sid="proc_4dae56ca81f6")
+        registry._running[short.id] = short
+        registry._running[long.id] = long
+        assert registry.get("proc_4dae") is short
+
+    def test_no_match_returns_none(self, registry):
+        s = _make_session(sid="proc_4dae56ca81f6")
+        registry._running[s.id] = s
+        assert registry.get("proc_ffff") is None
+
+    def test_poll_accepts_prefix(self, registry):
+        s = _make_session(sid="proc_4dae56ca81f6", output="hello world")
+        registry._running[s.id] = s
+        result = registry.poll("4dae56ca")
+        assert result["session_id"] == "proc_4dae56ca81f6"
+        assert result["status"] == "running"

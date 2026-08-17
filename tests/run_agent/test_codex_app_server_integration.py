@@ -12,6 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -411,7 +412,7 @@ class TestRunConversationCodexPath:
         profile remains the filesystem boundary."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"approvals": {"mode": "off"}},
         ):
             agent = _make_codex_agent()
@@ -430,7 +431,7 @@ class TestRunConversationCodexPath:
         subsystem's compatibility behavior for codex app-server routing too."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"approvals": {"mode": False}},
         ):
             agent = _make_codex_agent()
@@ -497,7 +498,7 @@ class TestRunConversationCodexPath:
         ):
             agent = _make_codex_agent()
             with patch(
-                "tools.approval.is_current_session_yolo_enabled",
+                "tools.approval.is_approval_bypass_active_for_session",
                 return_value=True,
             ), patch.object(
                 agent, "_spawn_background_review", return_value=None
@@ -694,48 +695,64 @@ class TestSessionRetirementOnRunAgent:
 
 
 class TestCodexToolProgressBridge:
-    """#38835: Codex app-server item/started notifications must surface as
-    Hermes tool-progress so gateways show verbose breadcrumbs on this route."""
+    """#38835 / #33200: Codex app-server item notifications must surface as
+    Hermes tool-progress so gateways show verbose breadcrumbs on this route.
+    The original item/started-only mapper was superseded by the full event
+    bridge (make_codex_app_server_event_bridge); these tests pin the same
+    mapping contract against the bridge helpers."""
 
     def test_mapper_command_execution(self):
-        from agent.codex_runtime import _codex_note_to_tool_progress
-        note = {"method": "item/started", "params": {"item": {
-            "type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}}}
-        name, preview, args = _codex_note_to_tool_progress(note)
-        assert name == "exec_command"
-        assert preview == "ls -la"
-        assert args == {"command": "ls -la", "cwd": "/tmp"}
+        from agent.codex_runtime import (
+            _codex_item_to_args,
+            _codex_item_to_preview,
+            _codex_item_to_tool_name,
+        )
+        item = {"type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}
+        assert _codex_item_to_tool_name(item) == "exec_command"
+        assert _codex_item_to_preview(item) == "ls -la"
+        assert _codex_item_to_args(item) == {"command": "ls -la", "cwd": "/tmp"}
 
     def test_mapper_file_change(self):
-        from agent.codex_runtime import _codex_note_to_tool_progress
-        note = {"method": "item/started", "params": {"item": {
+        from agent.codex_runtime import (
+            _codex_item_to_preview,
+            _codex_item_to_tool_name,
+        )
+        item = {
             "type": "fileChange",
-            "changes": [{"path": "a.py"}, {"path": "b.py"}]}}}
-        name, preview, args = _codex_note_to_tool_progress(note)
-        assert name == "apply_patch"
-        assert preview == "a.py, b.py"
+            "changes": [{"path": "a.py"}, {"path": "b.py"}],
+        }
+        assert _codex_item_to_tool_name(item) == "apply_patch"
+        assert _codex_item_to_preview(item) == "a.py, b.py"
 
     def test_mapper_mcp_and_dynamic_tool_calls(self):
-        from agent.codex_runtime import _codex_note_to_tool_progress
-        mcp = {"method": "item/started", "params": {"item": {
-            "type": "mcpToolCall", "server": "fs", "tool": "read", "arguments": {"p": 1}}}}
-        name, preview, args = _codex_note_to_tool_progress(mcp)
-        assert name == "mcp.fs.read"
-        assert preview == "read"
-        assert args == {"p": 1}
+        from agent.codex_runtime import (
+            _codex_item_to_args,
+            _codex_item_to_tool_name,
+        )
+        mcp = {"type": "mcpToolCall", "server": "fs", "tool": "read", "arguments": {"p": 1}}
+        assert _codex_item_to_tool_name(mcp) == "mcp.fs.read"
+        assert _codex_item_to_args(mcp) == {"p": 1}
 
-        dyn = {"method": "item/started", "params": {"item": {
-            "type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}}}
-        assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
+        dyn = {"type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}
+        assert _codex_item_to_tool_name(dyn) == "web_search"
 
-    def test_mapper_ignores_non_tool_items_and_other_methods(self):
-        from agent.codex_runtime import _codex_note_to_tool_progress
-        # agentMessage / reasoning items are not tool-shaped
-        assert _codex_note_to_tool_progress({"method": "item/started", "params": {
-            "item": {"type": "agentMessage", "text": "hi"}}}) is None
-        # non-item/started methods
-        assert _codex_note_to_tool_progress({"method": "item/completed", "params": {}}) is None
-        assert _codex_note_to_tool_progress({}) is None
+    def test_bridge_ignores_non_tool_items_and_other_methods(self):
+        from agent.codex_runtime import make_codex_app_server_event_bridge
+        events = []
+        agent = SimpleNamespace(
+            tool_progress_callback=lambda *a, **kw: events.append(a),
+            _fire_stream_delta=None,
+            _fire_reasoning_delta=None,
+            _emit_interim_assistant_message=None,
+        )
+        on_event = make_codex_app_server_event_bridge(agent)
+        # agentMessage started items are not tool-shaped
+        on_event({"method": "item/started", "params": {
+            "item": {"type": "agentMessage", "text": "hi"}}})
+        # malformed / empty notes
+        on_event({"method": "item/completed", "params": {}})
+        on_event({})
+        assert events == []
 
     def test_session_wired_with_on_event_that_fires_tool_progress(self, monkeypatch):
         """The session is constructed with an on_event hook that, when fed an
@@ -769,4 +786,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

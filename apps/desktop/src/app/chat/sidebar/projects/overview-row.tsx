@@ -2,15 +2,14 @@ import type * as React from 'react'
 import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
+  SidebarGroupRow,
   SidebarRowBody,
-  SidebarRowCluster,
   SidebarRowGrab,
   SidebarRowLabel,
   SidebarRowLead,
@@ -21,13 +20,13 @@ import {
 } from '../chrome'
 
 import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
-import { ProjectMenu } from './project-menu'
+import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon }: SidebarProjectTree) {
+export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -38,7 +37,7 @@ export function projectIcon({ color, icon }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || 'folder-library'} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
     </SidebarRowLeadGlyph>
   )
 }
@@ -111,46 +110,67 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
-  return (
-    <div className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
-      <SidebarRowShell
-        actions={
-          <>
-            {onNewSession && (
-              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
-            )}
-            <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
-          </>
-        }
-        className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
-        ref={rowRef}
-      >
-        <SidebarRowCluster className="min-w-0 flex-1">
-          {lead}
-          <SidebarRowLink
-            aria-label={s.projects.enter(project.label)}
-            labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-            onClick={() => onEnter?.(project.id)}
-          >
-            {project.label}
-          </SidebarRowLink>
-          {preview.length > 0 ? (
-            <button
-              aria-label={s.projects.toggle(project.label)}
-              className="flex flex-1 items-center self-stretch bg-transparent p-0"
-              onClick={toggleOpen}
-              type="button"
-            >
-              <DisclosureCaret
-                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-                open={open}
-              />
-            </button>
-          ) : (
-            <span className="flex-1" />
+  const shell = (
+    <SidebarGroupRow
+      actions={
+        <>
+          {/* Home is a bucket, not a record, so there's nothing to rename or
+              delete — but it still starts sessions: a null path is the "no
+              folder" chat. New session sits outermost: it's the one you reach
+              for. */}
+          {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
+          {onNewSession && (
+            <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
           )}
-        </SidebarRowCluster>
-      </SidebarRowShell>
+        </>
+      }
+      className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      label={
+        <SidebarRowLink
+          aria-label={s.projects.enter(project.label)}
+          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+          onClick={() => onEnter?.(project.id)}
+        >
+          {project.label}
+        </SidebarRowLink>
+      }
+      lead={lead}
+      // The label is grab surface too, not just the lead's grabber — same
+      // listeners, minus the controls that keep their own gestures. A project
+      // row has no rival drag (its title navigates on CLICK), so the sortable
+      // owns the press outright.
+      {...dragHandleProps}
+      onPointerDown={event => {
+        if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
+          return
+        }
+
+        dragHandleProps?.onPointerDown?.(event)
+      }}
+      ref={rowRef}
+      toggle={
+        preview.length > 0
+          ? { ariaLabel: s.projects.toggle(project.label, !open), onToggle: toggleOpen, open }
+          : undefined
+      }
+      totals={{ costUsd: project.totalCostUsd ?? 0, tokens: project.totalTokens ?? 0 }}
+    />
+  )
+
+  return (
+    // Tag each project sibling with its id so a custom skin can target one
+    // project in the overview — the parallel to the entered-project wrapper's
+    // `data-sessions-project` (index.tsx), which only fires once you've drilled
+    // in. Here it's present on every row of the list.
+    <div className={cn(dragging && 'relative z-10')} data-sessions-project={project.id} ref={ref} style={style}>
+      {/* Home has no per-project actions, so it gets no right-click menu. */}
+      {project.isNoProject ? (
+        shell
+      ) : (
+        <ProjectContextMenu isActive={isActive} project={project}>
+          {shell}
+        </ProjectContextMenu>
+      )}
       {open && preview.length > 0 && <SidebarRowNest>{renderRows?.(preview)}</SidebarRowNest>}
     </div>
   )

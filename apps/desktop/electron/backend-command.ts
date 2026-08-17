@@ -1,5 +1,3 @@
-'use strict'
-
 // Backend subcommand routing for the desktop-managed Hermes process.
 //
 // The desktop app launches its own headless backend via `hermes serve` — it

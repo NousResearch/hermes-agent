@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -48,6 +50,7 @@ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
   window.setTimeout(() => callback(performance.now()), 0)
 )
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
+vi.stubGlobal('CSS', { escape: (str: string) => str })
 
 Element.prototype.scrollTo = function scrollTo() {}
 
@@ -216,7 +219,10 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
-function assistantImageMessage(running = false): ThreadMessage {
+function assistantImageMessage(
+  running = false,
+  result: unknown = { image: 'https://cdn.example/cat.png', success: true }
+): ThreadMessage {
   return {
     id: `assistant-image-${running ? 'running' : 'done'}`,
     role: 'assistant',
@@ -227,7 +233,7 @@ function assistantImageMessage(running = false): ThreadMessage {
         toolName: 'image_generate',
         args: { prompt: 'draw a cat' },
         argsText: JSON.stringify({ prompt: 'draw a cat' }),
-        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
+        ...(running ? {} : { result })
       }
     ],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
@@ -242,7 +248,38 @@ function assistantImageMessage(running = false): ThreadMessage {
   } as ThreadMessage
 }
 
-function StreamingHarness() {
+function assistantTerminalMessage(): ThreadMessage {
+  return {
+    id: 'assistant-terminal-1',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'terminal-1',
+        toolName: 'terminal',
+        args: { command: 'npm run check --workspace=apps/desktop' },
+        argsText: JSON.stringify({ command: 'npm run check --workspace=apps/desktop' }),
+        result: { exit_code: 0, stdout: 'all checks passed' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+interface StreamingControls {
+  emitSecond: () => void
+  complete: () => void
+}
+
+function StreamingHarness({ onControls }: { onControls?: (controls: StreamingControls) => void } = {}) {
   const [messages, setMessages] = useState<ThreadMessage[]>([userMessage()])
   const [isRunning, setIsRunning] = useState(true)
 
@@ -250,6 +287,20 @@ function StreamingHarness() {
     const first = window.setTimeout(() => {
       setMessages([userMessage(), assistantMessage('first chunk')])
     }, 50)
+
+    if (onControls) {
+      onControls({
+        emitSecond: () => {
+          setMessages([userMessage(), assistantMessage('first chunk second chunk')])
+        },
+        complete: () => {
+          setMessages([userMessage(), assistantMessage('first chunk second chunk', false)])
+          setIsRunning(false)
+        }
+      })
+
+      return () => window.clearTimeout(first)
+    }
 
     const second = window.setTimeout(() => {
       setMessages([userMessage(), assistantMessage('first chunk second chunk')])
@@ -265,7 +316,7 @@ function StreamingHarness() {
       window.clearTimeout(second)
       window.clearTimeout(complete)
     }
-  }, [])
+  }, [onControls])
 
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages,
@@ -306,6 +357,37 @@ function MessageHarness({ message }: { message: ThreadMessage }) {
       <Thread />
     </AssistantRuntimeProvider>
   )
+}
+
+function TranscriptHarness({ messages }: { messages: ThreadMessage[] }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function assistantInterimMessage(text: string, id = 'assistant-interim-1'): ThreadMessage {
+  return {
+    id,
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: { interim: true }
+    }
+  } as ThreadMessage
 }
 
 function RunningMessageHarness({ message }: { message: ThreadMessage }) {
@@ -395,14 +477,19 @@ function DismissibleErrorHarness({ onDismissError }: { onDismissError: (messageI
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
+    $reasoningCollapsedByDefault.set(false)
   })
 
   it('renders assistant text incrementally before completion', async () => {
-    const { container } = render(<StreamingHarness />)
+    let controls: StreamingControls | undefined
+
+    const registerControls = (next: StreamingControls) => {
+      controls = next
+    }
+
+    const { container } = render(<StreamingHarness onControls={registerControls} />)
 
     expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
-
-    await wait(80)
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')
@@ -410,14 +497,16 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('second chunk')
     expect(screen.queryByRole('status', { name: 'Hermes is loading a response' })).toBeNull()
 
-    await wait(500)
-
+    // Producer-gated, not wall-clock-gated: the old test slept 80ms and
+    // assumed a 500ms timer could not fire before the assertion. On a loaded
+    // runner the test thread could be descheduled for >500ms, so both chunks
+    // arrived and this clean behavior test flaked.
+    act(() => controls?.emitSecond())
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')
     })
 
-    await wait(250)
-
+    act(() => controls?.complete())
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')
     })
@@ -427,6 +516,34 @@ describe('assistant-ui streaming renderer', () => {
     const { container } = render(<IntroHarness />)
 
     expect(container.querySelector('[data-slot="aui_composer-clearance"]')).toBeNull()
+  })
+
+  it('suppresses the action footer on sealed interim messages, keeping it on the final reply', () => {
+    const { container } = render(
+      <TranscriptHarness
+        messages={[
+          userMessage(),
+          assistantInterimMessage('Let me check the files.'),
+          assistantInterimMessage('Now applying the patch.', 'assistant-interim-2'),
+          assistantMessage('All done — patch applied.', false)
+        ]}
+      />
+    )
+
+    // Interim commentary stays visible…
+    expect(container.textContent).toContain('Let me check the files.')
+    expect(container.textContent).toContain('Now applying the patch.')
+    expect(container.textContent).toContain('All done — patch applied.')
+
+    // …but only the turn's final reply carries the copy/refresh action bar.
+    const actionBars = container.querySelectorAll('[data-slot="aui_msg-actions"]')
+    expect(actionBars).toHaveLength(1)
+
+    const finalRoot = [...container.querySelectorAll('[data-slot="aui_assistant-message-root"]')].find(root =>
+      root.textContent?.includes('All done — patch applied.')
+    )
+
+    expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
   it('renders assistant provider errors inline', () => {
@@ -488,11 +605,27 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('```ts')
   })
 
+  it('keeps streaming reasoning collapsed by default when the preference is enabled', () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container } = render(<RunningReasoningHarness />)
+    const thinkingToggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(thinkingToggle.getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+
+    fireEvent.click(thinkingToggle)
+
+    expect(thinkingToggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+  })
+
   it('renders reasoning text without a leading token space', () => {
     const { container } = render(<ReasoningHarness />)
     const ui = within(container)
 
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+    // Settled, so the header is past tense — a running block says "Thinking".
+    fireEvent.click(ui.getByRole('button', { name: /thought/i }))
 
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'
@@ -548,5 +681,33 @@ describe('assistant-ui streaming renderer', () => {
     })
     expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
     expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
+  })
+
+  it('uses the normal tool row for failed image generations instead of dropping their error payload', async () => {
+    const { container } = render(
+      <MessageHarness
+        message={assistantImageMessage(false, { error: 'FAL rejected the prompt', image: null, success: false })}
+      />
+    )
+
+    fireEvent.click(container.querySelector('[data-tool-row] button')!)
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('FAL rejected the prompt')
+    })
+    expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeNull()
+    expect(container.textContent).not.toContain('"success":false')
+  })
+
+  it('shows the command prompt and exit code for terminal calls', async () => {
+    const { container } = render(<MessageHarness message={assistantTerminalMessage()} />)
+
+    fireEvent.click(container.querySelector('[data-tool-row] button')!)
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('$ npm run check --workspace=apps/desktop')
+      expect(container.textContent).toContain('exit 0')
+      expect(container.textContent).toContain('all checks passed')
+    })
   })
 })

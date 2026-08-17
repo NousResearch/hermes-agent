@@ -2,6 +2,7 @@ import { atom, map } from 'nanostores'
 
 import { getActionStatus, installSkillFromHub, uninstallSkillFromHub, updateSkillsFromHub } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
@@ -62,7 +63,15 @@ $activeGatewayProfile.subscribe(value => {
 // One self-contained task: spawn → tail its own action log into the store →
 // mark resolved. Concurrency-safe: state is per-key, so parallel installs never
 // stomp each other, and the sources query is invalidated once at the end.
-async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promise<{ name: string }>): Promise<void> {
+// `profile` is the Capabilities profile-scope override — the action (and its
+// status polling) runs against THAT profile's backend; undefined keeps the
+// app-wide active profile (unchanged behavior).
+async function runHubAction(
+  key: string,
+  kind: HubActionKind,
+  spawn: () => Promise<{ name: string }>,
+  profile?: null | string
+): Promise<void> {
   const epoch = _hubEpoch
   const switched = () => _hubEpoch !== epoch
 
@@ -74,7 +83,7 @@ async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promi
     let exitCode: number | null = null
 
     for (;;) {
-      const status = await getActionStatus(started.name, 200)
+      const status = await getActionStatus(started.name, 200, profile)
 
       // Profile switched mid-flight: the store was cleared for the new profile,
       // so drop this A-profile result instead of writing it back into B.
@@ -104,6 +113,9 @@ async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promi
     // (un)install adds/removes a skill, so its count/rows must update too.
     void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
     void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
+    // …and the composer's `/` list, which caches the command catalog for an
+    // hour and would otherwise keep offering the skill we just removed.
+    invalidateSlashCompletions()
   } catch (err) {
     // A profile switch points the next poll at the new backend, which 404s the
     // old action name — that's an abandonment, not a failure, so swallow it
@@ -125,16 +137,16 @@ async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promi
   }
 }
 
-export function installHubSkill(identifier: string): Promise<void> {
-  return runHubAction(identifier, 'install', () => installSkillFromHub(identifier))
+export function installHubSkill(identifier: string, profile?: null | string): Promise<void> {
+  return runHubAction(identifier, 'install', () => installSkillFromHub(identifier, profile), profile)
 }
 
-export function uninstallHubSkill(identifier: string, name: string): Promise<void> {
-  return runHubAction(identifier, 'uninstall', () => uninstallSkillFromHub(name))
+export function uninstallHubSkill(identifier: string, name: string, profile?: null | string): Promise<void> {
+  return runHubAction(identifier, 'uninstall', () => uninstallSkillFromHub(name, profile), profile)
 }
 
-export function updateHubSkills(): Promise<void> {
-  return runHubAction(UPDATE_ALL_KEY, 'update', () => updateSkillsFromHub())
+export function updateHubSkills(profile?: null | string): Promise<void> {
+  return runHubAction(UPDATE_ALL_KEY, 'update', () => updateSkillsFromHub(profile), profile)
 }
 
 export function closeHubLog(): void {

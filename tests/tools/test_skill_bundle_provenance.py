@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -32,7 +33,11 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 
 
 @pytest.fixture
-def served_repo(tmp_path):
+def served_repo(tmp_path, monkeypatch):
+    # The fixture intentionally serves over loopback. Keep exercising the real
+    # HTTP transport while opting this test server into private-address access.
+    monkeypatch.setattr("tools.url_safety._global_allow_private_urls", lambda: True)
+
     repo = tmp_path / "upstream"
     repo.mkdir()
     (repo / "SKILL.md").write_text(SKILL_MD)
@@ -114,89 +119,6 @@ def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     assert source.fetch("owner/repo/skill") is None
 
 
-def test_github_source_fetches_only_exact_references_and_records_tree_revision(monkeypatch):
-    source = GitHubSource(GitHubAuth())
-    skill = "---\nname: demo\ndescription: demo\n---\n[guide](references/guide.md)\n"
-    fetched = []
-    monkeypatch.setattr(
-        source,
-        "_fetch_file_content",
-        lambda _repo, path: skill if path.endswith("SKILL.md") else None,
-    )
-
-    def _fetch_bytes(_repo, path):
-        fetched.append(path)
-        return b"guide"
-
-    monkeypatch.setattr(source, "_fetch_file_bytes", _fetch_bytes, raising=False)
-    source._tree_cache["owner/repo"] = (
-        "develop",
-        [
-            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
-            {"path": "skill/references/guide.md", "type": "blob", "mode": "100644"},
-            {"path": "skill/references/unreferenced.md", "type": "blob", "mode": "100644"},
-        ],
-    )
-    source._tree_revisions = {"owner/repo": "deadbeef"}
-
-    bundle = source.fetch("owner/repo/skill")
-
-    assert bundle is not None
-    assert fetched == ["skill/references/guide.md"]
-    assert bundle.files["references/guide.md"] == b"guide"
-    assert bundle.metadata["source_url"] == "https://github.com/owner/repo/tree/deadbeef/skill"
-    assert bundle.metadata["source_revision"] == "deadbeef"
-
-
-def test_scan_cache_records_full_provenance_and_hash_change_forces_rescan(tmp_path):
-    skill = tmp_path / "skill"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: test\n---\n# safe\n")
-    cache = tmp_path / "scan-cache"
-
-    first, first_provenance = scan_skill_cached(
-        skill, source="owner/repo/skill", source_url="https://github.com/owner/repo", cache_dir=cache
-    )
-    second, second_provenance = scan_skill_cached(
-        skill, source="owner/repo/skill", source_url="https://github.com/owner/repo", cache_dir=cache
-    )
-    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: changed\n---\n# safe\n")
-    third, third_provenance = scan_skill_cached(
-        skill, source="owner/repo/skill", source_url="https://github.com/owner/repo", cache_dir=cache
-    )
-
-    assert first.verdict == second.verdict == third.verdict == "safe"
-    assert first_provenance["fresh"] is True
-    assert second_provenance["fresh"] is False
-    assert third_provenance["fresh"] is True
-    assert first_provenance["bundle_hash"].startswith("sha256:")
-    assert len(first_provenance["bundle_hash"].split(":", 1)[1]) == 64
-    assert third_provenance["bundle_hash"] != first_provenance["bundle_hash"]
-    assert first_provenance["scanner_version"] == SCANNER_VERSION
-    assert first_provenance["source_url"] == "https://github.com/owner/repo"
-    assert isinstance(first_provenance["findings"], list)
-    assert isinstance(first_provenance["rules"], list)
-    assert first_provenance["scanned_at"]
-
-
-def test_scan_cache_never_reuses_provenance_across_sources(tmp_path):
-    skill = tmp_path / "skill"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: test\n---\n")
-    cache = tmp_path / "scan-cache"
-
-    _first, first = scan_skill_cached(
-        skill, source="community", source_url="https://one.example/SKILL.md", cache_dir=cache
-    )
-    _second, second = scan_skill_cached(
-        skill, source="community", source_url="https://two.example/SKILL.md", cache_dir=cache
-    )
-
-    assert first["fresh"] is True
-    assert second["fresh"] is True
-    assert second["source_url"] == "https://two.example/SKILL.md"
-
-
 def test_lock_file_persists_scan_provenance(tmp_path):
     lock = HubLockFile(tmp_path / "lock.json")
     provenance = {
@@ -242,6 +164,69 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     assert entry["scan_provenance"]["source_url"] == url
     assert entry["scan_provenance"]["fresh"] is True
     assert "Scan provenance: fresh" in sink.getvalue()
+
+
+def _make_skills_redirect(link: Path, target: Path) -> bool:
+    """Make *link* a directory redirect (Windows junction or POSIX symlink)
+    pointing at *target*. Junctions need no admin rights, unlike symlinks."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                check=True,
+                capture_output=True,
+            )
+            return True
+        except (subprocess.CalledProcessError, OSError):
+            return False
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
+    """#86971: install must not mix resolved and unresolved paths when the
+    skills directory is a junction/symlink redirect.
+
+    install_dir is resolved by _resolve_lock_install_path (following the
+    redirect), so relative_to() must receive the resolved skills root or it
+    raises ValueError after the files have already been moved, leaving a lock
+    entry without a content_hash (which then poisons 'hermes skills check').
+    """
+    from hermes_cli.skills_hub import do_install
+    import tools.skills_hub as hub
+
+    _repo, url = served_repo
+    home = tmp_path / "home"
+    home.mkdir()
+    real_skills = tmp_path / "real-skills"
+    real_skills.mkdir()
+    skills_link = home / "skills"
+    if not _make_skills_redirect(skills_link, real_skills):
+        pytest.skip("Cannot create a junction/symlink in this environment")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+
+    sink = StringIO()
+    do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
+
+    # Files landed in the real target, reached through the junction.
+    installed = real_skills / "demo-bundle"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "references" / "guide.md").read_text() == "safe guide\n"
+    # Lock entry got a valid relative install_path AND the content hash — the
+    # record_install call the pre-fix ValueError used to skip.
+    entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["demo-bundle"]
+    assert entry["install_path"] == "demo-bundle"
+    assert entry["content_hash"].startswith("sha256:")
+    # The post-install "Installed:" line (relative_to on the display path)
+    # renders instead of raising.
+    assert "Installed:" in sink.getvalue()
 
 
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):

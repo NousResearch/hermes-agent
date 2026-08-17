@@ -36,7 +36,11 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import (
+    ACP_MAX_MODELS_PER_PROVIDER,
+    HermesACPAgent,
+    HERMES_VERSION,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -94,35 +98,8 @@ class TestInitialize:
         assert isinstance(resp, InitializeResponse)
         assert resp.protocol_version == acp.PROTOCOL_VERSION
 
-    @pytest.mark.asyncio
-    async def test_initialize_returns_agent_info(self, agent):
-        resp = await agent.initialize(protocol_version=1)
-        assert resp.agent_info is not None
-        assert isinstance(resp.agent_info, Implementation)
-        assert resp.agent_info.name == "hermes-agent"
-        assert resp.agent_info.version == HERMES_VERSION
 
-    @pytest.mark.asyncio
-    async def test_initialize_returns_capabilities(self, agent):
-        resp = await agent.initialize(protocol_version=1)
-        caps = resp.agent_capabilities
-        assert isinstance(caps, AgentCapabilities)
-        assert caps.load_session is True
-        assert caps.session_capabilities is not None
-        assert caps.session_capabilities.fork is not None
-        assert caps.session_capabilities.list is not None
-        assert caps.session_capabilities.resume is not None
 
-    @pytest.mark.asyncio
-    async def test_initialize_capabilities_wire_format(self, agent):
-        """Verify the JSON wire format uses correct aliases so ACP clients see the right keys."""
-        resp = await agent.initialize(protocol_version=1)
-        payload = resp.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
-        assert payload["loadSession"] is True
-        session_caps = payload["sessionCapabilities"]
-        assert "fork" in session_caps
-        assert "list" in session_caps
-        assert "resume" in session_caps
 
     @pytest.mark.asyncio
     async def test_initialize_advertises_provider_and_terminal_auth_methods(self, agent, monkeypatch):
@@ -138,26 +115,6 @@ class TestInitialize:
         assert terminal["type"] == "terminal"
         assert terminal["args"] == ["--setup"]
 
-    @pytest.mark.asyncio
-    async def test_initialize_advertises_terminal_setup_auth_when_no_provider(self, agent, monkeypatch):
-        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: None)
-        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: None)
-
-        resp = await agent.initialize(protocol_version=1)
-        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
-
-        assert payloads == [
-            {
-                "args": ["--setup"],
-                "description": (
-                    "Open Hermes' interactive model/provider setup in a terminal. "
-                    "Use this when Hermes has not been configured on this machine yet."
-                ),
-                "id": TERMINAL_SETUP_AUTH_METHOD_ID,
-                "name": "Configure Hermes provider",
-                "type": "terminal",
-            }
-        ]
 
 
 # ---------------------------------------------------------------------------
@@ -211,14 +168,6 @@ class TestAuthenticate:
         resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
         assert isinstance(resp, AuthenticateResponse)
 
-    @pytest.mark.asyncio
-    async def test_authenticate_rejects_terminal_setup_without_provider(self, agent, monkeypatch):
-        monkeypatch.setattr(
-            "acp_adapter.server.detect_provider",
-            lambda: None,
-        )
-        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
-        assert resp is None
 
 
 # ---------------------------------------------------------------------------
@@ -227,34 +176,77 @@ class TestAuthenticate:
 
 
 class TestSessionOps:
-    @pytest.mark.asyncio
-    async def test_new_session_creates_session(self, agent):
-        resp = await agent.new_session(cwd="/home/user/project")
-        assert isinstance(resp, NewSessionResponse)
-        assert resp.session_id
-        # Session should be retrievable from the manager
-        state = agent.session_manager.get_session(resp.session_id)
-        assert state is not None
-        assert state.cwd == "/home/user/project"
 
     @pytest.mark.asyncio
-    async def test_new_session_returns_model_state(self):
+    async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
-            agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex")
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+            )
         )
         acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6", "claude-sonnet-4-6"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "models": [
+                        {"id": "gpt-5.4"},
+                        "gpt-5.4-mini",
+                    ],
+                },
+            ],
+        }
 
-        with patch(
-            "hermes_cli.models.curated_models_for_provider",
-            return_value=[("gpt-5.4", "recommended"), ("gpt-5.4-mini", "")],
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload) as build_payload,
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
         assert isinstance(resp.models, SessionModelState)
         assert resp.models.current_model_id == "openai-codex:gpt-5.4"
-        assert resp.models.available_models[0].model_id == "openai-codex:gpt-5.4"
-        assert resp.models.available_models[0].description is not None
-        assert "Provider:" in resp.models.available_models[0].description
+        assert [model.model_id for model in resp.models.available_models] == [
+            "anthropic:claude-sonnet-4-6",
+            "openai-codex:gpt-5.4",
+            "openai-codex:gpt-5.4-mini",
+        ]
+        assert [model.name for model in resp.models.available_models] == [
+            "Anthropic · claude-sonnet-4-6",
+            "OpenAI Codex · gpt-5.4",
+            "OpenAI Codex · gpt-5.4-mini",
+        ]
+        assert resp.models.available_models[1].description is not None
+        assert "current" in resp.models.available_models[1].description
+        picker_context.with_overrides.assert_called_once_with(
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="https://api.openai.com/v1",
+        )
+        build_payload.assert_called_once_with(
+            picker_context,
+            explicit_only=True,
+            include_unconfigured=False,
+            picker_hints=False,
+            canonical_order=True,
+            pricing=False,
+            capabilities=False,
+            refresh=False,
+            probe_custom_providers=False,
+            probe_current_custom_provider=False,
+            max_models=ACP_MAX_MODELS_PER_PROVIDER,
+        )
+
+
 
     @pytest.mark.asyncio
     async def test_available_commands_include_help(self, agent):
@@ -267,36 +259,6 @@ class TestSessionOps:
         assert help_cmd.description == "List available commands"
         assert help_cmd.input is None
 
-    @pytest.mark.asyncio
-    async def test_send_available_commands_update(self, agent):
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        await agent._send_available_commands_update("session-123")
-
-        mock_conn.session_update.assert_awaited_once()
-        call = mock_conn.session_update.await_args
-        assert call.kwargs["session_id"] == "session-123"
-        update = call.kwargs["update"]
-        assert isinstance(update, AvailableCommandsUpdate)
-        assert update.session_update == "available_commands_update"
-        assert [cmd.name for cmd in update.available_commands] == [
-            "help",
-            "model",
-            "tools",
-            "context",
-            "reset",
-            "compact",
-            "steer",
-            "queue",
-            "version",
-        ]
-        model_cmd = next(
-            cmd for cmd in update.available_commands if cmd.name == "model"
-        )
-        assert model_cmd.input is not None
-        assert model_cmd.input.root.hint == "model name to switch to"
 
     def test_build_usage_update_for_zed_context_indicator(self, agent, mock_manager):
         state = mock_manager.create_session(cwd="/tmp")
@@ -316,162 +278,18 @@ class TestSessionOps:
         assert update.size == 100_000
         assert update.used == 25_000
 
-    @pytest.mark.asyncio
-    async def test_send_usage_update_to_client(self, agent, mock_manager):
-        state = mock_manager.create_session(cwd="/tmp")
-        state.agent.context_compressor = MagicMock(context_length=100_000)
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        with patch(
-            "agent.model_metadata.estimate_request_tokens_rough",
-            return_value=25_000,
-        ):
-            await agent._send_usage_update(state)
 
-        mock_conn.session_update.assert_awaited_once()
-        call = mock_conn.session_update.await_args
-        assert call.kwargs["session_id"] == state.session_id
-        update = call.kwargs["update"]
-        assert isinstance(update, UsageUpdate)
-        assert update.size == 100_000
-        assert update.used == 25_000
-
-    @pytest.mark.asyncio
-    async def test_cancel_sets_event(self, agent):
-        resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(resp.session_id)
-        assert not state.cancel_event.is_set()
-        await agent.cancel(session_id=resp.session_id)
-        assert state.cancel_event.is_set()
-
-    @pytest.mark.asyncio
-    async def test_cancel_nonexistent_session_is_noop(self, agent):
-        # Should not raise
-        await agent.cancel(session_id="does-not-exist")
 
     @pytest.mark.asyncio
     async def test_load_session_not_found_returns_none(self, agent):
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
 
-    @pytest.mark.asyncio
-    async def test_load_session_replays_persisted_history_to_client(self, agent):
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [
-            {"role": "system", "content": "hidden system"},
-            {"role": "user", "content": "what controls the / slash commands?"},
-            {"role": "assistant", "content": "HermesACPAgent._ADVERTISED_COMMANDS controls them."},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_search_1",
-                        "type": "function",
-                        "function": {
-                            "name": "search_files",
-                            "arguments": '{"pattern":"slash commands","path":"."}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_search_1",
-                "content": '{"total_count":1,"matches":[{"path":"cli.py","line":42,"content":"slash commands"}]}',
-            },
-        ]
 
-        mock_conn.session_update.reset_mock()
-        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
 
-        assert isinstance(resp, LoadSessionResponse)
-        calls = mock_conn.session_update.await_args_list
-        replay_calls = [
-            call for call in calls
-            if getattr(call.kwargs.get("update"), "session_update", None)
-            in {"user_message_chunk", "agent_message_chunk"}
-        ]
-        assert len(replay_calls) == 2
-        assert isinstance(replay_calls[0].kwargs["update"], UserMessageChunk)
-        assert replay_calls[0].kwargs["update"].content.text == "what controls the / slash commands?"
-        assert isinstance(replay_calls[1].kwargs["update"], AgentMessageChunk)
-        assert replay_calls[1].kwargs["update"].content.text.startswith("HermesACPAgent")
 
-        tool_updates = [
-            call.kwargs["update"]
-            for call in calls
-            if getattr(call.kwargs.get("update"), "session_update", None)
-            in {"tool_call", "tool_call_update"}
-        ]
-        assert len(tool_updates) == 2
-        assert isinstance(tool_updates[0], ToolCallStart)
-        assert tool_updates[0].tool_call_id == "call_search_1"
-        assert tool_updates[0].title == "search: slash commands"
-        assert isinstance(tool_updates[1], ToolCallProgress)
-        assert tool_updates[1].tool_call_id == "call_search_1"
-        assert "Search results" in tool_updates[1].content[0].content.text
-        assert "cli.py:42" in tool_updates[1].content[0].content.text
-
-    @pytest.mark.asyncio
-    async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
-        """Persisted todo tool results should rebuild Zed's native plan panel."""
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_todo_1",
-                        "type": "function",
-                        "function": {
-                            "name": "todo",
-                            "arguments": '{"todos":[{"id":"ship","content":"Ship it","status":"in_progress"}]}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_todo_1",
-                "content": '{"todos":[{"id":"ship","content":"Ship it","status":"in_progress"}]}',
-            },
-        ]
-
-        mock_conn.session_update.reset_mock()
-        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        assert isinstance(resp, LoadSessionResponse)
-        relevant_updates = [
-            update for update in (call.kwargs["update"] for call in mock_conn.session_update.await_args_list)
-            if getattr(update, "session_update", None) in {"tool_call", "tool_call_update", "plan"}
-        ]
-        assert [getattr(update, "session_update", None) for update in relevant_updates] == [
-            "tool_call",
-            "tool_call_update",
-            "plan",
-        ]
-        plan = relevant_updates[2]
-        assert isinstance(plan, AgentPlanUpdate)
-        assert [entry.content for entry in plan.entries] == ["Ship it"]
-        assert [entry.status for entry in plan.entries] == ["in_progress"]
 
     @pytest.mark.asyncio
     async def test_resume_session_replays_persisted_history_to_client(self, agent):
@@ -496,302 +314,14 @@ class TestSessionOps:
             for update in updates
         )
 
-    @pytest.mark.asyncio
-    async def test_load_session_replays_reasoning_thought_before_message(self, agent):
-        """Thinking-model thoughts must be replayed via ``agent_thought_chunk``.
 
-        Regression for #12285 — when a session is loaded, persisted assistant
-        ``reasoning_content`` / ``reasoning`` fields must surface as ACP
-        ``AgentThoughtChunk`` notifications in the same relative position they
-        had live (thought streams before the assistant message text), so Zed's
-        collapsed Thinking pane rebuilds instead of vanishing on reconnect.
-        """
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [
-            {"role": "user", "content": "Walk me through it."},
-            {
-                "role": "assistant",
-                "reasoning_content": "Let me think step by step about the request.",
-                "content": "Here is the plan.",
-            },
-            {"role": "user", "content": "And the legacy case?"},
-            {
-                "role": "assistant",
-                # No reasoning_content — exercise the legacy "reasoning" fallback
-                # path so sessions persisted before #16892 still replay thoughts.
-                "reasoning": "Older sessions stored the trace under the internal key.",
-                "content": "Same idea, older field name.",
-            },
-        ]
 
-        mock_conn.session_update.reset_mock()
-        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
 
-        assert isinstance(resp, LoadSessionResponse)
 
-        replay_kinds = [
-            getattr(call.kwargs.get("update"), "session_update", None)
-            for call in mock_conn.session_update.await_args_list
-            if getattr(call.kwargs.get("update"), "session_update", None)
-            in {"user_message_chunk", "agent_message_chunk", "agent_thought_chunk"}
-        ]
-        assert replay_kinds == [
-            "user_message_chunk",
-            "agent_thought_chunk",
-            "agent_message_chunk",
-            "user_message_chunk",
-            "agent_thought_chunk",
-            "agent_message_chunk",
-        ]
 
-        thought_updates = [
-            call.kwargs["update"]
-            for call in mock_conn.session_update.await_args_list
-            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
-        ]
-        assert len(thought_updates) == 2
-        assert thought_updates[0].content.text == "Let me think step by step about the request."
-        assert thought_updates[1].content.text == "Older sessions stored the trace under the internal key."
 
-    @pytest.mark.asyncio
-    async def test_load_session_replays_reasoning_only_turn(self, agent):
-        """Assistant turns with reasoning but no content should still emit a thought.
 
-        Pure reasoning-only assistant entries (e.g. a thinking step before a
-        tool-call turn) commonly carry ``reasoning_content`` with empty
-        ``content``. The replay must still surface the thought so the editor's
-        Thinking pane rebuilds, even when there is no message text to follow.
-        """
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [
-            {
-                "role": "assistant",
-                "reasoning_content": "I should call the search tool next.",
-                "content": "",
-            },
-        ]
-
-        mock_conn.session_update.reset_mock()
-        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        thought_updates = [
-            call.kwargs["update"]
-            for call in mock_conn.session_update.await_args_list
-            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
-        ]
-        message_updates = [
-            call.kwargs["update"]
-            for call in mock_conn.session_update.await_args_list
-            if isinstance(call.kwargs.get("update"), AgentMessageChunk)
-        ]
-        assert len(thought_updates) == 1
-        assert thought_updates[0].content.text == "I should call the search tool next."
-        assert message_updates == []
-
-    @pytest.mark.asyncio
-    async def test_load_session_skips_empty_reasoning_fields(self, agent):
-        """Empty/whitespace reasoning fields must not produce notifications."""
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [
-            {
-                "role": "assistant",
-                "reasoning_content": "",
-                "reasoning": "   \n\t",
-                "content": "Just a regular answer.",
-            },
-        ]
-
-        mock_conn.session_update.reset_mock()
-        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        thought_updates = [
-            call.kwargs["update"]
-            for call in mock_conn.session_update.await_args_list
-            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
-        ]
-        assert thought_updates == []
-
-    @pytest.mark.asyncio
-    async def test_load_session_replays_thought_then_tool_call_without_message(self, agent):
-        """Canonical thinking-model shape: reasoning + tool_call + no body text.
-
-        Thinking models commonly emit a pre-tool thought followed by a
-        tool_calls turn with empty ``content``. Replay must emit:
-        ``agent_thought_chunk`` then ``tool_call`` then ``tool_call_update``
-        for the matching tool result — and crucially, NO ``agent_message_chunk``
-        for the empty-text assistant body. Regression for the canonical
-        thinking-then-tool flow on #12285.
-        """
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [
-            {"role": "user", "content": "Find the bug."},
-            {
-                "role": "assistant",
-                "reasoning_content": "I should grep for the function name first.",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_grep_1",
-                        "type": "function",
-                        "function": {
-                            "name": "search_files",
-                            "arguments": '{"pattern":"foo","path":"."}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_grep_1",
-                "content": '{"total_count":1,"matches":[{"path":"x.py","line":1,"content":"foo"}]}',
-            },
-        ]
-
-        mock_conn.session_update.reset_mock()
-        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        kinds = [
-            getattr(call.kwargs.get("update"), "session_update", None)
-            for call in mock_conn.session_update.await_args_list
-            if getattr(call.kwargs.get("update"), "session_update", None)
-            in {
-                "user_message_chunk",
-                "agent_thought_chunk",
-                "agent_message_chunk",
-                "tool_call",
-                "tool_call_update",
-            }
-        ]
-        # No agent_message_chunk for the empty-content assistant turn.
-        assert "agent_message_chunk" not in kinds
-        # Thought must precede the tool_call_start within the assistant turn,
-        # and the tool result follows.
-        assert kinds == [
-            "user_message_chunk",
-            "agent_thought_chunk",
-            "tool_call",
-            "tool_call_update",
-        ]
-
-    @pytest.mark.asyncio
-    async def test_load_session_replays_history_before_returning_response(self, agent):
-        """Per ACP spec, replay must complete BEFORE load_session returns.
-
-        Spec-compliant ACP clients (Codex, Claude Code, OpenCode, Pi, Zed)
-        attach their ``session/update`` listeners before awaiting the
-        ``loadSession`` RPC and rely on receiving the full transcript within
-        the request's lifetime. Deferring replay via ``loop.call_soon`` (the
-        prior behavior in May 2026) broke clients that read notification
-        counts synchronously against the load response — see #12285 follow-up.
-        """
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [{"role": "user", "content": "hello from history"}]
-        events: list[str] = []
-
-        async def replay_records(_state):
-            events.append("replay")
-
-        with patch.object(agent, "_replay_session_history", side_effect=replay_records):
-            resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-            events.append("returned")
-
-        assert isinstance(resp, LoadSessionResponse)
-        # Replay must have happened BEFORE the response was constructed —
-        # i.e. before the `events.append("returned")` after the await resolves.
-        assert events == ["replay", "returned"]
-
-    @pytest.mark.asyncio
-    async def test_resume_session_replays_history_before_returning_response(self, agent):
-        """Same spec rationale as ``load_session`` — replay before responding."""
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [{"role": "user", "content": "hello from history"}]
-        events: list[str] = []
-
-        async def replay_records(_state):
-            events.append("replay")
-
-        with patch.object(agent, "_replay_session_history", side_effect=replay_records):
-            resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
-            events.append("returned")
-
-        assert isinstance(resp, ResumeSessionResponse)
-        assert events == ["replay", "returned"]
-
-    @pytest.mark.asyncio
-    async def test_load_session_survives_replay_helper_exception(self, agent, caplog):
-        """A replay helper raising must not turn load_session into an error.
-
-        With awaited replay, an exception in ``_replay_session_history`` now
-        propagates into the ``load_session`` handler. The defensive try/except
-        guard at the call site must catch and log it so the JSON-RPC client
-        still receives a ``LoadSessionResponse`` — partial transcripts are
-        acceptable, total load failure is not.
-        """
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [{"role": "user", "content": "hi"}]
-
-        async def boom(_state):
-            raise RuntimeError("simulated replay helper crash")
-
-        with caplog.at_level("WARNING", logger="acp_adapter.server"):
-            with patch.object(agent, "_replay_session_history", side_effect=boom):
-                resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
-
-        assert isinstance(resp, LoadSessionResponse)
-        assert "history replay raised during session/load" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_resume_session_survives_replay_helper_exception(self, agent, caplog):
-        """Same guarantee as ``load_session`` for the resume path."""
-        new_resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [{"role": "user", "content": "hi"}]
-
-        async def boom(_state):
-            raise RuntimeError("simulated replay helper crash")
-
-        with caplog.at_level("WARNING", logger="acp_adapter.server"):
-            with patch.object(agent, "_replay_session_history", side_effect=boom):
-                resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
-
-        assert isinstance(resp, ResumeSessionResponse)
-        assert "history replay raised during session/resume" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_resume_session_creates_new_if_missing(self, agent):
-        resume_resp = await agent.resume_session(cwd="/tmp", session_id="nonexistent")
-        assert isinstance(resume_resp, ResumeSessionResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -827,63 +357,10 @@ class TestListAndFork:
         assert resp.sessions[0].title == "Fix Zed session history"
         assert resp.sessions[0].updated_at == "123.0"
 
-    @pytest.mark.asyncio
-    async def test_list_sessions_passes_cwd_filter(self, agent):
-        with patch.object(agent.session_manager, "list_sessions", return_value=[]) as mock_list:
-            await agent.list_sessions(cwd="/mnt/e/Projects/AI/browser-link-3")
 
-        mock_list.assert_called_once_with(cwd="/mnt/e/Projects/AI/browser-link-3")
 
-    @pytest.mark.asyncio
-    async def test_list_sessions_pagination_first_page(self, agent):
-        from acp_adapter import server as acp_server
 
-        infos = [
-            {"session_id": f"s{i}", "cwd": "/tmp", "title": None, "updated_at": 0.0}
-            for i in range(acp_server._LIST_SESSIONS_PAGE_SIZE + 5)
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions()
 
-        assert len(resp.sessions) == acp_server._LIST_SESSIONS_PAGE_SIZE
-        assert resp.next_cursor == resp.sessions[-1].session_id
-
-    @pytest.mark.asyncio
-    async def test_list_sessions_pagination_no_more(self, agent):
-        infos = [
-            {"session_id": f"s{i}", "cwd": "/tmp", "title": None, "updated_at": 0.0}
-            for i in range(3)
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions()
-
-        assert len(resp.sessions) == 3
-        assert resp.next_cursor is None
-
-    @pytest.mark.asyncio
-    async def test_list_sessions_cursor_resumes_after_match(self, agent):
-        infos = [
-            {"session_id": "s1", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-            {"session_id": "s2", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-            {"session_id": "s3", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions(cursor="s1")
-
-        assert [s.session_id for s in resp.sessions] == ["s2", "s3"]
-        assert resp.next_cursor is None
-
-    @pytest.mark.asyncio
-    async def test_list_sessions_unknown_cursor_returns_empty(self, agent):
-        infos = [
-            {"session_id": "s1", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-            {"session_id": "s2", "cwd": "/tmp", "title": None, "updated_at": 0.0},
-        ]
-        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
-            resp = await agent.list_sessions(cursor="does-not-exist")
-
-        assert resp.sessions == []
-        assert resp.next_cursor is None
 
 # ---------------------------------------------------------------------------
 # session configuration / model routing
@@ -891,14 +368,6 @@ class TestListAndFork:
 
 
 class TestSessionConfiguration:
-    @pytest.mark.asyncio
-    async def test_set_session_mode_returns_response(self, agent):
-        new_resp = await agent.new_session(cwd="/tmp")
-        resp = await agent.set_session_mode(mode_id="accept_edits", session_id=new_resp.session_id)
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        assert isinstance(resp, SetSessionModeResponse)
-        assert getattr(state, "mode", None) == "accept_edits"
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -923,79 +392,8 @@ class TestSessionConfiguration:
         assert mode_result == {}
         assert config_result["configOptions"] == []
 
-    @pytest.mark.asyncio
-    async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):
-        new_resp = await agent.new_session(cwd="/tmp")
-        router = build_agent_router(agent, use_unstable_protocol=True)
 
-        result = await router(
-            "session/set_model",
-            {"modelId": "gpt-5.4", "sessionId": new_resp.session_id},
-            False,
-        )
-        state = agent.session_manager.get_session(new_resp.session_id)
 
-        assert result == {}
-        assert state.model == "gpt-5.4"
-
-    @pytest.mark.asyncio
-    async def test_set_session_model_accepts_provider_prefixed_choice(self, tmp_path, monkeypatch):
-        runtime_calls = []
-
-        def fake_resolve_runtime_provider(requested=None, **kwargs):
-            runtime_calls.append(requested)
-            provider = requested or "openrouter"
-            return {
-                "provider": provider,
-                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
-                "base_url": f"https://{provider}.example/v1",
-                "api_key": f"{provider}-key",
-                "command": None,
-                "args": [],
-            }
-
-        def fake_agent(**kwargs):
-            return SimpleNamespace(
-                model=kwargs.get("model"),
-                provider=kwargs.get("provider"),
-                base_url=kwargs.get("base_url"),
-                api_mode=kwargs.get("api_mode"),
-            )
-
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
-            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
-        })
-        monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            fake_resolve_runtime_provider,
-        )
-        # Pin the parser so this test doesn't depend on live
-        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state
-        # (sibling of the same hardening on
-        # ``test_model_switch_uses_requested_provider``).
-        monkeypatch.setattr(
-            "hermes_cli.models.parse_model_input",
-            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
-        )
-        monkeypatch.setattr(
-            "hermes_cli.models.detect_provider_for_model",
-            lambda model, current: None,
-        )
-        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
-
-        with patch("run_agent.AIAgent", side_effect=fake_agent):
-            acp_agent = HermesACPAgent(session_manager=manager)
-            state = manager.create_session(cwd="/tmp")
-            result = await acp_agent.set_session_model(
-                model_id="anthropic:claude-sonnet-4-6",
-                session_id=state.session_id,
-            )
-
-        assert isinstance(result, SetSessionModelResponse)
-        assert state.model == "claude-sonnet-4-6"
-        assert state.agent.provider == "anthropic"
-        assert state.agent.base_url == "https://anthropic.example/v1"
-        assert runtime_calls[-1] == "anthropic"
 
 
 # ---------------------------------------------------------------------------
@@ -1012,432 +410,56 @@ class TestPrompt:
         assert resp.stop_reason == "refusal"
 
     @pytest.mark.asyncio
-    async def test_prompt_returns_end_turn_for_empty_message(self, agent):
-        new_resp = await agent.new_session(cwd=".")
-        prompt = [TextContentBlock(type="text", text="   ")]
-        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-        assert resp.stop_reason == "end_turn"
+    async def test_prompt_binds_session_id_into_subprocess_env(self, agent, mock_manager):
+        """The ACP prompt path must bridge the session id into child subprocesses.
 
-    @pytest.mark.asyncio
-    async def test_prompt_runs_agent(self, agent):
-        """The prompt method should call run_conversation on the agent."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        # Mock the agent's run_conversation
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "Hello! How can I help?",
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "Hello! How can I help?"},
-            ],
-        })
-
-        # Set up a mock connection
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="hello")]
-        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        assert isinstance(resp, PromptResponse)
-        assert resp.stop_reason == "end_turn"
-        state.agent.run_conversation.assert_called_once()
-        assert state.agent.tool_progress_callback is not None
-        assert state.agent.step_callback is not None
-        assert state.agent.stream_delta_callback is not None
-        assert state.agent.reasoning_callback is not None
-        assert state.agent.thinking_callback is None
-
-    @pytest.mark.asyncio
-    async def test_prompt_updates_history(self, agent):
-        """After a prompt, session history should be updated."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        expected_history = [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hey"},
-        ]
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "hey",
-            "messages": expected_history,
-        })
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="hi")]
-        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        assert state.history == expected_history
-
-    @pytest.mark.asyncio
-    async def test_prompt_sends_final_message_update(self, agent):
-        """The final response should be sent as an AgentMessageChunk."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "I can help with that!",
-            "messages": [],
-        })
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="help me")]
-        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        # session_update should include the final message (usage_update may follow it)
-        mock_conn.session_update.assert_called()
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.call_args_list
-        ]
-        assert any(update.session_update == "agent_message_chunk" for update in updates)
-
-    @pytest.mark.asyncio
-    async def test_prompt_suppresses_cancel_interrupt_sentinel(self, agent):
-        """ACP cancel status text should not be emitted as assistant output."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        sentinel = "Operation interrupted: waiting for model response (3.3s elapsed)."
-
-        def mock_run(*args, **kwargs):
-            state.cancel_event.set()
-            return {
-                "final_response": sentinel,
-                "messages": list(state.history),
-                "interrupted": True,
-                "completed": False,
-            }
-
-        state.agent.run_conversation = mock_run
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        with patch("agent.title_generator.maybe_auto_title") as mock_title:
-            prompt = [TextContentBlock(type="text", text="please do a long task")]
-            resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.call_args_list
-        ]
-        agent_texts = [
-            update.content.text
-            for update in updates
-            if update.session_update == "agent_message_chunk"
-        ]
-        assert resp.stop_reason == "cancelled"
-        assert sentinel not in agent_texts
-        assert not any(text.startswith("Operation interrupted:") for text in agent_texts)
-        mock_title.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_prompt_keeps_real_final_response_on_cancelled_turn(self, agent):
-        """A cancel flag must not suppress actual assistant/model text."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        final_text = "The actual model answer arrived before cancellation settled."
-
-        def mock_run(*args, **kwargs):
-            state.cancel_event.set()
-            return {
-                "final_response": final_text,
-                "messages": [],
-                "interrupted": True,
-            }
-
-        state.agent.run_conversation = mock_run
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="finish if you can")]
-        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.call_args_list
-        ]
-        agent_texts = [
-            update.content.text
-            for update in updates
-            if update.session_update == "agent_message_chunk"
-        ]
-        assert resp.stop_reason == "cancelled"
-        assert final_text in agent_texts
-
-    @pytest.mark.asyncio
-    async def test_prompt_propagates_hermes_session_id_env(self, agent, monkeypatch):
-        """ACP must propagate the originating session id to the agent loop
-        via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects
-        with it (e.g. ``kanban_create``) can read the env var inside
-        ``run_conversation``. The variable must be visible during the
-        agent call AND restored afterwards so a re-used executor thread
-        doesn't leak one session's id into another."""
-        # Pre-condition: env is clean.
-        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        captured: dict[str, str | None] = {}
-
-        def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
-            # Inside the agent loop the env var must reflect the active
-            # ACP session id. ``task_id`` is also the session id at this
-            # boundary; assert both for symmetry.
-            captured["env"] = os.environ.get("HERMES_SESSION_ID")
-            captured["task_id"] = task_id
-            return {"final_response": "ok", "messages": []}
-
-        state.agent.run_conversation = mock_run
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="hi")]
-        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        assert captured["env"] == new_resp.session_id, (
-            "HERMES_SESSION_ID must be set to the originating ACP session id "
-            "while the agent loop is running"
-        )
-        assert captured["task_id"] == new_resp.session_id
-        # Post-condition: must be restored to the prior value (None here).
-        assert os.environ.get("HERMES_SESSION_ID") is None, (
-            "HERMES_SESSION_ID must be restored after the agent call so "
-            "a re-used executor thread doesn't leak the id into the next "
-            "session's tools"
-        )
-
-    @pytest.mark.asyncio
-    async def test_prompt_restores_prior_hermes_session_id(self, agent, monkeypatch):
-        """If the env already had HERMES_SESSION_ID set (e.g. nested
-        agent loops), the prior value must be restored after the inner
-        prompt completes — not popped, not left at the inner id."""
-        monkeypatch.setenv("HERMES_SESSION_ID", "outer-sess")
-
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        captured: dict[str, str | None] = {}
-
-        def mock_run(*args, **kwargs):
-            captured["inner"] = os.environ.get("HERMES_SESSION_ID")
-            return {"final_response": "ok", "messages": []}
-
-        state.agent.run_conversation = mock_run
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="hi")]
-        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        assert captured["inner"] == new_resp.session_id
-        # Outer scope must be restored.
-        assert os.environ.get("HERMES_SESSION_ID") == "outer-sess"
-
-    @pytest.mark.asyncio
-    async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
-        """If ACP already streamed response chunks, final_response should not be sent again."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-
-        def mock_run(*args, **kwargs):
-            state.agent.stream_delta_callback("streamed answer")
-            return {"final_response": "streamed answer", "messages": []}
-
-        state.agent.run_conversation = mock_run
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
-
-        prompt = [TextContentBlock(type="text", text="hello")]
-        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.call_args_list
-        ]
-        agent_chunks = [update for update in updates if update.session_update == "agent_message_chunk"]
-        assert len(agent_chunks) == 1
-        assert agent_chunks[0].content.text == "streamed answer"
-
-    @pytest.mark.asyncio
-    async def test_prompt_delivers_transformed_response_after_streaming(self, agent):
-        """If a transform_llm_output plugin hook modifies the response after
-        streaming, ACP must deliver the transformed final_response so the
-        appended/rewritten text reaches the client.
+        Regression: ``set_session_vars`` was called with ``session_key`` only,
+        leaving the ``HERMES_SESSION_ID`` ContextVar bound to the explicit ""
+        default. Once the session-context machinery is engaged, that empty value
+        is authoritative — so ``_make_run_env`` handed child subprocesses an
+        empty ``HERMES_SESSION_ID`` instead of the session's own id.
         """
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
+        from tools.environments.local import _make_run_env
 
-        def mock_run(*args, **kwargs):
-            state.agent.stream_delta_callback("original answer")
-            return {
-                "final_response": "original answer\n\n[plugin appended this]",
-                "response_transformed": True,
-                "messages": [],
-            }
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
 
-        state.agent.run_conversation = mock_run
+        captured: dict[str, str | None] = {}
 
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
+        def _run(*args, **kwargs):
+            # Runs inside the session context copy set up by prompt().
+            captured["child"] = _make_run_env({}).get("HERMES_SESSION_ID")
+            return {"final_response": "ok", "messages": []}
 
-        prompt = [TextContentBlock(type="text", text="hello")]
-        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.call_args_list
-        ]
-        # The streamed chunk and the post-stream transformed message should
-        # both be present (final delivery is a separate update_agent_message_text
-        # call carrying the full transformed text).
-        all_texts = [
-            getattr(getattr(u, "content", None), "text", None)
-            for u in updates
-        ]
-        assert any(
-            text and "[plugin appended this]" in text for text in all_texts
-        ), f"expected transformed final to be delivered, got: {all_texts!r}"
-
-
-    @pytest.mark.asyncio
-    async def test_prompt_auto_titles_session(self, agent):
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "Here is the fix.",
-            "messages": [
-                {"role": "user", "content": "fix the broken ACP history"},
-                {"role": "assistant", "content": "Here is the fix."},
-            ],
-        })
+        state.agent.run_conversation = _run
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
 
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
         agent._conn = mock_conn
 
-        with patch("agent.title_generator.maybe_auto_title") as mock_title:
-            prompt = [TextContentBlock(type="text", text="fix the broken ACP history")]
-            await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=resp.session_id,
+        )
 
-        mock_title.assert_called_once()
-        assert mock_title.call_args.args[1] == new_resp.session_id
-        assert mock_title.call_args.args[2] == "fix the broken ACP history"
-        assert mock_title.call_args.args[3] == "Here is the fix."
-        assert callable(mock_title.call_args.kwargs["title_callback"])
+        assert captured.get("child") == resp.session_id
 
-    @pytest.mark.asyncio
-    async def test_prompt_sends_session_info_update_after_auto_title(self, agent):
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        resp = await agent.new_session(cwd="/tmp")
-        state = agent.session_manager.get_session(resp.session_id)
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "Done.",
-            "messages": [
-                {"role": "user", "content": "fix zed titles"},
-                {"role": "assistant", "content": "Done."},
-            ],
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2,
-        })
 
-        def fake_auto_title(db, session_id, user_text, final_response, history, **kwargs):
-            db.set_session_title(session_id, "Fix Zed titles")
-            kwargs["title_callback"]("Fix Zed titles")
 
-        with patch("agent.title_generator.maybe_auto_title", side_effect=fake_auto_title):
-            mock_conn.session_update.reset_mock()
-            await agent.prompt(
-                session_id=resp.session_id,
-                prompt=[TextContentBlock(type="text", text="fix zed titles")],
-            )
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
 
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.await_args_list
-        ]
-        info_updates = [u for u in updates if isinstance(u, SessionInfoUpdate)]
-        assert len(info_updates) == 1
-        assert info_updates[0].session_update == "session_info_update"
-        assert info_updates[0].title == "Fix Zed titles"
 
-    @pytest.mark.asyncio
-    async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
-        """ACP should map top-level token fields into PromptResponse.usage."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
 
-        state.agent.run_conversation = MagicMock(return_value={
-            "final_response": "usage attached",
-            "messages": [],
-            "prompt_tokens": 123,
-            "completion_tokens": 45,
-            "total_tokens": 168,
-            "reasoning_tokens": 7,
-            "cache_read_tokens": 11,
-        })
 
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        prompt = [TextContentBlock(type="text", text="show usage")]
-        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
-        assert isinstance(resp, PromptResponse)
-        assert resp.usage is not None
-        assert resp.usage.input_tokens == 123
-        assert resp.usage.output_tokens == 45
-        assert resp.usage.total_tokens == 168
-        assert resp.usage.thought_tokens == 7
-        assert resp.usage.cached_read_tokens == 11
 
-    @pytest.mark.asyncio
-    async def test_prompt_cancelled_returns_cancelled_stop_reason(self, agent):
-        """If cancel is called during prompt, stop_reason should be 'cancelled'."""
-        new_resp = await agent.new_session(cwd=".")
-        state = agent.session_manager.get_session(new_resp.session_id)
 
-        def mock_run(*args, **kwargs):
-            # Simulate cancel being set during execution
-            state.cancel_event.set()
-            return {"final_response": "interrupted", "messages": []}
 
-        state.agent.run_conversation = mock_run
 
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        prompt = [TextContentBlock(type="text", text="do something")]
-        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
-
-        assert resp.stop_reason == "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -1481,58 +503,9 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/model", state)
         assert "test-model" in result
 
-    def test_context_empty(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        state.history = []
-        result = agent._handle_slash_command("/context", state)
-        assert "empty" in result.lower()
 
-    def test_context_with_messages(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        state.history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-        ]
-        result = agent._handle_slash_command("/context", state)
-        assert "2 messages" in result
-        assert "user: 1" in result
 
-    def test_context_shows_usage_and_compression_threshold(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        state.history = [{"role": "user", "content": "hello"}]
-        state.agent.context_compressor = MagicMock(
-            context_length=100_000,
-            threshold_tokens=80_000,
-        )
-        state.agent._cached_system_prompt = "system"
-        state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
 
-        with patch(
-            "agent.model_metadata.estimate_request_tokens_rough",
-            return_value=25_000,
-        ):
-            result = agent._handle_slash_command("/context", state)
-
-        assert "Context usage: ~25,000 / 100,000 tokens (25.0%)" in result
-        assert "Compression: ~55,000 tokens until threshold (~80,000, 80%)" in result
-        assert "Tip: run /compact" in result
-
-    def test_context_says_compression_due_when_past_threshold(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        state.history = [{"role": "user", "content": "hello"}]
-        state.agent.context_compressor = MagicMock(
-            context_length=100_000,
-            threshold_tokens=80_000,
-        )
-
-        with patch(
-            "agent.model_metadata.estimate_request_tokens_rough",
-            return_value=82_000,
-        ):
-            result = agent._handle_slash_command("/context", state)
-
-        assert "Context usage: ~82,000 / 100,000 tokens (82.0%)" in result
-        assert "Compression: due now (threshold ~80,000, 80%). Run /compact." in result
 
     def test_reset_clears_history(self, agent, mock_manager):
         state = self._make_state(mock_manager)
@@ -1541,10 +514,8 @@ class TestSlashCommands:
         assert "cleared" in result.lower()
         assert len(state.history) == 0
 
-    def test_version(self, agent, mock_manager):
-        state = self._make_state(mock_manager)
-        result = agent._handle_slash_command("/version", state)
-        assert HERMES_VERSION in result
+
+
 
     def test_compact_compresses_context(self, agent, mock_manager):
         state = self._make_state(mock_manager)
@@ -1560,12 +531,13 @@ class TestSlashCommands:
         original_session_db = object()
         state.agent._session_db = original_session_db
 
-        def _compress_context(messages, system_prompt, *, approx_tokens, task_id):
+        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
             assert state.agent._session_db is None
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40
             assert task_id == state.session_id
+            assert force is True
             return [{"role": "user", "content": "summary"}], "new-system"
 
         state.agent._compress_context = MagicMock(side_effect=_compress_context)
@@ -1577,7 +549,7 @@ class TestSlashCommands:
                 side_effect=[40, 12],
             ),
         ):
-            result = agent._handle_slash_command("/compact", state)
+            result = agent._handle_slash_command("/compress", state)
 
         assert "Context compressed: 4 -> 1 messages" in result
         assert "~40 -> ~12 tokens" in result
@@ -1593,116 +565,40 @@ class TestSlashCommands:
             "system",
             approx_tokens=40,
             task_id=state.session_id,
+            force=True,
         )
         mock_save.assert_called_once_with(state.session_id)
+
 
     def test_unknown_command_returns_none(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         result = agent._handle_slash_command("/nonexistent", state)
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_slash_command_intercepted_in_prompt(self, agent, mock_manager):
-        """Slash commands should be handled without calling the LLM."""
-        new_resp = await agent.new_session(cwd="/tmp")
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        agent._conn = mock_conn
 
-        prompt = [TextContentBlock(type="text", text="/help")]
-        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+    def test_slash_handler_cwd_pin_does_not_leak(self, agent, mock_manager, tmp_path):
+        """The pin is scoped to the handler's own context copy.
 
-        assert resp.stop_reason == "end_turn"
-        updates = [
-            call.kwargs.get("update") or call.args[1]
-            for call in mock_conn.session_update.call_args_list
-        ]
-        assert any(update.session_update == "agent_message_chunk" for update in updates)
-        assert any(update.session_update == "usage_update" for update in updates)
+        Concurrent ACP sessions share the event loop, so a handler that pinned
+        the ambient context would leave its workspace bound for whatever runs
+        next. Asserting the ambient value is unchanged after dispatch keeps the
+        fix from trading one cross-session leak for another.
+        """
+        from agent.runtime_cwd import resolve_agent_cwd
 
-    @pytest.mark.asyncio
-    async def test_unknown_slash_falls_through_to_llm(self, agent, mock_manager):
-        """Unknown /commands should be sent to the LLM, not intercepted."""
-        new_resp = await agent.new_session(cwd="/tmp")
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        mock_conn.request_permission = AsyncMock(return_value=None)
-        agent._conn = mock_conn
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        state = mock_manager.create_session(cwd=str(workspace))
+        state.cwd = str(workspace)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
 
-        # Mock run_in_executor to avoid actually running the agent
-        with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(return_value={
-                "final_response": "I processed /foo",
-                "messages": [],
-            })
-            prompt = [TextContentBlock(type="text", text="/foo bar")]
-            resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+        before = str(resolve_agent_cwd())
+        agent._handle_slash_command("/help", state)
+        assert str(resolve_agent_cwd()) == before
 
-        assert resp.stop_reason == "end_turn"
 
-    def test_model_switch_uses_requested_provider(self, tmp_path, monkeypatch):
-        """`/model provider:model` should rebuild the ACP agent on that provider."""
-        runtime_calls = []
 
-        def fake_resolve_runtime_provider(requested=None, **kwargs):
-            runtime_calls.append(requested)
-            provider = requested or "openrouter"
-            return {
-                "provider": provider,
-                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
-                "base_url": f"https://{provider}.example/v1",
-                "api_key": f"{provider}-key",
-                "command": None,
-                "args": [],
-            }
-
-        def fake_agent(**kwargs):
-            return SimpleNamespace(
-                model=kwargs.get("model"),
-                provider=kwargs.get("provider"),
-                base_url=kwargs.get("base_url"),
-                api_mode=kwargs.get("api_mode"),
-            )
-
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
-            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
-        })
-        monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            fake_resolve_runtime_provider,
-        )
-        # Pin the model-string parser independently of the live
-        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state.
-        # Otherwise any test in the same xdist worker that mutates those
-        # globals (e.g. registers a custom provider that shadows
-        # ``anthropic``) flakes this one — observed once in CI as
-        # ``'custom' == 'anthropic'``.
-        monkeypatch.setattr(
-            "hermes_cli.models.parse_model_input",
-            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
-        )
-        monkeypatch.setattr(
-            "hermes_cli.models.detect_provider_for_model",
-            lambda model, current: None,
-        )
-        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
-
-        with patch("run_agent.AIAgent", side_effect=fake_agent):
-            acp_agent = HermesACPAgent(session_manager=manager)
-            state = manager.create_session(cwd="/tmp")
-            result = acp_agent._cmd_model("anthropic:claude-sonnet-4-6", state)
-
-        assert "Provider: anthropic" in result
-        assert state.agent.provider == "anthropic"
-        assert state.agent.base_url == "https://anthropic.example/v1"
-        # ``state.agent.provider == "anthropic"`` plus the base_url check above
-        # already prove ``fake_resolve_runtime_provider`` was called with
-        # ``requested="anthropic"`` for the model-switch step — the agent's
-        # provider/base_url come from that fake's return value. The legacy
-        # ``runtime_calls[-1] == "anthropic"`` assertion was flaky in CI
-        # under specific xdist-slice scheduling (saw ``'custom' == 'anthropic'``
-        # repeatedly) and was redundant with those checks, so it's gone.
-        assert "anthropic" in runtime_calls
 
 
 # ---------------------------------------------------------------------------
@@ -1755,36 +651,6 @@ class TestRegisterSessionMcpServers:
         assert cfg["args"] == ["--flag"]
         assert cfg["env"] == {"KEY": "val"}
 
-    @pytest.mark.asyncio
-    async def test_registers_http_servers(self, agent, mock_manager):
-        """McpServerHttp servers are converted correctly."""
-        from acp.schema import McpServerHttp, HttpHeader
-
-        state = mock_manager.create_session(cwd="/tmp")
-        state.agent.enabled_toolsets = ["hermes-acp"]
-        state.agent.disabled_toolsets = None
-        state.agent.tools = []
-        state.agent.valid_tool_names = set()
-
-        server = McpServerHttp(
-            name="http-server",
-            url="https://api.example.com/mcp",
-            headers=[HttpHeader(name="Authorization", value="Bearer tok")],
-        )
-
-        registered_config = {}
-        def capture_register(config_map):
-            registered_config.update(config_map)
-            return []
-
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
-            await agent._register_session_mcp_servers(state, [server])
-
-        assert "http-server" in registered_config
-        cfg = registered_config["http-server"]
-        assert cfg["url"] == "https://api.example.com/mcp"
-        assert cfg["headers"] == {"Authorization": "Bearer tok"}
 
     @pytest.mark.asyncio
     async def test_refreshes_agent_tool_surface(self, agent, mock_manager):

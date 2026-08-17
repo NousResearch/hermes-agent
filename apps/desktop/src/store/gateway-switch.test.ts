@@ -5,30 +5,43 @@ import {
   $cronSessions,
   $freshDraftReady,
   $messagingSessions,
+  $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
-  $sessionsTotal,
   setCronSessions,
   setFreshDraftReady,
   setMessagingSessions,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal
+  setSessionsLoading
 } from '@/store/session'
+import { $stalledSessionIds } from '@/store/session-states'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
 vi.mock('@/lib/query-client', () => ({
-  queryClient: { invalidateQueries: vi.fn() }
+  invalidateProfileScopedQueries: vi.fn()
 }))
+
+vi.mock(import('@/store/profile'), async importOriginal => {
+  const actual = await importOriginal()
+
+  return {
+    ...actual,
+    invalidateProfileListFetches: vi.fn()
+  }
+})
+
+const { invalidateProfileListFetches } = await import('@/store/profile')
 
 describe('wipeSessionListsForGatewaySwitch', () => {
   beforeEach(() => {
     $gatewaySwitching.set(false)
     setSessions([{ id: 's1', title: 'old', profile: 'default' } as never])
-    setSessionsTotal(1)
+    setSessionProfilesTruncated({ default: true })
     setCronSessions([{ id: 'c1', title: 'cron', profile: 'default' } as never])
     setMessagingSessions([{ id: 'm1', title: 'tg', profile: 'default' } as never])
+    $stalledSessionIds.set(['s1'])
     setSessionsLoading(false)
     setFreshDraftReady(false)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
@@ -39,6 +52,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessions([])
     setCronSessions([])
     setMessagingSessions([])
+    $stalledSessionIds.set([])
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
   })
@@ -47,11 +61,21 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     wipeSessionListsForGatewaySwitch()
 
     expect($sessions.get()).toEqual([])
-    expect($sessionsTotal.get()).toBe(0)
+    expect($sessionProfilesTruncated.get()).toEqual({})
     expect($cronSessions.get()).toEqual([])
     expect($messagingSessions.get()).toEqual([])
+    expect($stalledSessionIds.get()).toEqual([])
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it('strands in-flight profile-list fetches so the old backend cannot repaint the rail (#85731)', () => {
+    // The soft re-home moves /api/profiles routing to the NEW backend; a
+    // response still in flight from the previous one must be invalidated
+    // here, in the same wipe every connection/mode apply funnels through.
+    wipeSessionListsForGatewaySwitch()
+
+    expect(invalidateProfileListFetches).toHaveBeenCalled()
   })
 })

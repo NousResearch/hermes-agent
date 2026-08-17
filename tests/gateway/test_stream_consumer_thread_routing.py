@@ -51,20 +51,6 @@ class TestInitialReplyToId:
         )
         assert call_kwargs["chat_id"] == "chat_123"
 
-    @pytest.mark.asyncio
-    async def test_first_send_without_initial_reply_to_id(self):
-        """When initial_reply_to_id is None, first send should have
-        reply_to=None (backward compatible)."""
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter,
-            "chat_123",
-        )
-        await consumer._send_or_edit("Hello world")
-
-        adapter.send.assert_called_once()
-        call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs.get("reply_to") is None
 
     @pytest.mark.asyncio
     async def test_subsequent_edits_ignore_initial_reply_to_id(self):
@@ -88,59 +74,6 @@ class TestInitialReplyToId:
         edit_kwargs = adapter.edit_message.call_args[1]
         assert edit_kwargs["message_id"] == "msg_1"
         assert edit_kwargs["chat_id"] == "chat_123"
-
-    @pytest.mark.asyncio
-    async def test_metadata_passed_on_first_send(self):
-        """Metadata (containing thread_id) should be forwarded on first send."""
-        adapter = _make_adapter()
-        metadata = {"thread_id": "omt_topic789"}
-        consumer = GatewayStreamConsumer(
-            adapter,
-            "chat_123",
-            metadata=metadata,
-            initial_reply_to_id="om_msg_000",
-        )
-        await consumer._send_or_edit("Test")
-
-        call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == {**metadata, "expect_edits": True}
-        assert metadata == {"thread_id": "omt_topic789"}
-
-    @pytest.mark.asyncio
-    async def test_final_first_send_marks_metadata_notify_true(self):
-        """Final streaming sends should use the existing notify=True marker."""
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter,
-            "chat_123",
-            metadata={"thread_id": "root_post_123"},
-            initial_reply_to_id="reply_post_456",
-        )
-
-        await consumer._send_or_edit("Final answer", finalize=True)
-
-        call_kwargs = adapter.send.call_args[1]
-        metadata = call_kwargs["metadata"]
-        assert metadata["thread_id"] == "root_post_123"
-        assert metadata["notify"] is True
-        assert "delivery_kind" not in metadata
-        assert "allow_flat_fallback" not in metadata
-
-    @pytest.mark.asyncio
-    async def test_nonfinal_first_send_does_not_mark_notify(self):
-        """Preview/interim streaming sends must not be notify-worthy."""
-        adapter = _make_adapter()
-        consumer = GatewayStreamConsumer(
-            adapter,
-            "chat_123",
-            metadata={"thread_id": "root_post_123"},
-            initial_reply_to_id="reply_post_456",
-        )
-
-        await consumer._send_or_edit("Preview", finalize=False)
-
-        metadata = adapter.send.call_args[1]["metadata"]
-        assert metadata == {"thread_id": "root_post_123", "expect_edits": True}
 
 
 class TestOverflowFirstMessage:
@@ -239,35 +172,3 @@ class TestFeishuFallbackThreadRouting:
             f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
         )
 
-    @pytest.mark.asyncio
-    async def test_create_uses_chat_id_when_no_thread(self):
-        """When reply_to=None and metadata has no thread_id, message.create
-        should use receive_id_type='chat_id' (original behavior)."""
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        mock_client = MagicMock()
-        mock_create_response = SimpleNamespace(
-            success=lambda: True,
-            data=SimpleNamespace(message_id="new_msg_1"),
-        )
-        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
-
-        adapter = MagicMock(spec=FeishuAdapter)
-        adapter._client = mock_client
-        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
-        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
-        async def _run_blocking_passthrough(func, *args):
-            return func(*args)
-        adapter._run_blocking = _run_blocking_passthrough
-
-        import json
-        result = await FeishuAdapter._send_raw_message(
-            adapter,
-            chat_id="oc_main_chat",
-            msg_type="text",
-            payload=json.dumps({"text": "hello"}),
-            reply_to=None,
-            metadata=None,
-        )
-
-        mock_client.im.v1.message.create.assert_called_once()

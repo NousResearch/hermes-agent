@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any
 
 from agent.turn_finalizer import finalize_turn
 
@@ -30,7 +31,10 @@ class FakeAgent:
         self._skill_nudge_interval = 0
         self._iters_since_skill = 0
         self.valid_tool_names = []
-        self.persisted_messages = None
+        self.persisted_messages: list[dict[str, Any]] | None = None
+        self._persist_user_message_idx: int | None = None
+        self._persist_user_message_override: Any = None
+        self._persist_user_message_timestamp: float | None = None
 
     def _handle_max_iterations(self, messages, api_call_count):
         raise AssertionError("not expected")
@@ -51,7 +55,15 @@ class FakeAgent:
         pass
 
     def _persist_session(self, messages, conversation_history):
-        self.persisted_messages = list(messages)
+        # Capture the durable write before finalization restores API-local
+        # guidance to the returned/live transcript.
+        self.persisted_messages = [dict(message) for message in messages]
+
+    def _apply_persist_user_message_override(self, messages):
+        idx = self._persist_user_message_idx
+        override = self._persist_user_message_override
+        if idx is not None and override is not None:
+            messages[idx]["content"] = override
 
     def _file_mutation_verifier_enabled(self):
         return False
@@ -67,6 +79,10 @@ class FakeAgent:
 
     def _sync_external_memory_for_turn(self, **_kwargs):
         pass
+
+
+
+
 
 
 def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
@@ -107,6 +123,151 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
         _turn_exit_reason="fallback_prior_turn_content",
     )
 
-    assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "Done."
+    assert isinstance(result["messages"][-1]["timestamp"], float)
     assert agent.persisted_messages is not None
-    assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+    assert agent.persisted_messages[-1] == result["messages"][-1]
+
+
+def test_fallback_timestamp_survives_delayed_sqlite_persistence(
+    monkeypatch, tmp_path
+):
+    """The durable row records message creation, not the later DB flush."""
+    from hermes_state import SessionDB
+
+    created_at = 1_781_976_577.25
+    persisted_at = created_at + 600
+    monkeypatch.setattr("agent.message_metadata.wall_time", lambda: created_at)
+    monkeypatch.setattr("hermes_state.time.time", lambda: persisted_at)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-test", source="cli")
+    agent = FakeAgent()
+
+    def persist_to_sqlite(messages, _conversation_history):
+        db.replace_messages(agent.session_id, messages)
+        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+
+    agent._persist_session = persist_to_sqlite
+    messages = [
+        {"role": "user", "content": "do it", "timestamp": created_at - 1},
+        {"role": "tool", "content": "ok", "tool_call_id": "call-1"},
+    ]
+
+    finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=False,
+        _turn_exit_reason="fallback_prior_turn_content",
+    )
+
+    assert agent.persisted_messages[-1]["timestamp"] == created_at
+    assert agent.persisted_messages[-1]["timestamp"] != persisted_at
+
+
+def test_final_response_fills_pure_tool_call_tail(monkeypatch):
+    """A tail assistant row that is a *pure tool-call turn* carries no answer.
+
+    The role check alone ("tail is assistant ⇒ nothing to do") leaves the
+    #43849/#44100 invariant unmet when the tail is ``assistant(tool_calls)``
+    with no text of its own: the caller and the gateway already delivered
+    ``final_response``, but it never reaches the transcript. The next turn then
+    replays the user backlog and the model re-answers it — the exact symptom
+    that block exists to prevent.
+    """
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}
+            ],
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="Here is your answer.",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="t",
+        turn_id="tid",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    persisted = agent.persisted_messages
+    assert any(
+        m.get("role") == "assistant" and m.get("content") == result["final_response"]
+        for m in persisted
+    ), "delivered final_response never reached the durable transcript"
+    # Filled in place — no assistant→assistant pair, tool_calls preserved.
+    assert persisted[-1]["content"] == "Here is your answer."
+    assert persisted[-1]["tool_calls"]
+    assert sum(1 for m in persisted if m.get("role") == "assistant") == 1
+
+
+
+
+
+
+def test_final_response_fill_invalidates_flush_scan_cursor():
+    """The fill's marker pop must invalidate the bounded flush-scan cursor.
+
+    The cursor (run_agent.py) skips the identity-matched prefix of its
+    previous snapshot assuming no live dict loses ``_db_persisted`` in place
+    — the fill is the one path that pops it. Without invalidation, the
+    turn-end flush skips the filled row as 'already stamped' and the
+    delivered answer never reaches state.db (the #43849 class resurfacing).
+    """
+    agent = FakeAgent()
+    agent._db_flush_scan_prefix = ["prior-snapshot"]
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}
+            ],
+            "_db_persisted": True,
+        },
+    ]
+
+    finalize_turn(
+        agent,
+        final_response="Here is your answer.",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="t",
+        turn_id="tid",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert agent._db_flush_scan_prefix is None

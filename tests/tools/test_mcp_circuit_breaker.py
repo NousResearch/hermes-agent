@@ -116,11 +116,11 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     async def _call_tool_success(*a, **kw):
         call_count["n"] += 1
         result = MagicMock()
-        result.isError = False
+        result.is_error = False
         block = MagicMock()
         block.text = "ok"
         result.content = [block]
-        result.structuredContent = None
+        result.structured_content = None
         return result
 
     _install_stub_server(mcp_tool, "srv", _call_tool_success)
@@ -279,11 +279,11 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
 
     async def _call_tool_success(*a, **kw):
         result = MagicMock()
-        result.isError = False
+        result.is_error = False
         block = MagicMock()
         block.text = "ok"
         result.content = [block]
-        result.structuredContent = None
+        result.structured_content = None
         return result
 
     server = _install_stub_server(mcp_tool, "srv", _call_tool_success)
@@ -483,7 +483,7 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
@@ -564,7 +564,7 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 

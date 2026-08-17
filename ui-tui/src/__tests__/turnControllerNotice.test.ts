@@ -39,7 +39,7 @@ describe('turnController.startMessage — flash-and-yield notices clear on next 
         key: 'credits.depleted',
         kind: 'sticky',
         level: 'error',
-        text: '✕ Credit access paused · run /credits to top up'
+        text: '✕ Credit access paused · run /topup to top up'
       }
     })
     turnController.startMessage()

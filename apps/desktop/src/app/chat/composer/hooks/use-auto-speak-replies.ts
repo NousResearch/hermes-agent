@@ -2,10 +2,12 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { playSpeechText } from '@/lib/voice-playback'
+import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
-import { $messages } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
+
+import { useComposerScope } from '../scope'
 
 interface AutoSpeakReply {
   id: string
@@ -39,6 +41,9 @@ export function useAutoSpeakReplies({
   sessionId
 }: UseAutoSpeakReplies) {
   const enabled = useStore($autoSpeakReplies)
+  // Wake on THIS composer's transcript: a tile subscribed to the primary's
+  // would never fire on its own replies (and would fire on someone else's).
+  const { $messages } = useComposerScope()
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
 
@@ -65,9 +70,16 @@ export function useAutoSpeakReplies({
       }
 
       markSpoken()
-      void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
-        notifyError(error, failureLabel)
-      )
+      // Only one window voices a given reply when the same chat is open in
+      // several (reply.id is the shared backend message id). markSpoken already
+      // ran in every window, so peers just stay quiet.
+      void ownsAmbientCue(`speak:${reply.id}`).then(owns => {
+        if (owns) {
+          void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
+            notifyError(error, failureLabel)
+          )
+        }
+      })
     }
 
     // Re-check on a reply completing ($messages) and on the prior clip ending
@@ -75,5 +87,5 @@ export function useAutoSpeakReplies({
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
     return () => stops.forEach(f => f())
-  }, [enabled, sessionId])
+  }, [$messages, enabled, sessionId])
 }

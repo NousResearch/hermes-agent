@@ -82,8 +82,7 @@ export interface PetReaction {
 
 export const $petReaction = atom<PetReaction | null>(null)
 
-export const forwardPetReaction = (kind: string) =>
-  $petReaction.set({ id: ($petReaction.get()?.id ?? 0) + 1, kind })
+export const forwardPetReaction = (kind: string) => $petReaction.set({ id: ($petReaction.get()?.id ?? 0) + 1, kind })
 
 function loadSavedBounds(): null | PetOverlayBounds {
   try {

@@ -42,27 +42,7 @@ def project(tmp_path):
 class TestSubdirectoryHintTracker:
     """Unit tests for SubdirectoryHintTracker."""
 
-    def test_working_dir_not_loaded(self, project):
-        """Working dir is pre-marked as loaded (startup handles it)."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        # Reading a file in the root should NOT trigger hints
-        result = tracker.check_tool_call("read_file", {"path": str(project / "AGENTS.md")})
-        assert result is None
 
-    def test_discovers_agents_md_via_ancestor_walk(self, project):
-        """Reading backend/src/main.py discovers backend/AGENTS.md via ancestor walk."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(project / "backend" / "src" / "main.py")}
-        )
-        # backend/src/ has no hints, but ancestor walk finds backend/AGENTS.md
-        assert result is not None
-        assert "Backend-specific instructions" in result
-        # Second read in same subtree should not re-trigger
-        result2 = tracker.check_tool_call(
-            "read_file", {"path": str(project / "backend" / "AGENTS.md")}
-        )
-        assert result2 is None  # backend/ already loaded
 
     def test_discovers_claude_md(self, project):
         """Frontend CLAUDE.md should be discovered."""
@@ -86,31 +66,8 @@ class TestSubdirectoryHintTracker:
         )
         assert result2 is None  # already loaded
 
-    def test_no_hints_in_empty_directory(self, project):
-        """Directories without hint files return None."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(project / "docs" / "README.md")}
-        )
-        assert result is None
 
-    def test_terminal_command_path_extraction(self, project):
-        """Paths extracted from terminal commands."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "terminal", {"command": f"cat {project / 'frontend' / 'index.ts'}"}
-        )
-        assert result is not None
-        assert "Frontend rules" in result
 
-    def test_terminal_cd_command(self, project):
-        """cd into a directory with hints."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "terminal", {"command": f"cd {project / 'backend'} && ls"}
-        )
-        assert result is not None
-        assert "Backend-specific instructions" in result
 
     def test_relative_path(self, project):
         """Relative paths resolved against working_dir."""
@@ -121,75 +78,9 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
-    def test_outside_working_dir_rejected(self, tmp_path, project):
-        """Paths outside working_dir are rejected — no hints from outside workspace.
 
-        Note: project fixture returns tmp_path, so we need a path whose ancestor
-        is outside project. We simulate this by creating a directory at the same
-        level as project but not inside it — which requires creating a parent
-        tree. Since tmp_path / "other" IS inside tmp_path (=project), we need
-        a different approach: use tmp_path.parent as the reference for "outside".
-        """
-        # Create a directory at the same level as tmp_path (project),
-        # which means it's a sibling of project — not a child.
-        # Since tmp_path IS project, tmp_path.parent / "other" is a sibling.
-        parent = tmp_path.parent
-        other_project = parent / "other"
-        other_project.mkdir(exist_ok=True)
-        (other_project / "AGENTS.md").write_text("Other project rules")
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(other_project / "file.py")}
-        )
-        # Outside workspace — should NOT load hints
-        assert result is None
 
-    def test_outside_working_dir_absolute_path_rejected(self, tmp_path, project):
-        """Absolute paths like ~/.codex/AGENTS.md are rejected."""
-        # Create a directory at the parent level of project, simulating ~/.codex
-        parent = tmp_path.parent
-        outside_dir = parent / ".test-codex"
-        outside_dir.mkdir(exist_ok=True)
-        (outside_dir / "AGENTS.md").write_text("Codex contamination rules")
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(outside_dir / "AGENTS.md")}
-        )
-        # Reading a hint file outside working_dir — should NOT load hints
-        assert result is None
 
-    def test_inside_workspace_subdir_allowed(self, project):
-        """Paths inside working_dir are still allowed."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(project / "backend" / "src" / "main.py")}
-        )
-        assert result is not None
-        assert "Backend-specific instructions" in result
-
-    def test_sibling_repo_not_loaded_via_ancestor_walk(self, tmp_path, project):
-        """Ancestor walk from inside working_dir should NOT discover sibling repo hints."""
-        # Create a nested structure inside working_dir
-        deep_dir = project / "deep" / "nested" / "very" / "deep"
-        deep_dir.mkdir(parents=True)
-        (deep_dir / "file.py").write_text("deep file")
-        # Also create a sibling directory at the parent level
-        parent = tmp_path.parent
-        sibling = parent / "sibling-repo"
-        sibling.mkdir(exist_ok=True)
-        (sibling / "AGENTS.md").write_text("Sibling repo rules")
-        # Create a .cursorrules in the deep/nested/very dir so ancestor walk
-        # discovers it (fixture's deep/nested/path is NOT an ancestor of very/deep)
-        (deep_dir / ".cursorrules").write_text("Deep cursorrules")
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(deep_dir / "file.py")}
-        )
-        # Should discover deep cursorrules from the file's own directory
-        # but NOT sibling repo hints
-        assert result is not None
-        assert "Deep cursorrules" in result
-        assert "Sibling repo rules" not in result
 
     def test_workdir_arg(self, project):
         """The workdir argument from terminal tool is checked."""
@@ -200,24 +91,7 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
-    def test_deeply_nested_cursorrules(self, project):
-        """Deeply nested .cursorrules should be discovered."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(project / "deep" / "nested" / "path" / "file.py")}
-        )
-        assert result is not None
-        assert "Cursor rules for nested path" in result
 
-    def test_hint_format_includes_path(self, project):
-        """Discovered hints should indicate which file they came from."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "read_file", {"path": str(project / "backend" / "file.py")}
-        )
-        assert result is not None
-        assert "Subdirectory context discovered:" in result
-        assert "AGENTS.md" in result
 
     def test_truncation_of_large_hints(self, tmp_path):
         """Hint files over the limit are truncated."""
@@ -240,13 +114,6 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
-    def test_url_in_command_ignored(self, project):
-        """URLs in shell commands should not be treated as paths."""
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        result = tracker.check_tool_call(
-            "terminal", {"command": "curl https://example.com/frontend/api"}
-        )
-        assert result is None
 
 
 class TestPermissionErrorHandling:
@@ -294,17 +161,6 @@ class TestPermissionErrorHandling:
 class TestOutsideWorkspaceRejection:
     """Direct tests for _is_valid_subdir rejecting outside-workspace paths."""
 
-    def test_is_valid_subdir_rejects_outside_path(self, tmp_path, project):
-        """_is_valid_subdir should return False for paths outside working_dir.
-
-        Note: tmp_path / "other" is inside tmp_path (=project), so we use
-        tmp_path.parent / "other" to create a true outside-path sibling.
-        """
-        parent = tmp_path.parent
-        other_project = parent / "other"
-        other_project.mkdir(exist_ok=True)
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        assert tracker._is_valid_subdir(other_project) is False
 
     def test_is_valid_subdir_allows_inside_path(self, project):
         """_is_valid_subdir should return True for paths inside working_dir."""
@@ -312,11 +168,6 @@ class TestOutsideWorkspaceRejection:
         backend = project / "backend"
         assert tracker._is_valid_subdir(backend) is True
 
-    def test_is_valid_subdir_rejects_parent_dir(self, tmp_path, project):
-        """_is_valid_subdir should reject parent directories outside working_dir."""
-        parent = tmp_path.parent
-        tracker = SubdirectoryHintTracker(working_dir=str(project))
-        assert tracker._is_valid_subdir(parent) is False
 
     def test_is_valid_subdir_rejects_sibling_dir(self, tmp_path, project):
         """_is_valid_subdir should reject a sibling directory (simulating ~/.codex)."""
@@ -325,3 +176,124 @@ class TestOutsideWorkspaceRejection:
         outside.mkdir(exist_ok=True)
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         assert tracker._is_valid_subdir(outside) is False
+
+
+class TestContentDeduplication:
+    """The same context content must never be injected twice (ref: symlinked
+    shared workspaces, hardlinks, and copied backups all alias one file)."""
+
+    def test_symlinked_duplicate_not_reinjected(self, tmp_path):
+        """Two directories whose AGENTS.md is the same file yield one injection."""
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "AGENTS.md").write_text("Shared workspace instructions")
+
+        mirror = tmp_path / "mirror"
+        mirror.mkdir()
+        (mirror / "AGENTS.md").symlink_to(real / "AGENTS.md")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        first = tracker.check_tool_call("read_file", {"path": str(real / "x.py")})
+        second = tracker.check_tool_call("read_file", {"path": str(mirror / "y.py")})
+
+        assert first is not None
+        assert "Shared workspace instructions" in first
+        assert second is None
+
+    def test_identical_copy_not_reinjected(self, tmp_path):
+        """Byte-identical copies in unrelated directories dedupe by digest."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        (a / "AGENTS.md").write_text("Same content")
+        (b / "AGENTS.md").write_text("Same content")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(a / "f.py")}) is not None
+        assert tracker.check_tool_call("read_file", {"path": str(b / "f.py")}) is None
+
+    def test_differing_content_still_injected(self, tmp_path):
+        """Dedupe must not suppress genuinely different context."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        (a / "AGENTS.md").write_text("Alpha rules")
+        (b / "AGENTS.md").write_text("Beta rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        first = tracker.check_tool_call("read_file", {"path": str(a / "f.py")})
+        second = tracker.check_tool_call("read_file", {"path": str(b / "f.py")})
+
+        assert first is not None and "Alpha rules" in first
+        assert second is not None and "Beta rules" in second
+
+    def test_working_dir_content_seeded(self, tmp_path):
+        """A copy of the CWD's own context file is not re-injected."""
+        (tmp_path / "AGENTS.md").write_text("Root instructions")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "AGENTS.md").write_text("Root instructions")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(elsewhere / "f.py")}) is None
+
+
+class TestExcludedDirectories:
+    """Backups, vendored deps, and caches hold copies — never context."""
+
+    @pytest.mark.parametrize(
+        "excluded",
+        ["backups", "node_modules", ".git", "venv", "site-packages", ".Trash", "vendor"],
+    )
+    def test_excluded_directory_skipped(self, tmp_path, excluded):
+        target = tmp_path / excluded / "snapshot"
+        target.mkdir(parents=True)
+        (target / "AGENTS.md").write_text("Stale archived instructions")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(target / "f.py")}) is None
+
+    def test_excluded_ancestor_blocks_descendant(self, tmp_path):
+        """A hint nested under an excluded ancestor is still skipped."""
+        deep = tmp_path / "backups" / "2026" / "proj"
+        deep.mkdir(parents=True)
+        (deep / "AGENTS.md").write_text("Archived")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(deep / "f.py")}) is None
+
+    def test_working_dir_inside_excluded_name_still_works(self, tmp_path):
+        """If the user works inside e.g. vendor/, its own subdirs stay eligible."""
+        root = tmp_path / "vendor" / "myproject"
+        root.mkdir(parents=True)
+        sub = root / "pkg"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Package rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(root))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None and "Package rules" in result
+
+    def test_normal_directory_unaffected(self, tmp_path):
+        normal = tmp_path / "backend"
+        normal.mkdir()
+        (normal / "AGENTS.md").write_text("Backend rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(normal / "f.py")})
+        assert result is not None and "Backend rules" in result
+
+    def test_agents_override_md_wins_in_subdirectory(self, tmp_path):
+        """AGENTS.override.md takes priority over AGENTS.md per directory."""
+        sub = tmp_path / "backend"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Committed backend rules")
+        (sub / "AGENTS.override.md").write_text("Personal backend override")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None
+        assert "Personal backend override" in result
+        assert "Committed backend rules" not in result

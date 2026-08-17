@@ -36,6 +36,11 @@ MAX_TODO_ITEMS = 256
 # before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
+# Persisted as ordinary message content. ContextCompressor uses this stable
+# header to distinguish the synthetic post-compaction row from a real user.
+TODO_INJECTION_HEADER = (
+    "[Your active task list was preserved across context compression]"
+)
 
 
 class TodoStore:
@@ -62,7 +67,9 @@ class TodoStore:
         """
         if not merge:
             # Replace mode: new list entirely
-            self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
+            self._items = self._normalize_order(
+                [self._validate(t) for t in self._dedupe_by_id(todos)]
+            )
         else:
             # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
@@ -92,7 +99,7 @@ class TodoStore:
                 if current["id"] not in seen:
                     rebuilt.append(current)
                     seen.add(current["id"])
-            self._items = rebuilt
+            self._items = self._normalize_order(rebuilt)
         # Bound total item count so a replayed/oversized list can't grow the
         # re-injection block without limit. Keep the highest-priority head
         # (list order is priority).
@@ -135,7 +142,7 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
+        lines = [TODO_INJECTION_HEADER]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
@@ -194,6 +201,31 @@ class TodoStore:
             item_id = str(item.get("id", "")).strip() or "?"
             last_index[item_id] = i
         return [todos[i] for i in sorted(last_index.values())]
+
+    @staticmethod
+    def _normalize_order(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Lift the active step ahead of any earlier unfinished placeholders."""
+        active_index = next(
+            (i for i, item in enumerate(items) if item["status"] == "in_progress"),
+            None,
+        )
+        if active_index is None:
+            return items
+
+        pending_index = next(
+            (
+                i for i, item in enumerate(items[:active_index])
+                if item["status"] == "pending"
+            ),
+            None,
+        )
+        if pending_index is None:
+            return items
+
+        normalized = items.copy()
+        active_item = normalized.pop(active_index)
+        normalized.insert(pending_index, active_item)
+        return normalized
 
 
 def todo_tool(

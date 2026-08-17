@@ -106,6 +106,10 @@ class ChronosCronScheduler(CronScheduler):
         Does NOT block and does NOT spawn a 60s wake (DQ-1) — that is the whole
         point of scale-to-zero. The machine wakes only on a NAS→agent fire.
         """
+        # A new provider lifecycle cannot prove what an interrupted prior
+        # process did. Classify those attempts unknown for audit only; do not
+        # requeue them here.
+        self.recover_interrupted()
         try:
             self.reconcile()
         except Exception as e:
@@ -122,6 +126,15 @@ class ChronosCronScheduler(CronScheduler):
             self.reconcile()
         except Exception as e:
             logger.debug("Chronos on_jobs_changed reconcile failed: %s", e)
+
+    def register_job(self, job: Dict[str, Any]) -> None:
+        """Arm the first one-shot for a newly persisted job.
+
+        Unlike full reconciliation, this operation is allowed to raise so the
+        creation surface can report that the local job exists but its external
+        trigger was not registered.
+        """
+        self._arm_one_shot(job)
 
     # -- arming -----------------------------------------------------------
 
@@ -212,15 +225,28 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- fire -------------------------------------------------------------
 
-    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
-        """Run the due job (claim + run_one_job via the ABC default), then
-        re-arm the NEXT one-shot through NAS.
+    # NOTE: no ``fire_due`` override on purpose. The base implementation
+    # virtually dispatches through ``self.claim_fire``/``self.fire_claimed``,
+    # and ``provider_supports_split_fire`` treats ANY ``fire_due`` override
+    # (even a pure ``super()`` delegate) as the legacy single-phase signal —
+    # overriding it here would silently opt Chronos out of claim admission,
+    # duplicate detection, and the cancel-aware drain on the fire webhook.
 
-        Re-arm happens AFTER the run so next_run_at reflects the completed fire.
-        If the job is gone (one-shot completed / repeat-N exhausted), get_job
-        returns None → nothing to re-arm (the schedule naturally stops).
-        """
-        ran = super().fire_due(job_id, adapters=adapters, loop=loop)
+    def fire_claimed(
+        self,
+        claimed_job: dict,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        cancel_event: Any = None,
+    ) -> bool:
+        job_id = claimed_job["id"]
+        ran = super().fire_claimed(
+            claimed_job,
+            adapters=adapters,
+            loop=loop,
+            cancel_event=cancel_event,
+        )
         if ran:
             from cron.jobs import get_job
             job = get_job(job_id)

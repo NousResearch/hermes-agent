@@ -10,15 +10,16 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has seven layers:
+The security model has eight layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
-3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
-4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
-5. **Context file scanning** — prompt injection detection in project files
-6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
-7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
+3. **File write safety** — denylist and optional write sandbox for `write_file`/`patch`
+4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
+5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
+6. **Context file scanning** — prompt injection detection in project files
+7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
 
@@ -31,8 +32,9 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 ```yaml
 approvals:
   mode: smart                     # smart | manual | off
-  timeout: 60                     # seconds to wait for user response (default: 60)
+  timeout: 300                    # seconds to wait for user response (default: 300)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
+  single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
@@ -42,10 +44,11 @@ The full set of keys:
 | Key | Default | What it controls |
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
-| `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
+| `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
+| `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
-| `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
+| `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
 | Mode | Behavior |
 |------|----------|
@@ -144,7 +147,7 @@ Configure the timeout in `~/.hermes/config.yaml`:
 
 ```yaml
 approvals:
-  timeout: 60  # seconds (default: 60)
+  timeout: 300  # seconds (default: 300)
 ```
 
 ### What Triggers Approval
@@ -181,9 +184,13 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
+| `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
+| `docker context use` | Switches the default daemon for all future docker commands |
+| `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -230,6 +237,95 @@ These patterns are loaded at startup and silently approved in all future session
 
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
+:::
+
+### Mining Approval History (`hermes approvals suggest`)
+
+Instead of answering the same prompt session after session, you can mine your
+past approval decisions into allowlist proposals:
+
+```bash
+hermes approvals suggest            # dry run — prints a numbered proposal
+hermes approvals suggest --apply 1,3  # merge picks into command_allowlist
+hermes approvals suggest --json     # machine-readable output
+```
+
+The command scans the session database (`~/.hermes/state.db`) for
+dangerous-classified commands that actually executed — i.e. commands you
+approved — aggregates them into patterns (`git push *`, or the dangerous-class
+key for compound commands), and ranks them by approval frequency:
+
+```
+Proposed command_allowlist additions (from approval history, last 90 days):
+
+  1. git push *    — approved 14x
+  2. docker restart/stop/kill (container lifecycle)    — approved 9x (class key)
+```
+
+Safety rules:
+
+- **Nothing is ever applied automatically** — the default run is read-only;
+  only an explicit `--apply N[,M...]` writes to `config.yaml`.
+- **Destructive classes are never proposed**, no matter how often they were
+  approved: recursive deletes, `sudo`, disk/device writes, credential and
+  system-config edits, pipe-to-shell, SQL DROP/TRUNCATE, process kills, and
+  every hardline class are excluded outright. `rm -rf build/` approved 100
+  times still never yields an `rm` entry.
+- Proposals already covered by your existing `command_allowlist` are skipped.
+
+Useful flags: `--days N` (history window, default 90), `--min-count N`
+(minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
+
+## File Write Safety {#file-write-safety}
+
+Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately — **there is no approval prompt** and no way to override from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.
+
+### Protected paths (always blocked)
+
+These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
+
+| Category | Examples |
+|----------|----------|
+| OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
+| Hermes credential stores | `auth.json`, `.env`, `.anthropic_oauth.json`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root) |
+| Project secret files | `.env`, `.env.local`, `.env.production`, `.envrc` anywhere on disk |
+
+Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
+
+Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`
+
+**Exception — `~/.ssh/config` is approval-gated, not hard-blocked.** The SSH
+*client config* holds no private-key material and editing it (host aliases,
+`ProxyJump`, VS Code Remote-SSH targets) is a routine task, so `write_file` /
+`patch` route it through the same approve-once/session/always prompt the
+terminal tool already uses for `~/.ssh` writes — instead of the flat refusal
+that used to apply. It can still carry `ProxyCommand` / `Match exec` directives
+that run commands, so the write is never silent. Non-interactive callers (ACP
+file bridge, background jobs with no human channel) fail closed. Private keys,
+`authorized_keys`, and everything else under `~/.ssh/` remain hard-blocked.
+
+### HERMES_WRITE_SAFE_ROOT (optional sandbox)
+
+When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked** — not routed through dangerous-command approval.
+
+- Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
+- Supports multiple roots separated by `:` on Unix or `;` on Windows
+- **Do not add to `~/.hermes/.env` casually.** If you set it to a project directory, the agent cannot write to `~/.hermes/cron/jobs.json`, profile skills, or other Hermes state outside that prefix
+
+To allow both a workspace and Hermes home:
+
+```bash
+export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
+```
+
+Unset the variable to restore unrestricted writes (subject to the protected-path denylist). Full reference: [HERMES_WRITE_SAFE_ROOT](../reference/environment-variables.md#hermes_write_safe_root).
+
+### Cron and other Hermes state
+
+Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
+
+:::note Defense-in-depth, not a hard boundary
+Write guards apply to `write_file` and `patch` only. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
 :::
 
 ## User Authorization (Gateway)
@@ -399,7 +495,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -416,6 +512,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
+| **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 

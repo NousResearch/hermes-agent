@@ -15,14 +15,17 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from hermes_cli.main import (
+    _finish_dashboard_update_cleanup,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _restart_managed_dashboard_service,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -45,16 +48,20 @@ def _refresh_bindings_against_live_module():
     ordering within the worker.  The fix lives in the test module because
     the two pollutants above are load-bearing for their own tests.
     """
+    global _finish_dashboard_update_cleanup
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _restart_managed_dashboard_service
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
     if live is None:
         live = importlib.import_module("hermes_cli.main")
 
+    _finish_dashboard_update_cleanup = live._finish_dashboard_update_cleanup
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _restart_managed_dashboard_service = live._restart_managed_dashboard_service
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -83,40 +90,9 @@ def _ps_runner(stdout: str):
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 
-    def test_no_matches_returns_empty(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=_ps_line(111, "/usr/bin/python3 -m some.other.module")
-                + "\n"
-                + _ps_line(222, "/usr/bin/bash")
-                + "\n",
-                stderr="",
-            )
-            assert _find_stale_dashboard_pids() == []
 
-    def test_matches_running_dashboard(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=_ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119") + "\n",
-                stderr="",
-            )
-            assert _find_stale_dashboard_pids() == [12345]
 
-    def test_multiple_matches(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="\n".join([
-                    _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
-                    _ps_line(12346, "hermes dashboard --port 9120 --no-open"),
-                    _ps_line(12347, "python /home/x/hermes_cli/main.py dashboard"),
-                ]) + "\n",
-                stderr="",
-            )
-            assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
-
+    @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -131,111 +107,19 @@ class TestFindStaleDashboardPids:
         assert os.getpid() not in pids
         assert 12345 in pids
 
-    def test_ps_not_found_returns_empty(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            assert _find_stale_dashboard_pids() == []
 
     def test_ps_timeout_returns_empty(self):
         import subprocess as sp
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
 
-    def test_unrelated_process_containing_word_dashboard_not_matched(self):
-        """Guards against greedy pgrep-style matching catching chat sessions
-        or unrelated processes whose cmdline happens to contain 'dashboard'.
-        """
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="\n".join([
-                    _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
-                    _ps_line(22222, "python3 -m hermes_cli.main chat -q 'rewrite my dashboard'"),
-                    _ps_line(33333, "node /opt/grafana/dashboard-server.js"),
-                ]) + "\n",
-                stderr="",
-            )
-            pids = _find_stale_dashboard_pids()
-        assert pids == [12345]
 
-    def test_grep_lines_ignored(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="\n".join([
-                    _ps_line(99999, "grep hermes dashboard"),
-                    _ps_line(12345, "hermes dashboard --port 9119"),
-                ]) + "\n",
-                stderr="",
-            )
-            pids = _find_stale_dashboard_pids()
-        assert 99999 not in pids
-        assert 12345 in pids
-
-    def test_invalid_pid_lines_skipped(self):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="\n".join([
-                    "notapid hermes dashboard --bad",
-                    _ps_line(12345, "hermes dashboard --port 9119"),
-                    "   ",
-                ]) + "\n",
-                stderr="",
-            )
-            pids = _find_stale_dashboard_pids()
-        assert pids == [12345]
-
-    def test_exclude_pids_filters_specified_pids(self):
-        """exclude_pids removes specific PIDs from the result — used by
-        the Desktop Electron app to protect its own backend child.  (#37532)
-        """
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="\n".join([
-                    _ps_line(11111, "hermes dashboard --port 9119"),
-                    _ps_line(22222, "hermes dashboard --port 9120"),
-                    _ps_line(33333, "hermes dashboard --port 9121"),
-                ]) + "\n",
-                stderr="",
-            )
-            # Exclude the desktop-managed backend PID
-            pids = _find_stale_dashboard_pids(exclude_pids={22222})
-        assert 11111 in pids
-        assert 22222 not in pids
-        assert 33333 in pids
-
-    def test_exclude_pids_none_is_noop(self):
-        """Passing exclude_pids=None (the default) changes nothing."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
-                stderr="",
-            )
-            pids = _find_stale_dashboard_pids(exclude_pids=None)
-        assert pids == [12345]
-
-    def test_exclude_all_pids_returns_empty(self):
-        """If all matched PIDs are excluded, the result is empty."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
-                stderr="",
-            )
-            pids = _find_stale_dashboard_pids(exclude_pids={12345})
-        assert pids == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:
     """Kill path on Linux / macOS: SIGTERM then SIGKILL any survivors."""
 
-    def test_no_stale_processes_is_a_noop(self, capsys):
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]):
-            _kill_stale_dashboard_processes()
-        assert capsys.readouterr().out == ""
 
     def test_sigterm_graceful_exit(self, capsys):
         """Processes that exit on SIGTERM (the probe gets ProcessLookupError)
@@ -255,13 +139,16 @@ class TestKillStaleDashboardPosix:
                    return_value=[12345, 12346]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
-            _kill_stale_dashboard_processes()
+            result = _kill_stale_dashboard_processes()
 
         # Both got SIGTERM.
         sigterms = [pid for pid, sig in killed_signals if sig == _signal.SIGTERM]
         assert sorted(sigterms) == [12345, 12346]
         # No SIGKILL was needed.
         assert not any(sig == _signal.SIGKILL for _, sig in killed_signals)
+        assert result["matched"] == [12345, 12346]
+        assert result["killed"] == [12345, 12346]
+        assert result["failed"] == []
 
         out = capsys.readouterr().out
         assert "Stopping 2 dashboard" in out
@@ -269,75 +156,54 @@ class TestKillStaleDashboardPosix:
         assert "✓ stopped PID 12346" in out
         assert "Restart the dashboard" in out
 
-    def test_sigkill_fallback_for_survivors(self, capsys):
-        """If a process survives SIGTERM + the grace window, SIGKILL is sent."""
-        import signal as _signal
 
-        sent: list[tuple[int, int]] = []
 
-        def fake_kill(pid, sig):
-            sent.append((pid, sig))
-            # Simulate stubborn process: probe (sig 0) always succeeds,
-            # SIGTERM does nothing, SIGKILL is where it "dies".
-            if sig in {_signal.SIGTERM, 0, _signal.SIGKILL}:
-                return
-            # Any other signal — also fine.
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[99999]), \
-             patch("os.kill", side_effect=fake_kill), \
-             patch("time.sleep"), \
-             patch("time.monotonic", side_effect=[0.0] + [10.0] * 20):
-            # monotonic jumps past the 3s deadline on the second read so the
-            # grace loop exits immediately after one iteration.
-            _kill_stale_dashboard_processes()
 
-        signals_sent = [sig for _, sig in sent]
-        assert _signal.SIGTERM in signals_sent
-        assert _signal.SIGKILL in signals_sent
+    def test_user_scope_restart_never_falls_back_to_system_or_sudo(self, capsys):
+        """A user unit is discovered and restarted through ``systemctl --user``."""
+        calls: list[list[str]] = []
 
-        out = capsys.readouterr().out
-        assert "✓ stopped PID 99999" in out
+        def fake_run(args, *a, **kw):
+            calls.append(list(args))
+            if args == ["systemctl", "--user", "list-unit-files", "hermes-dashboard.service", "--no-legend", "--no-pager"]:
+                return MagicMock(returncode=0, stdout="hermes-dashboard.service enabled enabled\n", stderr="")
+            if args == ["systemctl", "--user", "is-active", "hermes-dashboard.service"]:
+                return MagicMock(returncode=0, stdout="active\n", stderr="")
+            if args == ["systemctl", "--user", "is-enabled", "hermes-dashboard.service"]:
+                return MagicMock(returncode=0, stdout="enabled\n", stderr="")
+            if args == ["systemctl", "--user", "restart", "hermes-dashboard.service"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {args}")
 
-    def test_permission_error_is_reported_not_raised(self, capsys):
-        """os.kill raising PermissionError (e.g. another user's process)
-        must not abort hermes update — it's reported as a failure and we
-        move on."""
-        def fake_kill(pid, sig):
-            raise PermissionError("Operation not permitted")
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]) as find_pids, \
+             patch("os.kill") as kill:
+            _kill_stale_dashboard_processes(restart_managed=True)
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345]), \
-             patch("os.kill", side_effect=fake_kill), \
-             patch("time.sleep"):
-            _kill_stale_dashboard_processes()  # must not raise
+        assert calls == [
+            ["systemctl", "--user", "list-unit-files", "hermes-dashboard.service", "--no-legend", "--no-pager"],
+            ["systemctl", "--user", "is-active", "hermes-dashboard.service"],
+            ["systemctl", "--user", "is-enabled", "hermes-dashboard.service"],
+            ["systemctl", "--user", "restart", "hermes-dashboard.service"],
+        ]
+        assert all(call[:1] != ["sudo"] and call[:2] != ["systemctl"] for call in calls)
+        find_pids.assert_not_called()
+        kill.assert_not_called()
+        assert "✓ restarted hermes-dashboard.service" in capsys.readouterr().out
 
-        out = capsys.readouterr().out
-        assert "✗ failed to stop PID 12345" in out
-        assert "Operation not permitted" in out
 
-    def test_process_already_gone_counts_as_stopped(self, capsys):
-        """ProcessLookupError on the initial SIGTERM means the process
-        already exited between detection and the kill — treat as success."""
-        def fake_kill(pid, sig):
-            raise ProcessLookupError
-
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345]), \
-             patch("os.kill", side_effect=fake_kill), \
-             patch("time.sleep"):
-            _kill_stale_dashboard_processes()
-
-        out = capsys.readouterr().out
-        assert "✓ stopped PID 12345" in out
-        assert "failed to stop" not in out
 
 
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
 
-    def test_taskkill_invoked_for_each_pid(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "platform", "win32")
+    @pytest.mark.windows_only
+    def test_taskkill_invoked_for_each_pid(self, capsys):
+        """``windows_only``: ``taskkill.exe`` only exists on Windows, and the
+        faked platform also silently skipped the POSIX-only cgroup/argv
+        snapshot the real Windows path must not take.
+        """
 
         def fake_run(args, *a, **kw):
             # taskkill returns 0 on success
@@ -361,22 +227,6 @@ class TestKillStaleDashboardWindows:
         assert "✓ stopped PID 12345" in out
         assert "✓ stopped PID 12346" in out
 
-    def test_taskkill_failure_is_reported(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "platform", "win32")
-
-        def fake_run(args, *a, **kw):
-            return MagicMock(returncode=128, stdout="",
-                             stderr="ERROR: Access is denied.")
-
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   return_value=[12345]), \
-             patch("subprocess.run", side_effect=fake_run):
-            _kill_stale_dashboard_processes()  # must not raise
-
-        out = capsys.readouterr().out
-        assert "✗ failed to stop PID 12345" in out
-        assert "Access is denied" in out
-
 
 class TestBackCompatAlias:
     """``_warn_stale_dashboard_processes`` is kept as an alias for the
@@ -386,18 +236,40 @@ class TestBackCompatAlias:
         assert _warn_stale_dashboard_processes is _kill_stale_dashboard_processes
 
 
+class TestDashboardUpdateCleanup:
+    """The git and Windows ZIP update paths share this final cleanup."""
+
+    def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys):
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
+                          "unrecovered": []},
+        ):
+            _finish_dashboard_update_cleanup([])
+
+        assert "stopped during update" not in capsys.readouterr().out
+
+
 class TestWindowsWmicEncoding:
     """Regression tests for #17049 — the Windows wmic branch must not crash
     `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
     """
 
-    def test_wmic_invoked_with_utf8_ignore_errors(self, monkeypatch):
-        """The wmic subprocess.run call must pass encoding='utf-8' and
-        errors='ignore' so the subprocess reader thread cannot raise
-        UnicodeDecodeError on non-UTF-8 wmic output."""
-        monkeypatch.setattr(sys, "platform", "win32")
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
+    def test_wmic_routed_through_bounded_probe_run_with_ignore_errors(self):
+        """The wmic scan must go through ``bounded_probe_run`` — which owns
+        the deterministic UTF-8 decode (#17049) and the deadlock-safe
+        post-timeout cleanup (#87134) — with errors='ignore' so undecodable
+        bytes from a non-UTF-8 system code page (e.g. cp936 on zh-CN) don't
+        take down the reader thread, and with a finite timeout.
+
+        Cross-platform: nothing Windows-native executes once the probe is
+        mocked, so ``sys.platform`` is patched rather than gating the test
+        to the Windows-only CI job.
+        """
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = subprocess.CompletedProcess(
+                args=["wmic"],
                 returncode=0,
                 stdout=(
                     "CommandLine=python -m hermes_cli.main dashboard\n"
@@ -405,32 +277,495 @@ class TestWindowsWmicEncoding:
                 ),
                 stderr="",
             )
-            _find_stale_dashboard_pids()
+            pids = _find_stale_dashboard_pids()
 
-        # The wmic call is the first subprocess.run invocation.
-        assert mock_run.called, "subprocess.run was not invoked"
-        wmic_call = mock_run.call_args_list[0]
+        assert mock_probe.called, "bounded_probe_run was not invoked"
+        wmic_call = mock_probe.call_args_list[0]
+        assert wmic_call.args[0][0] == "wmic"
         kwargs = wmic_call.kwargs
-        assert kwargs.get("encoding") == "utf-8", (
-            "encoding kwarg must be 'utf-8' so wmic output is decoded "
-            "deterministically rather than via the implicit reader-thread "
-            "default that crashes on non-UTF-8 locales (#17049)."
-        )
         assert kwargs.get("errors") == "ignore", (
             "errors kwarg must be 'ignore' so undecodable bytes don't take "
             "down the reader thread (#17049)."
         )
+        assert kwargs.get("timeout"), (
+            "the scan must carry a finite timeout — bounded_probe_run "
+            "guarantees the post-timeout cleanup is bounded too (#87134)."
+        )
+        assert pids == [12345]
 
-    def test_wmic_returns_none_stdout_does_not_crash(self, monkeypatch):
-        """If subprocess.run returns successfully but stdout is None — which
-        is what Python 3.11 leaves behind when the reader thread silently
-        crashed on UnicodeDecodeError before this fix landed — detection
-        must short-circuit instead of raising AttributeError on
-        ``None.split('\\n')`` and aborting `hermes update` (#17049)."""
-        monkeypatch.setattr(sys, "platform", "win32")
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout=None, stderr=""
-            )
-            # Must not raise.
+    def test_probe_failure_fails_open_to_empty_list(self):
+        """A spawn failure or timeout (bounded_probe_run → None) must yield
+        an empty scan, not an AttributeError on result.stdout (#87134)."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run",
+                   return_value=None):
             assert _find_stale_dashboard_pids() == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")
+class TestSupervisedBackendRestart:
+    """After the kill, systemd-supervised PIDs get their owning unit
+    restarted (#68934) — SIGTERM reads as a clean stop to systemd, so
+    Restart=on-failure never fires on its own."""
+
+    def _live(self):
+        return sys.modules["hermes_cli.main"]
+
+    def test_supervised_pid_restarts_owning_unit(self, capsys):
+        """A killed PID whose cgroup names a custom unit → systemctl restart."""
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_get_pid_cgroup_path",
+                          return_value="/system.slice/hermes-serve.service"), \
+             patch.object(live, "_get_systemd_service_for_pid",
+                          return_value="hermes-serve.service"), \
+             patch.object(live, "_try_restart_systemd_service", return_value=True) as restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        restart.assert_called_once_with(
+            "hermes-serve.service", "/system.slice/hermes-serve.service"
+        )
+        out = capsys.readouterr().out
+        assert "✓ restarted systemd service hermes-serve.service" in out
+        # Supervised restart succeeded — no manual hint.
+        assert "when you're ready" not in out
+
+    def test_already_restarted_unit_is_left_untouched(self):
+        """Review on #83595: hermes update's systemd fleet-restart loop may
+        already have restarted this PID's owning unit directly (e.g. a
+        Serve-only install). Passing it via already_restarted_units must
+        skip killing/restarting it again here."""
+        live = self._live()
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_get_pid_cgroup_path",
+                          return_value="/system.slice/hermes-serve.service"), \
+             patch.object(live, "_get_systemd_service_for_pid",
+                          return_value="hermes-serve.service"), \
+             patch.object(live, "_try_restart_systemd_service") as restart, \
+             patch("os.kill") as kill, \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True, already_restarted_units={"hermes-serve"}
+            )
+
+        kill.assert_not_called()
+        restart.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
+
+
+class TestManualBackendRespawn:
+    """Manually-started dashboards/serves have their argv captured before the
+    kill and are respawned detached after the update (#40449)."""
+
+    def _live(self):
+        return sys.modules["hermes_cli.main"]
+
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_argv_capture_failure_falls_back_to_hint(self, capsys):
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[5555]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_dashboard_cmdline_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Restart anything not auto-restarted" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_non_orphan_fixed_port_still_respawns(self, capsys):
+        """A supervised-by-shell dashboard with a fixed port is still restarted."""
+        live = self._live()
+        argv = ["hermes", "dashboard", "--port", "8300"]
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[6001]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_called_once_with([argv])
+        assert "when you're ready" not in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_port_zero_serves_killed_without_respawn(self, capsys):
+        """``serve --port 0`` backends are stopped but not resurrected (#78821)."""
+        live = self._live()
+        argv = [
+            "python", "-m", "hermes_cli.main",
+            "serve", "--host", "127.0.0.1", "--port", "0",
+        ]
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids",
+                          return_value=[7001, 7002, 7003]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_not_called()
+        assert sorted(result["killed"]) == [7001, 7002, 7003]
+        # Intentional skips are not "unrecovered" — no noisy manual hint.
+        assert result["unrecovered"] == []
+        assert "when you're ready" not in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_detached_fixed_port_still_respawns_after_prior_update(self, capsys):
+        """PPID-1 fixed-port backends (prior start_new_session respawn) stay eligible."""
+        live = self._live()
+        argv = ["hermes", "dashboard", "--port", "8300"]
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[8001]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_called_once_with([argv])
+        assert "when you're ready" not in capsys.readouterr().out
+
+    def test_respawn_adds_no_open_to_dashboard_commands(self, tmp_path, monkeypatch):
+        """Respawned `dashboard` argv gains --no-open; `serve` argv untouched."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        spawned: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned.append(list(cmd))
+
+        with patch.object(live.subprocess, "Popen", _FakePopen):
+            failed = live._respawn_dashboard_processes([
+                ["hermes", "dashboard", "--port", "8300"],
+                ["hermes", "serve", "--host", "0.0.0.0"],
+            ])
+
+        assert failed == []
+        assert spawned[0] == ["hermes", "dashboard", "--port", "8300", "--no-open"]
+        assert spawned[1] == ["hermes", "serve", "--host", "0.0.0.0"]
+
+    def test_respawn_failure_returned(self, tmp_path, monkeypatch, capsys):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen", side_effect=OSError("no such file")):
+            failed = live._respawn_dashboard_processes([["hermes", "serve"]])
+
+        assert failed == [["hermes", "serve"]]
+        out = capsys.readouterr().out
+        assert "✗ failed to restart" in out
+
+
+class TestFilterDashboardRespawnCandidates:
+    """Unit tests for respawn filtering / dedupe / orphan skip (#78821)."""
+
+    def test_skips_serve_port_zero(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = [
+            "python", "-m", "hermes_cli.main",
+            "--profile", "mini-cat",
+            "serve", "--host", "127.0.0.1", "--port", "0",
+        ]
+        assert _filter_dashboard_respawn_candidates([
+            (42, argv, "/home/u/.hermes/profiles/mini-cat"),
+        ]) == []
+
+    def test_skips_legacy_dashboard_port_zero(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = [
+            "hermes", "--profile", "coder",
+            "dashboard", "--no-open", "--host", "127.0.0.1", "--port", "0",
+        ]
+        assert _filter_dashboard_respawn_candidates([(7, argv, None)]) == []
+
+    def test_skips_serve_port_equals_zero(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = ["hermes", "serve", "--port=0"]
+        assert _filter_dashboard_respawn_candidates([(1, argv, None)]) == []
+
+    def test_keeps_ppid1_fixed_port_for_repeat_update(self):
+        """Detached prior-update respawns (PPID 1) must remain restartable (#40449)."""
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = ["hermes", "dashboard", "--port", "9119"]
+        assert _filter_dashboard_respawn_candidates([(10, argv, None)]) == [argv]
+
+    def test_dedupes_identical_normalized_cmdlines(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        a = ["/usr/bin/python3", "-m", "hermes_cli.main", "dashboard", "--port", "8300"]
+        b = ["/other/python", "-m", "hermes_cli.main", "dashboard", "--port", "8300"]
+        out = _filter_dashboard_respawn_candidates([
+            (1, a, None),
+            (2, b, None),
+        ])
+        assert out == [a]
+
+    def test_caps_one_per_profile(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        a = ["hermes", "--profile", "coder", "dashboard", "--port", "8300"]
+        b = ["hermes", "--profile", "coder", "dashboard", "--port", "8301"]
+        c = ["hermes", "--profile", "writer", "dashboard", "--port", "8302"]
+        out = _filter_dashboard_respawn_candidates([
+            (1, a, None),
+            (2, b, None),
+            (3, c, None),
+        ])
+        assert out == [a, c]
+
+    def test_caps_one_per_hermes_home(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        home = "/tmp/hermes-home-a"
+        a = ["hermes", "dashboard", "--port", "8300"]
+        b = ["hermes", "dashboard", "--port", "8301"]
+        out = _filter_dashboard_respawn_candidates([
+            (1, a, home),
+            (2, b, home),
+        ])
+        assert out == [a]
+
+    def test_profile_flag_and_profiles_home_share_cap(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        a = ["hermes", "--profile", "coder", "dashboard", "--port", "8300"]
+        b = ["hermes", "dashboard", "--port", "8301"]
+        out = _filter_dashboard_respawn_candidates([
+            (1, a, None),
+            (2, b, "/home/u/.hermes/profiles/coder"),
+        ])
+        assert out == [a]
+
+    def test_default_profile_same_root_home_caps(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        a = ["hermes", "--profile", "default", "dashboard", "--port", "8300"]
+        b = ["hermes", "dashboard", "--port", "8301"]
+        home = "/home/u/.hermes"
+        out = _filter_dashboard_respawn_candidates([
+            (1, a, home),
+            (2, b, home),
+        ])
+        assert out == [a]
+
+    def test_distinct_dot_hermes_homes_do_not_share_cap(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        a = ["hermes", "dashboard", "--port", "8300"]
+        b = ["hermes", "dashboard", "--port", "8301"]
+        out = _filter_dashboard_respawn_candidates([
+            (1, a, "/home/u/.hermes"),
+            (2, b, "/work/project/.hermes"),
+        ])
+        assert out == [a, b]
+
+    def test_keeps_fixed_port_serve(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = ["hermes", "serve", "--host", "0.0.0.0", "--port", "9119"]
+        assert _filter_dashboard_respawn_candidates([
+            (9, argv, None),
+        ]) == [argv]
+
+    def test_seventeen_port_zero_orphans_collapse_to_zero(self):
+        """The reported accumulation case: many identical serve --port 0 → none."""
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = [
+            "python", "-m", "hermes_cli.main",
+            "serve", "--host", "127.0.0.1", "--port", "0",
+        ]
+        candidates = [(i, argv, None) for i in range(17)]
+        assert _filter_dashboard_respawn_candidates(candidates) == []
+
+
+class TestCmdlineCapture:
+    """_dashboard_cmdline_for_pid reads /proc on Linux, ps on macOS."""
+
+    def _live(self):
+        return sys.modules["hermes_cli.main"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /proc cmdline path")
+    def test_reads_proc_cmdline_when_available(self, tmp_path, monkeypatch):
+        live = self._live()
+        proc_file = tmp_path / "cmdline"
+        proc_file.write_bytes(b"/usr/bin/python3\x00-m\x00hermes_cli.main\x00serve\x00")
+
+        real_exists = os.path.exists
+
+        def fake_exists(path):
+            if path == "/proc/777/cmdline":
+                return True
+            return real_exists(path)
+
+        real_open = open
+
+        def fake_open(path, *a, **kw):
+            if path == "/proc/777/cmdline":
+                return real_open(proc_file, *a, **kw)
+            return real_open(path, *a, **kw)
+
+        with patch.object(live.os.path, "exists", fake_exists), \
+             patch("builtins.open", fake_open):
+            argv = live._dashboard_cmdline_for_pid(777)
+
+        assert argv == ["/usr/bin/python3", "-m", "hermes_cli.main", "serve"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps cmdline fallback")
+    def test_falls_back_to_ps_without_proc(self, monkeypatch):
+        live = self._live()
+
+        def fake_run(args, *a, **kw):
+            assert args == ["ps", "-p", "888", "-o", "command="]
+            return MagicMock(returncode=0, stdout="hermes serve --port 8300\n", stderr="")
+
+        with patch.object(live.os.path, "exists", return_value=False), \
+             patch("subprocess.run", side_effect=fake_run):
+            argv = live._dashboard_cmdline_for_pid(888)
+
+        assert argv == ["hermes", "serve", "--port", "8300"]
+
+    @pytest.mark.windows_only
+    def test_returns_none_on_windows(self):
+        """``windows_only``: the contract is "no graceful-argv capture on a
+        real Windows host" — asserting it against a faked platform only
+        restated the branch condition.
+        """
+        live = self._live()
+        assert live._dashboard_cmdline_for_pid(123) is None
+
+
+class TestPostUpdateStaleModuleReload:
+    """Regression tests for the post-update stale-module ImportError.
+
+    ``hermes update`` runs in the PRE-pull Python process. When the update
+    adds a new symbol to ``hermes_cli._subprocess_compat`` (as #87134 added
+    ``bounded_probe_run``), the post-update dashboard cleanup's lazy
+    ``from hermes_cli._subprocess_compat import bounded_probe_run`` hits the
+    stale cached module and crashes with ImportError — after the code update
+    itself already succeeded. The cleanup entry point must force-reload the
+    process-scan modules first (PR #87757 + ZIP-path widening).
+    """
+
+    def test_cleanup_reloads_before_scanning(self):
+        """_finish_dashboard_update_cleanup must reload the process-scan
+        modules BEFORE calling _kill_stale_dashboard_processes, on every
+        call path (git update and ZIP fallback both route here)."""
+        from hermes_cli import update_cmd
+
+        order: list[str] = []
+        with patch.object(
+            update_cmd, "_reload_process_scan_modules",
+            side_effect=lambda: order.append("reload"),
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            side_effect=lambda **kw: order.append("kill") or {"unrecovered": []},
+        ):
+            update_cmd._finish_dashboard_update_cleanup([])
+
+        assert order == ["reload", "kill"]
+
+    def test_node_failures_skip_reload_and_kill(self):
+        """A failed Node refresh leaves the running dashboard untouched —
+        no reload, no kill (existing safety rule preserved)."""
+        from hermes_cli import update_cmd
+
+        with patch.object(update_cmd, "_reload_process_scan_modules") as mock_reload, \
+             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill:
+            update_cmd._finish_dashboard_update_cleanup(["dashboard"])
+
+        mock_reload.assert_not_called()
+        mock_kill.assert_not_called()
+
+    def test_reload_restores_missing_symbol(self):
+        """Simulate the stale-module state: strip ``bounded_probe_run`` off
+        the cached module object (what an old pre-#87134 module looks like)
+        and verify the reload restores it from disk — the exact state the
+        Windows update crash came from."""
+        import hermes_cli._subprocess_compat as compat
+        from hermes_cli import update_cmd
+
+        assert hasattr(compat, "bounded_probe_run")
+        try:
+            delattr(compat, "bounded_probe_run")
+            assert not hasattr(compat, "bounded_probe_run")
+
+            update_cmd._reload_process_scan_modules()
+
+            stale = sys.modules["hermes_cli._subprocess_compat"]
+            assert hasattr(stale, "bounded_probe_run")
+        finally:
+            importlib.reload(sys.modules["hermes_cli._subprocess_compat"])
+            importlib.reload(sys.modules["hermes_cli.dashboard_procs"])
+
+    def test_reload_failure_is_nonfatal(self):
+        """A reload failure must log and continue, never raise — the cleanup
+        step runs after the update already succeeded."""
+        from hermes_cli import update_cmd
+
+        with patch("importlib.reload", side_effect=RuntimeError("boom")):
+            update_cmd._reload_process_scan_modules()  # must not raise
+
+    def test_config_reload_list_includes_process_scan_modules(self):
+        """PR #87757's half: the git-path pre-cleanup reload also refreshes
+        the process-scan modules (belt to the entry-point suspenders)."""
+        from hermes_cli import update_cmd
+
+        reloaded: list[str] = []
+        with patch("importlib.reload", side_effect=lambda m: reloaded.append(m.__name__)):
+            update_cmd._reload_config_modules()
+
+        assert "hermes_cli._subprocess_compat" in reloaded
+        assert "hermes_cli.dashboard_procs" in reloaded

@@ -1,13 +1,13 @@
 ---
 name: comfyui
-description: "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution."
+description: Generate images, video, and audio via diffusion workflows.
 version: 5.1.0
 author: [kshitijk4poor, alt-glitch, purzbeats]
 license: MIT
 platforms: [macos, linux, windows]
 compatibility: "Requires ComfyUI (local, Comfy Desktop, or Comfy Cloud) and comfy-cli (auto-installed via pipx/uvx by the setup script)."
 prerequisites:
-  commands: ["python3"]
+  commands: ["python"]
 setup:
   help: "Run scripts/hardware_check.py FIRST to decide local vs Comfy Cloud; then scripts/comfyui_setup.sh auto-installs locally (or use Cloud API key for platform.comfy.org)."
 metadata:
@@ -23,7 +23,7 @@ metadata:
       - creative
       - generative-ai
       - video-generation
-    related_skills: [stable-diffusion-image-generation, image_gen]
+    related_skills: [stable-diffusion]
     category: creative
 ---
 
@@ -108,7 +108,7 @@ command -v comfy >/dev/null 2>&1 && echo "comfy-cli: installed"
 curl -s http://127.0.0.1:8188/system_stats 2>/dev/null && echo "server: running"
 
 # Can this machine run ComfyUI locally? (GPU/VRAM/disk check)
-python3 scripts/hardware_check.py
+python scripts/hardware_check.py
 ```
 
 If nothing is installed, see **Setup & Onboarding** below — but always run the
@@ -117,7 +117,7 @@ hardware check first.
 ### One-line health check
 
 ```bash
-python3 scripts/health_check.py
+python scripts/health_check.py
 # → JSON: comfy_cli on PATH? server reachable? at least one checkpoint? smoke-test passes?
 ```
 
@@ -139,10 +139,10 @@ executable**. The scripts detect this and tell you to re-export.
 ### Step 2: See what's controllable
 
 ```bash
-python3 scripts/extract_schema.py workflow_api.json --summary-only
+python scripts/extract_schema.py workflow_api.json --summary-only
 # → {"parameter_count": 12, "has_negative_prompt": true, "has_seed": true, ...}
 
-python3 scripts/extract_schema.py workflow_api.json
+python scripts/extract_schema.py workflow_api.json
 # → full schema with parameters, model deps, embedding refs
 ```
 
@@ -150,33 +150,33 @@ python3 scripts/extract_schema.py workflow_api.json
 
 ```bash
 # Local (defaults to http://127.0.0.1:8188)
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow workflow_api.json \
   --args '{"prompt": "a beautiful sunset over mountains", "seed": -1, "steps": 30}' \
   --output-dir ./outputs
 
 # Cloud (export API key once; uses correct /api routing automatically)
 export COMFY_CLOUD_API_KEY="comfyui-..."
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow workflow_api.json \
   --args '{"prompt": "..."}' \
   --host https://cloud.comfy.org \
   --output-dir ./outputs
 
 # Real-time progress via WebSocket (requires `pip install websocket-client`)
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow flux_dev.json \
   --args '{"prompt": "..."}' \
   --ws
 
 # img2img / inpaint: pass --input-image to upload + reference automatically
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow sdxl_img2img.json \
   --input-image image=./photo.png \
   --args '{"prompt": "make it watercolor", "denoise": 0.6}'
 
 # Batch / sweep: 8 random seeds, parallel up to cloud tier limit
-python3 scripts/run_batch.py \
+python scripts/run_batch.py \
   --workflow sdxl.json \
   --args '{"prompt": "abstract"}' \
   --count 8 --randomize-seed --parallel 3 \
@@ -266,9 +266,9 @@ Routing:
 ### Step 1: Verify Hardware (ONLY if user chose local)
 
 ```bash
-python3 scripts/hardware_check.py --json
+python scripts/hardware_check.py --json
 # Optional: also probe `torch` for actual CUDA/MPS:
-python3 scripts/hardware_check.py --json --check-pytorch
+python scripts/hardware_check.py --json --check-pytorch
 ```
 
 | Verdict    | Meaning                                                       | Action |
@@ -324,11 +324,11 @@ For users without a capable GPU or who want zero setup. Hosted on RTX 6000 Pro.
 2. Generate an API key at https://platform.comfy.org/login
 3. Set the key:
    ```bash
-   export COMFY_CLOUD_API_KEY="comfyui-xxxxxxxxxxxx"
+   export COMFY_CLOUD_API_KEY="your-comfyui-key"
    ```
 4. Run workflows:
    ```bash
-   python3 scripts/run_workflow.py \
+   python scripts/run_workflow.py \
      --workflow workflows/flux_dev_txt2img.json \
      --args '{"prompt": "..."}' \
      --host https://cloud.comfy.org \
@@ -465,13 +465,13 @@ comfy node install-deps --workflow=workflow.json   # install everything a workfl
 ### Post-Install: Verify
 
 ```bash
-python3 scripts/health_check.py
+python scripts/health_check.py
 # → comfy_cli on PATH? server reachable? checkpoints? smoke test?
 
-python3 scripts/check_deps.py my_workflow.json
+python scripts/check_deps.py my_workflow.json
 # → are this workflow's nodes/models/embeddings installed?
 
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow workflows/sd15_txt2img.json \
   --args '{"prompt": "test", "steps": 4}' \
   --output-dir ./test-outputs
@@ -482,7 +482,7 @@ python3 scripts/run_workflow.py \
 The simplest way is to use `--input-image` with `run_workflow.py`:
 
 ```bash
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow workflows/sdxl_img2img.json \
   --input-image image=./photo.png \
   --args '{"prompt": "make it cyberpunk", "denoise": 0.6}'
@@ -492,7 +492,7 @@ The flag uploads `photo.png`, then injects its server-side filename into
 whatever schema parameter is named `image`. For inpainting, pass both:
 
 ```bash
-python3 scripts/run_workflow.py \
+python scripts/run_workflow.py \
   --workflow workflows/sdxl_inpaint.json \
   --input-image image=./photo.png \
   --input-image mask_image=./mask.png \
@@ -536,7 +536,7 @@ curl -X POST "https://cloud.comfy.org/api/upload/image" \
 
 ```bash
 # Local
-curl -s http://127.0.0.1:8188/queue | python3 -m json.tool
+curl -s http://127.0.0.1:8188/queue | python -m json.tool
 curl -X POST http://127.0.0.1:8188/queue -d '{"clear": true}'    # cancel pending
 curl -X POST http://127.0.0.1:8188/interrupt                      # cancel running
 curl -X POST http://127.0.0.1:8188/free \
@@ -544,7 +544,7 @@ curl -X POST http://127.0.0.1:8188/free \
   -d '{"unload_models": true, "free_memory": true}'
 
 # Cloud — same paths under /api/, plus:
-python3 scripts/fetch_logs.py --tail-queue --host https://cloud.comfy.org
+python scripts/fetch_logs.py --tail-queue --host https://cloud.comfy.org
 ```
 
 ## Pitfalls
@@ -599,7 +599,7 @@ python3 scripts/fetch_logs.py --tail-queue --host https://cloud.comfy.org
 
 ## Verification Checklist
 
-Use `python3 scripts/health_check.py` to run the whole list at once. Manual:
+Use `python scripts/health_check.py` to run the whole list at once. Manual:
 
 - [ ] `hardware_check.py` verdict is `ok` OR the user explicitly chose Comfy Cloud
 - [ ] `comfy --version` works (or `uvx --from comfy-cli comfy --help`)

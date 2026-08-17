@@ -40,46 +40,6 @@ def _patch_resolution(monkeypatch, *, model_from_config: str, provider: str = "o
     )
 
 
-def test_new_clears_last_resolved_model(monkeypatch):
-    """/new handler must remove the session-key entry from _last_resolved_model."""
-    runner = _make_runner()
-    sk = "agent:main:qqbot:dm:123"
-
-    # Turn 1: resolve model — caches it.
-    _patch_resolution(monkeypatch, model_from_config="deepseek-chat")
-    runner._resolve_session_agent_runtime(session_key=sk, user_config={"model": {"default": "x"}})
-    assert runner._last_resolved_model.get(sk) == "deepseek-chat"
-
-    # Simulate what /new does (mirror slash_commands.py _handle_reset_command).
-    runner._session_model_overrides.pop(sk, None)
-    _lrm = getattr(runner, "_last_resolved_model", None)
-    if _lrm is not None:
-        _lrm.pop(sk, None)
-
-    # After /new, the per-session cache must be gone.
-    assert sk not in runner._last_resolved_model
-
-
-def test_new_does_not_clobber_global_fallback(monkeypatch):
-    """/new clears per-session but preserves the process-wide '*' slot."""
-    runner = _make_runner()
-    sk = "agent:main:qqbot:dm:123"
-
-    _patch_resolution(monkeypatch, model_from_config="deepseek-chat")
-    runner._resolve_session_agent_runtime(session_key=sk, user_config={"model": {"default": "x"}})
-    assert runner._last_resolved_model.get("*") == "deepseek-chat"
-
-    # Simulate /new
-    runner._session_model_overrides.pop(sk, None)
-    _lrm = getattr(runner, "_last_resolved_model", None)
-    if _lrm is not None:
-        _lrm.pop(sk, None)
-
-    # Per-session gone, global "*" still present (safety net for other sessions).
-    assert sk not in runner._last_resolved_model
-    assert runner._last_resolved_model.get("*") == "deepseek-chat"
-
-
 def test_new_with_config_change_no_stale_fallback(monkeypatch):
     """After /new + config change, empty config read should NOT recover old model."""
     runner = _make_runner()

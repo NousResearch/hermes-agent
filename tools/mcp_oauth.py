@@ -29,6 +29,8 @@ Configuration in config.yaml::
           client_secret: "secret"               # confidential clients only
           scope: "read write"                   # default: server-provided
           redirect_port: 0                      # 0 = auto-pick free port
+          redirect_uri: "https://proxy/callback"  # default: loopback callback
+          redirect_host: "localhost"            # loopback hostname (WAF-safe)
           client_name: "My Custom Client"       # default: "Hermes Agent"
 """
 
@@ -58,19 +60,69 @@ logger = logging.getLogger(__name__)
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
 
-_OAUTH_AVAILABLE=False
-try:
-    from mcp.client.auth import OAuthClientProvider
-    from mcp.shared.auth import (
-        OAuthClientInformationFull,
-        OAuthClientMetadata,
-        OAuthMetadata,
-        OAuthToken,
-    )
+# Availability is detected WITHOUT importing the mcp SDK (which costs
+# ~170 ms at module load). The actual classes are imported lazily on first
+# use via _ensure_sdk_loaded(); the module-level names below are kept as
+# placeholders so tests can patch them (patch.object requires the attribute
+# to exist on the module).
+import importlib.util as _importlib_util
 
-    _OAUTH_AVAILABLE=True
-except ImportError:
+_OAUTH_AVAILABLE = _importlib_util.find_spec("mcp") is not None
+if not _OAUTH_AVAILABLE:
     logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+
+# Lazily-bound SDK names (rebound by _ensure_sdk_loaded on first use).
+# Annotated ``Any`` so quoted type annotations elsewhere in the file remain
+# valid for static checkers while the runtime value starts as None.
+OAuthClientProvider: Any = None
+OAuthClientInformationFull: Any = None
+OAuthClientMetadata: Any = None
+OAuthMetadata: Any = None
+OAuthToken: Any = None
+
+# Cache of the real SDK classes so a test that temporarily patches one of the
+# module-level names (and restores it to None afterwards) doesn't strand the
+# module in a broken state.
+_SDK_CLASSES: dict[str, Any] = {}
+_SDK_LOAD_FAILED = False
+
+
+def _ensure_sdk_loaded() -> bool:
+    """Import the MCP SDK OAuth classes on first use and bind module globals.
+
+    Returns True when the SDK classes are available. Module-level names that
+    have been replaced (e.g. patched by tests) are left untouched; only names
+    that are currently ``None`` are (re)bound to the real SDK classes.
+    """
+    global _SDK_LOAD_FAILED, _OAUTH_AVAILABLE
+    if _SDK_LOAD_FAILED:
+        return False
+    if not _SDK_CLASSES:
+        try:
+            from mcp.client.auth import OAuthClientProvider as _Provider
+            from mcp.shared.auth import (
+                OAuthClientInformationFull as _InfoFull,
+                OAuthClientMetadata as _ClientMeta,
+                OAuthMetadata as _Meta,
+                OAuthToken as _Token,
+            )
+        except ImportError:
+            _SDK_LOAD_FAILED = True
+            _OAUTH_AVAILABLE = False
+            logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+            return False
+        _SDK_CLASSES.update(
+            OAuthClientProvider=_Provider,
+            OAuthClientInformationFull=_InfoFull,
+            OAuthClientMetadata=_ClientMeta,
+            OAuthMetadata=_Meta,
+            OAuthToken=_Token,
+        )
+    g = globals()
+    for _name, _cls in _SDK_CLASSES.items():
+        if g.get(_name) is None:
+            g[_name] = _cls
+    return True
 
 try:
     from pydantic import AnyUrl
@@ -129,17 +181,15 @@ _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 # ---------------------------------------------------------------------------
 
 
-def _get_token_dir() -> Path:
+def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
     """Return the directory for MCP OAuth token files.
 
     Uses HERMES_HOME so each profile gets its own OAuth tokens.
     Layout: ``HERMES_HOME/mcp-tokens/``
     """
-    try:
-        from hermes_constants import get_hermes_home
-        base = Path(get_hermes_home())
-    except ImportError:
-        base = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    from hermes_constants import get_hermes_home
+
+    base = Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
     return base / "mcp-tokens"
 
 
@@ -153,6 +203,96 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+# Bound-but-not-listening sockets reserved for pending OAuth callback flows,
+# keyed by port. Holding the socket from port-selection time until
+# _wait_for_callback adopts it closes the TOCTOU window where another process
+# could grab the port between _find_free_port() closing its probe socket and
+# HTTPServer binding minutes later (#22161). Bounded FIFO so repeated
+# build_oauth_auth calls (reconnect loops) cannot leak fds.
+_reserved_sockets: "dict[int, socket.socket]" = {}
+_MAX_RESERVED_SOCKETS = 8
+
+
+def _reserve_callback_port() -> int:
+    """Pick an ephemeral callback port and keep its socket bound.
+
+    Returns the port. The bound (not yet listening) socket is parked in
+    ``_reserved_sockets`` so no other process can bind the port before
+    ``_wait_for_callback`` adopts it. Adoption (or ``server_close``) owns
+    the socket's lifetime from there.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+    except OSError:
+        s.close()
+        raise
+    port = s.getsockname()[1]
+    # Evict oldest reservations past the cap (dict preserves insertion order).
+    while len(_reserved_sockets) >= _MAX_RESERVED_SOCKETS:
+        _, stale = next(iter(_reserved_sockets.items()))
+        _reserved_sockets.pop(next(iter(_reserved_sockets)), None)
+        try:
+            stale.close()
+        except OSError:
+            pass
+    _reserved_sockets[port] = s
+    return port
+
+
+def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
+    """Return the loopback callback port from cached client registration.
+
+    OAuth providers bind a dynamically-registered ``client_id`` to the exact
+    redirect URI that was registered with it. If Hermes restarts and chooses a
+    new random callback port while reusing the stored ``client_id``, providers
+    such as Summ reject the authorization request with ``redirect_uri does not
+    match any registered URIs``. Reusing the cached redirect port keeps the
+    authorization request consistent with the stored client registration.
+    """
+    if storage is None:
+        return None
+
+    try:
+        data = _read_json(storage._client_info_path())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not data:
+        return None
+
+    for uri in data.get("redirect_uris") or []:
+        try:
+            parsed = urlparse(str(uri))
+        except (TypeError, ValueError):
+            continue
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost"}
+            and parsed.path == "/callback"
+            and parsed.port is not None
+        ):
+            return int(parsed.port)
+    return None
+
+
+def _cached_redirect_uri(storage: "HermesTokenStorage | None") -> str | None:
+    """Return a cached non-loopback redirect URI, if one was registered."""
+    if storage is None:
+        return None
+    try:
+        data = _read_json(storage._client_info_path())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    for uri in (data or {}).get("redirect_uris") or []:
+        try:
+            parsed = urlparse(str(uri))
+        except (TypeError, ValueError):
+            continue
+        if parsed.scheme == "https" and parsed.netloc:
+            return str(uri)
+    return None
 
 
 def _is_interactive() -> bool:
@@ -296,23 +436,26 @@ class HermesTokenStorage:
         HERMES_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
     """
 
-    def __init__(self, server_name: str):
+    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
+        self._hermes_home = Path(hermes_home) if hermes_home is not None else None
 
     def _tokens_path(self) -> Path:
-        return _get_token_dir() / f"{self._server_name}.json"
+        return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
 
     def _client_info_path(self) -> Path:
-        return _get_token_dir() / f"{self._server_name}.client.json"
+        return _get_token_dir(self._hermes_home) / f"{self._server_name}.client.json"
 
     def _meta_path(self) -> Path:
-        return _get_token_dir() / f"{self._server_name}.meta.json"
+        return _get_token_dir(self._hermes_home) / f"{self._server_name}.meta.json"
 
     # -- tokens ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
         data = _read_json(self._tokens_path())
         if data is None:
+            return None
+        if OAuthToken is None and not _ensure_sdk_loaded():
             return None
         # Hermes records an absolute wall-clock ``expires_at`` alongside the
         # SDK's serialized token (see ``set_tokens``). On read we rewrite
@@ -375,14 +518,35 @@ class HermesTokenStorage:
         data = _read_json(self._client_info_path())
         if data is None:
             return None
+        if OAuthClientInformationFull is None and not _ensure_sdk_loaded():
+            return None
         try:
-            return OAuthClientInformationFull.model_validate(data)
+            info = OAuthClientInformationFull.model_validate(data)
+            # Some dynamic registration providers (notably Supabase MCP) return
+            # a client_secret but omit token_endpoint_auth_method. The MCP SDK
+            # defaults that missing field to "none", which causes token exchange
+            # to omit client_secret and fail with "Required parameter: client_secret".
+            # If a secret is present, use client_secret_post unless the provider
+            # explicitly saved a different method.
+            if getattr(info, "client_secret", None) and data.get("token_endpoint_auth_method") in (None, "none", ""):
+                data["token_endpoint_auth_method"] = "client_secret_post"
+                info = OAuthClientInformationFull.model_validate(data)
+                _write_json(self._client_info_path(), info.model_dump(mode="json", exclude_none=True))
+            return info
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+        data = client_info.model_dump(mode="json", exclude_none=True)
+        # Supabase MCP dynamic client registration returns a client_secret but
+        # omits token_endpoint_auth_method. The MCP SDK defaults that to
+        # "none", which makes token exchange omit client_secret and loops the
+        # browser authorization page. Persist the effective method immediately
+        # so this flow and subsequent retries use client_secret_post.
+        if data.get("client_secret") and data.get("token_endpoint_auth_method") in (None, "none", ""):
+            data["token_endpoint_auth_method"] = "client_secret_post"
+        _write_json(self._client_info_path(), data)
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- oauth server metadata --------------------------------------------
@@ -400,6 +564,8 @@ class HermesTokenStorage:
     def load_oauth_metadata(self) -> "OAuthMetadata | None":
         data = _read_json(self._meta_path())
         if data is None:
+            return None
+        if OAuthMetadata is None and not _ensure_sdk_loaded():
             return None
         try:
             return OAuthMetadata.model_validate(data)
@@ -429,12 +595,21 @@ class HermesTokenStorage:
                 pass
         return snap
 
-    def restore(self, snapshot: dict[str, bytes]) -> None:
-        """Revert to a ``snapshot()`` capture (dropping any newer partial state)."""
+    def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
+        """Revert to a snapshot without overwriting a concurrent successful write."""
+        if only_if_absent and any(
+            path.exists()
+            for path in (self._tokens_path(), self._client_info_path(), self._meta_path())
+        ):
+            logger.info(
+                "Skipping OAuth rollback for %s because newer state exists",
+                self._server_name,
+            )
+            return
         self.remove()
         if not snapshot:
             return
-        token_dir = _get_token_dir()
+        token_dir = _get_token_dir(self._hermes_home)
         token_dir.mkdir(parents=True, exist_ok=True)
         for fname, data in snapshot.items():
             path = token_dir / fname
@@ -494,6 +669,22 @@ class HermesTokenStorage:
 # ---------------------------------------------------------------------------
 
 
+def _authorization_code_result(code: str, state: "str | None", iss: "str | None" = None):
+    """Package redirect parameters in the shape the installed SDK expects.
+
+    mcp 2.0 changed ``callback_handler``'s contract from a
+    ``tuple[str, str | None]`` to an ``AuthorizationCodeResult`` model, and the
+    SDK now reads ``result.state`` / ``result.iss`` off it — a tuple raises
+    ``AttributeError`` mid-flow. Fall back to the tuple when the model is
+    absent so the handler still satisfies an older SDK.
+    """
+    try:
+        from mcp.shared.auth import AuthorizationCodeResult
+    except ImportError:  # mcp < 2.0
+        return code, state
+    return AuthorizationCodeResult(code=code, state=state, iss=iss)
+
+
 def _make_callback_handler() -> tuple[type, dict]:
     """Create a per-flow callback HTTP handler class with its own result dict.
 
@@ -502,7 +693,9 @@ def _make_callback_handler() -> tuple[type, dict]:
     OAuth redirect arrives.  Each call returns a fresh pair so concurrent
     flows don't stomp on each other.
     """
-    result: dict[str, Any] = {"auth_code": None, "state": None, "error": None}
+    result: dict[str, Any] = {
+        "auth_code": None, "state": None, "error": None, "iss": None,
+    }
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -510,10 +703,17 @@ def _make_callback_handler() -> tuple[type, dict]:
             code = params.get("code", [None])[0]
             state = params.get("state", [None])[0]
             error = params.get("error", [None])[0]
+            # RFC 9207 authorization-response issuer. mcp 2.0 validates it
+            # against the discovered metadata and *rejects* a response that
+            # omits it when the authorization server advertised
+            # `authorization_response_iss_parameter_supported`, so dropping it
+            # here would break login against those providers.
+            iss = params.get("iss", [None])[0]
 
             result["auth_code"] = code
             result["state"] = state
             result["error"] = error
+            result["iss"] = iss
 
             body = (
                 "<html><body><h2>Authorization Successful</h2>"
@@ -538,88 +738,112 @@ def _make_callback_handler() -> tuple[type, dict]:
 # ---------------------------------------------------------------------------
 
 
-async def _redirect_handler(authorization_url: str) -> None:
-    """Show the authorization URL to the user.
+def _make_redirect_handler(port: int, redirect_uri: str | None = None):
+    """Return a redirect handler closure that closes over the given port.
 
-    Opens the browser automatically when possible; always prints the URL
-    as a fallback for headless/SSH/gateway environments.
+    Using a closure instead of reading the module-level ``_oauth_port`` avoids
+    cross-server state pollution when multiple MCP servers run OAuth
+    concurrently (fixes #44588).
+
+    ``redirect_uri`` is the configured proxy callback (e.g. a Tailscale Funnel
+    URL), or ``None`` for the loopback default. It tailors the remote-session
+    hint: a proxied callback reaches this machine on its own, so the loopback
+    SSH-tunnel guidance would be misleading.
     """
-    # Fail fast at the authorization boundary in non-interactive contexts
-    # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
-    # token (expired/revoked, refresh rejected) makes the SDK fall through to
-    # the authorization-code flow even though build_oauth_auth's token-file
-    # guard passed. Without this check we would print a URL and launch a
-    # browser flow no operator can complete, then block in _wait_for_callback
-    # for the full timeout. Raise before launching so gateway adapters start
-    # promptly and the caller can skip this server with an actionable warning.
-    # This intentionally re-checks interactivity here rather than trusting the
-    # token-file existence guard alone. See #57836.
-    _raise_if_non_interactive(
-        "MCP OAuth requires browser authorization but no interactive "
-        "session is available (non-interactive/background context)."
-    )
+    async def _redirect_handler(authorization_url: str) -> None:
+        """Show the authorization URL to the user.
 
-    msg = (
-        f"\n  MCP OAuth: authorization required.\n"
-        f"  Open this URL in your browser:\n\n"
-        f"    {authorization_url}\n"
-    )
-    print(msg, file=sys.stderr)
+        Opens the browser automatically when possible; always prints the URL
+        as a fallback for headless/SSH/gateway environments.
+        """
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
 
-    # On a remote SSH session the OAuth provider redirects to
-    # http://127.0.0.1:<port>/callback, which reaches the callback server on
-    # the *remote* machine — not the user's local machine where the browser
-    # opened.  Two ways out: paste the redirect URL back (default fallback,
-    # offered by _wait_for_callback on interactive TTYs), or set up an SSH
-    # port forward so the redirect tunnels through.
-    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
-        print(
-            f"  Remote session detected. After you authorize, the provider redirects to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
-            f"  which only the listener on THIS machine can receive. Two options:\n"
-            f"\n"
-            f"    1. Easiest — when your browser shows a connection error after\n"
-            f"       authorizing, copy the full URL from the address bar and paste\n"
-            f"       it at the prompt below. The pasted ``code=...&state=...`` is\n"
-            f"       enough to complete the flow.\n"
-            f"\n"
-            f"    2. Or forward the port first in a separate terminal:\n"
-            f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
-            f"       then open the URL above and let it redirect normally.\n"
-            f"\n"
-            f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
-            file=sys.stderr,
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            await dashboard_flow.publish_authorization_url(authorization_url)
+            return
+
+        # Fail fast at the authorization boundary in non-interactive contexts
+        # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
+        # token (expired/revoked, refresh rejected) makes the SDK fall through to
+        # the authorization-code flow even though build_oauth_auth's token-file
+        # guard passed. Without this check we would print a URL and launch a
+        # browser flow no operator can complete, then block in _wait_for_callback
+        # for the full timeout. Raise before launching so gateway adapters start
+        # promptly and the caller can skip this server with an actionable warning.
+        # This intentionally re-checks interactivity here rather than trusting the
+        # token-file existence guard alone. See #57836.
+        _raise_if_non_interactive(
+            "MCP OAuth requires browser authorization but no interactive "
+            "session is available (non-interactive/background context)."
         )
 
-    if _can_open_browser():
-        try:
-            opened = webbrowser.open(authorization_url)
-            if opened:
-                print("  (Browser opened automatically.)\n", file=sys.stderr)
-            else:
+        msg = (
+            f"\n  MCP OAuth: authorization required.\n"
+            f"  Open this URL in your browser:\n\n"
+            f"    {authorization_url}\n"
+        )
+        print(msg, file=sys.stderr)
+
+        on_ssh = bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+        if on_ssh and redirect_uri:
+            # A configured proxy callback (e.g. Tailscale Funnel) forwards the
+            # redirect to the listener on this machine, so no tunnel/paste is needed.
+            print(
+                f"  Remote session detected. After you authorize, the provider redirects to\n"
+                f"    {redirect_uri}\n"
+                f"  which forwards to the callback listener on this machine — no SSH tunnel needed.\n",
+                file=sys.stderr,
+            )
+        elif on_ssh and port:
+            # Loopback default: the provider redirects to
+            # http://127.0.0.1:<port>/callback, which reaches the callback server on
+            # the *remote* machine — not the user's local machine where the browser
+            # opened. Two ways out: paste the redirect URL back (default fallback,
+            # offered by _wait_for_callback on interactive TTYs), or set up an SSH
+            # port forward so the redirect tunnels through.
+            print(
+                f"  Remote session detected. After you authorize, the provider redirects to\n"
+                f"    http://127.0.0.1:{port}/callback\n"
+                f"  which only the listener on THIS machine can receive. Two options:\n"
+                f"\n"
+                f"    1. Easiest — when your browser shows a connection error after\n"
+                f"       authorizing, copy the full URL from the address bar and paste\n"
+                f"       it at the prompt below. The pasted ``code=...&state=...`` is\n"
+                f"       enough to complete the flow.\n"
+                f"\n"
+                f"    2. Or forward the port first in a separate terminal:\n"
+                f"         ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>\n"
+                f"       then open the URL above and let it redirect normally.\n"
+                f"\n"
+                f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+                file=sys.stderr,
+            )
+
+        if _can_open_browser():
+            try:
+                opened = webbrowser.open(authorization_url)
+                if opened:
+                    print("  (Browser opened automatically.)\n", file=sys.stderr)
+                else:
+                    print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
+            except Exception:
                 print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
-        except Exception:
-            print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
-    else:
-        print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
+        else:
+            print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
+
+    return _redirect_handler
 
 
 async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive on the local callback server.
+    """Wait for the OAuth callback on the legacy module-level port.
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
-
-    On an interactive TTY, races the HTTP listener against a stdin paste
-    fallback so users without an SSH tunnel can copy the redirect URL (or
-    just the ``code=...&state=...`` query string) from a browser on another
-    machine and paste it back. The HTTP listener wins when the redirect
-    reaches it first; the paste fallback wins when it doesn't.
+    Kept for backwards compatibility with callers that never went through
+    :func:`build_oauth_auth`'s per-flow wiring. New code paths receive a
+    per-flow waiter from :func:`_make_callback_waiter` so concurrent OAuth
+    flows cannot cross ports (#34260).
 
     Raises:
-        OAuthNonInteractiveError: If the callback times out (no user present
-            to complete the browser auth).
         RuntimeError: If ``_oauth_port`` has not been set, which would indicate
             that ``build_oauth_auth`` was skipped — the asserting form below
             was a silent bug when running Python with ``-O``/``-OO``.
@@ -629,82 +853,144 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
         )
+    return await _make_callback_waiter(_oauth_port)()
 
-    # Reject before binding the callback listener in non-interactive contexts.
-    # Reaching here means the SDK entered the authorization-code flow (a valid
-    # or refreshable token would never call the callback handler), so a cached
-    # token file is present but unusable. Binding the listener here would block
-    # for the full 300s timeout and — on the next connection retry — collide
-    # with the still-bound/TIME_WAIT port, surfacing as
-    # ``OSError: [Errno 98] Address already in use``. Failing fast keeps
-    # gateway startup independent of an unusable optional MCP server. This
-    # guard holds "regardless of whether a token file exists" — the point the
-    # build_oauth_auth token-file guard cannot cover. See #57836.
-    _raise_if_non_interactive(
-        "OAuth callback requires an interactive session but none is "
-        "available (non-interactive/background context); skipping browser "
-        "authorization without binding a callback listener."
-    )
 
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
+def _make_callback_waiter(port: int, timeout: float = 300.0):
+    """Return a callback waiter bound to a single OAuth flow's port.
 
-    # Start a temporary server on the known port
-    try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
+    ``timeout`` bounds how long the waiter polls for the redirect. It used to
+    be passed to ``OAuthClientProvider(timeout=...)`` as well, but mcp 2.0
+    dropped that constructor argument — the wait happens here, so this is now
+    the only place the configured ``oauth.timeout`` takes effect.
+
+    Closing over the port (instead of reading the module-level
+    ``_oauth_port``) keeps concurrent OAuth flows isolated: flow A's waiter
+    listens on flow A's port even when flow B's ``_configure_callback_port``
+    overwrites the legacy global afterwards (#34260, the callback-side
+    sibling of the #44588 redirect-handler fix).
+
+    The waiter polls for the redirect without blocking the event loop. On an
+    interactive TTY it races the HTTP listener against a stdin paste fallback
+    so users without an SSH tunnel can paste the redirect URL (or just the
+    ``code=...&state=...`` query string) from a browser on another machine.
+
+    Raises (when awaited):
+        OAuthNonInteractiveError: If the callback times out (no user present
+            to complete the browser auth), or in non-interactive contexts.
+    """
+
+    async def _wait():
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            # The dashboard flow still speaks the legacy tuple; normalize it
+            # here so both callback sources hand the SDK one shape.
+            dash_code, dash_state = await dashboard_flow.wait_for_callback()
+            return _authorization_code_result(dash_code, dash_state)
+
+        # Reject before binding the callback listener in non-interactive
+        # contexts. Reaching here means the SDK entered the authorization-code
+        # flow (a valid or refreshable token would never call the callback
+        # handler), so a cached token file is present but unusable. Binding the
+        # listener here would block for the full 300s timeout and — on the next
+        # connection retry — collide with the still-bound/TIME_WAIT port,
+        # surfacing as ``OSError: [Errno 98] Address already in use``. Failing
+        # fast keeps gateway startup independent of an unusable optional MCP
+        # server. This guard holds "regardless of whether a token file exists"
+        # — the point the build_oauth_auth token-file guard cannot cover.
+        # See #57836.
+        _raise_if_non_interactive(
+            "OAuth callback requires an interactive session but none is "
+            "available (non-interactive/background context); skipping browser "
+            "authorization without binding a callback listener."
         )
 
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
+        handler_cls, result = _make_callback_handler()
 
-    # Optional paste-fallback thread: only on interactive TTYs. Reads one
-    # line from stdin and writes the parsed code/state into the shared
-    # result dict. The HTTP listener and this thread race for the result;
-    # whichever fills it first wins.
-    paste_thread: threading.Thread | None = None
-    if _is_interactive():
-        print(
-            "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
-            "portion) and press Enter. Type ``skip`` + Enter to continue "
-            "without this server:",
-            file=sys.stderr,
-            flush=True,
+        # Start a temporary server on this flow's port, adopting the socket
+        # reserved at port-selection time when one exists. Holding the bound
+        # socket from _reserve_callback_port() until here closes the TOCTOU
+        # window where another process could steal the port between selection
+        # and bind (#22161). allow_reuse_address is set BEFORE binding (setting
+        # it after the constructor has already bound is a no-op) so a lingering
+        # TIME_WAIT socket from a previous flow cannot block the next one
+        # (#44590).
+        try:
+            server = HTTPServer(
+                ("127.0.0.1", port), handler_cls, bind_and_activate=False
+            )
+            reserved = _reserved_sockets.pop(port, None)
+            if reserved is not None:
+                # Adopt the reserved (already bound) socket and start listening.
+                server.socket.close()
+                server.socket = reserved
+                server.server_address = reserved.getsockname()
+                server.server_activate()
+            else:
+                server.allow_reuse_address = True
+                server.server_bind()
+                server.server_activate()
+        except OSError as exc:
+            # The loopback callback port is genuinely in use: a concurrent OAuth
+            # flow, a leftover listener, or a fixed `oauth.redirect_port` that
+            # collided. build_oauth_auth does not start its own callback server,
+            # so there is nothing to poll here; surface a clear, actionable error
+            # instead of a misleading "timed out".
+            raise OAuthNonInteractiveError(
+                f"OAuth callback port {port} is already in use ({exc}). "
+                "Close any other in-progress login, or set a free `oauth.redirect_port` "
+                "in the server config, then retry."
+            ) from exc
+
+        server_thread = threading.Thread(target=server.handle_request, daemon=True)
+        server_thread.start()
+
+        # Optional paste-fallback thread: only on interactive TTYs. Reads one
+        # line from stdin and writes the parsed code/state into the shared
+        # result dict. The HTTP listener and this thread race for the result;
+        # whichever fills it first wins.
+        paste_thread: threading.Thread | None = None
+        if _is_interactive():
+            print(
+                "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
+                "portion) and press Enter. Type ``skip`` + Enter to continue "
+                "without this server:",
+                file=sys.stderr,
+                flush=True,
+            )
+            paste_thread = threading.Thread(
+                target=_paste_callback_reader, args=(result,), daemon=True
+            )
+            paste_thread.start()
+
+        poll_interval = 0.5
+        elapsed = 0.0
+        try:
+            while elapsed < timeout:
+                if result["auth_code"] is not None or result["error"] is not None:
+                    break
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+        finally:
+            server.server_close()
+
+        if result["error"] == _USER_SKIPPED_SENTINEL:
+            raise OAuthNonInteractiveError("user_skipped")
+        if result["error"]:
+            raise RuntimeError(f"OAuth authorization failed: {result['error']}")
+        if result["auth_code"] is None:
+            raise OAuthNonInteractiveError(
+                "OAuth callback timed out — no authorization code received. "
+                "Ensure you completed the browser authorization flow."
+            )
+
+        return _authorization_code_result(
+            result["auth_code"], result["state"], result.get("iss")
         )
-        paste_thread = threading.Thread(
-            target=_paste_callback_reader, args=(result,), daemon=True
-        )
-        paste_thread.start()
 
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
-    try:
-        while elapsed < timeout:
-            if result["auth_code"] is not None or result["error"] is not None:
-                break
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
-    finally:
-        server.server_close()
-
-    if result["error"] == _USER_SKIPPED_SENTINEL:
-        raise OAuthNonInteractiveError("user_skipped")
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
-
-    return result["auth_code"], result["state"]
+    return _wait
 
 
 def _paste_callback_reader(result: dict) -> None:
@@ -772,6 +1058,7 @@ def _paste_callback_reader(result: dict) -> None:
     code = params.get("code", [None])[0]
     state = params.get("state", [None])[0]
     error = params.get("error", [None])[0]
+    iss = params.get("iss", [None])[0]  # RFC 9207 — see _make_callback_handler
 
     if not code and not error:
         print(
@@ -787,8 +1074,102 @@ def _paste_callback_reader(result: dict) -> None:
     result["auth_code"] = code
     result["state"] = state
     result["error"] = error
+    result["iss"] = iss
     if code:
         print("  Got authorization code from paste — completing flow.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# OAuth provider compatibility shims
+# ---------------------------------------------------------------------------
+
+
+HermesOAuthClientProvider: Any = None
+
+
+def _get_hermes_oauth_provider_class() -> type | None:
+    global HermesOAuthClientProvider
+    if HermesOAuthClientProvider is not None:
+        return HermesOAuthClientProvider
+    if not _ensure_sdk_loaded():
+        return None
+
+    class _HermesOAuthClientProvider(OAuthClientProvider):
+        """OAuth provider with pragmatic fixes for real-world MCP providers.
+
+        Supabase MCP dynamic registration returns ``client_secret`` but omits
+        ``token_endpoint_auth_method``. The upstream MCP SDK treats the missing
+        method as ``none`` and therefore omits ``client_secret`` from the token
+        request, causing Supabase to reject the exchange and the browser to show
+        the authorization page again. Coerce the in-memory client info right before
+        token/refresh requests as well as persisting the fixed shape in storage.
+        """
+
+        def _coerce_client_secret_post(self) -> None:
+            info = getattr(self.context, "client_info", None)
+            if not info or not getattr(info, "client_secret", None):
+                return
+            method = getattr(info, "token_endpoint_auth_method", None)
+            if method not in (None, "none", ""):
+                return
+            data = info.model_dump(mode="json", exclude_none=True)
+            data["token_endpoint_auth_method"] = "client_secret_post"
+            self.context.client_info = OAuthClientInformationFull.model_validate(data)
+
+        async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):
+            self._coerce_client_secret_post()
+            return await super()._exchange_token_authorization_code(*args, **kwargs)
+
+        async def _refresh_token(self):
+            self._coerce_client_secret_post()
+            return await super()._refresh_token()
+
+        async def _handle_token_response(self, response):
+            """Accept any 2xx token response and avoid leaking token bodies in errors."""
+            if 200 <= response.status_code < 300:
+                from mcp.client.auth.utils import handle_token_response_scopes
+                from mcp.client.auth.oauth2 import OAuthTokenError
+                from httpx import HTTPError
+
+                try:
+                    token_response = await handle_token_response_scopes(response)
+                except (HTTPError, OAuthTokenError):
+                    raise OAuthTokenError("Invalid token response") from None
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return
+
+            from mcp.client.auth.oauth2 import OAuthTokenError
+
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+
+        async def _handle_refresh_response(self, response) -> bool:
+            """Accept any 2xx refresh response and avoid logging token bodies."""
+            if not (200 <= response.status_code < 300):
+                logger.warning("Token refresh failed: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+            from pydantic import ValidationError
+            from httpx import HTTPError
+
+            try:
+                content = await response.aread()
+                token_response = OAuthToken.model_validate_json(content)
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return True
+            except (HTTPError, ValidationError):
+                logger.warning("Invalid refresh response: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+    _HermesOAuthClientProvider.__name__ = "HermesOAuthClientProvider"
+    _HermesOAuthClientProvider.__qualname__ = "HermesOAuthClientProvider"
+    HermesOAuthClientProvider = _HermesOAuthClientProvider
+    return HermesOAuthClientProvider
 
 
 # ---------------------------------------------------------------------------
@@ -796,9 +1177,13 @@ def _paste_callback_reader(result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def remove_oauth_tokens(server_name: str) -> None:
+def remove_oauth_tokens(
+    server_name: str,
+    *,
+    hermes_home: str | Path | None = None,
+) -> None:
     """Delete stored OAuth tokens and client info for a server."""
-    storage = HermesTokenStorage(server_name)
+    storage = HermesTokenStorage(server_name, hermes_home=hermes_home)
     storage.remove()
     logger.info("OAuth tokens removed for '%s'", server_name)
 
@@ -812,12 +1197,20 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
+def _configure_callback_port(
+    cfg: dict,
+    storage: "HermesTokenStorage | None" = None,
+) -> int:
     """Pick or validate the OAuth callback port.
 
     Stores the resolved port into ``cfg['_resolved_port']`` so sibling
     helpers (and the manager) can read it from the same dict. Returns the
     resolved port.
+
+    Port choice precedence:
+    1. explicit ``oauth.redirect_port`` config
+    2. cached client registration redirect URI port
+    3. newly allocated free port
 
     NOTE: also sets the legacy module-level ``_oauth_port`` so existing
     calls to ``_wait_for_callback`` keep working. The legacy global is
@@ -826,11 +1219,120 @@ def _configure_callback_port(cfg: dict) -> int:
     consolidation PR.
     """
     global _oauth_port
+    from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+    dashboard_flow = get_dashboard_oauth_flow()
+    if dashboard_flow is not None:
+        cfg["_resolved_port"] = 0
+        cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
+        return 0
+    cached_redirect_uri = _cached_redirect_uri(storage)
+    if not cfg.get("redirect_uri") and cached_redirect_uri:
+        cfg["redirect_uri"] = cached_redirect_uri
+        cfg["_resolved_port"] = 0
+        return 0
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
+    # Precedence: explicit config port → cached client-registration port →
+    # fresh ephemeral port. The cached port keeps re-auth consistent with the
+    # redirect URI pinned at dynamic client registration (providers reject a
+    # mismatched URI). Only a truly fresh ephemeral pick goes through
+    # _reserve_callback_port(), which keeps the socket bound until
+    # _wait_for_callback adopts it — closing the select→bind TOCTOU race
+    # (#22161). Explicit and cached ports are fixed, known values and bind
+    # via the reuse_address path instead.
+    port = requested or _cached_redirect_port(storage) or _reserve_callback_port()
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port
+
+
+def _resolve_redirect_uri(cfg: dict, port: int) -> str:
+    """Resolve the OAuth callback URL: configured ``redirect_uri`` or loopback.
+
+    A configured ``redirect_uri`` lets the callback go through a proxy (e.g. a
+    Tailscale Funnel exposing a public HTTPS URL that forwards to localhost);
+    otherwise we default to ``http://<redirect_host>:<port>/callback``. An empty
+    value is treated as unset. Both the client metadata and any pre-registered
+    client info must derive the redirect_uri here so they stay identical — a
+    mismatch makes the authorization server reject the callback.
+
+    ``redirect_host`` (default ``127.0.0.1``) tweaks only the hostname of the
+    loopback callback. Some providers' WAFs (e.g. Reclaim.ai's AWS API Gateway)
+    reject any authorize request whose query string contains a literal
+    ``127.0.0.1``, returning ``{"message":"Forbidden"}``; ``redirect_host:
+    localhost`` works around that. The callback listener still binds
+    ``127.0.0.1`` either way.
+    """
+    configured = cfg.get("redirect_uri")
+    if configured:
+        return configured
+    host = cfg.get("redirect_host") or "127.0.0.1"
+    return f"http://{host}:{port}/callback"
+
+
+# Figma's remote MCP (https://mcp.figma.com/mcp) implement RFC 7591 DCR as a
+# *name allowlist*, not open registration. POST /v1/oauth/mcp/register returns
+# 403 Forbidden for any client_name outside a short fixed set. Empirically (as
+# of 2026-07, verified by live call against api.figma.com):
+#   "Claude Code" → 200
+#   "Codex"       → 200
+#   "Hermes Agent" / "Hermes" / "Cursor" / "VS Code" / … → 403
+# pi-figma-remote-auth and similar tools work around this the same way — register
+# under an allowlisted name so the browser flow can start. User can still pin a
+# different name via oauth.client_name if Figma ever admits one.
+_FIGMA_DCR_CLIENT_NAME = "Claude Code"
+_FIGMA_DEFAULT_SCOPE = "mcp:connect"
+
+
+def _is_figma_remote_mcp(
+    server_name: str | None = None,
+    server_url: str | None = None,
+) -> bool:
+    """True when this MCP server is Figma's hosted remote endpoint."""
+    url = (server_url or "").lower()
+    name = (server_name or "").lower()
+    from utils import base_url_host_matches, base_url_hostname
+    if base_url_host_matches(url, "mcp.figma.com") or (
+        base_url_host_matches(url, "figma.com") and "/mcp" in url
+    ):
+        return True
+    # Name-only match only when the URL isn't some other host called figma-*.
+    if "figma" in name and (not url or "figma" in base_url_hostname(url)):
+        return True
+    return False
+
+
+def apply_oauth_provider_defaults(
+    cfg: dict,
+    *,
+    server_name: str = "",
+    server_url: str | None = None,
+) -> dict:
+    """Mutate *cfg* with provider-specific OAuth workarounds. Returns *cfg*.
+
+    Call this before :func:`_build_client_metadata` /
+    :func:`_maybe_preregister_client`. Only fills keys the user left unset —
+    an explicit ``oauth.client_name`` / ``oauth.scope`` always wins.
+    """
+    if _is_figma_remote_mcp(server_name, server_url):
+        if not cfg.get("client_name"):
+            cfg["client_name"] = _FIGMA_DCR_CLIENT_NAME
+            logger.info(
+                "MCP OAuth '%s': Figma DCR allowlist — registering as "
+                "client_name=%r (override via oauth.client_name)",
+                server_name or server_url,
+                _FIGMA_DCR_CLIENT_NAME,
+            )
+        if not cfg.get("scope"):
+            cfg["scope"] = _FIGMA_DEFAULT_SCOPE
+        # Figma's register response advertises token_endpoint_auth_method=none
+        # *and* returns a client_secret — then the token endpoint rejects the
+        # exchange with "Client secret is required". Request confidential-
+        # client registration so the SDK includes client_secret on the token
+        # POST (auth method client_secret_post).
+        if not cfg.get("token_endpoint_auth_method"):
+            cfg["token_endpoint_auth_method"] = "client_secret_post"
+    return cfg
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
@@ -844,23 +1346,97 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         raise ValueError(
             "_configure_callback_port() must be called before _build_client_metadata()"
         )
+    if OAuthClientMetadata is None:
+        _ensure_sdk_loaded()
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _resolve_redirect_uri(cfg, port)
+
+    # Default public client; confidential only when a secret is already known
+    # or the provider (e.g. Figma) needs confidential-style token posts.
+    auth_method = cfg.get("token_endpoint_auth_method")
+    if not auth_method:
+        auth_method = "client_secret_post" if cfg.get("client_secret") else "none"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
         "redirect_uris": [AnyUrl(redirect_uri)],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "token_endpoint_auth_method": "none",
+        "token_endpoint_auth_method": auth_method,
+        # SEP-837 (2026-07-28 spec): clients MUST declare an application_type
+        # during registration so OIDC-strict authorization servers stop
+        # rejecting loopback redirect_uris. Hermes is a CLI/desktop app
+        # redirecting to 127.0.0.1/localhost — that is exactly "native".
+        # Overridable for the rare hosted-dashboard deployment fronting a
+        # real https redirect.
+        "application_type": cfg.get("application_type", "native"),
     }
     if scope:
         metadata_kwargs["scope"] = scope
-    if cfg.get("client_secret"):
-        metadata_kwargs["token_endpoint_auth_method"] = "client_secret_post"
 
-    return OAuthClientMetadata.model_validate(metadata_kwargs)
+    try:
+        return OAuthClientMetadata.model_validate(metadata_kwargs)
+    except Exception:
+        # mcp 1.x metadata models predate SEP-837 and reject the unknown
+        # field — retry without it rather than failing the whole flow.
+        metadata_kwargs.pop("application_type", None)
+        return OAuthClientMetadata.model_validate(metadata_kwargs)
+
+
+def _invalidate_tokens_on_client_change(
+    storage: "HermesTokenStorage",
+    new_client_id: str,
+    new_client_secret: str | None,
+) -> None:
+    """Drop cached tokens when the configured OAuth client identity changes.
+
+    Tokens are minted for a specific ``client_id``: after the user edits
+    ``oauth.client_id`` / ``oauth.client_secret`` in config.yaml (or switches
+    from dynamic registration to a pre-registered client), the old tokens are
+    unusable — the token endpoint rejects their refresh with
+    ``invalid_client``. Pre-registered clients are deliberately exempt from
+    the ``invalid_client`` auto-poison path (config-supplied identity can't
+    be healed by re-registration), so without this check the stale tokens
+    wedge every request until the user manually wipes
+    ``~/.hermes/mcp-tokens/<server>.*``.
+
+    Compares the on-disk ``client.json`` identity against the incoming
+    config identity BEFORE the new client info overwrites it. Matching
+    identity is a no-op so live sessions and valid tokens are preserved.
+    Port of cline/cline#12983's "invalidate tokens when OAuth client
+    changes" invariant.
+    """
+    existing = _read_json(storage._client_info_path())
+    if not isinstance(existing, dict):
+        return
+    old_client_id = existing.get("client_id")
+    if not old_client_id:
+        return
+    old_client_secret = existing.get("client_secret") or None
+    if old_client_id == new_client_id and old_client_secret == (
+        new_client_secret or None
+    ):
+        return
+    removed = False
+    for path in (storage._tokens_path(), storage._meta_path()):
+        try:
+            if path.exists():
+                path.unlink()
+                removed = True
+        except OSError as exc:  # non-fatal — stale tokens fail later anyway
+            logger.warning(
+                "MCP OAuth '%s': could not remove stale %s after client "
+                "change: %s", storage._server_name, path.name, exc,
+            )
+    if removed:
+        logger.warning(
+            "MCP OAuth '%s': configured OAuth client changed (client_id %r "
+            "-> %r); discarded tokens minted under the previous client. "
+            "Re-authorize with: hermes mcp login %s",
+            storage._server_name, old_client_id, new_client_id,
+            storage._server_name,
+        )
 
 
 def _maybe_preregister_client(
@@ -872,8 +1448,13 @@ def _maybe_preregister_client(
     client_id = cfg.get("client_id")
     if not client_id:
         return
+    if OAuthClientInformationFull is None:
+        _ensure_sdk_loaded()
+    _invalidate_tokens_on_client_change(
+        storage, client_id, cfg.get("client_secret")
+    )
     port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _resolve_redirect_uri(cfg, port)
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,
@@ -892,6 +1473,56 @@ def _maybe_preregister_client(
     client_info = OAuthClientInformationFull.model_validate(info_dict)
     _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
+
+
+def humanize_oauth_registration_error(
+    server_name: str,
+    exc: BaseException | str,
+    *,
+    server_url: str | None = None,
+) -> str | None:
+    """Turn a Dynamic Client Registration refusal into a useful next step.
+
+    Returns a humanized message when the error is a registration 403/Forbidden,
+    else ``None`` so the caller keeps the original exception text.
+
+    Figma's remote MCP gates DCR on exact ``client_name``. Hermes auto-sets
+    ``Claude Code`` (known-good); this message fires when the user overrode
+    that with something Figma still rejects, or an older Hermes is running.
+    """
+    msg = str(exc)
+    lowered = msg.lower()
+    if "403" not in msg and "forbidden" not in lowered:
+        return None
+    looks_like_registration = (
+        "regist" in lowered
+        or "client registration" in lowered
+        or "dcr" in lowered
+        or "dynamic client" in lowered
+        or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
+        or ("403" in msg and "forbidden" in lowered)
+    )
+    if not looks_like_registration:
+        return None
+
+    if _is_figma_remote_mcp(server_name, server_url):
+        return (
+            f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by "
+            f"exact client_name (\"{_FIGMA_DCR_CLIENT_NAME}\" and \"Codex\" "
+            "work; most other names 403). Hermes defaults to "
+            f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you "
+            "set oauth.client_name yourself, change it to one of those, or "
+            "clear it and re-run:\n"
+            f"  hermes mcp login {server_name}"
+        )
+
+    return (
+        f"'{server_name}' only allows pre-approved OAuth clients — it rejected "
+        "client registration (403), so no browser flow can start. Options: "
+        "set oauth.client_name to a name the provider allowlists, add a "
+        "pre-registered client (oauth: {client_id: ..., client_secret: ...}), "
+        "or use the provider's stdio / API-key / local server instead."
+    )
 
 
 def build_oauth_auth(
@@ -914,7 +1545,9 @@ def build_oauth_auth(
         An ``OAuthClientProvider`` instance, or None if the MCP SDK lacks
         OAuth support.
     """
-    if not _OAUTH_AVAILABLE:
+    if not _OAUTH_AVAILABLE or (
+        OAuthClientProvider is None and not _ensure_sdk_loaded()
+    ):
         logger.warning(
             "MCP OAuth requested for '%s' but SDK auth types are not available. "
             "Install with: pip install 'mcp>=1.26.0'",
@@ -923,6 +1556,9 @@ def build_oauth_auth(
         return None
 
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
+    apply_oauth_provider_defaults(
+        cfg, server_name=server_name, server_url=server_url
+    )
     storage = HermesTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():
@@ -934,15 +1570,34 @@ def build_oauth_auth(
             "initial authorization, then cached tokens will be reused."
         )
 
-    _configure_callback_port(cfg)
+    _configure_callback_port(cfg, storage)
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
-    return OAuthClientProvider(
+    # Use closure factories to avoid global state pollution (#44588, #34260).
+    resolved_port = cfg.get("_resolved_port", _oauth_port)
+    redirect_handler = _make_redirect_handler(
+        resolved_port, redirect_uri=cfg.get("redirect_uri") or None
+    )
+    callback_handler = _make_callback_waiter(
+        resolved_port, timeout=float(cfg.get("timeout", 300))
+    )
+
+    provider_class = _get_hermes_oauth_provider_class()
+    if provider_class is None:
+        logger.warning(
+            "MCP OAuth requested for '%s' but the provider class is unavailable",
+            server_name,
+        )
+        return None
+
+    return provider_class(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_handler,
-        callback_handler=_wait_for_callback,
-        timeout=float(cfg.get("timeout", 300)),
+        redirect_handler=redirect_handler,
+        # mcp 2.0 removed the provider's own `timeout` argument; the configured
+        # `oauth.timeout` is applied inside the callback waiter above, which is
+        # where the browser round-trip is actually awaited.
+        callback_handler=callback_handler,
     )

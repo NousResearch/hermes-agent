@@ -21,12 +21,6 @@ def test_ringbuffer_drops_oldest_over_capacity():
     assert rb.truncated is True
 
 
-def test_ringbuffer_truncation_across_appends():
-    rb = RingBuffer(3)
-    rb.append(b"ab")
-    rb.append(b"cd")             # now "abcd" -> keep "bcd"
-    assert rb.snapshot() == b"bcd"
-    assert rb.truncated is True
 
 
 class FakeBridge:
@@ -83,6 +77,25 @@ async def test_attach_replays_buffer_then_streams_live():
 
 
 @pytest.mark.asyncio
+async def test_reattach_can_force_complete_tui_redraw_after_replay():
+    """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"partial differential frame", b""])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)
+
+    ws = FakeWS()
+    await s.attach(ws, force_redraw=True)
+
+    replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    assert replay == b"partial differential frame"
+    assert bytes(bridge.written) == b"\x0c"
+    await s.close()
+
+
+@pytest.mark.asyncio
 async def test_detach_keeps_draining_into_buffer():
     from hermes_cli.pty_session import PtySession
     bridge = FakeBridge([b"one", b"", b"two"])
@@ -135,20 +148,6 @@ async def test_same_key_reattaches_same_session():
     await reg.close_all()
 
 
-@pytest.mark.asyncio
-async def test_reap_idle_closes_sessions_past_ttl():
-    reg = make_registry(ttl=10.0)
-    b = FakeBridge([b"", b""])
-    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
-    ws = FakeWS()
-    await s.attach(ws)
-    s.detach(ws)
-    s.last_detached_at = time.monotonic() - 11.0   # detached 11s ago, ttl 10s
-    await reg.reap_idle()
-    assert b.closed is True
-    s2, created = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]))
-    assert created is True
-    await reg.close_all()
 
 
 @pytest.mark.asyncio

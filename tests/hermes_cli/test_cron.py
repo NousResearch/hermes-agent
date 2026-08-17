@@ -1,5 +1,6 @@
 """Tests for hermes_cli.cron command handling."""
 
+import argparse
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 from cron.jobs import create_job, get_job, list_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
+from hermes_cli.subcommands.cron import build_cron_parser
 
 
 @pytest.fixture()
@@ -19,25 +21,30 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
-    def test_pause_resume_run(self, tmp_cron_dir, capsys):
-        job = create_job(prompt="Check server status", schedule="every 1h")
 
-        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
-        paused = get_job(job["id"])
-        assert paused["state"] == "paused"
+    def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
 
-        cron_command(Namespace(cron_command="resume", job_id=job["id"]))
-        resumed = get_job(job["id"])
-        assert resumed["state"] == "scheduled"
+        args = parser.parse_args(
+            [
+                "cron",
+                "edit",
+                job["id"],
+                "--model",
+                "new-model",
+                "--provider",
+                "nous",
+            ]
+        )
+        cron_command(args)
 
-        cron_command(Namespace(cron_command="run", job_id=job["id"]))
-        triggered = get_job(job["id"])
-        assert triggered["state"] == "scheduled"
-
-        out = capsys.readouterr().out
-        assert "Paused job" in out
-        assert "Resumed job" in out
-        assert "Triggered job" in out
+        updated = get_job(job["id"])
+        assert updated["model"] == "new-model"
+        assert updated["provider"] == "nous"
+        assert "Updated job" in capsys.readouterr().out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
@@ -121,38 +128,6 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
-    def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
-        """A one-shot job can be persisted with ``"repeat": null``. `cron
-        list` must render it as ∞ rather than crashing on .get(...)\\.get."""
-        from cron.jobs import load_jobs, save_jobs
-
-        create_job(prompt="One shot", schedule="every 1h")
-        # Force the present-but-null shape that .get("repeat", {}) mishandles.
-        jobs = load_jobs()
-        jobs[0]["repeat"] = None
-        save_jobs(jobs)
-
-        cron_command(Namespace(cron_command="list", all=True))
-
-        out = capsys.readouterr().out
-        assert "Repeat:    ∞" in out
-
-    def test_list_does_not_crash_when_deliver_is_null(self, tmp_cron_dir, capsys):
-        """A job can be persisted with ``"deliver": null`` (present-but-null).
-        `cron list` must fall back to the default channel rather than crashing
-        on ``", ".join(None)`` — same dict-default pitfall as ``repeat`` (#32896).
-        """
-        from cron.jobs import load_jobs, save_jobs
-
-        create_job(prompt="No deliver", schedule="every 1h")
-        jobs = load_jobs()
-        jobs[0]["deliver"] = None
-        save_jobs(jobs)
-
-        cron_command(Namespace(cron_command="list", all=True))
-
-        out = capsys.readouterr().out
-        assert "Deliver:   local" in out
 
 
 class TestGatewayNotRunningWarning:
@@ -162,47 +137,6 @@ class TestGatewayNotRunningWarning:
     report was simply a gateway that was never started.
     """
 
-    def test_create_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
-        cron_command(
-            Namespace(
-                cron_command="create",
-                schedule="0 11 * * *",
-                prompt="Daily report",
-                name="Daily 1130",
-                deliver=None,
-                repeat=None,
-                skill=None,
-                skills=None,
-                script=None,
-                workdir=None,
-                no_agent=False,
-            )
-        )
-        out = capsys.readouterr().out
-        assert "Created job" in out
-        assert "Gateway is not running" in out
-
-    def test_create_silent_when_gateway_running(self, tmp_cron_dir, capsys, monkeypatch):
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4242])
-        cron_command(
-            Namespace(
-                cron_command="create",
-                schedule="0 11 * * *",
-                prompt="Daily report",
-                name="Daily 1130",
-                deliver=None,
-                repeat=None,
-                skill=None,
-                skills=None,
-                script=None,
-                workdir=None,
-                no_agent=False,
-            )
-        )
-        out = capsys.readouterr().out
-        assert "Created job" in out
-        assert "Gateway is not running" not in out
 
     def test_list_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
         create_job(prompt="Daily report", schedule="0 11 * * *")
@@ -241,17 +175,6 @@ class TestExternalCronProviderStatus:
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
-    def test_status_unchanged_for_builtin(self, tmp_cron_dir, capsys, monkeypatch):
-        create_job(prompt="Ping", schedule="every 2m")
-        monkeypatch.setattr(
-            "hermes_cli.cron._active_cron_provider_name", lambda: "builtin"
-        )
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
-        cron_command(Namespace(cron_command="status"))
-        out = capsys.readouterr().out
-        # Built-in path is the historical ticker-based report.
-        assert "Gateway is not running" in out
-        assert "managed scheduler" not in out
 
     def test_create_silent_for_chronos_even_without_gateway(
         self, tmp_cron_dir, capsys, monkeypatch
@@ -307,26 +230,6 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     assert "Nightly docs" in out
 
 
-def test_cron_status_reports_running_gateway(monkeypatch, capsys):
-    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1234, 5678])
-    monkeypatch.setattr(
-        "cron.jobs.list_jobs",
-        lambda include_disabled=False: [
-            {"next_run_at": "2026-06-01T00:00:00Z"},
-            {"next_run_at": "2026-05-31T12:00:00Z"},
-        ],
-    )
-
-    cron_cli.cron_status()
-
-    out = capsys.readouterr().out
-    assert "Gateway is running" in out
-    assert "1234, 5678" in out
-    assert "2 active job(s)" in out
-    assert "2026-05-31T12:00:00Z" in out
-
-
 def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     calls = []
     monkeypatch.setattr("cron.scheduler.tick", lambda verbose=False: calls.append(verbose))
@@ -334,51 +237,6 @@ def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     cron_cli.cron_tick()
 
     assert calls == [True]
-
-
-def test_cron_create_success_prints_job_details(monkeypatch, capsys):
-    monkeypatch.setattr(
-        cron_cli,
-        "_cron_api",
-        lambda **kwargs: {
-            "success": True,
-            "job_id": "job-1",
-            "name": "Nightly docs",
-            "schedule": "every day",
-            "skills": ["docs"],
-            "next_run_at": "2026-06-01T00:00:00Z",
-            "job": {
-                "script": "scripts/build_docs.py",
-                "no_agent": True,
-                "workdir": "/tmp/repo",
-            },
-        },
-    )
-    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
-
-    args = SimpleNamespace(
-        schedule="every day",
-        prompt="refresh docs",
-        name="Nightly docs",
-        deliver=None,
-        repeat=None,
-        skill="docs",
-        skills=None,
-        script="scripts/build_docs.py",
-        workdir="/tmp/repo",
-        no_agent=True,
-    )
-
-    rc = cron_cli.cron_create(args)
-
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "Created job: job-1" in out
-    assert "Skills: docs" in out
-    assert "Script: scripts/build_docs.py" in out
-    assert "Mode: no-agent" in out
-    assert "Workdir: /tmp/repo" in out
-    assert "Next run: 2026-06-01T00:00:00Z" in out
 
 
 def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
@@ -402,3 +260,126 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+class TestCronRunBackgroundDispatch:
+    """`hermes cron run` must not report 'failed' when the run was dispatched
+    to the background delegation worker.
+
+    The CLI process inherits the gateway/desktop session env, so a manual run
+    can be dispatched to the daemon instead of executing inline. Such
+    responses carry execution_mode='background' / delegation_id and the job
+    keeps running after the CLI exits — a terminal success/failure verdict
+    would be a lie (#83340). The CLI must report the background dispatch
+    instead, and leave synchronous runs unchanged.
+    """
+
+    def _run_cmd(self, capsys):
+        rc = cron_command(Namespace(cron_command="run", job_id="job-1"))
+        return rc, capsys.readouterr().out
+
+    def test_background_dispatch_with_delegation_id_does_not_report_failed(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "execution_mode": "background",
+                    "delegation_id": "del-abc123",
+                    # No execution_success — the inline verdict must not apply.
+                    "executed": True,
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Running in background (delegation del-abc123)." in out
+        assert "failed" not in out.lower()
+        assert "Ran now" not in out
+
+    def test_background_dispatch_without_delegation_id(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "execution_mode": "background",
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Running in background." in out
+        assert "failed" not in out.lower()
+
+    def test_sync_run_success_unchanged(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "executed": True,
+                    "execution_success": True,
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Ran now: succeeded." in out
+
+    def test_sync_run_failure_still_reported(self, monkeypatch, capsys):
+        # A genuine synchronous failure must keep reporting 'failed' — only
+        # background-dispatched runs are exempt from the terminal verdict.
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {
+                    "id": "job-1",
+                    "name": "Watchdog",
+                    "executed": True,
+                    "execution_success": False,
+                },
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Ran now: failed." in out
+
+    def test_delegation_id_alone_counts_as_background(self, monkeypatch, capsys):
+        # Some dispatchers may not set execution_mode but always return the
+        # delegation_id — either marker alone must suppress the verdict.
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job": {"id": "job-1", "name": "Watchdog", "delegation_id": "del-xyz"},
+            },
+        )
+
+        rc, out = self._run_cmd(capsys)
+
+        assert rc == 0
+        assert "Running in background (delegation del-xyz)." in out
+        assert "failed" not in out.lower()

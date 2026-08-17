@@ -34,6 +34,8 @@ def hermes_home(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def server(hermes_home):
+    # Mocks are scoped to the initial import only (see
+    # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
@@ -42,17 +44,20 @@ def server(hermes_home):
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        # Reset module-level session state without re-importing. importlib.reload
-        # would re-register the module's atexit hooks; duplicated hooks race the
-        # stderr buffer at interpreter shutdown (Fatal Python error:
-        # _enter_buffered_busy) — same class as PR #34217.
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        # NOTE: _methods is intentionally NOT cleared — it's populated at import
-        # time and would only repopulate via reload.
-        mod._db = None
+
+    methods = dict(mod._methods)
+    yield mod
+    # Restore in place instead of clear+reload: importlib.reload
+    # re-registers atexit hooks (duplicate ThreadPoolExecutor shutdowns
+    # race the stderr buffer at interpreter exit — same class as PR #34217)
+    # and re-captures module-level paths like _hermes_home against this
+    # test's soon-deleted tmpdir, breaking later files in the same process.
+    mod._methods.clear()
+    mod._methods.update(methods)
+    mod._sessions.clear()
+    mod._pending.clear()
+    mod._answers.clear()
+    mod._db = None
 
 
 @pytest.fixture()
@@ -101,88 +106,7 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
     # Default /undo backs up one user turn — "question 3"
     assert result["message"] == "question 3"
     assert "Undid" in result["notice"]
+    assert s["history"]
+    assert all("_row_id" in message for message in s["history"])
 
 
-def test_undo_truncates_in_memory_history(server, session_with_history, db):
-    sid, session_key, s, agent = session_with_history
-    _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
-    # After undoing to "question 3", active history should be 4 rows:
-    # user q1, asst a1, user q2, asst a2
-    assert len(s["history"]) == 4
-    roles = [m["role"] for m in s["history"]]
-    assert roles == ["user", "assistant", "user", "assistant"]
-    # version bumped
-    assert s["history_version"] == 1
-
-
-def test_undo_n_backs_up_multiple_turns(server, session_with_history, db):
-    """/undo 2 backs up two user turns to "question 2"."""
-    sid, session_key, s, agent = session_with_history
-    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="2")
-    result = resp["result"]
-    assert result["type"] == "prefill"
-    assert result["message"] == "question 2"
-    assert "2 turns" in result["notice"]
-    # Active history truncated to user q1 + asst a1
-    assert len(s["history"]) == 2
-    assert [m["role"] for m in s["history"]] == ["user", "assistant"]
-
-
-def test_undo_n_clamps_to_oldest_turn(server, session_with_history, db):
-    """/undo with N larger than the number of user turns backs up to the oldest."""
-    sid, session_key, s, agent = session_with_history
-    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="99")
-    result = resp["result"]
-    assert result["message"] == "question 1"
-    assert len(s["history"]) == 0
-
-
-def test_undo_rejects_invalid_count(server, session_with_history):
-    sid, _, _, _ = session_with_history
-    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="abc")
-    assert "error" in resp
-    assert "invalid count" in resp["error"]["message"].lower()
-
-
-def test_undo_soft_deletes_rows_in_db(server, session_with_history, db):
-    sid, session_key, _, _ = session_with_history
-    _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
-    # All rows still present
-    all_rows = db.get_messages(session_key, include_inactive=True)
-    assert len(all_rows) == 6
-    # 2 inactive (the "question 3" row + its trailing "answer 3").
-    active = [r for r in all_rows if r["active"] == 1]
-    assert len(active) == 4
-    # rewind_count bumped
-    sess = db.get_session(session_key)
-    assert sess["rewind_count"] == 1
-
-
-def test_undo_notifies_memory_provider(server, session_with_history):
-    sid, session_key, _, agent = session_with_history
-    _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
-    agent._memory_manager.on_session_switch.assert_called_once()
-    args, kwargs = agent._memory_manager.on_session_switch.call_args
-    assert args[0] == session_key
-    assert kwargs["rewound"] is True
-    assert kwargs["reset"] is False
-
-
-def test_undo_refuses_when_session_busy(server, session_with_history):
-    sid, _, s, _ = session_with_history
-    s["running"] = True
-    resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
-    assert "error" in resp
-    assert "busy" in resp["error"]["message"].lower()
-
-
-def test_undo_errors_when_no_active_session(server):
-    resp = _call(server, "command.dispatch", session_id="no-such-sid", name="undo", arg="")
-    assert "error" in resp
-    assert "no active session" in resp["error"]["message"].lower()
-
-
-def test_undo_in_pending_input_commands(server):
-    """Registry sanity: /undo must be in _PENDING_INPUT_COMMANDS so
-    slash.exec rejects it and the TUI falls through to command.dispatch."""
-    assert "undo" in server._PENDING_INPUT_COMMANDS

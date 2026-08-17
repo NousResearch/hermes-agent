@@ -129,8 +129,14 @@ export const tr: Translations = {
     title: "Oturumlar",
     history: "Geçmiş",
     overview: "Genel bakış",
+    filterChats: "Sohbetler",
+    filterAutomation: "Otomasyon",
+    filterAll: "Tümü",
+    sourceFilter: "Oturum kaynağı",
+    anySource: "Herhangi bir kaynak",
     searchPlaceholder: "Mesaj içeriğinde ara...",
     noSessions: "Henüz oturum yok",
+    noSessionsInFilter: "Bu filtrede oturum yok",
     noMatch: "Aramanızla eşleşen oturum yok",
     startConversation: "Burada görmek için bir konuşma başlatın",
     noMessages: "Mesaj yok",
@@ -612,6 +618,12 @@ export const tr: Translations = {
       "Panolar, ilgisiz iş akışlarını ayırmanızı sağlar — proje, depo veya alan başına bir pano. Bir panodaki worker'lar başka bir panonun görevlerini asla görmez.",
     slug: "Slug",
     slugHint: "— küçük harf, tire, ör. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Görünen ad",
     displayNameHint: "(isteğe bağlı)",
     description: "Açıklama",

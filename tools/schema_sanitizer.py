@@ -38,9 +38,83 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Anthropic (and Bedrock/Vertex/Azure fronting it) reject tool input schemas
+# whose property keys don't match this pattern. Cloudflare's flat API MCP
+# ships 61 such keys (query-filter params like ``issue_class~neq`` and
+# ``meta.<field>[<operator>]``) — one bad key anywhere in the tools array
+# 400s the entire request.
+_PROP_KEY_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
+
+
+def sanitize_property_key(key: str) -> str:
+    """Deterministically map an arbitrary property key to a conforming one."""
+    new = _PROP_KEY_BAD_CHARS.sub("_", key)[:64]
+    return new or "param"
+
+
+def _rename_property_keys(props: dict, path: str) -> dict[str, str]:
+    """Return {original_key: conforming_key} for one properties dict.
+
+    Identity entries are omitted. Deterministic: keys are processed in
+    insertion order and collisions deduped with numeric suffixes, so the
+    model-visible schema AND the dispatch-time reverse map (computed
+    independently from the registry's original schema) always agree.
+    """
+    renames: dict[str, str] = {}
+    taken = {k for k in props if _PROP_KEY_RE.match(k)}
+    for key in props:
+        if _PROP_KEY_RE.match(key):
+            continue
+        base = sanitize_property_key(key)
+        candidate, i = base, 2
+        while candidate in taken:
+            suffix = f"_{i}"
+            candidate = base[: 64 - len(suffix)] + suffix
+            i += 1
+        taken.add(candidate)
+        renames[key] = candidate
+        logger.debug(
+            "schema_sanitizer[%s]: renamed property key %r -> %r "
+            "(provider key-pattern compat)", path, key, candidate,
+        )
+    return renames
+
+
+def unrename_tool_args(params_schema: Any, args: Any) -> Any:
+    """Map sanitized property keys in model-emitted args back to wire names.
+
+    ``params_schema`` is the ORIGINAL (unsanitized) parameters schema from the
+    registry. Recurses into object-typed values and array items so nested
+    renamed keys are restored too. Unknown keys pass through untouched.
+    """
+    if not isinstance(params_schema, dict) or not isinstance(args, dict):
+        return args
+    props = params_schema.get("properties")
+    if not isinstance(props, dict):
+        return args
+    reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
+    out = {}
+    for key, value in args.items():
+        orig = reverse.get(key, key)
+        subschema = props.get(orig)
+        if isinstance(subschema, dict):
+            if isinstance(value, dict):
+                value = unrename_tool_args(subschema, value)
+            elif isinstance(value, list) and isinstance(subschema.get("items"), dict):
+                value = [
+                    unrename_tool_args(subschema["items"], item)
+                    if isinstance(item, dict) else item
+                    for item in value
+                ]
+        out[orig] = value
+    return out
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -228,6 +302,102 @@ def strip_nullable_unions(
     return stripped
 
 
+_CONST_PRIMITIVE_TYPES: dict[type, str] = {
+    bool: "boolean",
+    int: "integer",
+    float: "number",
+    str: "string",
+}
+
+
+def _const_branch_type(branch: Any) -> str | None:
+    """Return the JSON-Schema primitive type of a pure ``const`` branch.
+
+    A branch qualifies when it is a dict carrying ``const`` with a primitive
+    value, and any declared ``type`` matches the const value's type. Branch
+    metadata (``title``, ``description``) does not disqualify it, but any
+    other constraining keyword does. Returns ``None`` for non-qualifying
+    branches.
+    """
+    if not isinstance(branch, dict) or "const" not in branch:
+        return None
+    extra = set(branch) - {"const", "type", "title", "description"}
+    if extra:
+        return None
+    value = branch["const"]
+    # bool is a subclass of int in Python; check it first so True/False never
+    # classify as integers.
+    for py_type, json_type in _CONST_PRIMITIVE_TYPES.items():
+        if type(value) is py_type:
+            declared = branch.get("type")
+            if declared is not None and declared != json_type:
+                return None
+            return json_type
+    return None
+
+
+def collapse_const_unions(schema: Any) -> Any:
+    """Collapse ``anyOf`` / ``oneOf`` unions of same-typed consts to ``enum``.
+
+    Ported from block/goose ``tool_schema_normalize.rs`` (Apache-2.0).
+
+    MCP servers (particularly ones generated from Rust/TypeScript union types)
+    commonly emit closed value sets as const unions::
+
+        {"anyOf": [{"const": "red"}, {"const": "green"}, {"const": "blue"}]}
+
+    Strict tool-calling backends reject or mishandle these, while the
+    equivalent property-level ``enum`` form is universally supported::
+
+        {"type": "string", "enum": ["red", "green", "blue"]}
+
+    The collapse applies only when EVERY non-null branch is a pure ``const``
+    of the same primitive type (bool/int/float/str — ``bool`` never merges
+    with ``integer``). Mixed unions and non-uniform const types pass through
+    untouched. A single ``{"type": "null"}`` branch is tolerated: it is
+    dropped and recorded as ``nullable: true`` (matching the
+    ``strip_nullable_unions`` convention), since strip_nullable_unions only
+    collapses unions with exactly one non-null branch and therefore leaves
+    null+multi-const unions for us.
+
+    Outer-node metadata (``title``, ``description``, ``default``,
+    ``examples``) is carried onto the replacement. Enum order preserves
+    branch order, so output is deterministic and byte-stable across
+    discoveries. Input is never mutated.
+    """
+    if isinstance(schema, list):
+        return [collapse_const_unions(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    out = {k: collapse_const_unions(v) for k, v in schema.items()}
+    for key in ("anyOf", "oneOf"):
+        variants = out.get(key)
+        if not isinstance(variants, list) or not variants:
+            continue
+        null_branches = [
+            item for item in variants
+            if isinstance(item, dict) and item.get("type") == "null" and "const" not in item
+        ]
+        const_branches = [item for item in variants if item not in null_branches]
+        if len(null_branches) > 1 or not const_branches:
+            continue
+        branch_types = {_const_branch_type(item) for item in const_branches}
+        if len(branch_types) != 1 or None in branch_types:
+            continue
+        replacement: dict = {
+            "type": branch_types.pop(),
+            "enum": [item["const"] for item in const_branches],
+        }
+        if null_branches:
+            replacement["nullable"] = True
+        for meta_key in ("title", "description", "default", "examples"):
+            if meta_key in out and meta_key not in replacement:
+                replacement[meta_key] = out[meta_key]
+        return replacement
+    return out
+
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment.
 
@@ -268,6 +438,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if not isinstance(node, dict):
         return node
 
+    # Compute property-key renames up front so the ``required`` branch below
+    # can remap regardless of dict iteration order (``required`` may precede
+    # ``properties`` in the source dict).
+    prop_renames: dict[str, str] = {}
+    if isinstance(node.get("properties"), dict):
+        prop_renames = _rename_property_keys(node["properties"], f"{path}.properties")
+
     out: dict = {}
     for key, value in node.items():
         # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common
@@ -306,10 +483,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
             continue
 
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
-            out[key] = {
-                sub_k: _sanitize_node(sub_v, f"{path}.{key}.{sub_k}")
-                for sub_k, sub_v in value.items()
-            }
+            renames = prop_renames if key == "properties" else {}
+            new_props = {}
+            for sub_k, sub_v in value.items():
+                out_k = renames.get(sub_k, sub_k)
+                new_props[out_k] = _sanitize_node(sub_v, f"{path}.{key}.{out_k}")
+            out[key] = new_props
         elif key in {"items", "additionalProperties"}:
             if isinstance(value, bool):
                 # Keep bool ``additionalProperties`` as-is — it's a valid form
@@ -323,15 +502,22 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 _sanitize_node(item, f"{path}.{key}[{i}]")
                 for i, item in enumerate(value)
             ]
-        elif key in {"required", "enum", "examples"}:
+        elif key in {"required", "enum", "examples", "dependentRequired"}:
             # Schema "sibling" keywords whose values are NOT schemas:
             #  - ``required``: list of property-name strings
             #  - ``enum``: list of literal values (any JSON type)
             #  - ``examples``: list of example values (any JSON type)
+            #  - ``dependentRequired``: mapping of property names to lists of
+            #    required property-name strings (JSON Schema 2020-12)
             # Recursing into these with _sanitize_node() would mis-interpret
             # literal strings like "path" as bare-string schemas and replace
-            # them with {"type": "object"} dicts. Pass through unchanged.
-            out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
+            # them with {"type": "object"} dicts. Pass through unchanged
+            # (remapping ``required`` entries through the property renames).
+            if key == "required" and prop_renames and isinstance(value, list):
+                out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r
+                            for r in value]
+            else:
+                out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 

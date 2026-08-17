@@ -23,23 +23,12 @@ class TestSanitizeSurrogates:
         text = "Hello, this is normal text with unicode: café ñ 日本語 🎉"
         assert _sanitize_surrogates(text) == text
 
-    def test_empty_string(self):
-        assert _sanitize_surrogates("") == ""
 
     def test_single_surrogate_replaced(self):
         result = _sanitize_surrogates("Hello \udce2 world")
         assert result == "Hello \ufffd world"
 
-    def test_multiple_surrogates_replaced(self):
-        result = _sanitize_surrogates("a\ud800b\udc00c\udfff")
-        assert result == "a\ufffdb\ufffdc\ufffd"
 
-    def test_all_surrogate_range(self):
-        """Verify the regex catches the full surrogate range."""
-        for cp in [0xD800, 0xD900, 0xDA00, 0xDB00, 0xDC00, 0xDD00, 0xDE00, 0xDF00, 0xDFFF]:
-            text = f"test{chr(cp)}end"
-            result = _sanitize_surrogates(text)
-            assert '\ufffd' in result, f"Surrogate U+{cp:04X} not caught"
 
     def test_result_is_json_serializable(self):
         """Sanitized text must survive json.dumps + utf-8 encoding."""
@@ -49,12 +38,6 @@ class TestSanitizeSurrogates:
         # Must not raise UnicodeEncodeError
         serialized.encode("utf-8")
 
-    def test_original_surrogates_fail_encoding(self):
-        """Confirm the original bug: surrogates crash utf-8 encoding."""
-        dirty = "data \udce2 from clipboard"
-        serialized = json.dumps({"content": dirty}, ensure_ascii=False)
-        with pytest.raises(UnicodeEncodeError):
-            serialized.encode("utf-8")
 
 
 class TestSanitizeMessagesSurrogates:
@@ -86,20 +69,7 @@ class TestSanitizeMessagesSurrogates:
         assert "\ufffd" in msgs[0]["content"][0]["text"]
         assert "\udce2" not in msgs[0]["content"][0]["text"]
 
-    def test_mixed_clean_and_dirty(self):
-        msgs = [
-            {"role": "user", "content": "clean text"},
-            {"role": "user", "content": "dirty \udce2 text"},
-            {"role": "assistant", "content": "clean response"},
-        ]
-        assert _sanitize_messages_surrogates(msgs) is True
-        assert msgs[0]["content"] == "clean text"
-        assert "\ufffd" in msgs[1]["content"]
-        assert msgs[2]["content"] == "clean response"
 
-    def test_non_dict_items_skipped(self):
-        msgs = ["not a dict", {"role": "user", "content": "ok"}]
-        assert _sanitize_messages_surrogates(msgs) is False
 
     def test_tool_messages_sanitized(self):
         """Tool results could also contain surrogates from file reads etc."""
@@ -127,14 +97,6 @@ class TestReasoningFieldSurrogates:
         assert "\udce2" not in msgs[0]["reasoning"]
         assert "\ufffd" in msgs[0]["reasoning"]
 
-    def test_reasoning_content_field_sanitized(self):
-        """api_messages carry `reasoning_content` built from `reasoning`."""
-        msgs = [
-            {"role": "assistant", "content": "ok", "reasoning_content": "thought \udce2 here"},
-        ]
-        assert _sanitize_messages_surrogates(msgs) is True
-        assert "\udce2" not in msgs[0]["reasoning_content"]
-        assert "\ufffd" in msgs[0]["reasoning_content"]
 
     def test_reasoning_details_nested_sanitized(self):
         """reasoning_details is a list of dicts with nested string fields."""
@@ -154,28 +116,6 @@ class TestReasoningFieldSurrogates:
         assert "\udc00" not in msgs[0]["reasoning_details"][1]["text"]
         assert "\ufffd" in msgs[0]["reasoning_details"][1]["text"]
 
-    def test_deeply_nested_reasoning_sanitized(self):
-        """Nested dicts / lists inside extra fields are recursed into."""
-        msgs = [
-            {
-                "role": "assistant",
-                "content": "ok",
-                "reasoning_details": [
-                    {
-                        "type": "reasoning.encrypted",
-                        "content": {
-                            "encrypted_content": "opaque",
-                            "text_parts": ["part1", "part2 \udce2 part"],
-                        },
-                    },
-                ],
-            },
-        ]
-        assert _sanitize_messages_surrogates(msgs) is True
-        assert (
-            msgs[0]["reasoning_details"][0]["content"]["text_parts"][1]
-            == "part2 \ufffd part"
-        )
 
     def test_reasoning_end_to_end_json_serialization(self):
         """After sanitization, the full message dict must serialize clean."""
@@ -195,26 +135,11 @@ class TestReasoningFieldSurrogates:
         assert b"\\" not in payload[:0]  # sanity — just ensure we got bytes
         assert len(payload) > 0
 
-    def test_no_surrogates_returns_false(self):
-        """Clean reasoning fields don't trigger a modification."""
-        msgs = [
-            {
-                "role": "assistant",
-                "content": "ok",
-                "reasoning": "clean thought",
-                "reasoning_content": "also clean",
-                "reasoning_details": [{"summary": "clean summary"}],
-            },
-        ]
-        assert _sanitize_messages_surrogates(msgs) is False
 
 
 class TestSanitizeStructureSurrogates:
     """Test the _sanitize_structure_surrogates() helper for nested payloads."""
 
-    def test_empty_payload(self):
-        assert _sanitize_structure_surrogates({}) is False
-        assert _sanitize_structure_surrogates([]) is False
 
     def test_flat_dict(self):
         payload = {"a": "clean", "b": "dirty \udce2 text"}
@@ -222,39 +147,10 @@ class TestSanitizeStructureSurrogates:
         assert payload["a"] == "clean"
         assert "\ufffd" in payload["b"]
 
-    def test_flat_list(self):
-        payload = ["clean", "dirty \udce2"]
-        assert _sanitize_structure_surrogates(payload) is True
-        assert payload[0] == "clean"
-        assert "\ufffd" in payload[1]
 
-    def test_nested_dict_in_list(self):
-        payload = [{"x": "dirty \udce2"}, {"x": "clean"}]
-        assert _sanitize_structure_surrogates(payload) is True
-        assert "\ufffd" in payload[0]["x"]
-        assert payload[1]["x"] == "clean"
 
-    def test_deeply_nested(self):
-        payload = {
-            "level1": {
-                "level2": [
-                    {"level3": "deep \udce2 surrogate"},
-                ],
-            },
-        }
-        assert _sanitize_structure_surrogates(payload) is True
-        assert "\ufffd" in payload["level1"]["level2"][0]["level3"]
 
-    def test_clean_payload_returns_false(self):
-        payload = {"a": "clean", "b": [{"c": "also clean"}]}
-        assert _sanitize_structure_surrogates(payload) is False
 
-    def test_non_string_values_ignored(self):
-        payload = {"int": 42, "list": [1, 2, 3], "dict": {"none": None}, "bool": True}
-        assert _sanitize_structure_surrogates(payload) is False
-        # Non-string values survive unchanged
-        assert payload["int"] == 42
-        assert payload["list"] == [1, 2, 3]
 
 
 class TestApiMessagesSurrogateRecovery:

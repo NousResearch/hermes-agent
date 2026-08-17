@@ -152,16 +152,17 @@ def test_install_sh_clears_unmerged_index_before_stash_source_order() -> None:
     assert idx_unmerged < idx_stash
 
 
-def test_install_ps1_stops_venv_resident_processes_before_removing_venv() -> None:
+def test_install_ps1_stops_venv_resident_processes_before_parking_venv() -> None:
     """The Windows venv-recreate path must stop every process running out of the
-    old venv before deleting it.
+    old venv before moving it aside.
 
     A gateway autostarted by a scheduled task runs as
     ``venv\\Scripts\\pythonw.exe -m hermes_cli.main gateway run`` — image name
     ``pythonw``, not ``hermes.exe`` — so the ``taskkill /IM hermes.exe`` guard
-    misses it, the loaded ``.pyd`` stays locked, and ``Remove-Item venv`` fails
-    mid-recursion (issues #47036/#47557/#47910). The recreate branch must also
-    sweep by venv path prefix, and that sweep must run before the delete.
+    misses it and the loaded ``.pyd`` stays locked (issues #47036/#47557/#47910).
+    The recreate branch must sweep by venv path prefix before Rename-Item, and
+    must never fall back to an in-place ``Remove-Item`` of the live ``venv``
+    (#83149 — that path can gut site-packages with no rollback).
     """
     text = INSTALL_PS1.read_text()
 
@@ -179,8 +180,12 @@ def test_install_ps1_stops_venv_resident_processes_before_removing_venv() -> Non
         "the -like wildcard match must not be used for venv path scoping"
     )
 
-    # The process sweep must run before the venv is removed, or it is a no-op.
-    idx_remove = text.index('Remove-Item -Recurse -Force "venv"', idx_recreate)
-    assert idx_sweep < idx_remove, (
-        "venv-resident processes must be stopped before Remove-Item deletes the venv"
+    # The process sweep must run before the venv is parked, or it is a no-op.
+    idx_park = text.index('Rename-Item -LiteralPath "venv"', idx_recreate)
+    assert idx_sweep < idx_park, (
+        "venv-resident processes must be stopped before Rename-Item parks the venv"
     )
+    assert 'Remove-Item -Recurse -Force "venv"' not in text[idx_recreate:], (
+        "must not fall back to in-place delete of the live venv (#83149)"
+    )
+    assert "Could not move the existing venv aside" in text[idx_recreate:]

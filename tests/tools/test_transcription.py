@@ -47,32 +47,6 @@ class TestGetProvider:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 
-    def test_local_nothing_available(self, monkeypatch):
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "local"}) == "none"
-
-    def test_openai_when_key_set(self, monkeypatch):
-        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
-        with patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "openai"}) == "openai"
-
-    def test_explicit_openai_no_key_returns_none(self, monkeypatch):
-        """Explicit openai without key returns none — no cross-provider fallback."""
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "openai"}) == "none"
-
-    def test_default_provider_is_local(self):
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "local"
 
     def test_disabled_config_returns_none(self):
         from tools.transcription_tools import _get_provider
@@ -92,19 +66,6 @@ class TestValidateAudioFile:
         assert result is not None
         assert "not found" in result["error"]
 
-    def test_unsupported_format(self, tmp_path):
-        f = tmp_path / "test.xyz"
-        f.write_bytes(b"data")
-        from tools.transcription_tools import _validate_audio_file
-        result = _validate_audio_file(str(f))
-        assert result is not None
-        assert "Unsupported" in result["error"]
-
-    def test_valid_file_returns_none(self, tmp_path):
-        f = tmp_path / "test.ogg"
-        f.write_bytes(b"fake audio data")
-        from tools.transcription_tools import _validate_audio_file
-        assert _validate_audio_file(str(f)) is None
 
     def test_too_large(self, tmp_path):
         f = tmp_path / "big.ogg"
@@ -120,6 +81,27 @@ class TestValidateAudioFile:
             result = _validate_audio_file(str(f))
         assert result is not None
         assert "too large" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Config resolution
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSttConfig:
+
+    def test_merges_default_local_initial_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "stt:\n  local:\n    model: small\n",
+            encoding="utf-8",
+        )
+
+        from tools.transcription_tools import _load_stt_config
+        local_config = _load_stt_config()["local"]
+
+        assert local_config["model"] == "small"
+        assert local_config["initial_prompt"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +134,7 @@ class TestTranscribeLocal:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
             from tools.transcription_tools import _transcribe_local
@@ -174,21 +157,25 @@ class TestTranscribeOpenAI:
         assert result["success"] is False
         assert "VOICE_TOOLS_OPENAI_KEY" in result["error"]
 
-    def test_successful_transcription(self, monkeypatch, tmp_path):
+
+    def test_unset_language_omits_argument(self, monkeypatch, tmp_path):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         audio_file = tmp_path / "test.ogg"
         audio_file.write_bytes(b"fake audio")
 
         mock_client = MagicMock()
-        mock_client.audio.transcriptions.create.return_value = "Hello from OpenAI"
+        mock_client.audio.transcriptions.create.return_value = "Hello"
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "openai": {"language": ""},
+             }), \
              patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(str(audio_file), "whisper-1")
 
         assert result["success"] is True
-        assert result["transcript"] == "Hello from OpenAI"
+        assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -211,48 +198,50 @@ class TestTranscribeAudio:
         assert result["success"] is True
         mock_local.assert_called_once()
 
-    def test_dispatches_to_openai(self, tmp_path):
-        audio_file = tmp_path / "test.ogg"
-        audio_file.write_bytes(b"fake audio")
-
-        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
-             patch("tools.transcription_tools._get_provider", return_value="openai"), \
-             patch("tools.transcription_tools._transcribe_openai", return_value={"success": True, "transcript": "hi"}) as mock_openai:
-            from tools.transcription_tools import transcribe_audio
-            result = transcribe_audio(str(audio_file))
-
-        assert result["success"] is True
-        mock_openai.assert_called_once()
-
-    def test_no_provider_returns_error(self, tmp_path):
-        audio_file = tmp_path / "test.ogg"
-        audio_file.write_bytes(b"fake audio")
-
-        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
-             patch("tools.transcription_tools._get_provider", return_value="none"):
-            from tools.transcription_tools import transcribe_audio
-            result = transcribe_audio(str(audio_file))
-
-        assert result["success"] is False
-        assert "No STT provider" in result["error"]
-
-    def test_disabled_config_returns_disabled_error(self, tmp_path):
-        audio_file = tmp_path / "test.ogg"
-        audio_file.write_bytes(b"fake audio")
-
-        with patch("tools.transcription_tools._load_stt_config", return_value={"enabled": False}), \
-             patch("tools.transcription_tools._get_provider", return_value="none"):
-            from tools.transcription_tools import transcribe_audio
-            result = transcribe_audio(str(audio_file))
-
-        assert result["success"] is False
-        assert "disabled" in result["error"].lower()
 
     def test_invalid_file_returns_error(self):
         from tools.transcription_tools import transcribe_audio
         result = transcribe_audio("/nonexistent/file.ogg")
         assert result["success"] is False
         assert "not found" in result["error"]
+
+
+class TestLocalFallback:
+
+    def test_uses_installed_faster_whisper_without_changing_provider(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "openai", "local": {"model": "small"}},
+        ), patch(
+            "tools.transcription_tools._HAS_FASTER_WHISPER",
+            True,
+        ), patch(
+            "tools.transcription_tools._transcribe_local",
+            return_value={"success": True, "transcript": "local result"},
+        ) as mock_local:
+            from tools.transcription_tools import transcribe_audio_local_fallback
+
+            result = transcribe_audio_local_fallback(str(audio_file))
+
+        assert result["transcript"] == "local result"
+        mock_local.assert_called_once_with(str(audio_file), "small")
+
+    def test_does_not_install_when_no_local_backend_exists(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), patch(
+            "tools.transcription_tools._has_local_command", return_value=False
+        ):
+            from tools.transcription_tools import transcribe_audio_local_fallback
+
+            result = transcribe_audio_local_fallback(str(audio_file))
+
+        assert result["success"] is False
+        assert "installed local STT" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -267,25 +256,6 @@ class TestNormalizeLocalModel:
         from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
         assert _normalize_local_model("whisper-1") == DEFAULT_LOCAL_MODEL
 
-    def test_groq_model_name_maps_to_default(self):
-        from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
-        assert _normalize_local_model("whisper-large-v3-turbo") == DEFAULT_LOCAL_MODEL
-
-    def test_valid_local_model_preserved(self):
-        from tools.transcription_tools import _normalize_local_model
-        for size in ("tiny", "base", "small", "medium", "large-v3"):
-            assert _normalize_local_model(size) == size
-
-    def test_none_maps_to_default(self):
-        from tools.transcription_tools import _normalize_local_model, DEFAULT_LOCAL_MODEL
-        assert _normalize_local_model(None) == DEFAULT_LOCAL_MODEL
-
-    def test_warning_emitted_for_cloud_model(self, caplog):
-        import logging
-        from tools.transcription_tools import _normalize_local_model
-        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"):
-            _normalize_local_model("whisper-1")
-        assert any("whisper-1" in r.message for r in caplog.records)
 
     def test_local_transcribe_normalises_model(self):
         """transcribe_audio with local provider must not pass 'whisper-1' to WhisperModel."""

@@ -19,6 +19,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import noninteractive_git_env
+
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
 _MAX_BUFFER = 32 * 1024 * 1024
@@ -31,14 +33,22 @@ _TRUNK_BRANCHES = ("main", "master")
 
 def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int, str, str]:
     """Run ``git`` in ``cwd``. Returns (returncode, stdout, stderr); never raises
-    on a non-zero exit (callers decide what an error means)."""
+    on a non-zero exit (callers decide what an error means).
+
+    Runs non-interactively (stdin nulled, ``GIT_TERMINAL_PROMPT=0``): these
+    calls serve authenticated REST requests from the dashboard/desktop, so a
+    credential prompt from ``fetch``/``push``/``pull`` could never be answered
+    — it would just hang the request until the timeout. Failing fast surfaces
+    the real auth error in the toast instead."""
     try:
         proc = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return 1, "", "git invocation failed"
@@ -419,9 +429,15 @@ def review_commit_context(cwd: str) -> dict:
 def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
     if not shutil.which("gh"):
         return False, ""
+    # Same non-interactive contract as _git: these serve REST requests, so gh
+    # must fail fast instead of prompting (GH_PROMPT_DISABLED is gh's own
+    # documented kill-switch for interactive prompts).
+    env = noninteractive_git_env()
+    env["GH_PROMPT_DISABLED"] = "1"
     try:
         proc = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=_GH_TIMEOUT
+            ["gh", *args], cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=_GH_TIMEOUT,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return False, ""
@@ -445,6 +461,96 @@ def review_ship_info(cwd: str) -> dict:
     if pr and pr.get("url"):
         return {"ghReady": True, "pr": {"url": pr["url"], "state": pr.get("state"), "number": pr.get("number")}}
     return {"ghReady": True, "pr": None}
+
+
+# GraphQL asks per branch, so the answer can't be crowded out the way a
+# `gh pr list` page can. Aliases let one request carry many branches; 50 keeps
+# the document well inside GitHub's node budget.
+_PR_QUERY_BRANCH_CHUNK = 50
+_PR_QUERY_BRANCH_CAP = 300
+
+
+_PR_NODE_FIELDS = "number state isDraft isCrossRepository title url headRefName"
+
+
+def _pr_query(owner: str, name: str, branches: list[str], numbers: list[int]) -> str:
+    fields = [
+        f"b{i}: pullRequests(headRefName: {json.dumps(branch)}, first: 5, "
+        f"orderBy: {{field: CREATED_AT, direction: DESC}}) "
+        f"{{ nodes {{ {_PR_NODE_FIELDS} }} }}"
+        for i, branch in enumerate(branches)
+    ]
+    # A PR recovered from a transcript is known by number, and asking for it
+    # directly also tells us its branch — so it lands in the same by-branch map
+    # as everything else.
+    fields += [f"n{i}: pullRequest(number: {n}) {{ {_PR_NODE_FIELDS} }}" for i, n in enumerate(numbers)]
+    return (
+        f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        + "\n".join(fields)
+        + "\n} }"
+    )
+
+
+def _pr_payload(pr: dict) -> dict:
+    return {
+        "branch": str(pr.get("headRefName")),
+        "draft": bool(pr.get("isDraft")),
+        "number": int(pr.get("number") or 0),
+        "state": str(pr.get("state") or "").lower(),
+        "title": str(pr.get("title") or ""),
+        "url": str(pr.get("url") or ""),
+    }
+
+
+def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+    """The PRs on the given branches (plus any asked for by number). Asks GitHub
+    about the branches we actually have sessions on rather than listing the
+    repo's newest PRs and hoping ours are in the page."""
+    if not _is_dir(cwd):
+        return {"ghReady": False, "prs": []}
+    wanted = list(dict.fromkeys(str(b) for b in (branches or []) if b))[:_PR_QUERY_BRANCH_CAP]
+    by_number = list(dict.fromkeys(int(n) for n in (numbers or []) if n))[:_PR_QUERY_BRANCH_CAP]
+    if not wanted and not by_number:
+        return {"ghReady": False, "prs": []}
+    repo_ok, repo_out = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    owner, _, name = repo_out.strip().partition("/")
+    if not repo_ok or not owner or not name:
+        # gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
+        return {"ghReady": False, "prs": []}
+
+    prs: list[dict] = []
+    chunks = [
+        (wanted[i : i + _PR_QUERY_BRANCH_CHUNK], [])
+        for i in range(0, len(wanted), _PR_QUERY_BRANCH_CHUNK)
+    ] + [
+        ([], by_number[i : i + _PR_QUERY_BRANCH_CHUNK])
+        for i in range(0, len(by_number), _PR_QUERY_BRANCH_CHUNK)
+    ]
+    for branch_chunk, number_chunk in chunks:
+        ok, out = _gh(cwd, ["api", "graphql", "-f", f"query={_pr_query(owner, name, branch_chunk, number_chunk)}"])
+        if not ok:
+            continue
+        try:
+            repository = (json.loads(out).get("data") or {}).get("repository") or {}
+        except json.JSONDecodeError:
+            continue  # A malformed chunk drops its branches; the rest still resolve.
+        for key, field in repository.items():
+            if not field:
+                continue
+            if key.startswith("n"):
+                # Asked for by number, so it's ours by construction — a fork PR
+                # can't be recovered from our own transcript.
+                if field.get("headRefName"):
+                    prs.append(_pr_payload(field))
+                continue
+            # Fork PRs share our branch namespace: a contributor's `main` is how
+            # a session sitting on trunk ends up badged with a stranger's closed
+            # PR. Only this repo's own branches describe our sessions.
+            nodes = field.get("nodes") or []
+            pr = next((n for n in nodes if n and not n.get("isCrossRepository")), None)
+            if pr and pr.get("headRefName"):
+                prs.append(_pr_payload(pr))
+    return {"ghReady": True, "prs": prs}
 
 
 def review_create_pr(cwd: str) -> dict:
@@ -576,19 +682,46 @@ def _unique_dir(base: str) -> str:
     return candidate
 
 
+def _remote_of_ref(cwd: str, name: str) -> str:
+    """The remote a ref belongs to ("origin" for "origin/main"), or "" when the
+    name is not a remote-tracking ref in this repo. Asks git rather than
+    assuming the remote is called "origin" (mirrors the Electron op)."""
+    if "/" not in name:
+        return ""
+    code, _, _ = _git(cwd, ["show-ref", "--verify", "--quiet", f"refs/remotes/{name}"])
+    if code != 0:
+        return ""
+    return name.split("/", 1)[0]
+
+
 def worktree_add(cwd: str, options: dict) -> dict:
     _ensure_repo(cwd)
     root = _main_root(cwd)
     options = options or {}
 
-    existing = _sanitize_branch(options.get("existingBranch") or "")
+    requested = _sanitize_branch(options.get("existingBranch") or "")
     if options.get("existingBranch"):
-        if not existing:
+        if not requested:
             raise RuntimeError("Branch name is required.")
-        if existing == _default_branch(root):
+        # "origin/feature" is a remote-tracking ref, not a branch git can check
+        # out — `git worktree add <dir> origin/feature` detaches HEAD. Create a
+        # local branch with the same short name that tracks the remote ref,
+        # like `git switch feature` does for a branch on exactly one remote.
+        # (Parity with the Electron op; a remote gateway serves this mirror, so
+        # the desktop's convert-a-branch flow must behave identically. #81724)
+        remote = _remote_of_ref(root, requested)
+        existing = requested.split("/", 1)[1] if remote else requested
+        if not remote and existing == _default_branch(root):
             _git_ok(root, ["switch", existing])
             return {"path": root, "branch": existing, "repoRoot": root}
         target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
+        if remote:
+            # Best-effort freshness: the remote-tracking ref is stale if the
+            # user did not fetch recently. On failure (offline, branch gone)
+            # the last known ref is still there to branch from.
+            _git(root, ["fetch", remote, existing])
+            _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+            return {"path": target, "branch": existing, "repoRoot": root}
         _git_ok(root, ["worktree", "add", target, existing])
         return {"path": target, "branch": existing, "repoRoot": root}
 
@@ -597,7 +730,20 @@ def worktree_add(cwd: str, options: dict) -> dict:
     target = _unique_dir(os.path.join(root, ".worktrees", slug))
     args = ["worktree", "add", "-b", branch, target]
     if options.get("base"):
-        args.append(str(options["base"]))
+        base = str(options["base"])
+        # Remote-tracking branches may be stale or missing; fetch just that
+        # branch so the local ref is up to date before branching. Ignore fetch
+        # failures (offline / no remote) — git will use whatever local ref
+        # exists, or raise a clear error below if the ref is entirely missing.
+        if base.startswith("origin/"):
+            remote_branch = base[len("origin/"):]
+            _git(root, ["fetch", "origin", remote_branch])
+            # Branching off a remote-tracking ref auto-sets up tracking (the
+            # new branch silently wired to origin's upstream). The user wants a
+            # standalone local branch — like `git checkout origin/main && git
+            # checkout -b new` — so suppress it (parity with the Electron op).
+            args.append("--no-track")
+        args.append(base)
     code, _, err = _git(root, args)
     if code != 0:
         if "already exists" in (err or "").lower():
@@ -618,6 +764,10 @@ def worktree_remove(cwd: str, worktree_path: str, force: bool) -> dict:
 
 
 def branch_list(cwd: str) -> list[dict]:
+    """Branches for the convert-a-branch picker: local heads first, then the
+    remote-tracking refs that have no local head yet (a teammate's branch is
+    reachable without a manual checkout). Parity with the Electron op — a
+    remote gateway serves this mirror for the same desktop UI (#81724)."""
     out = _git_out(
         cwd, ["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/heads"]
     )
@@ -626,15 +776,44 @@ def branch_list(cwd: str) -> list[dict]:
     trees = worktree_list(cwd)
     path_by_branch = {t["branch"]: t["path"] for t in trees if t["branch"]}
     trunk = _default_branch(cwd)
-    return [
-        {
-            "name": name,
-            "checkedOut": name in path_by_branch,
-            "isDefault": bool(trunk and name == trunk),
-            "worktreePath": path_by_branch.get(name),
-        }
-        for name in (line.strip() for line in out.split("\n"))
+    locals_ = [name for name in (line.strip() for line in out.split("\n")) if name]
+    local_set = set(locals_)
+    remote_out = _git_out(
+        cwd, ["for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/remotes"]
+    )
+    remotes = [
+        name
+        for name in (line.strip() for line in remote_out.split("\n"))
         if name
+        # "origin/HEAD" is a symbolic alias for the remote's default branch —
+        # not a branch, and a duplicate row in the list.
+        and not name.endswith("/HEAD")
+        # A remote branch tracked locally is reachable via its local head; a
+        # second row is noise, and checking out the remote ref detaches HEAD.
+        and name.split("/", 1)[-1] not in local_set
+    ]
+    return [
+        *(
+            {
+                "name": name,
+                "checkedOut": name in path_by_branch,
+                "isDefault": bool(trunk and name == trunk),
+                "isRemote": False,
+                "worktreePath": path_by_branch.get(name),
+            }
+            for name in locals_
+        ),
+        *(
+            {
+                # No local checkout, and never the local trunk.
+                "name": name,
+                "checkedOut": False,
+                "isDefault": False,
+                "isRemote": True,
+                "worktreePath": None,
+            }
+            for name in remotes
+        ),
     ]
 
 
@@ -644,3 +823,46 @@ def branch_switch(cwd: str, branch: str) -> dict:
         raise RuntimeError("Branch name is required.")
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
+
+
+def base_branch_list(cwd: str) -> list[dict]:
+    """Local heads + remote-tracking refs for the base-branch picker.
+
+    The remote default (origin/HEAD) is flagged so the UI can preselect it.
+    """
+    out = _git_out(
+        cwd,
+        [
+            "for-each-ref",
+            "--format=%(refname:short)\t%(committerdate:iso)",
+            "--sort=-committerdate",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    if not out:
+        return []
+    remote_default = _git_out(
+        cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]
+    ).strip()
+    local_default = _default_branch(cwd) if not remote_default else ""
+    result: list[dict] = []
+    for line in out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        name = line.split("\t")[0]
+        result.append(
+            {
+                "name": name,
+                "isRemote": name.startswith("origin/"),
+                # origin/HEAD when a remote exists; otherwise the local
+                # default (main/master/init.defaultBranch) so a no-remote
+                # repo still flags its trunk.
+                "isDefault": bool(
+                    (remote_default and name == remote_default)
+                    or (not remote_default and local_default and name == local_default)
+                ),
+            }
+        )
+    return result

@@ -10,7 +10,7 @@ export { NoSelect } from './ink/components/NoSelect.js'
 export { RawAnsi } from './ink/components/RawAnsi.js'
 export { default as ScrollBox } from './ink/components/ScrollBox.js'
 export { default as Spacer } from './ink/components/Spacer.js'
-export { default as Text } from './ink/components/Text.js'
+export { setDimFallbackColor, default as Text } from './ink/components/Text.js'
 export { default as useApp } from './ink/hooks/use-app.js'
 export { useCursorAdvance } from './ink/hooks/use-cursor-advance.js'
 export { useDeclaredCursor } from './ink/hooks/use-declared-cursor.js'
@@ -21,12 +21,20 @@ export { default as useStdin } from './ink/hooks/use-stdin.js'
 export { useTabStatus } from './ink/hooks/use-tab-status.js'
 export { useTerminalFocus } from './ink/hooks/use-terminal-focus.js'
 export { useTerminalTitle } from './ink/hooks/use-terminal-title.js'
+export type { TerminalTitlePair } from './ink/hooks/use-terminal-title.js'
 export { useTerminalViewport } from './ink/hooks/use-terminal-viewport.js'
 export { default as measureElement } from './ink/measure-element.js'
 export { scrollFastPathStats, type ScrollFastPathStats } from './ink/render-node-to-output.js'
 export { createRoot, forceRedraw, default as render, renderSync } from './ink/root.js'
 export { stringWidth } from './ink/stringWidth.js'
-export { isXtermJs } from './ink/terminal.js'
+export {
+  isXtermJs,
+  onTerminalBackground,
+  onTerminalForeground,
+  parseOscColor,
+  terminalBackgroundHex,
+  terminalForegroundHex
+} from './ink/terminal.js'
 export type { MouseTrackingMode } from './ink/termio/dec.js'
 export { wrapAnsi } from './ink/wrapAnsi.js'
 

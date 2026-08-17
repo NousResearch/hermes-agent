@@ -129,8 +129,14 @@ export const ja: Translations = {
     title: "セッション",
     history: "履歴",
     overview: "概要",
+    filterChats: "チャット",
+    filterAutomation: "自動化",
+    filterAll: "すべて",
+    sourceFilter: "セッションのソース",
+    anySource: "すべてのソース",
     searchPlaceholder: "メッセージ内容を検索...",
     noSessions: "まだセッションがありません",
+    noSessionsInFilter: "このフィルターにセッションはありません",
     noMatch: "検索条件に一致するセッションはありません",
     startConversation: "会話を開始するとここに表示されます",
     noMessages: "メッセージがありません",
@@ -611,6 +617,12 @@ export const ja: Translations = {
       "ボードを使うと、関連のない作業の流れを分けられます — プロジェクト、リポジトリ、ドメインごとに 1 つずつ。あるボードのワーカーは、別のボードのタスクを見ることはありません。",
     slug: "スラッグ",
     slugHint: "— 小文字とハイフン、例: atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "表示名",
     displayNameHint: "（任意）",
     description: "説明",

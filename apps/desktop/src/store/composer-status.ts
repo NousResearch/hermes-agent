@@ -1,23 +1,29 @@
 import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { stableArray } from '@/lib/stable-array'
 import type { TodoItem, TodoStatus } from '@/lib/todos'
 
 import { $gateway } from './gateway'
+import { $goalsBySession, type GoalStatus } from './goals'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
+import { $sessions, lineageAliases } from './session'
+import { $sessionStates } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
 /** Composer status stack feed — merged todos, subagents, background per session. */
 export type StatusItemState = 'done' | 'failed' | 'running'
-export type StatusItemType = 'background' | 'subagent' | 'todo'
+export type StatusItemType = 'background' | 'goal' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
   /** background: non-zero exit shown inline when failed. */
   exitCode?: number
   /** subagent: active tool label shown on the right. */
   currentTool?: string
+  /** goal: active | paused | waiting | done. */
+  goalStatus?: GoalStatus
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
@@ -34,6 +40,40 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+
+// Stored session ids that have at least one RUNNING background process. The
+// sidebar row reads this for a hollow dot — distinct from the filled dot of an
+// active LLM turn — so the user can tell at a glance "this session has
+// something chugging along in the background" even when the turn is idle.
+//
+// $backgroundStatusBySession is keyed by RUNTIME session id (gateway events
+// and process.list both speak that); the sidebar row knows only the STORED id.
+// $sessionStates bridges the two: runtime id → state.storedSessionId, then
+// lineageAliases covers whichever tip of that conversation a surface holds.
+// Perf: recomputes on every $sessionStates change (message deltas, tens/sec),
+// but the background-running set rarely moves. `stableArray` keeps the prior
+// reference when unchanged so rows reading this don't re-render per token.
+let backgroundRunningIds: readonly string[] = []
+export const $backgroundRunningSessionIds = computed(
+  [$backgroundStatusBySession, $sessionStates, $sessions],
+  (bg, states, sessions) => {
+    const ids = new Set<string>()
+
+    for (const [runtimeId, items] of Object.entries(bg)) {
+      if (!items.some(i => i.state === 'running')) {
+        continue
+      }
+
+      // Same fresh-chat fallback as the working/attention projections: before a
+      // conversation is persisted its runtime id is the id surfaces key on.
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        ids.add(alias)
+      }
+    }
+
+    return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
+  }
+)
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
@@ -113,10 +153,52 @@ const todoToItem = (t: TodoItem): ComposerStatusItem => ({
   type: 'todo'
 })
 
+const goalToItem = (goal: { detail?: string; status: GoalStatus; title: string }): ComposerStatusItem => ({
+  currentTool: goal.detail,
+  goalStatus: goal.status,
+  id: 'goal:standing',
+  state: goal.status === 'active' || goal.status === 'waiting' ? 'running' : 'done',
+  title: goal.title,
+  type: 'goal'
+})
+
 // The single thing the stack reads: a typed, merged item list per session.
+//
+// Identity contract: this computed's inputs churn constantly during a turn (a
+// subagent tick, a 5s background poll, a todo update — in ANY session), but
+// the merged output for most sessions is unchanged. Rebuilding fresh arrays
+// and item objects every time handed every mounted composer stack a new
+// reference per recompute — cross-session churn × open tiles. Stabilize both
+// levels: an unchanged session keeps its previous array (and item objects),
+// and a fully-unchanged map keeps its previous reference so `computed` skips
+// the notify entirely ("preserve reference identity on no-ops").
+const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
+  a.id === b.id &&
+  a.type === b.type &&
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode &&
+  a.currentTool === b.currentTool &&
+  a.goalStatus === b.goalStatus &&
+  a.todoStatus === b.todoStatus &&
+  a.sessionId === b.sessionId
+
+const stabilizeItems = (prev: ComposerStatusItem[] | undefined, next: ComposerStatusItem[]): ComposerStatusItem[] => {
+  if (!prev) {
+    return next
+  }
+
+  const merged = next.map((item, i) => (prev[i] && sameStatusItem(prev[i], item) ? prev[i] : item))
+
+  return merged.length === prev.length && merged.every((item, i) => item === prev[i]) ? prev : merged
+}
+
+let prevStatusItems: Record<string, ComposerStatusItem[]> = {}
+
 export const $statusItemsBySession = computed(
-  [$subagentsBySession, $backgroundStatusBySession, $todosBySession],
-  (subs, background, todos) => {
+  [$goalsBySession, $subagentsBySession, $backgroundStatusBySession, $todosBySession],
+  (goals, subs, background, todos) => {
     const out: Record<string, ComposerStatusItem[]> = {}
 
     const push = (sid: string, items: ComposerStatusItem[]) => {
@@ -129,6 +211,10 @@ export const $statusItemsBySession = computed(
       push(sid, list.map(todoToItem))
     }
 
+    for (const [sid, goal] of Object.entries(goals)) {
+      push(sid, [goalToItem(goal)])
+    }
+
     for (const [sid, list] of Object.entries(subs)) {
       push(sid, list.filter(s => s.status === 'running' || s.status === 'queued').map(subToItem))
     }
@@ -137,12 +223,19 @@ export const $statusItemsBySession = computed(
       push(sid, list)
     }
 
-    return out
+    let unchanged = Object.keys(prevStatusItems).length === Object.keys(out).length
+
+    for (const sid of Object.keys(out)) {
+      out[sid] = stabilizeItems(prevStatusItems[sid], out[sid]!)
+      unchanged &&= out[sid] === prevStatusItems[sid]
+    }
+
+    return (prevStatusItems = unchanged ? prevStatusItems : out)
   }
 )
 
 // Fixed render order for the groups in the stack (top → bottom, above queue).
-const TYPE_ORDER: readonly StatusItemType[] = ['todo', 'subagent', 'background']
+const TYPE_ORDER: readonly StatusItemType[] = ['goal', 'todo', 'subagent', 'background']
 
 export interface StatusGroup {
   items: ComposerStatusItem[]

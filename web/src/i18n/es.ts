@@ -129,8 +129,14 @@ export const es: Translations = {
     title: "Sesiones",
     history: "Historial",
     overview: "Resumen",
+    filterChats: "Chats",
+    filterAutomation: "Automatización",
+    filterAll: "Todas",
+    sourceFilter: "Origen de la sesión",
+    anySource: "Cualquier origen",
     searchPlaceholder: "Buscar contenido de mensajes...",
     noSessions: "Aún no hay sesiones",
+    noSessionsInFilter: "No hay sesiones en este filtro",
     noMatch: "Ninguna sesión coincide con tu búsqueda",
     startConversation: "Inicia una conversación para verla aquí",
     noMessages: "Sin mensajes",
@@ -612,6 +618,12 @@ export const es: Translations = {
       "Los tableros te permiten separar flujos de trabajo no relacionados — uno por proyecto, repositorio o dominio. Los workers de un tablero nunca ven las tareas de otro.",
     slug: "Slug",
     slugHint: "— minúsculas, guiones, p. ej. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nombre visible",
     displayNameHint: "(opcional)",
     description: "Descripción",

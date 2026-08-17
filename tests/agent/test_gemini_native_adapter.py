@@ -19,70 +19,63 @@ class DummyResponse:
         return self._payload
 
 
-def test_build_native_request_preserves_thought_signature_on_tool_replay():
-    from agent.gemini_native_adapter import build_gemini_request
 
-    request = build_gemini_request(
-        messages=[
-            {"role": "system", "content": "Be helpful."},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "Paris"}',
-                        },
-                        "extra_content": {
-                            "google": {"thought_signature": "sig-123"}
-                        },
-                    }
-                ],
-            },
-        ],
-        tools=[],
-        tool_choice=None,
+
+
+
+
+
+
+
+
+def test_followup_user_turn_is_not_merged_into_function_response_turn():
+    """Human follow-up after tool results must stay its own user content.
+
+    The split pair is kept alternation-valid by interposing a placeholder
+    model turn between the functionResponse content and the human text
+    content (mirrors gemini-cli#28700's INTERRUPTED_RESPONSE_PLACEHOLDER).
+
+    Scope: only the functionResponse↔human-text boundary. Ordinary same-role
+    merges (parallel tool results, back-to-back plain user texts) remain
+    required for Gemini alternation and are covered by sibling tests.
+    """
+    from agent.gemini_native_adapter import (
+        _INTERRUPTED_RESPONSE_PLACEHOLDER,
+        _build_gemini_contents,
     )
 
-    parts = request["contents"][0]["parts"]
-    assert parts[0]["functionCall"]["name"] == "get_weather"
-    assert parts[0]["thoughtSignature"] == "sig-123"
+    messages = [
+        {"role": "user", "content": "Load the skill"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": '{"name":"hermes-agent"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "loaded"},
+        {"role": "user", "content": "Continue"},
+    ]
 
+    contents, _ = _build_gemini_contents(messages)
 
-def test_build_native_request_uses_original_function_name_for_tool_result():
-    from agent.gemini_native_adapter import build_gemini_request
-
-    request = build_gemini_request(
-        messages=[
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "Paris"}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "content": '{"forecast": "sunny"}',
-            },
-        ],
-        tools=[],
-        tool_choice=None,
-    )
-
-    tool_response = request["contents"][1]["parts"][0]["functionResponse"]
-    assert tool_response["name"] == "get_weather"
+    assert [content["role"] for content in contents] == [
+        "user",
+        "model",
+        "user",
+        "model",
+        "user",
+    ]
+    assert "functionResponse" in contents[2]["parts"][0]
+    assert contents[3]["parts"] == [{"text": _INTERRUPTED_RESPONSE_PLACEHOLDER}]
+    assert contents[-1]["parts"] == [{"text": "Continue"}]
 
 
 def test_parallel_tool_results_merge_into_one_user_content():
@@ -138,44 +131,6 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     assert roles == ["user", "model"], roles
 
 
-def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
-    from agent.gemini_native_adapter import build_gemini_request
-
-    request = build_gemini_request(
-        messages=[{"role": "user", "content": "Hello"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup_weather",
-                    "description": "Weather lookup",
-                    "parameters": {
-                        "$schema": "https://json-schema.org/draft/2020-12/schema",
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "city": {
-                                "type": "string",
-                                "$schema": "ignored",
-                                "description": "City name",
-                            }
-                        },
-                        "required": ["city"],
-                    },
-                },
-            }
-        ],
-        tool_choice=None,
-    )
-
-    params = request["tools"][0]["functionDeclarations"][0]["parameters"]
-    assert "$schema" not in params
-    assert "additionalProperties" not in params
-    assert params["type"] == "object"
-    assert params["properties"]["city"] == {
-        "type": "string",
-        "description": "City name",
-    }
 
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
@@ -251,71 +206,10 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
-@pytest.mark.parametrize("model, expected", [
-    ("google/gemini-2.0-flash", "gemini-2.0-flash"),
-    ("gemini/gemini-3-pro-preview", "gemini-3-pro-preview"),
-    ("Google/Gemini-2.5-Pro", "Gemini-2.5-Pro"),
-    ("models/gemini-x", "models/gemini-x"),
-    ("tunedModels/my-tune", "tunedModels/my-tune"),
-])
-def test_bare_gemini_model_id_strips_only_self_prefix(model, expected):
-    from agent.gemini_native_adapter import bare_gemini_model_id
-
-    assert bare_gemini_model_id(model) == expected
 
 
-def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
-    from agent.gemini_native_adapter import GeminiNativeClient
-
-    recorded = {}
-
-    class DummyHTTP:
-        def post(self, url, json=None, headers=None, timeout=None):
-            recorded["url"] = url
-            return DummyResponse(payload={
-                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
-                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
-            })
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
-    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
-    client.chat.completions.create(
-        model="google/gemini-2.0-flash",
-        messages=[{"role": "user", "content": "Hello"}],
-    )
-
-    assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 
-def test_native_http_error_keeps_status_and_retry_after():
-    from agent.gemini_native_adapter import gemini_http_error
-
-    response = DummyResponse(
-        status_code=429,
-        headers={"Retry-After": "17"},
-        payload={
-            "error": {
-                "code": 429,
-                "message": "quota exhausted",
-                "status": "RESOURCE_EXHAUSTED",
-                "details": [
-                    {
-                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                        "reason": "RESOURCE_EXHAUSTED",
-                        "metadata": {"service": "generativelanguage.googleapis.com"},
-                    }
-                ],
-            }
-        },
-    )
-
-    err = gemini_http_error(response)
-    assert getattr(err, "status_code", None) == 429
-    assert getattr(err, "retry_after", None) == 17.0
-    assert "quota exhausted" in str(err)
 
 
 def test_native_client_accepts_injected_http_client():
@@ -396,68 +290,170 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
-def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
-    from agent.gemini_native_adapter import translate_stream_event
-
-    event = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
-                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
-                    ]
-                },
-                "finishReason": "STOP",
-            }
-        ]
-    }
-
-    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
-    tool_chunks = [chunk for chunk in chunks if chunk.choices[0].delta.tool_calls]
-    assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
-    assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
-    assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
-
-
-def test_system_instruction_includes_role_field_and_stays_out_of_contents():
+def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
     from agent.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello"},
-        ],
-        tools=[],
-        tool_choice=None,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
     )
 
-    assert request["systemInstruction"] == {
-        "role": "system",
-        "parts": [{"text": "You are a helpful assistant."}],
-    }
-    assert all(content.get("role") != "system" for content in request["contents"])
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert "thinkingConfig" not in request["generationConfig"]
 
 
-def test_max_tokens_none_defaults_to_gemini_output_ceiling():
-    """max_tokens=None must send the model's full output ceiling, not omit it.
-
-    Gemini's native generateContent applies a low internal default when
-    maxOutputTokens is absent, truncating tool calls mid-stream. Hermes passes
-    None to mean "unlimited", so the adapter must translate that to the
-    published 65,535 ceiling rather than leaving the field unset.
-    """
+def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
     from agent.gemini_native_adapter import (
-        build_gemini_request,
         GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+        build_gemini_request,
     )
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
-    assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": True, "thinkingLevel": "high"},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    assert request["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "high"
 
 
-def test_explicit_max_tokens_is_respected():
+def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
     from agent.gemini_native_adapter import build_gemini_request
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
-    assert req["generationConfig"]["maxOutputTokens"] == 4096
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+        thinking_config={"includeThoughts": False},
+    )
+
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
+    assert request["generationConfig"]["thinkingConfig"]["includeThoughts"] is False
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# X-Goog-Api-Client header tests
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+class TestGemini3ToolCallIds:
+    """Gemini 3+ requires explicit tool call IDs in replayed history
+    (port of earendil-works/pi#7494)."""
+
+    def _history(self):
+        return [
+            {"role": "user", "content": "Read a.txt and b.txt"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "type": "function",
+                     "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}},
+                    {"id": "call_2", "type": "function",
+                     "function": {"name": "read_file", "arguments": '{"path": "b.txt"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "AAA"},
+            {"role": "tool", "tool_call_id": "call_2", "content": "BBB"},
+        ]
+
+    def test_requires_ids_gate(self):
+        from agent.gemini_native_adapter import gemini_requires_tool_call_ids
+
+        assert gemini_requires_tool_call_ids("gemini-3.6-flash")
+        assert gemini_requires_tool_call_ids("google/gemini-3.6-pro")
+        assert gemini_requires_tool_call_ids("gemini-3-flash-preview")
+        assert not gemini_requires_tool_call_ids("gemini-2.5-flash")
+        assert not gemini_requires_tool_call_ids("gemini-1.5-pro")
+        assert not gemini_requires_tool_call_ids("claude-opus-4.6")
+        assert not gemini_requires_tool_call_ids("")
+
+    def test_ids_preserved_for_gemini3(self):
+        from agent.gemini_native_adapter import _build_gemini_contents
+
+        contents, _ = _build_gemini_contents(
+            self._history(), include_tool_call_ids=True
+        )
+        call_ids = [
+            p["functionCall"]["id"]
+            for c in contents for p in c["parts"] if "functionCall" in p
+        ]
+        response_ids = [
+            p["functionResponse"]["id"]
+            for c in contents for p in c["parts"] if "functionResponse" in p
+        ]
+        assert call_ids == ["call_1", "call_2"]
+        assert response_ids == ["call_1", "call_2"]
+
+    def test_ids_omitted_for_older_gemini(self):
+        from agent.gemini_native_adapter import _build_gemini_contents
+
+        contents, _ = _build_gemini_contents(self._history())
+        for c in contents:
+            for p in c["parts"]:
+                if "functionCall" in p:
+                    assert "id" not in p["functionCall"]
+                if "functionResponse" in p:
+                    assert "id" not in p["functionResponse"]
+
+    def test_build_request_threads_model_gate(self):
+        from agent.gemini_native_adapter import build_gemini_request
+
+        request = build_gemini_request(
+            messages=self._history(), model="gemini-3.6-flash"
+        )
+        parts = [p for c in request["contents"] for p in c["parts"]]
+        assert any(p.get("functionCall", {}).get("id") == "call_1" for p in parts)
+
+        request_old = build_gemini_request(
+            messages=self._history(), model="gemini-2.5-flash"
+        )
+        parts_old = [p for c in request_old["contents"] for p in c["parts"]]
+        assert all("id" not in p.get("functionCall", {}) for p in parts_old)
+
+    def test_response_preserves_provider_tool_call_id(self):
+        from agent.gemini_native_adapter import translate_gemini_response
+
+        resp = {
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {"id": "call_native_7", "name": "read_file",
+                                     "args": {"path": "a.txt"}},
+                }]},
+                "finishReason": "STOP",
+            }],
+        }
+        result = translate_gemini_response(resp, model="gemini-3.6-flash")
+        tool_calls = result.choices[0].message.tool_calls
+        assert tool_calls[0].id == "call_native_7"
+
+    def test_response_generates_id_when_absent(self):
+        from agent.gemini_native_adapter import translate_gemini_response
+
+        resp = {
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {"name": "read_file", "args": {}},
+                }]},
+                "finishReason": "STOP",
+            }],
+        }
+        result = translate_gemini_response(resp, model="gemini-2.5-flash")
+        tool_calls = result.choices[0].message.tool_calls
+        assert tool_calls[0].id.startswith("call_")

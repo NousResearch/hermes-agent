@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from pathlib import Path
@@ -93,13 +94,47 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
+def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
+    """Best-effort extraction of ``chatgpt_account_id`` from the OAuth JWT.
+
+    The Codex backend requires the ``ChatGPT-Account-Id`` header for the
+    per-account catalog. Without it, ``GET /backend-api/codex/models``
+    returns ``{"models":[]}`` (HTTP 200) — which masquerades as "no
+    models available" and silently degrades the picker to the curated
+    fallback list. The request-side path in ``auxiliary_client.py``
+    already extracts the same claim; this mirrors that logic here so the
+    probe sees the same catalog the request path will actually use.
+
+    Returns ``None`` on any parse error — the probe then degrades
+    gracefully to the unauthenticated fallback list instead of crashing.
+    """
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        acct_id = (
+            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+            if isinstance(claims, dict)
+            else None
+        )
+        return acct_id if isinstance(acct_id, str) and acct_id else None
+    except Exception:
+        return None
+
+
 def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
+        headers = {"Authorization": f"Bearer {access_token}"}
+        acct_id = _extract_chatgpt_account_id(access_token)
+        if acct_id:
+            headers["ChatGPT-Account-Id"] = acct_id
         resp = httpx.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers=headers,
             timeout=10,
         )
         if resp.status_code != 200:

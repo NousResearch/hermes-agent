@@ -21,11 +21,16 @@ function connectionCacheKey(connection: HermesConnection | null) {
     return 'local:'
   }
 
-  return `${connection.mode || 'local'}:${connection.profile || ''}:${connection.baseUrl || ''}`
+  const target =
+    connection.remoteKind === 'ssh'
+      ? connection.remoteIdentity || connection.remoteHost || ''
+      : connection.baseUrl || ''
+
+  return `${connection.mode || 'local'}:${connection.remoteKind || ''}:${connection.profile || ''}:${target}`
 }
 
-export function desktopFsCacheKey() {
-  return connectionCacheKey($connection.get())
+export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
+  return connectionCacheKey(connection)
 }
 
 export function isDesktopFsRemoteMode() {
@@ -102,6 +107,29 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
   const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
 
   return typeof result === 'string' ? result : result.dataUrl || ''
+}
+
+/**
+ * Read a composer image local-shell first, even when the active agent is
+ * remote. Picker, clipboard, and OS-drop paths belong to this machine; in-app
+ * project-tree paths may belong only to the gateway and fall back there.
+ */
+export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<string> {
+  try {
+    const local = await window.hermesDesktop?.readFileDataUrl?.(path)
+
+    if (local) {
+      return local
+    }
+  } catch (error) {
+    if (!isDesktopFsRemoteMode()) {
+      throw error
+    }
+
+    // Not on this machine (or unreadable locally) — try the active gateway.
+  }
+
+  return readDesktopFileDataUrl(path)
 }
 
 export async function desktopGitRoot(path: string): Promise<string | null> {

@@ -4,13 +4,17 @@ import type { ComposerAttachment } from '@/store/composer'
 
 import {
   attachmentDisplayText,
+  attachmentId,
   coerceThinkingText,
+  messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  toRuntimeMessage
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
+const THUMB_URL = 'data:image/png;base64,dGh1bWI='
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
@@ -25,16 +29,25 @@ describe('optimisticAttachmentRef', () => {
     expect(ref).toBe(DATA_URL)
   })
 
-  it('falls back to an @image: path ref when no preview is available', () => {
-    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBe('@image:/tmp/shot.png')
+  it('prefers the downscaled thumbnail for the display ref when present', () => {
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
+    )
+
+    // The bubble is display-only; full bytes are read on demand and for upload.
+    expect(ref).toBe(THUMB_URL)
   })
 
-  it('ignores a non-data preview url and uses the path ref', () => {
+  it('does not render a full path-backed image while its bounded thumbnail is pending', () => {
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBeNull()
+  })
+
+  it('does not use a path fallback for a non-data preview url', () => {
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: 'https://example.com/x.png' })
     )
 
-    expect(ref).toBe('@image:/tmp/shot.png')
+    expect(ref).toBeNull()
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
@@ -67,6 +80,34 @@ describe('attachmentDisplayText', () => {
 
   it('still resolves a normal file ref', () => {
     expect(attachmentDisplayText(attachment({ kind: 'file', refText: '@file:src/a.ts' }))).toBe('@file:src/a.ts')
+  })
+
+  it('expands a review attachment into an anchored fenced block', () => {
+    const detail = JSON.stringify({
+      author: 'teknium1',
+      body: 'this cap looks wrong',
+      diffHunk: '@@ -1,2 +1,2 @@\n-const CAP = 5\n+const CAP = 50',
+      kind: 'review',
+      line: 12,
+      path: 'src/limits.ts',
+      prNumber: 123,
+      startLine: null,
+      url: 'https://github.com/o/r/pull/123#discussion_r1'
+    })
+
+    const block = attachmentDisplayText(attachment({ kind: 'review', detail, refText: '@url:`https://x`' }))
+
+    // The contract: anchor (file:line), author, body, and the hunk all ride.
+    expect(block).toContain('review-comment src/limits.ts:12')
+    expect(block).toContain('@teknium1')
+    expect(block).toContain('this cap looks wrong')
+    expect(block).toContain('const CAP = 50')
+  })
+
+  it('falls back to the url ref when a review detail is malformed', () => {
+    expect(attachmentDisplayText(attachment({ kind: 'review', detail: 'not json', refText: '@url:`https://x`' }))).toBe(
+      '@url:`https://x`'
+    )
   })
 })
 
@@ -148,5 +189,65 @@ describe('parseSlashCommand', () => {
 
   it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
     expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
+  })
+})
+
+describe('attachmentId', () => {
+  it('normalizes a trailing slash on a url so a re-attach dedupes (#59305 P2)', () => {
+    expect(attachmentId('url', 'https://example.com/a')).toBe(attachmentId('url', 'https://example.com/a/'))
+  })
+
+  it('falls back to the trimmed raw value for a malformed url instead of throwing', () => {
+    expect(() => attachmentId('url', 'not a url')).not.toThrow()
+    expect(attachmentId('url', '  not a url  ')).toBe(attachmentId('url', 'not a url'))
+  })
+
+  it('normalizes backslash path separators so a Windows and posix path dedupe', () => {
+    expect(attachmentId('file', 'a\\b.ts')).toBe(attachmentId('file', 'a/b.ts'))
+  })
+
+  it('normalizes a trailing slash on a folder path', () => {
+    expect(attachmentId('folder', 'src/app/')).toBe(attachmentId('folder', 'src/app'))
+  })
+
+  it('does not collapse a bare root path to an empty id', () => {
+    expect(attachmentId('folder', '/')).toBe('folder:/')
+  })
+
+  it('keeps distinct urls distinct', () => {
+    expect(attachmentId('url', 'https://example.com/a')).not.toBe(attachmentId('url', 'https://example.com/b'))
+  })
+})
+
+describe('messageCreatedAt', () => {
+  const NOW = Date.UTC(2026, 6, 28, 18, 0, 0)
+
+  it('reads the authoritative Unix-seconds timestamp (not ms)', () => {
+    // 1785282262s → July 2026, not the 1970 epoch a *1000-less read would give.
+    expect(messageCreatedAt({ timestamp: 1785282262 }, NOW).getFullYear()).toBe(2026)
+  })
+
+  it('falls back to now — never digs digits out of the id → "20663d ago" (1970)', () => {
+    // The old fallback did `new Date(Number(id.match(/\d+/)))`, so a session-style
+    // id like 20260728_184420_05e697 parsed to 20260728 *ms* = Jan 1970, showing
+    // as an absurd 20663-day age. A timestamp-less message is freshly created.
+    expect(messageCreatedAt({ timestamp: undefined }, NOW).getTime()).toBe(NOW)
+  })
+
+  it('treats a zero / non-finite timestamp as absent', () => {
+    expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
+    expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+  })
+})
+
+describe('toRuntimeMessage timeline metadata', () => {
+  it('does not expose a fabricated visible timestamp for timestamp-less history', () => {
+    const runtime = toRuntimeMessage({
+      id: 'old-message',
+      parts: [{ text: 'old', type: 'text' }],
+      role: 'assistant'
+    })
+
+    expect((runtime.metadata?.custom as { timelineTimestamp?: number }).timelineTimestamp).toBeUndefined()
   })
 })

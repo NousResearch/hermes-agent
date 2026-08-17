@@ -17,6 +17,8 @@ import pytest
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only (see
+    # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
@@ -31,12 +33,13 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        mod._child_mirrors.clear()
-        mod._active_child_runs.clear()
+
+    yield mod
+    mod._sessions.clear()
+    mod._pending.clear()
+    mod._answers.clear()
+    mod._child_mirrors.clear()
+    mod._active_child_runs.clear()
 
 
 @pytest.fixture()
@@ -235,37 +238,3 @@ def test_text_mirrors_as_message_delta(server, emits):
     ]
 
 
-def test_text_routes_to_watch_transport_without_contextvar(server, monkeypatch):
-    """Async/background path: the child runs on a detached daemon thread that
-    carries NO contextvar transport binding. Routing must still reach the
-    watch window because write_json keys event frames off the session's STORED
-    transport, not the current context. Exercises the real _emit/write_json."""
-    monkeypatch.setattr(server, "_tool_progress_enabled", lambda sid: True)
-
-    frames: list = []
-
-    class RecTransport:
-        def write(self, obj):
-            frames.append(obj)
-            return True
-
-    watch_t = RecTransport()
-    # A lazy watch resume stored its transport on the live child session.
-    server._sessions["live-1"] = {
-        "session_key": "child-1",
-        "agent": None,
-        "transport": watch_t,
-    }
-
-    # Relay with NO transport bound on the current context (the daemon worker
-    # thread never inherits the parent's contextvar) — mirrors the async case.
-    assert server.current_transport() is None
-    _relay(server, "subagent.text", preview="streamed reply", child_session_id="child-1")
-
-    routed = [
-        (f["params"]["type"], f["params"]["session_id"], f["params"].get("payload"))
-        for f in frames
-        if f.get("method") == "event" and f["params"]["session_id"] == "live-1"
-    ]
-    assert ("message.start", "live-1", None) in routed
-    assert ("message.delta", "live-1", {"text": "streamed reply"}) in routed

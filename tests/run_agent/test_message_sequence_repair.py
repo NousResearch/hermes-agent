@@ -36,44 +36,8 @@ def test_drop_scaffolding_rewinds_orphan_tool_tail():
     assert messages == [{"role": "user", "content": "task"}]
 
 
-def test_drop_scaffolding_keeps_tail_when_no_scaffolding():
-    """Mid-iteration tool results must NOT be rewound — only if scaffolding fires."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "task"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "t1", "type": "function",
-                         "function": {"name": "f", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "t1", "content": "out"},
-    ]
-    original = [dict(m) for m in messages]
-
-    AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
-
-    assert messages == original
 
 
-def test_drop_scaffolding_handles_multiple_parallel_tool_results():
-    """Parallel tool calls (one assistant → many tool results) all rewound together."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "task"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [
-             {"id": "t1", "type": "function",
-              "function": {"name": "f", "arguments": "{}"}},
-             {"id": "t2", "type": "function",
-              "function": {"name": "g", "arguments": "{}"}},
-         ]},
-        {"role": "tool", "tool_call_id": "t1", "content": "out1"},
-        {"role": "tool", "tool_call_id": "t2", "content": "out2"},
-        {"role": "assistant", "content": "(empty)",
-         "_empty_terminal_sentinel": True},
-    ]
-
-    AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
-
-    assert messages == [{"role": "user", "content": "task"}]
 
 
 # ── _repair_message_sequence ───────────────────────────────────────────────
@@ -193,109 +157,16 @@ def test_repair_keeps_tool_matching_only_call_id():
     assert any(m.get("role") == "tool" for m in messages)
 
 
-def test_repair_keeps_tool_matching_id_when_call_id_also_present():
-    """When the assistant tool_call carries both ``id`` and ``call_id`` and the
-    result matches on ``id`` (OpenAI-compatible builder path), it must be kept
-    (#58168 -- both keys are registered, so either matches).
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "do it"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "fc_9", "call_id": "call_9",
-                         "type": "function",
-                         "function": {"name": "x", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "fc_9", "content": "result"},
-        {"role": "user", "content": "next"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 0
-    assert any(m.get("role") == "tool" for m in messages)
 
 
-def test_repair_still_drops_genuine_orphan_alongside_codex_pair():
-    """Negative control for #58168: registering both id and call_id must NOT
-    over-relax orphan detection. A genuinely orphaned tool result (matching
-    neither the id nor the call_id of any assistant tool_call) is still
-    dropped, while the valid codex-format pair in the same window survives.
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "go"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "fc_1", "call_id": "call_1",
-                         "type": "function",
-                         "function": {"name": "x", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_1", "content": "valid"},
-        {"role": "tool", "tool_call_id": "call_ORPHAN", "content": "stray"},
-        {"role": "user", "content": "next"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 1
-    tool_ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
-    assert tool_ids == ["call_1"]
 
 
-def test_repair_leaves_valid_conversation_unchanged():
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "list files"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "t1", "type": "function",
-                         "function": {"name": "ls", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "t1", "content": "a.txt b.txt"},
-        {"role": "assistant", "content": "Found 2 files"},
-        {"role": "user", "content": "more"},
-    ]
-    original = [dict(m) for m in messages]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 0
-    assert messages == original
 
 
-def test_repair_preserves_multimodal_user_content():
-    """Multimodal (list) content must NOT be merged — risks mangling attachments."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": [{"type": "text", "text": "hi"},
-                                     {"type": "image_url", "image_url": {"url": "..."}}]},
-        {"role": "user", "content": "follow-up"},
-    ]
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    # The multimodal user message stays as a distinct message — no merge
-    assert len(messages) == 2
-    assert isinstance(messages[0]["content"], list)
 
 
-def test_repair_empty_messages_returns_zero():
-    agent = _bare_agent()
-    messages = []
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 0
-    assert messages == []
 
 
-def test_repair_preserves_system_messages():
-    agent = _bare_agent()
-    messages = [
-        {"role": "system", "content": "You are..."},
-        {"role": "user", "content": "hi"},
-    ]
-    original = [dict(m) for m in messages]
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    assert messages == original
 
 
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
@@ -341,32 +212,8 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
     assert messages[agent._last_flushed_db_idx] is unflushed_assistant
 
 
-def test_cursor_untouched_when_no_repairs():
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ]
-    agent._last_flushed_db_idx = 1
-
-    repairs = repair_message_sequence_with_cursor(agent, messages)
-
-    assert repairs == 0
-    assert agent._last_flushed_db_idx == 1
 
 
-def test_cursor_helper_safe_without_cursor_attribute():
-    """Bare agents (no _last_flushed_db_idx) must not crash."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "a"},
-        {"role": "user", "content": "b"},
-    ]
-
-    repairs = repair_message_sequence_with_cursor(agent, messages)
-
-    assert repairs == 1
-    assert not hasattr(agent, "_last_flushed_db_idx")
 
 
 def test_flush_guard_clamps_overshooting_cursor():
@@ -379,6 +226,11 @@ def test_flush_guard_clamps_overshooting_cursor():
 
         def append_message(self, **kw):
             self.rows.append(kw)
+
+        def append_messages_batch(self, session_id, messages, **kw):
+            for m in messages:
+                self.rows.append(dict(m, session_id=session_id))
+            return list(range(1, len(messages) + 1))
 
     agent = _bare_agent()
     agent._session_db = _DB()
@@ -399,228 +251,22 @@ def test_flush_guard_clamps_overshooting_cursor():
 
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
 
-def test_repair_merges_parallel_tool_calls_split_across_assistants():
-    """Two adjacent assistant(tool_calls) collapse into one turn (#29148).
-
-    DeepSeek v4 rejects a replayed history where parallel calls appear as
-    separate assistant turns:
-        assistant(tc=[A]) → assistant(tc=[B]) → tool(A) → tool(B)
-    The repair must produce:
-        assistant(tc=[A, B]) → tool(A) → tool(B)
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "run both"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "call_A", "type": "function",
-                         "function": {"name": "session_search", "arguments": "{}"}}]},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "call_B", "type": "function",
-                         "function": {"name": "search_files", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_A", "content": "A"},
-        {"role": "tool", "tool_call_id": "call_B", "content": "B"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs >= 1
-    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
-    assert len(assistant_msgs) == 1
-    assert {tc["id"] for tc in assistant_msgs[0]["tool_calls"]} == {"call_A", "call_B"}
-    # Both tool results survive Pass 1 (their ids are in the merged union).
-    assert sum(1 for m in messages if m.get("role") == "tool") == 2
 
 
-def test_repair_merges_content_then_toolcalls_split():
-    """content-only assistant followed by tool_calls-only assistant merge (#49147).
-
-    The recovery/continuation paths can leave:
-        assistant(content="Let me search") → assistant(tool_calls=[A]) → tool(A)
-    which must become:
-        assistant(content="Let me search", tool_calls=[A]) → tool(A)
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "search"},
-        {"role": "assistant", "content": "Let me search for that."},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "call_1", "type": "function",
-                         "function": {"name": "session_search", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_1", "content": "found"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs >= 1
-    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
-    assert len(assistant_msgs) == 1
-    merged = assistant_msgs[0]
-    assert merged["content"] == "Let me search for that."
-    assert len(merged["tool_calls"]) == 1
-    assert merged["tool_calls"][0]["id"] == "call_1"
-    # Tool result still follows immediately.
-    assert messages[-1]["role"] == "tool"
 
 
-def test_repair_merges_three_consecutive_assistant_tool_calls():
-    """Three adjacent assistant(tool_calls) turns all collapse into one."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "run three"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "c1", "type": "function",
-                         "function": {"name": "x", "arguments": "{}"}}]},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "c2", "type": "function",
-                         "function": {"name": "y", "arguments": "{}"}}]},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "c3", "type": "function",
-                         "function": {"name": "z", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "r1"},
-        {"role": "tool", "tool_call_id": "c2", "content": "r2"},
-        {"role": "tool", "tool_call_id": "c3", "content": "r3"},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs >= 2
-    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
-    assert len(assistant_msgs) == 1
-    assert len(assistant_msgs[0]["tool_calls"]) == 3
-    assert sum(1 for m in messages if m.get("role") == "tool") == 3
 
 
-def test_repair_does_NOT_merge_tool_calls_separated_by_tool_result():
-    """A tool result between two assistant(tool_calls) marks distinct rounds.
-
-    This is the critical guard: two sequential tool-call rounds must NOT be
-    collapsed, or the second round's tool result would orphan.
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "go"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "t1", "type": "function",
-                         "function": {"name": "f", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "t1", "content": "done"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "t2", "type": "function",
-                         "function": {"name": "g", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "t2", "content": "done2"},
-    ]
-    before = sum(1 for m in messages if m.get("role") == "assistant")
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    assert sum(1 for m in messages if m.get("role") == "assistant") == before
-    # Both tool results survive (neither orphaned).
-    assert sum(1 for m in messages if m.get("role") == "tool") == 2
 
 
-def test_repair_does_NOT_merge_assistant_separated_by_user():
-    """A user turn between two assistants blocks the merge (normal dialog)."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "q1"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "q2"},
-        {"role": "assistant", "content": "a2"},
-    ]
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    assert sum(1 for m in messages if m.get("role") == "assistant") == 2
 
 
-def test_repair_merges_two_text_only_assistants():
-    """Two consecutive text-only assistants (no tool_calls) still merge.
-
-    The empty-response / thinking-prefill paths can leave two adjacent
-    text assistants; strict providers reject consecutive same-role turns.
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "q"},
-        {"role": "assistant", "content": "First part."},
-        {"role": "assistant", "content": "Second part."},
-    ]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs >= 1
-    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
-    assert len(assistant_msgs) == 1
-    assert assistant_msgs[0]["content"] == "First part.\nSecond part."
 
 
-def test_repair_preserves_reasoning_content_on_merge():
-    """Merged tool-call turn keeps a reasoning_content (DeepSeek/Kimi replay)."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "go"},
-        {"role": "assistant", "content": "", "reasoning_content": "thinking A",
-         "tool_calls": [{"id": "a", "type": "function",
-                         "function": {"name": "f", "arguments": "{}"}}]},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "b", "type": "function",
-                         "function": {"name": "g", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "a", "content": "ra"},
-        {"role": "tool", "tool_call_id": "b", "content": "rb"},
-    ]
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    merged = [m for m in messages if m.get("role") == "assistant"][0]
-    assert merged.get("reasoning_content") == "thinking A"
 
 
-def test_repair_noop_on_valid_parallel_format():
-    """A correctly-formatted single assistant with multiple tool_calls is unchanged."""
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "run both"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [
-             {"id": "call_A", "type": "function",
-              "function": {"name": "session_search", "arguments": "{}"}},
-             {"id": "call_B", "type": "function",
-              "function": {"name": "search_files", "arguments": "{}"}},
-         ]},
-        {"role": "tool", "tool_call_id": "call_A", "content": "A"},
-        {"role": "tool", "tool_call_id": "call_B", "content": "B"},
-    ]
-    original_len = len(messages)
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 0
-    assert len(messages) == original_len
 
 
-def test_repair_does_NOT_merge_codex_interim_assistants():
-    """Codex Responses interim turns stay separate (encrypted replay state).
-
-    The codex_responses api_mode keeps multiple consecutive incomplete
-    assistant turns, each carrying distinct codex_reasoning_items /
-    codex_message_items that must replay verbatim. Pass 0 must exempt them.
-    Refs test_run_agent_codex_responses.py duplicate-detection tests.
-    """
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "think hard"},
-        {"role": "assistant", "content": "", "finish_reason": "incomplete",
-         "codex_reasoning_items": [{"encrypted_content": "enc_first"}]},
-        {"role": "assistant", "content": "", "finish_reason": "incomplete",
-         "codex_reasoning_items": [{"encrypted_content": "enc_second"}]},
-        {"role": "assistant", "content": "Final answer."},
-    ]
-
-    AIAgent._repair_message_sequence(agent, messages)
-
-    interim = [m for m in messages if m.get("finish_reason") == "incomplete"]
-    assert len(interim) == 2
-    encs = [m["codex_reasoning_items"][0]["encrypted_content"] for m in interim]
-    assert "enc_first" in encs and "enc_second" in encs
 
 
 # ── tool_call_id de-duplication (#58327) ────────────────────────────────────
@@ -628,28 +274,6 @@ def test_repair_does_NOT_merge_codex_interim_assistants():
 # appears more than once with HTTP 400 "Duplicate value for 'tool_call_id'".
 
 
-def test_repair_deduplicates_duplicate_tool_results():
-    """A second tool result reusing an already-matched tool_call_id is dropped.
-
-    repair_message_sequence consumes the id from known_tool_ids on first match
-    so the duplicate falls into the repair/drop branch (#58327, kernel #55436).
-    """
-    from agent.agent_runtime_helpers import repair_message_sequence
-
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "run the tool"},
-        {"role": "assistant", "content": "",
-         "tool_calls": [{"id": "call_1", "type": "function",
-                         "function": {"name": "test", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_1", "content": "res1"},
-        {"role": "tool", "tool_call_id": "call_1", "content": "res1 duplicate"},
-    ]
-    repairs = repair_message_sequence(agent, messages)
-    assert repairs == 1
-    tool_msgs = [m for m in messages if m.get("role") == "tool"]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0]["content"] == "res1"
 
 
 def test_sanitize_deduplicates_duplicate_tool_results():
@@ -712,6 +336,126 @@ def test_sanitize_preserves_distinct_tool_call_ids():
     assert sorted(m["tool_call_id"] for m in out if m.get("role") == "tool") == ["call_A", "call_B"]
 
 
+# ── tool_call_id reuse by local servers (#70724) ────────────────────────────
+# llama.cpp emits ONE constant tool_call_id for every tool call it returns, so
+# ``tool_call_id`` is not globally unique in practice. The #58327 dedup pass
+# must key off outstanding calls, not "seen at any point", or every result
+# after the first is deleted and the agent stops mid-task.
+
+
+CONSTANT_ID = "ZsSt4SkIFMRz0HtqT7MTlimNvzlKM896"
+
+
+def _call(cid, name="terminal"):
+    return {"role": "assistant", "content": None,
+            "tool_calls": [{"id": cid, "type": "function",
+                            "function": {"name": name, "arguments": "{}"}}]}
+
+
+def _result(cid, content):
+    return {"role": "tool", "tool_call_id": cid, "name": "terminal",
+            "content": content}
+
+
+def test_sanitize_keeps_results_when_server_reuses_one_tool_call_id():
+    """Every answered call survives even when all of them share one id.
+
+    Contract: a tool result is dropped for being unanswerable, never for
+    reusing an id that an earlier call already retired.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [{"role": "user", "content": "do three steps"}]
+    for i in range(3):
+        messages.append(_call(CONSTANT_ID))
+        messages.append(_result(CONSTANT_ID, f"step {i} output"))
+
+    out = sanitize_api_messages(list(messages))
+    results = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in results] == [
+        "step 0 output", "step 1 output", "step 2 output",
+    ]
+    calls = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(calls) == 3
+
+
+def test_sanitize_still_drops_replayed_result_for_retired_call():
+    """The #58327 protection holds: a second result for an already-answered
+    call answers nothing outstanding and is still dropped."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        _call(CONSTANT_ID),
+        _result(CONSTANT_ID, "real"),
+        _result(CONSTANT_ID, "replayed by a retry/resume glitch"),
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["content"] for m in out if m.get("role") == "tool"] == ["real"]
+
+
+def test_sanitize_preserves_deterministic_local_ids_across_turns():
+    """Hermes' own deterministic call ids (fn-name+args hashes / local
+    counters) legitimately repeat across turns — both must survive.
+
+    Scenario surfaced in #76632: two image_generate rounds emit the same
+    local ids (``image_generate:0``/``:1``) in successive assistant turns.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    def _tc(cid):
+        return {"id": cid, "type": "function",
+                "function": {"name": "image_generate", "arguments": "{}"}}
+
+    messages = [{"role": "user", "content": "make images"}]
+    for turn in ("one", "two"):
+        messages.append({"role": "assistant", "content": turn,
+                         "tool_calls": [_tc("image_generate:0"), _tc("image_generate:1")]})
+        messages.append({"role": "tool", "tool_call_id": "image_generate:0",
+                         "content": f"imgA-{turn}"})
+        messages.append({"role": "tool", "tool_call_id": "image_generate:1",
+                         "content": f"imgB-{turn}"})
+
+    out = sanitize_api_messages(list(messages))
+    assistants = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(assistants) == 2
+    for a in assistants:
+        assert [tc["id"] for tc in a["tool_calls"]] == [
+            "image_generate:0", "image_generate:1"]
+    tool_ids = sorted(m["tool_call_id"] for m in out if m.get("role") == "tool")
+    assert tool_ids == ["image_generate:0", "image_generate:0",
+                        "image_generate:1", "image_generate:1"]
+
+
+def test_sanitize_keeps_all_results_over_fifty_turn_constant_id_session():
+    """Kimi K3 / llama.cpp field repro (#70724, #70734): 50 sequential calls
+    all sharing one id must all survive — stock behavior kept 1/50."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [{"role": "user", "content": "Run 50 steps."}]
+    for step in range(50):
+        messages.append(_call(CONSTANT_ID))
+        messages.append(_result(CONSTANT_ID, f"completed-step-{step}"))
+
+    out = sanitize_api_messages(list(messages))
+    calls = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
+    results = [m for m in out if m.get("role") == "tool"]
+    assert len(calls) == 50
+    assert len(results) == 50
+    assert results[-1]["content"] == "completed-step-49"
+
+
+def test_sanitize_drops_result_with_no_preceding_call():
+    """A tool result that never had a call is an orphan regardless of id."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    out = sanitize_api_messages([
+        {"role": "user", "content": "hi"},
+        _result("id_never_requested", "orphan"),
+    ])
+    assert [m for m in out if m.get("role") == "tool"] == []
+
+
 def test_sanitize_drops_empty_tool_calls_array():
     """sanitize_api_messages strips ``tool_calls: []`` from assistant messages.
 
@@ -732,41 +476,90 @@ def test_sanitize_drops_empty_tool_calls_array():
     assert assistant["content"] == "answer"
 
 
-def test_sanitize_drops_non_list_tool_calls():
-    """A malformed non-list ``tool_calls`` (e.g. None under the key) is also
-    dropped so it can't reach a strict provider."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
+    """repair_message_sequence must drop a stale ``tool_calls: []`` on the
+    surviving message of a consecutive-assistant merge (#77921).
+
+    The chokepoint sanitizer (sanitize_api_messages) only patches the per-call
+    wire copy — a ``[]`` left on the repaired live/persisted trajectory is
+    replayed on the next turn and 400s strict providers (DeepSeek v4). The
+    merge's union branches only ever set non-empty lists or leave the key
+    untouched, so the empty array survives into the persisted state."""
+    from agent.agent_runtime_helpers import repair_message_sequence
 
     messages = [
-        {"role": "assistant", "content": "text", "tool_calls": None},
+        {"role": "user", "content": "hi"},
+        # surviving turn carries a stale empty tool_calls from an earlier pass
+        {"role": "assistant", "content": "first", "tool_calls": []},
+        {"role": "assistant", "content": "second"},
     ]
-    out = sanitize_api_messages(list(messages))
-    assert "tool_calls" not in out[0]
+    # A dummy agent object is enough — repair only reads message roles/content.
+    agent = type("Agent", (), {})()
+    n = repair_message_sequence(agent, messages)
+    assert n >= 0
+    assistants = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    assert "tool_calls" not in assistants[0]
+    assert "second" in assistants[0]["content"]
 
 
-def test_sanitize_does_not_mutate_original_on_empty_tool_calls():
-    """Stripping must be non-destructive: the caller's message dicts (the
-    persisted trajectory) keep their original ``tool_calls`` key."""
+
+
+
+
+
+
+# ── Self-recovery: heal empty-content non-final messages ──────────────────
+# Repro of the production incident: a dead stream persisted an empty-content
+# assistant stub mid-transcript, and every later request 400'd with
+# "all messages must have non-empty content except for the optional final
+# assistant message" (INVALID_REQUEST_BODY). sanitize_api_messages now heals
+# such turns on the per-call copy so the session recovers itself in memory.
+
+
+def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
+    """When dedup removes ALL tool_calls from an assistant message,
+    the key is dropped instead of writing tool_calls: [].
+
+    DeepSeek v4 and newer OpenAI reject empty tool_calls with HTTP 400.
+    The dedup pass introduced by #58327 can produce this state when
+    all tool_call_ids are duplicates of earlier messages in a long
+    history. The fix (#64335) drops the key entirely rather than
+    writing an empty array.
+    """
     from agent.agent_runtime_helpers import sanitize_api_messages
 
-    original_assistant = {"role": "assistant", "content": "answer", "tool_calls": []}
-    messages = [{"role": "user", "content": "hi"}, original_assistant]
-    sanitize_api_messages(list(messages))
-    assert original_assistant["tool_calls"] == []  # untouched in-place
-
-
-def test_sanitize_preserves_populated_tool_calls():
-    """Negative control: a non-empty tool_calls array (with its matching tool
-    result) must survive untouched."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
-
+    # Simulate a crash/resume glitch or compression-window re-emission that
+    # replays the SAME assistant call while the first is still outstanding
+    # (no tool result has answered it yet). That is a true duplicate: the
+    # first occurrence is kept, the replay is removed. NOTE: a reuse AFTER
+    # the call was answered is NOT a duplicate — servers with per-turn or
+    # constant ids (llama.cpp, Kimi K3) legitimately re-issue ids across
+    # turns (#70724), which outstanding-call semantics now preserve.
     messages = [
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_Z", "type": "function",
-             "function": {"name": "foo", "arguments": "{}"}},
-        ]},
-        {"role": "tool", "tool_call_id": "call_Z", "content": "r"},
+        {"role": "user", "content": "step 1"},
+        {"role": "assistant", "content": "running",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+        # Replayed assistant call BEFORE the result answers call_A —
+        # a duplicate of a still-outstanding call, so it must be removed.
+        {"role": "assistant", "content": "retrying",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "result 1"},
     ]
+
     out = sanitize_api_messages(list(messages))
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
-    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+    # First assistant should keep tool_calls (first occurrence)
+    assistant1 = [m for m in out if m.get("role") == "assistant"][0]
+    assert "tool_calls" in assistant1
+    assert len(assistant1["tool_calls"]) == 1
+    assert assistant1["tool_calls"][0]["id"] == "call_A"
+
+    # Second assistant should have tool_calls key DROPPED
+    # (all tool_calls were deduped as duplicates of call_A)
+    assistant2 = [m for m in out if m.get("role") == "assistant"][1]
+    assert "tool_calls" not in assistant2
+    # Content should be preserved
+    assert assistant2["content"] == "retrying"

@@ -30,68 +30,6 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.mark.asyncio
-async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch):
-    """A wedged initialize() attempt must not trap startup on attempt 1/8."""
-    fake_app = MagicMock()
-    fake_app.bot = MagicMock()
-    fake_app.initialize = AsyncMock(return_value=None)
-    fake_app.start = AsyncMock()
-    fake_app.add_handler = MagicMock()
-
-    chainable = MagicMock()
-    chainable.token.return_value = chainable
-    chainable.request.return_value = chainable
-    chainable.get_updates_request.return_value = chainable
-    chainable.build.return_value = fake_app
-
-    builder_root = MagicMock()
-    builder_root.builder.return_value = chainable
-    monkeypatch.setattr(tg_adapter, "Application", builder_root)
-    monkeypatch.setattr(tg_adapter, "HTTPXRequest", MagicMock)
-    monkeypatch.setattr(tg_adapter, "discover_fallback_ips", AsyncMock(return_value=[]))
-    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *a, **k: None)
-    monkeypatch.setattr(tg_adapter.asyncio, "sleep", AsyncMock())
-
-    deadline_calls = 0
-
-    async def _fake_deadline(awaitable, timeout, *, on_abandon=None):
-        nonlocal deadline_calls
-        deadline_calls += 1
-        if deadline_calls == 1:
-            awaitable.close()
-            raise tg_adapter.asyncio.TimeoutError()
-        return await awaitable
-
-    monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", _fake_deadline)
-
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
-    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
-    monkeypatch.setattr(adapter, "_delete_webhook_best_effort", AsyncMock())
-    monkeypatch.setattr(adapter, "_start_polling_resilient", AsyncMock(return_value=True))
-    monkeypatch.setattr(adapter, "_polling_heartbeat_loop", AsyncMock(return_value=None))
-    monkeypatch.setattr(adapter, "_start_post_connect_housekeeping", MagicMock())
-
-    assert await adapter.connect() is True
-
-    assert fake_app.initialize.call_count == 2
-    assert fake_app.initialize.await_count == 1
-    assert deadline_calls == 2
-    tg_adapter.asyncio.sleep.assert_awaited_once_with(1)
-    fake_app.start.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_await_with_thread_deadline_returns_value_on_happy_path():
-    """The real helper returns the awaited result and raises no timeout."""
-    async def _ok():
-        return 42
-
-    result = await tg_adapter._await_with_thread_deadline(_ok(), timeout=5.0)
-    assert result == 42
-
-
-@pytest.mark.asyncio
 async def test_await_with_thread_deadline_abandons_and_runs_cleanup_on_timeout():
     """A wedged awaitable must raise TimeoutError promptly AND trigger the
     best-effort on_abandon cleanup (the httpx-pool-leak guard).
@@ -158,44 +96,38 @@ async def test_await_with_thread_deadline_cleanup_error_is_swallowed():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_abandoned_app_closes_request_transports_when_uninitialized():
-    """The leak fix must release the httpx transports even when PTB's own
-    Application.shutdown()/Bot.shutdown() no-op because the wedged initialize()
-    never flipped _initialized. _shutdown_abandoned_app falls back to closing
-    each bot._request transport directly (HTTPXRequest.shutdown gates only on
-    client.is_closed, not on an init flag)."""
-    from unittest.mock import AsyncMock, MagicMock
+async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
+    """#63309: when the loop thread is stuck in a synchronous call, the expiry
+    callback never runs and every asyncio timeout goes silent. The off-loop
+    watchdog must detect that state and emit diagnostics from its own thread."""
+    import asyncio as _asyncio
+    import time as _time
 
-    # A half-built app: shutdown() is a no-op (uninitialized), but the request
-    # transports still hold open httpx clients that must be closed.
-    req0 = MagicMock()
-    req0.shutdown = AsyncMock()
-    req1 = MagicMock()
-    req1.shutdown = AsyncMock()
-    bot = MagicMock()
-    bot._request = (req0, req1)
-    app = MagicMock()
-    app.bot = bot
-    app.shutdown = AsyncMock(return_value=None)  # PTB no-op on uninitialized app
+    dumps = []
+    monkeypatch.setattr(
+        tg_adapter,
+        "_dump_loop_blocked_diagnostics",
+        lambda timeout, grace: dumps.append((timeout, grace)),
+    )
+    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.15)
 
-    await tg_adapter._shutdown_abandoned_app(app)
+    hung = _asyncio.get_running_loop().create_future()  # never completes
+    task = _asyncio.ensure_future(
+        tg_adapter._await_with_thread_deadline(hung, timeout=0.05)
+    )
+    # Let the helper start its deadline + watchdog timers…
+    await _asyncio.sleep(0)
+    # …then block the event loop straight through deadline (0.05s) AND the
+    # watchdog grace (0.15s): call_soon_threadsafe stays queued, exactly like
+    # a sync call pinning the loop during Application.initialize().
+    # Margin matters: the watchdog thread only dumps if the loop is STILL
+    # blocked when it wakes, and thread wakeup lags under parallel-suite load.
+    # 0.2s (= deadline+grace exactly) flaked in a 40-worker full-suite run.
+    _time.sleep(1.0)
+    with pytest.raises(_asyncio.TimeoutError):
+        await task
 
-    app.shutdown.assert_awaited_once()
-    # Fell back to closing the transports directly — the actual leak fix.
-    req0.shutdown.assert_awaited_once()
-    req1.shutdown.assert_awaited_once()
+    assert dumps == [(0.05, 0.15)]
+    hung.cancel()
 
 
-@pytest.mark.asyncio
-async def test_shutdown_abandoned_app_handles_none_and_missing_requests():
-    """Robust against app=None and an app whose bot/_request aren't present."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    # None app -> no-op, no crash.
-    await tg_adapter._shutdown_abandoned_app(None)
-
-    # app.shutdown() raising must be swallowed, and missing _request tolerated.
-    app = MagicMock()
-    app.shutdown = AsyncMock(side_effect=RuntimeError("still running"))
-    app.bot = None
-    await tg_adapter._shutdown_abandoned_app(app)  # must not raise

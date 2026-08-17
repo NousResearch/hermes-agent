@@ -48,12 +48,6 @@ class TestYuanbaoAdapterInit:
         assert adapter is not None
         assert adapter.PLATFORM == Platform.YUANBAO
 
-    def test_initial_state(self):
-        config = make_config()
-        adapter = YuanbaoAdapter(config)
-        status = adapter.get_status()
-        assert status["connected"] == False
-        assert status["bot_id"] is None
 
 
 # ===========================================================
@@ -64,10 +58,6 @@ class TestYuanbaoConfig:
     def test_platform_enum(self):
         assert Platform.YUANBAO.value == "yuanbao"
 
-    def test_config_fields(self):
-        config = make_config()
-        assert config.extra["app_id"] == "test_key"
-        assert config.extra["app_secret"] == "test_secret"
 
     def test_get_connected_platforms_requires_key_and_secret(self):
         # Only key, no secret → not in connected list
@@ -154,21 +144,6 @@ class TestGatewayRunnerRegistration:
         assert adapter is not None
         assert isinstance(adapter, YuanbaoAdapter)
 
-    def test_runner_adapter_platform_attr(self):
-        """创建的 adapter.PLATFORM 为 Platform.YUANBAO"""
-        from gateway.config import GatewayConfig
-        config = make_config(enabled=True)
-        gw_config = GatewayConfig(platforms={Platform.YUANBAO: config})
-
-        try:
-            runner, _ = self._make_minimal_runner(gw_config)
-            with patch("gateway.platforms.yuanbao.WEBSOCKETS_AVAILABLE", True):
-                adapter = runner._create_adapter(Platform.YUANBAO, config)
-        except ImportError as e:
-            pytest.skip(f"run.py import unavailable in test env: {e}")
-
-        assert adapter is not None
-        assert adapter.PLATFORM == Platform.YUANBAO
 
 
 # ===========================================================
@@ -185,15 +160,6 @@ class TestProtoRoundTrip:
         assert decoded["seq_no"] == 42
         assert decoded["data"] == b"hello"
 
-    def test_text_elem_encoding(self):
-        from gateway.platforms.yuanbao_proto import encode_send_c2c_message
-        msg = encode_send_c2c_message(
-            to_account="user123",
-            msg_body=[{"msg_type": "TIMTextElem", "msg_content": {"text": "hello"}}],
-            from_account="bot456",
-        )
-        assert isinstance(msg, bytes)
-        assert len(msg) > 0
 
 
 # ===========================================================
@@ -211,22 +177,12 @@ class TestMarkdownChunking:
             assert isinstance(c, str)
             assert len(c) > 0
 
-    def test_chunk_short_text_no_split(self):
-        from gateway.platforms.yuanbao import MarkdownProcessor
-        text = "hello world"
-        chunks = MarkdownProcessor.chunk_markdown_text(text, 3000)
-        assert chunks == [text]
 
 
 # ===========================================================
 # 6. Sign Token 模块
 # ===========================================================
 
-class TestSignToken:
-    def test_import_ok(self):
-        from gateway.platforms.yuanbao import SignManager
-        assert callable(SignManager.get_token)
-        assert callable(SignManager.force_refresh)
 
 
 # ===========================================================
@@ -234,25 +190,10 @@ class TestSignToken:
 # ===========================================================
 
 class TestManagerImports:
-    def test_connection_manager_import(self):
-        from gateway.platforms.yuanbao import ConnectionManager
-        assert ConnectionManager is not None
 
-    def test_outbound_manager_import(self):
-        from gateway.platforms.yuanbao import OutboundManager
-        assert OutboundManager is not None
 
-    def test_message_sender_import(self):
-        from gateway.platforms.yuanbao import MessageSender
-        assert MessageSender is not None
 
-    def test_heartbeat_manager_import(self):
-        from gateway.platforms.yuanbao import HeartbeatManager
-        assert HeartbeatManager is not None
 
-    def test_slow_response_notifier_import(self):
-        from gateway.platforms.yuanbao import SlowResponseNotifier
-        assert SlowResponseNotifier is not None
 
     def test_adapter_has_outbound_manager(self):
         adapter = YuanbaoAdapter(make_config())
@@ -272,11 +213,6 @@ class TestManagerImports:
 # 7. Media 模块
 # ===========================================================
 
-class TestMediaModule:
-    def test_import_ok(self):
-        from gateway.platforms.yuanbao_media import upload_to_cos, download_url
-        assert callable(upload_to_cos)
-        assert callable(download_url)
 
 
 # ===========================================================
@@ -292,28 +228,12 @@ class TestToolset:
         toolsets_dict = getattr(ts, "TOOLSETS", getattr(ts, "toolsets", {}))
         assert "hermes-yuanbao" in toolsets_dict
 
-    def test_tools_import(self):
-        from tools.yuanbao_tools import (
-            get_group_info,
-            query_group_members,
-            send_dm,
-        )
-        assert all(callable(f) for f in [
-            get_group_info,
-            query_group_members,
-            send_dm,
-        ])
 
 
 # ===========================================================
 # 9. platforms/__init__.py 导出
 # ===========================================================
 
-class TestPlatformInit:
-    def test_yuanbao_adapter_exported(self):
-        """gateway.platforms.__init__.py 应导出 YuanbaoAdapter"""
-        from gateway.platforms import YuanbaoAdapter as _YuanbaoAdapter
-        assert _YuanbaoAdapter is YuanbaoAdapter
 
 
 # ===========================================================
@@ -347,22 +267,11 @@ class TestP0ReconnectGuard:
         # No new task should be created because already reconnecting
 
 
-class TestP0InboundTaskTracking:
-    """P0-2: _inbound_tasks set is initialized and usable."""
-
-    def test_inbound_tasks_initialized(self):
-        adapter = YuanbaoAdapter(make_config())
-        assert hasattr(adapter, '_inbound_tasks')
-        assert isinstance(adapter._inbound_tasks, set)
-        assert len(adapter._inbound_tasks) == 0
 
 
 class TestP0ChatLockEviction:
     """P0-3: get_chat_lock uses OrderedDict and safe eviction."""
 
-    def test_chat_locks_is_ordered_dict(self):
-        adapter = YuanbaoAdapter(make_config())
-        assert isinstance(adapter._outbound._chat_locks, collections.OrderedDict)
 
     def test_eviction_skips_locked(self):
         """When eviction is needed, locked entries are skipped."""

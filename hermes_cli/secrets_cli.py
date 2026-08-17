@@ -2,7 +2,7 @@
 
 Subcommands:
     setup    — interactive wizard: install bws, prompt for token + project, test fetch
-    status   — show current config + binary version + last fetch outcome
+    status   — show current config + binary version + token validation status
     sync     — run a fetch right now and show what would be applied (dry-run friendly)
     disable  — flip ``secrets.bitwarden.enabled`` to False
     install  — just download the bws binary (no token / project required)
@@ -11,6 +11,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import subprocess
@@ -22,7 +23,20 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agent.secret_sources import bitwarden as bw
+# NOTE: the Bitwarden backend (``agent.secret_sources.bitwarden``) pulls in
+# ``cryptography`` at module-import time.  On Windows the resulting
+# ``cryptography._rust.pyd`` is mapped into the running process — and when
+# that process is ``hermes update``, the self-lock preflight detects the
+# loaded native module and defers (#86781).  Keep the backend import lazy:
+# this module is registered parse-time from ``hermes_cli.main`` and must not
+# touch ``bw`` until a handler actually runs.
+#
+# ``_BWS_VERSION`` is duplicated here (as a plain string) so ``register_cli``
+# can render the ``install --help`` text without importing the backend.
+# ``agent.secret_sources.bitwarden._BWS_VERSION`` is the source of truth;
+# bump both together when pinning a new bws release.
+_BWS_VERSION = "2.0.0"
+
 from hermes_cli.config import (
     get_env_path,
     load_config,
@@ -30,6 +44,28 @@ from hermes_cli.config import (
     save_env_value,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+
+def _load_bw():
+    """Import ``agent.secret_sources.bitwarden`` on first use (crypto payload)."""
+    from agent.secret_sources import bitwarden as _bw
+
+    return _bw
+
+
+def __getattr__(name: str):
+    """PEP 562 module-level lazy resolver.
+
+    Existing callers (and upstream tests) monkeypatch attributes on
+    ``hermes_cli.secrets_cli.bw`` directly.  Resolving that attribute at
+    module-import time would re-import ``cryptography`` eagerly — the very
+    self-lock we are preventing (#86781).  Defer the backend import until
+    the first actual attribute access, so ``import hermes_cli.secrets_cli``
+    stays crypto-free while ``secrets_cli.bw.find_bws`` still resolves.
+    """
+    if name == "bw":
+        return _load_bw()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +104,26 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     setup.set_defaults(func=cmd_setup)
 
-    status = sub.add_parser("status", help="Show config + binary + last fetch")
+    status = sub.add_parser(
+        "status",
+        help="Show config + binary + token validation status",
+    )
     status.set_defaults(func=cmd_status)
+
+    token = sub.add_parser(
+        "token",
+        help="Rotate the access token: validate a new one and store it in .env",
+    )
+    token.add_argument(
+        "--access-token",
+        help="Provide the new token non-interactively (default: masked prompt)",
+    )
+    token.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Store without probing Bitwarden first (not recommended)",
+    )
+    token.set_defaults(func=cmd_token)
 
     sync = sub.add_parser("sync", help="Fetch secrets now and report what changed")
     sync.add_argument(
@@ -84,7 +138,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 
     install = sub.add_parser(
         "install",
-        help=f"Download and verify the pinned bws binary (v{bw._BWS_VERSION})",
+        help=f"Download and verify the pinned bws binary (v{_BWS_VERSION})",
     )
     install.add_argument(
         "--force",
@@ -100,6 +154,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     console.print(
         Panel.fit(
@@ -289,6 +344,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
@@ -297,7 +353,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
     project_id = bw_cfg.get("project_id", "")
     server_url = str(bw_cfg.get("server_url", "") or "").strip()
-    token_set = bool(os.environ.get(token_env))
+    token = os.environ.get(token_env, "").strip()
+    token_set = bool(token)
+    binary = bw.find_bws(install_if_missing=False)
+    token_validation, validation_messages = _token_validation_status(
+        enabled=enabled,
+        binary=binary,
+        token=token,
+        server_url=server_url,
+    )
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("", style="bold")
@@ -305,6 +369,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     table.add_row("Enabled",         _yn(enabled))
     table.add_row("Token env var",   token_env)
     table.add_row("Token in env",    _yn(token_set))
+    table.add_row("Token validation", token_validation)
     table.add_row("Project ID",      project_id or "[dim](unset)[/dim]")
     table.add_row(
         "Server URL",
@@ -314,13 +379,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     table.add_row("Cache TTL (s)",   str(bw_cfg.get("cache_ttl_seconds", 300)))
     table.add_row("Auto-install",    _yn(bool(bw_cfg.get("auto_install", True))))
 
-    binary = bw.find_bws(install_if_missing=False)
     if binary:
         table.add_row("bws binary",  f"{binary} ({_bws_version(binary)})")
     else:
         table.add_row("bws binary",  "[yellow]not installed[/yellow]")
 
     console.print(Panel(table, title="Bitwarden Secrets Manager", border_style="cyan"))
+    for message in validation_messages:
+        console.print(message)
 
     if not enabled:
         console.print("\n  Run [cyan]hermes secrets bitwarden setup[/cyan] to enable.")
@@ -337,7 +403,90 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_token(args: argparse.Namespace) -> int:
+    """Rotate the BSM access token without re-running the whole setup wizard.
+
+    Prompts for (or accepts via ``--access-token``) a new machine-account
+    token, probes Bitwarden with it (unless ``--no-verify``), and only then
+    persists it to .env — so a bad paste never bricks the working token.
+    """
+    bw = _load_bw()
+    console = Console()
+    cfg = load_config()
+    bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
+    token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
+    server_url = str(bw_cfg.get("server_url", "") or "").strip()
+
+    token = (args.access_token or "").strip()
+    if not token:
+        if not sys.stdin.isatty():
+            console.print(
+                "[red]No TTY — pass the token with --access-token.[/red]"
+            )
+            return 1
+        console.print(
+            "Create a new token in the Bitwarden web app:\n"
+            "  Secrets Manager → Machine accounts → [your account] → "
+            "Access tokens → Create access token\n"
+        )
+        token = masked_secret_prompt(f"Paste new access token ({token_env}): ").strip()
+    if not token:
+        console.print("[red]Empty token, aborting.[/red]")
+        return 1
+    if not token.startswith("0."):
+        console.print(
+            "[yellow]Warning: token doesn't start with '0.' — usually that means "
+            "you pasted something other than a BSM access token.[/yellow]"
+        )
+
+    if not args.no_verify:
+        binary = bw.find_bws(install_if_missing=True)
+        if binary is None:
+            console.print(
+                "[red]bws binary not available — cannot verify.  "
+                "Re-run with --no-verify to store anyway.[/red]"
+            )
+            return 1
+        console.print("Verifying against Bitwarden…")
+        projects = _list_projects(binary, token, console, server_url=server_url)
+        if projects is None:
+            console.print(
+                "[red]✗ New token was rejected — nothing was changed.[/red]"
+            )
+            return 1
+        console.print(
+            f"[green]✓ Token accepted[/green] "
+            f"({len(projects)} project{'s' if len(projects) != 1 else ''} visible)."
+        )
+        project_id = str(bw_cfg.get("project_id", "") or "")
+        if project_id and projects and project_id not in {p["id"] for p in projects}:
+            console.print(
+                f"[yellow]Warning: configured project {project_id} is not visible "
+                "to this machine account.  Grant it access in the Bitwarden web "
+                "app or re-run `hermes secrets bitwarden setup` to pick a "
+                "different project.[/yellow]"
+            )
+
+    save_env_value(token_env, token)
+    os.environ[token_env] = token
+    # Old cached pulls are keyed on the previous token's fingerprint; drop
+    # them so the next startup fetches fresh with the new credential.
+    bw.clear_caches()
+    console.print(
+        f"[green]✓[/green] stored in {get_env_path()} as {token_env}.  "
+        "Takes effect on the next Hermes invocation."
+    )
+    if not bw_cfg.get("enabled"):
+        console.print(
+            "[yellow]Note: the Bitwarden integration is currently disabled — "
+            "run `hermes secrets bitwarden setup` (or set "
+            "secrets.bitwarden.enabled: true) to turn it on.[/yellow]"
+        )
+    return 0
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
@@ -428,6 +577,7 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
 
 def cmd_install(args: argparse.Namespace) -> int:
+    bw = _load_bw()
     console = Console()
     try:
         path = bw.install_bws(force=bool(args.force))
@@ -452,7 +602,7 @@ def _bws_version(binary: Path) -> str:
         res = subprocess.run(
             [str(binary), "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=5,
         )
         if res.returncode == 0:
@@ -462,11 +612,46 @@ def _bws_version(binary: Path) -> str:
     return "version unknown"
 
 
+def _token_validation_status(
+    *,
+    enabled: bool,
+    binary: Optional[Path],
+    token: str,
+    server_url: str = "",
+) -> tuple[str, list[str]]:
+    if not enabled:
+        return "[dim]not checked[/dim] (integration disabled)", []
+    if not token:
+        return "[dim]not checked[/dim] (token missing)", []
+    if binary is None:
+        return "[dim]not checked[/dim] (bws not installed)", []
+
+    messages: list[str] = []
+    if not token.startswith("0."):
+        messages.append(
+            "  [yellow]Warning: token doesn't start with '0.' — usually that means "
+            "you pasted something other than a BSM access token.  Continuing anyway.[/yellow]"
+        )
+
+    capture = io.StringIO()
+    probe_console = Console(file=capture, record=True, width=200)
+    projects = _list_projects(binary, token, probe_console, server_url=server_url)
+    if projects is None:
+        details = probe_console.export_text(styles=False).strip()
+        if details:
+            messages.extend(line.rstrip() for line in details.splitlines())
+        return "[red]failed[/red]", messages
+    return "[green]passed[/green]", messages
+
+
 def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    env = os.environ.copy()
+    # Secret-manager CLI child: intentionally receives tokens — no scrub,
+    # no HOME rewrite (bws stores state under the real user home).
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env["BWS_ACCESS_TOKEN"] = token
     env.setdefault("NO_COLOR", "1")
     if server_url:
@@ -476,7 +661,7 @@ def _list_projects(
             [str(binary), "project", "list", "--output", "json"],
             env=env,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

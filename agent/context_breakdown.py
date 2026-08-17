@@ -154,3 +154,207 @@ def compute_session_context_breakdown(
         "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
     }
+
+
+# ── /context rendering (CLI + gateway) ──────────────────────────────────────
+#
+# Pure text renderers over the payload above. The CLI shows a glyph block-grid
+# plus a category table; the gateway uses the same table without the grid
+# (proportional monospace is not guaranteed on messaging platforms).
+
+_CATEGORY_GLYPHS = {
+    "system_prompt": "■",
+    "tool_definitions": "▣",
+    "rules": "▩",
+    "skills": "▤",
+    "mcp": "▥",
+    "subagent_definitions": "▦",
+    "memory": "▧",
+    "conversation": "▨",
+}
+_FREE_GLYPH = "·"
+_GRID_COLUMNS = 20
+_GRID_ROWS = 5  # 100 cells → 1 cell per percent of the context window
+
+# Human-readable tables cap the expanded listings; nothing is dropped from
+# the underlying data.
+_DETAILS_TABLE_LIMIT = 15
+
+
+def _bytes_to_tokens(size: Optional[int]) -> Optional[int]:
+    if size is None:
+        return None
+    return (int(size) + 3) // 4
+
+
+def compute_context_details(agent: Any) -> Dict[str, Any]:
+    """Expanded per-skill / per-toolset cost listing for ``/context all``.
+
+    Reuses the ``hermes prompt-size`` attribution mechanism (PR #66656):
+    per-skill index-line bytes parsed from the live ``<available_skills>``
+    block, and per-toolset schema bytes attributed via the tool registry's
+    canonical tool→toolset map. Byte figures are converted to the same
+    chars/4 token heuristic the categories above use.
+    """
+    from hermes_cli.prompt_size import (
+        _compute_skills_breakdown,
+        _compute_toolsets_breakdown,
+    )
+    from agent.system_prompt import build_system_prompt_parts
+
+    parts = build_system_prompt_parts(agent)
+    stable = parts.get("stable", "") or ""
+    skills_match = _SKILLS_BLOCK_RE.search(stable)
+    skills_block = skills_match.group(0) if skills_match else ""
+
+    skills: List[Dict[str, Any]] = []
+    if skills_block:
+        for entry in _compute_skills_breakdown(skills_block):
+            skills.append({
+                "name": entry.get("name", ""),
+                "index_tokens": _bytes_to_tokens(entry.get("index_line_bytes")) or 0,
+                "skill_md_tokens": _bytes_to_tokens(entry.get("skill_md_bytes")),
+            })
+
+    toolsets: List[Dict[str, Any]] = []
+    tools = list(getattr(agent, "tools", None) or [])
+    if tools:
+        for group in _compute_toolsets_breakdown(tools):
+            toolsets.append({
+                "toolset": group.get("toolset", ""),
+                "tool_count": int(group.get("tool_count", 0) or 0),
+                "schema_tokens": _bytes_to_tokens(group.get("json_bytes")) or 0,
+            })
+
+    return {"skills": skills, "toolsets": toolsets}
+
+
+def render_context_grid(payload: Dict[str, Any]) -> List[str]:
+    """Render the payload as a Claude Code-style glyph block grid.
+
+    100 cells (5×20), each one percent of the model context window. Categories
+    fill in declaration order; the remainder renders as free space.
+    """
+    context_max = int(payload.get("context_max") or 0)
+    categories = payload.get("categories") or []
+    total_cells = _GRID_COLUMNS * _GRID_ROWS
+
+    cells: List[str] = []
+    if context_max > 0:
+        for cat in categories:
+            tokens = int(cat.get("tokens") or 0)
+            n = round(tokens / context_max * total_cells)
+            if tokens > 0 and n == 0:
+                n = 1  # never render a nonzero category as invisible
+            glyph = _CATEGORY_GLYPHS.get(str(cat.get("id") or ""), "▪")
+            cells.extend([glyph] * n)
+        cells = cells[:total_cells]
+    cells.extend([_FREE_GLYPH] * (total_cells - len(cells)))
+
+    return [
+        " ".join(cells[row * _GRID_COLUMNS:(row + 1) * _GRID_COLUMNS])
+        for row in range(_GRID_ROWS)
+    ]
+
+
+def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
+    """Render the 'Estimated usage by category' table as plain-text lines."""
+    categories = payload.get("categories") or []
+    context_max = int(payload.get("context_max") or 0)
+    estimated_total = int(payload.get("estimated_total") or 0)
+    denom = context_max or estimated_total
+
+    lines = ["Estimated usage by category"]
+    if not categories:
+        lines.append("  (no data yet — send a message first)")
+        return lines
+
+    width = max(len(str(cat.get("label") or "")) for cat in categories)
+    width = max(width, len("Free space"))
+    for cat in categories:
+        tokens = int(cat.get("tokens") or 0)
+        glyph = _CATEGORY_GLYPHS.get(str(cat.get("id") or ""), "▪")
+        pct = tokens / denom * 100 if denom else 0.0
+        label = str(cat.get("label") or cat.get("id") or "")
+        lines.append(f"{glyph} {label:<{width}} {tokens:>9,} tokens {pct:>5.1f}%")
+    if context_max > 0:
+        free = max(0, context_max - estimated_total)
+        pct = free / context_max * 100
+        lines.append(f"{_FREE_GLYPH} {'Free space':<{width}} {free:>9,} tokens {pct:>5.1f}%")
+    return lines
+
+
+def render_context_details_lines(details: Dict[str, Any]) -> List[str]:
+    """Render the expanded ``/context all`` per-skill / per-toolset tables."""
+    lines: List[str] = []
+
+    toolsets = details.get("toolsets") or []
+    if toolsets:
+        lines.append("Toolsets by schema cost (largest first)")
+        for group in toolsets[:_DETAILS_TABLE_LIMIT]:
+            lines.append(
+                f"  {group['toolset']:<24} {group['tool_count']:>3} tools"
+                f" {group['schema_tokens']:>8,} tokens"
+            )
+        remaining = len(toolsets) - _DETAILS_TABLE_LIMIT
+        if remaining > 0:
+            lines.append(f"  … and {remaining} more")
+
+    skills = details.get("skills") or []
+    if skills:
+        if lines:
+            lines.append("")
+        lines.append("Skills by cost (index = always-on; SKILL.md = cost when loaded)")
+        for entry in skills[:_DETAILS_TABLE_LIMIT]:
+            name = str(entry.get("name") or "")
+            if len(name) > 28:
+                name = name[:27] + "…"
+            md = entry.get("skill_md_tokens")
+            md_str = f"{md:>8,}" if md is not None else f"{'n/a':>8}"
+            lines.append(
+                f"  {name:<28} index {entry['index_tokens']:>6,}"
+                f"  SKILL.md {md_str} tokens"
+            )
+        remaining = len(skills) - _DETAILS_TABLE_LIMIT
+        if remaining > 0:
+            lines.append(f"  … and {remaining} more")
+
+    return lines
+
+
+def render_context_breakdown_lines(
+    payload: Dict[str, Any],
+    *,
+    details: Optional[Dict[str, Any]] = None,
+    grid: bool = True,
+) -> List[str]:
+    """Render the full /context view as plain-text lines.
+
+    ``grid=True`` (CLI) prepends the glyph block grid; the gateway passes
+    ``grid=False`` and keeps its own gauge. ``details`` (from
+    :func:`compute_context_details`) appends the expanded listings.
+    """
+    lines: List[str] = []
+    if grid:
+        lines.extend(render_context_grid(payload))
+        lines.append("")
+    lines.extend(render_context_category_lines(payload))
+
+    context_max = int(payload.get("context_max") or 0)
+    context_used = int(payload.get("context_used") or 0)
+    if context_max > 0:
+        pct = int(payload.get("context_percent") or 0)
+        lines.append("")
+        lines.append(
+            f"Context window: {context_used:,} / {context_max:,} tokens ({pct}%)"
+        )
+
+    if details is not None:
+        detail_lines = render_context_details_lines(details)
+        if detail_lines:
+            lines.append("")
+            lines.extend(detail_lines)
+    else:
+        lines.append("")
+        lines.append("Use /context all for per-skill and per-toolset costs.")
+    return lines

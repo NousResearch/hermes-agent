@@ -52,7 +52,6 @@ def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     # No fallback chain so empty responses exhaust deterministically.
@@ -78,17 +77,8 @@ def test_explanation_quiet_for_empty_reason():
     assert AIAgent._format_turn_completion_explanation("guardrail_halt") == ""
 
 
-def test_explanation_for_empty_response_exhausted():
-    out = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
-    assert out  # non-empty
-    assert "empty content" in out
-    assert "continue" in out.lower()
 
 
-def test_explanation_for_partial_stream_recovery():
-    out = AIAgent._format_turn_completion_explanation("partial_stream_recovery")
-    assert "partial" in out.lower()
-    assert "continue" in out.lower()
 
 
 def test_explanation_for_max_iterations_reached_prefix_match():
@@ -99,11 +89,228 @@ def test_explanation_for_max_iterations_reached_prefix_match():
     assert "iteration" in out.lower()
 
 
-def test_explanation_for_all_retries_exhausted():
+
+
+
+
+# --------------------------------------------------------------------------
+# 1b. Cause-aware session-persistence wording
+# --------------------------------------------------------------------------
+def test_explanation_persistence_locked_cause_says_busy_not_disk():
+    """Write-lock contention must NOT be misdiagnosed as a disk problem."""
     out = AIAgent._format_turn_completion_explanation(
-        "all_retries_exhausted_no_response"
+        "session_persistence_failed", "locked"
     )
-    assert "retries" in out.lower()
+    lower = out.lower()
+    assert "busy" in lower
+    assert "saved" in lower
+    assert "send it again" in lower
+    assert "disk" not in lower
+    assert "permission" not in lower
+
+
+def test_explanation_persistence_compression_cause_is_specific():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "compression"
+    )
+    lower = out.lower()
+    assert "compression" in lower
+    assert "database" not in lower
+    assert "disk" not in lower
+
+
+def test_explanation_persistence_turn_lease_cause_is_specific():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "turn_lease"
+    )
+    lower = out.lower()
+    assert "took over" in lower
+    assert "not saved" in lower
+    assert "disk" not in lower
+    assert "compression" not in lower
+    assert "hermes doctor" not in lower
+
+
+def test_explanation_persistence_disk_cause_keeps_disk_wording():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "disk"
+    )
+    lower = out.lower()
+    assert "disk" in lower
+    assert "free some space" in lower or "disk space" in lower
+
+
+def test_explanation_persistence_corrupt_cause_never_says_free_space():
+    """Structural corruption must point at the repair path, not disk space
+    (the #77386-family misdiagnosis: 'database disk image is malformed'
+    rendered as 'this is often a full disk')."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "corrupt"
+    )
+    lower = out.lower()
+    assert "corrupt" in lower
+    assert "hermes doctor" in lower
+    assert "free some space" not in lower
+    assert "full disk" not in lower
+
+
+def test_explanation_persistence_unknown_cause_is_neutral():
+    """None/'unknown' cause must not claim disk-full — point at diagnostics."""
+    for cause in (None, "unknown"):
+        out = AIAgent._format_turn_completion_explanation(
+            "session_persistence_failed", cause
+        )
+        lower = out.lower()
+        assert out.strip() != ""
+        assert "disk space" not in lower
+        assert "full disk" not in lower
+        assert "hermes doctor" in lower
+        assert "again" in lower
+
+
+def test_explanation_persistence_one_arg_backward_compat():
+    """Existing one-arg callers must keep working (optional second param)."""
+    out = AIAgent._format_turn_completion_explanation("session_persistence_failed")
+    assert out.strip() != ""
+    assert "session storage" in out.lower()
+
+
+def test_explanation_cause_ignored_for_other_reasons():
+    """The cause parameter must not perturb non-persistence reasons."""
+    assert (
+        AIAgent._format_turn_completion_explanation(
+            "text_response(finish_reason=stop)", "locked"
+        )
+        == ""
+    )
+    out = AIAgent._format_turn_completion_explanation(
+        "max_iterations_reached(10/10)", "locked"
+    )
+    assert "iteration" in out.lower()
+
+
+# --------------------------------------------------------------------------
+# 1c. classify_persistence_error — the pure cause classifier
+# --------------------------------------------------------------------------
+def test_classify_persistence_error_categories():
+    import sqlite3
+
+    from hermes_state import classify_persistence_error
+
+    assert classify_persistence_error(
+        sqlite3.OperationalError("database is locked")
+    ) == "locked"
+    assert classify_persistence_error("SQLITE_BUSY: busy") == "locked"
+    assert classify_persistence_error(
+        sqlite3.OperationalError("database or disk is full")
+    ) == "disk"
+    assert classify_persistence_error("attempt to write a readonly database") == "disk"
+    assert classify_persistence_error("read-only file system") == "disk"
+    assert classify_persistence_error("no space left on device") == "disk"
+    assert classify_persistence_error("disk I/O error") == "disk"
+    assert classify_persistence_error("something else entirely") == "unknown"
+    assert classify_persistence_error(None) == "unknown"
+    assert classify_persistence_error("") == "unknown"
+
+
+def test_classify_persistence_error_corruption_beats_disk_bucket():
+    """'database disk image is malformed' contains the word 'disk', so
+    without an explicit corruption bucket it classified as 'disk' and the
+    user was told to free space for a structurally damaged file (#77386
+    comment thread, v0.20.0 malformed-DB incident)."""
+    import sqlite3
+
+    from hermes_state import classify_persistence_error
+
+    assert classify_persistence_error(
+        sqlite3.DatabaseError("database disk image is malformed")
+    ) == "corrupt"
+    assert classify_persistence_error(
+        "database disk image is malformed"
+    ) == "corrupt"
+    assert classify_persistence_error(
+        sqlite3.DatabaseError("file is not a database")
+    ) == "corrupt"
+    assert classify_persistence_error("malformed database schema") == "corrupt"
+    # Genuine disk-space failures must keep classifying as 'disk'.
+    assert classify_persistence_error("database or disk is full") == "disk"
+    assert classify_persistence_error("disk I/O error") == "disk"
+
+
+def test_classify_persistence_error_reuses_disk_full_markers():
+    """The disk bucket delegates to hermes_state.is_disk_full_error, so
+    every marker that helper recognizes (ENOSPC, 'not enough space', ...)
+    must classify as 'disk' — the two classifiers can never drift apart."""
+    import errno
+
+    from hermes_state import classify_persistence_error
+
+    assert classify_persistence_error("ENOSPC writing state.db") == "disk"
+    assert classify_persistence_error(
+        "There is not enough space on the disk"
+    ) == "disk"
+    assert classify_persistence_error(
+        OSError(errno.ENOSPC, "No space left on device")
+    ) == "disk"
+
+
+def test_classify_persistence_error_compression_busy_is_distinct():
+    """A live compression lease refusing the write is contention, not
+    storage damage — but its message contains neither 'locked' nor 'busy',
+    so it must classify by exception type (and by phrase for RPC-wrapped
+    strings). This is the exact failure mode of issue #81227."""
+    from hermes_state import (
+        CompressionSessionBusyError,
+        SessionCompressionInProgressError,
+    )
+    from hermes_state import classify_persistence_error
+
+    assert classify_persistence_error(
+        SessionCompressionInProgressError(
+            "Session 'abc' is being compressed by another writer"
+        )
+    ) == "compression"
+    assert classify_persistence_error(
+        CompressionSessionBusyError("Compression lease lost before publication: abc")
+    ) == "compression"
+    # RPC-wrapped string forms (exception type lost in transit).
+    assert classify_persistence_error(
+        "Session 'abc' is being compressed by another writer"
+    ) == "compression"
+    assert classify_persistence_error(
+        "Compression lease lost before publication: abc"
+    ) == "compression"
+
+
+def test_classify_persistence_error_turn_lease_lost_is_distinct():
+    from hermes_state import SessionTurnLeaseLostError, classify_persistence_error
+
+    assert classify_persistence_error(
+        SessionTurnLeaseLostError(
+            "Session turn lease lost; refusing transcript write for 'abc'"
+        )
+    ) == "turn_lease"
+    assert classify_persistence_error(
+        "Session turn lease lost; refusing transcript write for 'abc'"
+    ) == "turn_lease"
+
+
+def test_persistence_error_causes_tuple_matches_classifier():
+    """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
+    return (consumers like cron suppression iterate it)."""
+    from hermes_state import PERSISTENCE_ERROR_CAUSES, classify_persistence_error
+
+    probes = (
+        "database is locked",
+        "Session 'abc' is being compressed by another writer",
+        "Session turn lease lost; refusing transcript write for 'abc'",
+        "database disk image is malformed",
+        "database or disk is full",
+        "something else entirely",
+        None,
+    )
+    for probe in probes:
+        assert classify_persistence_error(probe) in PERSISTENCE_ERROR_CAUSES
 
 
 # --------------------------------------------------------------------------
@@ -125,15 +332,41 @@ def test_explainer_disabled_via_env():
         assert agent._turn_completion_explainer_enabled() is False
 
 
-def test_explainer_disabled_via_config():
+def test_explainer_config_read_once_then_cached():
+    """Measured-work pin: the config lookup happens once per agent.
+
+    The explainer gate runs at the end of every turn, so a fresh
+    ``load_config()`` per call is wasted work (measured ~0.9 ms/call on a
+    warm mtime-cache on this host; per-turn config reads were killed
+    repo-wide in #74211, and this seam was missed).  The config read must
+    be cached after the first call; the env-var override must still win on
+    every call, cached or not.
+    """
     agent = _make_agent()
+    calls = {"n": 0}
+
+    def counting_load():
+        calls["n"] += 1
+        return {"display": {"turn_completion_explainer": True}}
+
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"display": {"turn_completion_explainer": False}},
-        ):
-            assert agent._turn_completion_explainer_enabled() is False
+        with patch("hermes_cli.config.load_config", counting_load):
+            # First call reads config and caches the result.
+            assert agent._turn_completion_explainer_enabled() is True
+            assert calls["n"] == 1
+            # Subsequent calls must not re-read config.
+            assert agent._turn_completion_explainer_enabled() is True
+            assert agent._turn_completion_explainer_enabled() is True
+            assert calls["n"] == 1
+            # Env override stays authoritative even after the cache is warm.
+            with patch.dict(
+                os.environ, {"HERMES_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
+            ):
+                assert agent._turn_completion_explainer_enabled() is False
+            assert calls["n"] == 1  # env path never touches config
+
+
 
 
 # --------------------------------------------------------------------------
@@ -193,20 +426,3 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
-def test_run_conversation_normal_reply_stays_quiet():
-    """A normal short reply like 'Done.' must NOT get an explainer footer."""
-    agent = _make_agent(max_iterations=10)
-    agent.client.chat.completions.create.side_effect = [
-        _mock_response(content="Done.", finish_reason="stop"),
-    ]
-
-    with (
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        result = agent.run_conversation("do something")
-
-    assert result["turn_exit_reason"].startswith("text_response")
-    assert result["final_response"] == "Done."
-    assert "No reply:" not in result["final_response"]

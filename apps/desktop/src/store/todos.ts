@@ -1,6 +1,10 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
+import { stableRecord } from '@/lib/stable-array'
 import type { TodoItem } from '@/lib/todos'
+
+import { $sessions, lineageAliases } from './session'
+import { $sessionStates } from './session-states'
 
 /**
  * Live todo list per runtime session, rendered by the composer status stack
@@ -15,6 +19,37 @@ export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
+
+let todoProgress: Readonly<Record<string, string>> = {}
+
+/** Live "X/Y" per STORED session id, for the sidebar's inbox cards. The live
+ *  map keys on runtime ids; this projects through the same storedSessionId +
+ *  lineage-alias fallback as the working/attention projections, so the card
+ *  finds its count under the id the sidebar knows. Cancelled items don't
+ *  count toward either side of the fraction. Values are the rendered "X/Y"
+ *  string — primitives, so stableRecord can suppress no-op emits. */
+export const $todoProgressBySession = computed(
+  [$todosBySession, $sessionStates, $sessions],
+  (todosMap, states, sessions) => {
+    const next: Record<string, string> = {}
+
+    for (const [runtimeId, todos] of Object.entries(todosMap)) {
+      const counted = todos.filter(t => t.status !== 'cancelled')
+
+      if (counted.length === 0) {
+        continue
+      }
+
+      const progress = `${counted.filter(t => t.status === 'completed').length}/${counted.length}`
+
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        next[alias] = progress
+      }
+    }
+
+    return (todoProgress = stableRecord(todoProgress, next))
+  }
+)
 
 // Decide which todo list to restore when rehydrating a session from stored
 // history. Rehydration runs *after* a turn completes, so an active list (last

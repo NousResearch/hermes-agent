@@ -129,8 +129,14 @@ export const de: Translations = {
     title: "Sitzungen",
     history: "Verlauf",
     overview: "Übersicht",
+    filterChats: "Chats",
+    filterAutomation: "Automatisierung",
+    filterAll: "Alle",
+    sourceFilter: "Sitzungsquelle",
+    anySource: "Beliebige Quelle",
     searchPlaceholder: "Nachrichteninhalt suchen...",
     noSessions: "Noch keine Sitzungen",
+    noSessionsInFilter: "Keine Sitzungen in diesem Filter",
     noMatch: "Keine Sitzungen entsprechen deiner Suche",
     startConversation: "Starte eine Unterhaltung, um sie hier zu sehen",
     noMessages: "Keine Nachrichten",
@@ -611,6 +617,12 @@ export const de: Translations = {
       "Mit Boards kannst du voneinander unabhängige Arbeitsabläufe trennen — eines pro Projekt, Repository oder Domäne. Worker auf einem Board sehen niemals die Aufgaben eines anderen Boards.",
     slug: "Slug",
     slugHint: "— Kleinbuchstaben, Bindestriche, z. B. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Anzeigename",
     displayNameHint: "(optional)",
     description: "Beschreibung",

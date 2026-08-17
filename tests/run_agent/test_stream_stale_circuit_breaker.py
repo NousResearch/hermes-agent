@@ -39,6 +39,9 @@ def _make_anthropic_agent(**kwargs):
     agent.api_mode = "anthropic_messages"
     agent._anthropic_client = MagicMock()
     agent._anthropic_api_key = "test-anthropic-key"
+    # #67142: anthropic streams now run on a request-local client; route it to
+    # the test mock so .messages.stream is exercised.
+    agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
     return agent
 
 
@@ -58,6 +61,29 @@ def _good_stream_cm():
 
 
 class TestStreamStaleCircuitBreaker:
+    def test_interrupted_pre_response_wait_advances_streak(self, monkeypatch):
+        """Qualified pre-response interrupts advance the breaker, while early
+        and mid-stream user cancellations remain neutral."""
+        from agent.chat_completion_helpers import (
+            _check_stale_giveup,
+            _record_interrupted_provider_wait,
+        )
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "2")
+        agent = _make_anthropic_agent()
+        agent._consecutive_stale_streams = 0
+
+        assert _record_interrupted_provider_wait(agent, 29.9, response_started=False) is False
+        assert _record_interrupted_provider_wait(agent, 45.0, response_started=True) is False
+        assert agent._consecutive_stale_streams == 0
+
+        assert _record_interrupted_provider_wait(agent, 45.0, response_started=False) is True
+        assert agent._consecutive_stale_streams == 1
+
+        assert _record_interrupted_provider_wait(agent, 60.0, response_started=False) is True
+        with pytest.raises(RuntimeError, match="2 consecutive stale attempts"):
+            _check_stale_giveup(agent)
+
     @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
     def test_short_circuits_when_streak_at_threshold(self, monkeypatch):
         """A session already past the consecutive-stale threshold must abort
@@ -116,7 +142,10 @@ class TestStreamStaleCircuitBreaker:
 
         # Every attempt blocks, trips the stale detector, and fails.
         agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
-        agent._anthropic_client.close.side_effect = unblock.set
+        # #67142: the stale detector now aborts the request-local client's
+        # sockets from the poll thread (not close() on the shared client), so
+        # unblock on the abort to simulate the socket shutdown waking the read.
+        agent._abort_request_anthropic_client = lambda *a, **k: unblock.set()
 
         with pytest.raises(Exception):
             agent._interruptible_streaming_api_call({})

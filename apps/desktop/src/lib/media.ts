@@ -58,6 +58,46 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+export function isInlineMediaSrc(path: string): boolean {
+  return /^(?:https?|data):/i.test(path)
+}
+
+function isFileMediaPath(path: string): boolean {
+  return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
+}
+
+export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+  if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
+  }
+
+  if (!window.hermesDesktop?.readFileDataUrl) {
+    return mediaExternalUrl(path)
+  }
+
+  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+}
+
+// Audio/video need a seekable source instead of a whole-file data URL. Keep
+// remote URLs untouched and route filesystem paths through the Electron media
+// protocol. Its main-process handler reads local files directly or proxies a
+// remote gateway with the connection's bearer/cookie/token authentication.
+export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
+  if (isInlineMediaSrc(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
+  }
+
+  return resolveMediaDisplaySrc(path)
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
@@ -77,6 +117,23 @@ export function mediaExternalUrl(path: string): string {
   }
 
   return /^file:/i.test(path) ? path : `file://${path}`
+}
+
+// Remote gateway audio/video is proxied by the Electron main process. OAuth
+// connections intentionally expose no static token to the renderer, so a bare
+// HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
+// out of renderer URLs while forwarding Range requests to /api/files/stream.
+export function mediaGatewayStreamUrl(path: string): string {
+  const conn = $connection.get()
+
+  if (isRemoteGateway()) {
+    const file = encodeURIComponent(filePathFromMediaPath(path))
+    const profile = conn?.profile ? `?profile=${encodeURIComponent(conn.profile)}` : ''
+
+    return `hermes-media://remote/${file}${profile}`
+  }
+
+  return mediaExternalUrl(path)
 }
 
 // Custom Electron scheme (registered in electron/main.ts) that streams a local
@@ -125,25 +182,25 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 }
 
 // Remote-mode replacement for opening gateway-local file paths with file://.
-// The file lives on the gateway, so fetch it over the authenticated fs bridge
-// and hand the bytes to the local browser shell as a download.
-export async function downloadGatewayMediaFile(path: string): Promise<void> {
-  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
+// The file lives on the gateway, so ask the Electron main process to fetch the
+// bytes through the authenticated backend connection and save them locally. This
+// avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
+// used by preview endpoints.
+export async function downloadGatewayMediaFile(
+  path: string
+): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
+  const file = filePathFromMediaPath(path)
+  const conn = $connection.get()
 
-  if (!dataUrl) {
-    throw new Error('Gateway returned no file data')
+  if (!window.hermesDesktop?.saveGatewayFile) {
+    throw new Error('Desktop file download bridge is unavailable')
   }
 
-  const response = await fetch(dataUrl)
-  const blobUrl = URL.createObjectURL(await response.blob())
-  const anchor = document.createElement('a')
-  anchor.href = blobUrl
-  anchor.download = mediaName(path)
-  anchor.rel = 'noopener noreferrer'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+  return window.hermesDesktop.saveGatewayFile({
+    path: file,
+    profile: conn?.profile,
+    suggestedName: mediaName(file)
+  })
 }
 
 export function mediaDisplayLabel(path: string): string {

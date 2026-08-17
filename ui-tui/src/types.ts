@@ -92,8 +92,10 @@ export interface DelegationStatus {
 export interface ApprovalReq {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  choices?: string[]
   command: string
   description: string
+  smartDenied?: boolean
 }
 
 export interface ConfirmReq {
@@ -113,11 +115,25 @@ export interface ClarifyReq {
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
   role: Role
   text: string
+  // Unix seconds the message was authored (persisted transcript timestamp on
+  // rehydrate, wall clock at append time for live rows). Rendered as a dim
+  // [HH:MM] label when `display.timestamps` is on (#41531).
+  createdAt?: number
   thinking?: string
+  // MoA reference-model output stored in `thinking` (see turnController's
+  // recordMoaReference): unlike ordinary model reasoning, this is the
+  // user-facing mixture-of-agents process the user opted into, so it stays
+  // visible even when `display.sections.thinking` is hidden.
+  isMoaReference?: boolean
+  // True only while this trail segment's reasoning is being streamed live by
+  // the current turn (see turnController's syncReasoningSegment). Sealed
+  // reasoning segments from earlier in the turn carry no flag, so the TUI can
+  // tell "the reasoning happening right now" apart from finished blocks.
+  isLiveReasoning?: boolean
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
@@ -147,6 +163,13 @@ export interface McpServerStatus {
   transport: string
 }
 
+export interface ProjectInfo {
+  id: string
+  name: string
+  primary_path?: null | string
+  slug: string
+}
+
 export interface SessionInfo {
   cwd?: string
   fast?: boolean
@@ -155,6 +178,7 @@ export interface SessionInfo {
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  project?: null | ProjectInfo
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

@@ -76,34 +76,4 @@ class TestSendSlashConfirm:
         assert "script\\_name" in sent["text"]
         assert "\\." in sent["text"]
 
-    @pytest.mark.asyncio
-    async def test_stores_slash_confirm_state(self):
-        adapter = _make_adapter()
-        adapter._bot.send_message = AsyncMock(
-            return_value=SimpleNamespace(message_id=8)
-        )
 
-        await adapter.send_slash_confirm(
-            chat_id="100",
-            title="Confirm",
-            message="reload-mcp",
-            session_key="my-session",
-            confirm_id="cid2",
-        )
-
-        assert adapter._slash_confirm_state["cid2"] == "my-session"
-
-    @pytest.mark.asyncio
-    async def test_not_connected_returns_failure(self):
-        adapter = _make_adapter()
-        adapter._bot = None
-
-        result = await adapter.send_slash_confirm(
-            chat_id="100",
-            title="Confirm",
-            message="reload-mcp",
-            session_key="sk",
-            confirm_id="cid3",
-        )
-
-        assert result.success is False

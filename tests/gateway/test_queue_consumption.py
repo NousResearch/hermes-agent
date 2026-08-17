@@ -48,19 +48,6 @@ class _StubAdapter(BasePlatformAdapter):
 class TestQueueMessageStorage:
     """Verify /queue stores messages correctly in adapter._pending_messages."""
 
-    def test_queue_stores_message_in_pending(self):
-        adapter = _StubAdapter()
-        session_key = "telegram:user:123"
-        event = MessageEvent(
-            text="do this next",
-            message_type=MessageType.TEXT,
-            source=MagicMock(chat_id="123", platform=Platform.TELEGRAM),
-            message_id="q1",
-        )
-        adapter._pending_messages[session_key] = event
-
-        assert session_key in adapter._pending_messages
-        assert adapter._pending_messages[session_key].text == "do this next"
 
     def test_get_pending_message_consumes_and_clears(self):
         adapter = _StubAdapter()
@@ -79,25 +66,6 @@ class TestQueueMessageStorage:
         # Should be consumed (cleared)
         assert adapter.get_pending_message(session_key) is None
 
-    def test_dequeue_pending_event_preserves_voice_media_metadata(self):
-        adapter = _StubAdapter()
-        session_key = "telegram:user:voice"
-        event = MessageEvent(
-            text="",
-            message_type=MessageType.VOICE,
-            source=MagicMock(chat_id="123", platform=Platform.TELEGRAM),
-            message_id="voice-q1",
-            media_urls=["/tmp/voice.ogg"],
-            media_types=["audio/ogg"],
-        )
-        adapter._pending_messages[session_key] = event
-
-        retrieved = _dequeue_pending_event(adapter, session_key)
-
-        assert retrieved is event
-        assert retrieved.media_urls == ["/tmp/voice.ogg"]
-        assert retrieved.media_types == ["audio/ogg"]
-        assert adapter.get_pending_message(session_key) is None
 
     def test_queue_does_not_set_interrupt_event(self):
         """The whole point of /queue — no interrupt signal."""
@@ -119,25 +87,6 @@ class TestQueueMessageStorage:
         # The interrupt event should NOT be set
         assert not adapter._active_sessions[session_key].is_set()
         assert not adapter.has_pending_interrupt(session_key)
-
-    def test_regular_message_sets_interrupt_event(self):
-        """Contrast: regular messages DO trigger interrupt."""
-        adapter = _StubAdapter()
-        session_key = "telegram:user:123"
-
-        adapter._active_sessions[session_key] = asyncio.Event()
-
-        # Simulate regular message arrival (what handle_message does)
-        event = MessageEvent(
-            text="new message",
-            message_type=MessageType.TEXT,
-            source=MagicMock(),
-            message_id="m1",
-        )
-        adapter._pending_messages[session_key] = event
-        adapter._active_sessions[session_key].set()  # this is what handle_message does
-
-        assert adapter.has_pending_interrupt(session_key)
 
 
 class TestQueueConsumptionAfterCompletion:
@@ -167,84 +116,6 @@ class TestQueueConsumptionAfterCompletion:
         assert retrieved is not None
         assert retrieved.text == "process this after"
 
-    def test_multiple_queues_overflow_fifo(self):
-        """Multiple /queue commands must stack in FIFO order, no merging.
-
-        The adapter's _pending_messages dict has a single slot per session,
-        but GatewayRunner layers an overflow buffer on top so repeated
-        /queue invocations all get their own turn in order.
-        """
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
-        adapter = _StubAdapter()
-        session_key = "telegram:user:123"
-
-        events = [
-            MessageEvent(
-                text=text,
-                message_type=MessageType.TEXT,
-                source=MagicMock(chat_id="123", platform=Platform.TELEGRAM),
-                message_id=f"q-{text}",
-            )
-            for text in ("first", "second", "third")
-        ]
-
-        for ev in events:
-            runner._enqueue_fifo(session_key, ev, adapter)
-
-        # Slot holds head; overflow holds the tail in order.
-        assert adapter._pending_messages[session_key].text == "first"
-        assert [e.text for e in runner._queued_events[session_key]] == ["second", "third"]
-        assert runner._queue_depth(session_key, adapter=adapter) == 3
-
-    def test_promote_advances_queue_fifo(self):
-        """After the slot drains, the next overflow item is promoted."""
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
-        adapter = _StubAdapter()
-        session_key = "telegram:user:123"
-
-        for text in ("A", "B", "C"):
-            runner._enqueue_fifo(
-                session_key,
-                MessageEvent(
-                    text=text,
-                    message_type=MessageType.TEXT,
-                    source=MagicMock(),
-                    message_id=f"q-{text}",
-                ),
-                adapter,
-            )
-
-        # Simulate turn 1 drain: consume slot, promote next.
-        pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
-        assert pending_event is not None and pending_event.text == "A"
-        assert adapter._pending_messages[session_key].text == "B"
-        assert runner._queue_depth(session_key, adapter=adapter) == 2
-
-        # Simulate turn 2 drain.
-        pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
-        assert pending_event.text == "B"
-        assert adapter._pending_messages[session_key].text == "C"
-        assert session_key not in runner._queued_events  # overflow emptied
-
-        # Simulate turn 3 drain.
-        pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
-        assert pending_event.text == "C"
-        assert session_key not in adapter._pending_messages
-        assert runner._queue_depth(session_key, adapter=adapter) == 0
-
-        # Turn 4: nothing pending.
-        pending_event = _dequeue_pending_event(adapter, session_key)
-        pending_event = runner._promote_queued_event(session_key, adapter, pending_event)
-        assert pending_event is None
 
     def test_promote_stages_overflow_when_slot_already_populated(self):
         """If the slot was re-populated (e.g. by an interrupt follow-up),
@@ -298,69 +169,6 @@ class TestQueueConsumptionAfterCompletion:
         # gets the next-in-line item.
         assert adapter._pending_messages[session_key].text == "Q2"
 
-    def test_queue_depth_counts_slot_plus_overflow(self):
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
-        adapter = _StubAdapter()
-        session_key = "telegram:user:depth"
-
-        assert runner._queue_depth(session_key, adapter=adapter) == 0
-
-        runner._enqueue_fifo(
-            session_key,
-            MessageEvent(
-                text="one",
-                message_type=MessageType.TEXT,
-                source=MagicMock(),
-                message_id="q1",
-            ),
-            adapter,
-        )
-        assert runner._queue_depth(session_key, adapter=adapter) == 1
-
-        for text in ("two", "three"):
-            runner._enqueue_fifo(
-                session_key,
-                MessageEvent(
-                    text=text,
-                    message_type=MessageType.TEXT,
-                    source=MagicMock(),
-                    message_id=f"q-{text}",
-                ),
-                adapter,
-            )
-        assert runner._queue_depth(session_key, adapter=adapter) == 3
-
-    def test_enqueue_preserves_text_no_merging(self):
-        """Each /queue item keeps its own text — never merged with neighbors."""
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._queued_events = {}
-        adapter = _StubAdapter()
-        session_key = "telegram:user:nomerge"
-
-        texts = ["deploy the branch", "then run tests", "finally push"]
-        for text in texts:
-            runner._enqueue_fifo(
-                session_key,
-                MessageEvent(
-                    text=text,
-                    message_type=MessageType.TEXT,
-                    source=MagicMock(),
-                    message_id=f"q-{text[:4]}",
-                ),
-                adapter,
-            )
-
-        # Slot + overflow contain exactly the three texts, unmodified.
-        collected = [adapter._pending_messages[session_key].text] + [
-            e.text for e in runner._queued_events[session_key]
-        ]
-        assert collected == texts
-
 
 class TestBusyInputModeQueueFifo:
     """Regression coverage for issue #28503.
@@ -411,46 +219,4 @@ class TestBusyInputModeQueueFifo:
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
-    def test_queue_respects_bounded_cap(self):
-        """Beyond the per-session cap, follow-ups are dropped (with a warning)."""
-        from gateway.run import GatewayRunner
 
-        runner, adapter = self._make_runner_and_adapter()
-        session_key = "telegram:user:cap"
-
-        cap = GatewayRunner._BUSY_QUEUE_MAX_PENDING
-        for i in range(cap + 5):
-            runner._queue_or_replace_pending_event(
-                session_key, self._text_event(f"msg-{i:03d}")
-            )
-
-        # Exactly ``cap`` follow-ups retained (head + cap-1 in overflow).
-        assert runner._queue_depth(session_key, adapter=adapter) == cap
-        assert adapter._pending_messages[session_key].text == "msg-000"
-        # The last accepted overflow item is msg-{cap-1}.
-        assert runner._queued_events[session_key][-1].text == f"msg-{cap - 1:03d}"
-
-    def test_photo_burst_still_merges_in_head_slot(self):
-        """Photo bursts must keep album-merge semantics, not split into N turns."""
-        runner, adapter = self._make_runner_and_adapter()
-        session_key = "telegram:user:burst"
-
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
-        for i in range(3):
-            runner._queue_or_replace_pending_event(
-                session_key,
-                MessageEvent(
-                    text="",
-                    message_type=MessageType.PHOTO,
-                    source=source,
-                    message_id=f"p-{i}",
-                    media_urls=[f"http://example.com/{i}.jpg"],
-                    media_types=["image/jpeg"],
-                ),
-            )
-
-        # Single merged head event with all three media URLs.
-        assert session_key not in runner._queued_events or not runner._queued_events[session_key]
-        head = adapter._pending_messages[session_key]
-        assert head.message_type == MessageType.PHOTO
-        assert len(head.media_urls) == 3

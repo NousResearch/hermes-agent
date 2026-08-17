@@ -12,9 +12,11 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** accepts ``deepseek-chat`` (V3), ``deepseek-reasoner``
-  (R1-family), and the first-class V-series IDs (``deepseek-v4-pro``,
-  ``deepseek-v4-flash``, and any future ``deepseek-v<N>-*``).  Older
+- **DeepSeek** accepts only the first-class V-series IDs
+  (``deepseek-v4-pro``, ``deepseek-v4-flash``, and any future
+  ``deepseek-v<N>-*``).  The legacy aliases ``deepseek-chat`` and
+  ``deepseek-reasoner`` were retired on 2026-07-24 and are remapped to
+  ``deepseek-v4-flash`` (official non-thinking / thinking shims).  Older
   Hermes revisions folded every non-reasoner input into
   ``deepseek-chat``, which on aggregators routes to V3 — so a user
   picking V4 Pro was silently downgraded.
@@ -67,6 +69,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
+    "ai-gateway",
     "kilocode",
 })
 
@@ -106,6 +109,19 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xai",
 })
 
+# Providers whose API serves ``vendor/model`` ids but whose endpoint can also
+# front arbitrary self-hosted models, so a bare name cannot be prefixed
+# blindly. A bare id is repaired only when the curated catalogue for that
+# provider holds exactly one entry ending in ``/<name>`` — a lookup, not a
+# guess. NVIDIA NIM is the case in hand: build.nvidia.com serves
+# ``nvidia/nemotron-…`` (and third-party ``z-ai/glm-…``), while the same
+# provider id also points at local NIM containers with their own naming.
+# Without this repair a bare ``nemotron-3-ultra-550b-a55b`` reaches the API
+# and returns a bare ``404 page not found`` that never names the model (#78796).
+_CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
+    "nvidia",
+})
+
 # Providers whose APIs require lowercase model IDs.  Xiaomi's
 # ``api.xiaomimimo.com`` rejects mixed-case names like ``MiMo-V2.5-Pro``
 # that users might copy from marketing docs — it only accepts
@@ -118,8 +134,9 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
+# DeepSeek's direct API only accepts first-class V-series IDs after the
+# 2026-07-24 cut-off.  Legacy aliases and fuzzy names are remapped here so
+# saved configs / picker leftovers cannot keep sending retired IDs.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -129,9 +146,15 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "cot",
 })
 
+# Retired on 2026-07-24 15:59 UTC. Official docs: both aliases mapped to
+# deepseek-v4-flash (chat = non-thinking, reasoner = thinking). Thinking
+# mode itself is controlled by extra_body.thinking on the DeepSeek profile.
+_DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
+    "deepseek-chat",
+    "deepseek-reasoner",
+})
+
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
-    "deepseek-reasoner",   # R1-family reasoning model
     "deepseek-v4-pro",     # V4 Pro — first-class model ID
     "deepseek-v4-flash",   # V4 Flash — first-class model ID
 })
@@ -149,13 +172,15 @@ def _normalize_for_deepseek(model_name: str) -> str:
     """Map a model input to a DeepSeek-accepted identifier.
 
     Rules:
-    - Already a known canonical (``deepseek-chat``/``deepseek-reasoner``/
-      ``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass through.
+    - Retired aliases ``deepseek-chat`` / ``deepseek-reasoner`` (cut off
+      2026-07-24) -> ``deepseek-v4-flash``.
+    - Already a known canonical (``deepseek-v4-pro``/``deepseek-v4-flash``)
+      -> pass through.
     - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
       (covers future ``deepseek-v5-*`` and dated variants without a release).
     - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
-      -> ``deepseek-reasoner``.
-    - Everything else -> ``deepseek-chat``.
+      -> ``deepseek-v4-flash``.
+    - Everything else -> ``deepseek-v4-flash``.
 
     Args:
         model_name: The bare model name (vendor prefix already stripped).
@@ -164,6 +189,11 @@ def _normalize_for_deepseek(model_name: str) -> str:
         A DeepSeek-accepted model identifier.
     """
     bare = _strip_vendor_prefix(model_name).lower()
+
+    # Retired aliases must rewrite — DeepSeek returns HTTP 400 after the
+    # 2026-07-24 cut-off if these IDs are sent on the wire.
+    if bare in _DEEPSEEK_RETIRED_ALIASES:
+        return "deepseek-v4-flash"
 
     if bare in _DEEPSEEK_CANONICAL_MODELS:
         return bare
@@ -175,9 +205,9 @@ def _normalize_for_deepseek(model_name: str) -> str:
     # Check for reasoner-like keywords anywhere in the name
     for keyword in _DEEPSEEK_REASONER_KEYWORDS:
         if keyword in bare:
-            return "deepseek-reasoner"
+            return "deepseek-v4-flash"
 
-    return "deepseek-chat"
+    return "deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +259,14 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     This prevents arbitrary slash-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
     ``zai/glm-5.1`` for the ``zai`` provider.
+
+    ``custom`` is a generic bucket for arbitrary user-defined endpoints, not
+    a vendor identity like ``zai``/``gemini``/``xai``. An alias that merely
+    *resolves to* ``custom`` (e.g. ``ollama``, via ``_PROVIDER_ALIASES``)
+    does not mean a ``ollama/`` prefix is redundant -- it may be the actual
+    routing prefix a proxy in front of the custom endpoint (e.g. LiteLLM)
+    requires, as in ``ollama/glm-5.2``. Only a literal ``custom/`` prefix --
+    the bucket's own name -- is treated as redundant here.
     """
     if "/" not in model_name:
         return model_name
@@ -237,8 +275,13 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     if not prefix.strip() or not remainder.strip():
         return model_name
 
-    normalized_prefix = _normalize_provider_alias(prefix)
     normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_target == "custom":
+        if prefix.strip().lower() == "custom":
+            return remainder.strip()
+        return model_name
+
+    normalized_prefix = _normalize_provider_alias(prefix)
     if normalized_prefix and normalized_prefix == normalized_target:
         return remainder.strip()
     return model_name
@@ -320,6 +363,63 @@ def _prepend_vendor(model_name: str) -> str:
     return model_name
 
 
+def _repair_prefix_from_catalogue(model_name: str, provider: str) -> str:
+    """Restore a dropped ``vendor/`` prefix using the provider's catalogue.
+
+    Unlike :func:`_prepend_vendor`, this never guesses from the model's name
+    shape — it only repairs a bare id that matches **exactly one** curated
+    entry for this provider modulo the prefix. That keeps self-hosted models
+    behind the same provider id (local NIM containers, proxies) untouched,
+    since they aren't in the catalogue.
+
+    Examples::
+
+        >>> _repair_prefix_from_catalogue("nemotron-3-ultra-550b-a55b", "nvidia")
+        'nvidia/nemotron-3-ultra-550b-a55b'
+        >>> _repair_prefix_from_catalogue("my-local-nim", "nvidia")
+        'my-local-nim'
+    """
+    if "/" in model_name:
+        return model_name
+    try:
+        from hermes_cli.models import _PROVIDER_MODELS
+    except Exception:
+        return model_name
+
+    catalogue = _PROVIDER_MODELS.get(provider) or []
+    # Compare against the catalogue's own suffix, tag included: a bare
+    # ``…:free`` id must resolve to the ``:free`` entry, not its paid sibling.
+    needle = model_name.strip().lower()
+    matches = {
+        entry
+        for entry in catalogue
+        if "/" in entry and entry.split("/", 1)[1].strip().lower() == needle
+    }
+    if len(matches) == 1:
+        return matches.pop()
+    return model_name
+
+
+def suggest_prefixed_model_id(provider: str, model_name: str) -> Optional[str]:
+    """Return the prefixed catalogue id for a bare *model_name*, if unambiguous.
+
+    The diagnostic counterpart to :func:`_repair_prefix_from_catalogue`: used
+    to explain a provider's content-free 404 when the configured id lost its
+    ``vendor/`` prefix. Returns ``None`` when the name already has a prefix,
+    the provider has no curated catalogue, or nothing matches — so callers can
+    stay silent rather than guess (#78796).
+    """
+    name = (model_name or "").strip()
+    if not name or "/" in name:
+        return None
+    try:
+        canonical = _normalize_provider_alias(provider)
+    except Exception:
+        return None
+    repaired = _repair_prefix_from_catalogue(name, canonical)
+    return repaired if repaired != name else None
+
+
 # ---------------------------------------------------------------------------
 # Main normalisation entry point
 # ---------------------------------------------------------------------------
@@ -369,10 +469,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         'minimax-m2.5-free'
 
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
-        'deepseek-chat'
+        'deepseek-v4-flash'
 
         >>> normalize_model_for_provider("deepseek-r1", "deepseek")
-        'deepseek-reasoner'
+        'deepseek-v4-flash'
+
+        >>> normalize_model_for_provider("deepseek-reasoner", "deepseek")
+        'deepseek-v4-flash'
 
         >>> normalize_model_for_provider("my-model", "custom")
         'my-model'
@@ -458,6 +561,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         if provider in _LOWERCASE_MODEL_PROVIDERS:
             result = result.lower()
         return result
+
+    # --- Catalogue-backed prefix repair: restore a dropped ``vendor/`` on a
+    #     bare id that matches exactly one curated entry.  Unknown names (a
+    #     local NIM container, a proxied model) pass through untouched. ---
+    if provider in _CATALOGUE_PREFIX_REPAIR_PROVIDERS:
+        return _repair_prefix_from_catalogue(name, provider)
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:

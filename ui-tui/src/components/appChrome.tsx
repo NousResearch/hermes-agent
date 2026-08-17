@@ -4,7 +4,8 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -16,6 +17,8 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+
+import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -120,6 +123,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -128,6 +132,19 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const { intervalMs, showVerb } = renderIndicator(style, 0)
 
   useEffect(() => {
+    // An overlay is painted OVER the status rule (the modal widget slot, or a
+    // floating panel growing up over the top rule), so every tick below is a
+    // re-render nobody can see — in an Ink TUI that churn reads as the dialog
+    // tearing.  Arm nothing while occluded.  The effect re-runs when the rule
+    // is revealed again and re-seeds `now` from the wall clock, so the elapsed
+    // read-out resumes live rather than frozen at the moment it was covered.
+    // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
+    if (isOccluded) {
+      return
+    }
+
+    setNow(Date.now())
+
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
     // Verb timer is gated on `showVerb` — `unicode` style hides the verb
@@ -142,7 +159,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, isOccluded, showVerb])
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
@@ -184,6 +201,34 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
 
 function statusSessionCountLabel(count: number) {
   return `${count} ${count === 1 ? 'session' : 'sessions'}`
+}
+
+// Colour the battery read-out by its (Python-computed) category. Inverted vs
+// the context bar — a full battery is "good", an empty one "critical".
+function batteryColor(info: BatteryInfo, t: Theme): string {
+  if (info.category === 'good') {
+    return t.color.statusGood
+  }
+
+  if (info.category === 'warn') {
+    return t.color.statusWarn
+  }
+
+  if (info.category === 'bad') {
+    return t.color.statusBad
+  }
+
+  if (info.category === 'critical') {
+    return t.color.statusCritical
+  }
+
+  return t.color.muted
+}
+
+// Compact battery label: a bolt while charging, else a battery glyph.
+// Renders `--` for an unknown percent so a null can never surface as "null%".
+function batteryLabel(info: BatteryInfo): string {
+  return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -330,13 +375,21 @@ function SpawnHud({ t }: { t: Theme }) {
 
 function SessionDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   useEffect(() => {
+    // Paused only while an overlay actually covers the status rule — see
+    // FaceTicker.  The `setNow` below already re-seeds from the wall clock
+    // on every re-arm, so it doubles as the reveal catch-up.
+    if (isOccluded) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [startedAt])
+  }, [isOccluded, startedAt])
 
   return fmtDuration(now - startedAt)
 }
@@ -345,13 +398,21 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   // Time since the last final agent response. Re-ticks every second like
   // SessionDuration so the read-out stays live while the session idles.
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   useEffect(() => {
+    // Paused only while an overlay actually covers the status rule — see
+    // FaceTicker.  The `setNow` below re-seeds from the wall clock on reveal
+    // so the idle read-out is not frozen when the overlay closes.
+    if (isOccluded) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [endedAt])
+  }, [endedAt, isOccluded])
 
   return `✓ ${fmtDuration(now - endedAt)}`
 }
@@ -403,6 +464,8 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  battery,
+  focusView,
   cwdLabel,
   cols,
   busy,
@@ -417,6 +480,7 @@ export function StatusRule({
   bgCount,
   lastTurnEndedAt,
   liveSessionCount,
+  sessionTitle,
   sessionStartedAt,
   turnStartedAt,
   voiceLabel,
@@ -439,6 +503,12 @@ export function StatusRule({
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+
+  // Battery read-out — the first (pinned) status-bar element when enabled.
+  const showBattery = !!battery && battery.available && battery.percent != null
+  const batteryText = showBattery ? batteryLabel(battery!) : ''
+  const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
+  const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -465,12 +535,14 @@ export function StatusRule({
 
   const essentialWidth =
     stringWidth('─ ') +
+    batteryWidth +
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
+  const rightLabel = sessionTitle ? ` ${sessionTitle} ` : cwdLabel
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
@@ -532,6 +604,11 @@ export function StatusRule({
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
+  // Focus-view badge. Pinned (not tail-budgeted) on purpose: the whole point of
+  // the indicator is that the user can never be in reduced-output mode without
+  // seeing it, so it must not drop off a narrow terminal.
+  const showFocus = !!focusView
+
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
     onSessionCountClick?.()
@@ -554,6 +631,12 @@ export function StatusRule({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
+          {showBattery ? (
+            <Text color={batteryColorVal}>
+              {batteryText}
+              <Text color={t.color.muted}>{' │ '}</Text>
+            </Text>
+          ) : null}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
@@ -590,6 +673,12 @@ export function StatusRule({
             </Text>
           ) : null}
         </Box>
+        {showFocus ? (
+          <Box flexDirection="row" flexShrink={0}>
+            <Text color={t.color.muted}>{' │ '}</Text>
+            <Text color={t.color.warn}>◉ focus</Text>
+          </Box>
+        ) : null}
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -661,8 +750,8 @@ export function StatusRule({
         <>
           <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
           <Box flexShrink={0} width={rightWidth}>
-            <Text color={t.color.label} wrap="truncate-end">
-              {cwdLabel}
+            <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
+              {rightLabel}
             </Text>
           </Box>
         </>
@@ -711,8 +800,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  const thumbColor = grab !== null ? t.color.primary : hover ? t.color.accent : t.color.border
-  const trackColor = hover ? t.color.border : t.color.muted
+  const { thumb: thumbColor, track: trackColor } = scrollbarColors(t, hover, grab !== null)
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {
@@ -744,24 +832,21 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
       }}
       width={1}
     >
-      {!scrollable ? (
-        <Text color={trackColor} dim>
-          {' \n'.repeat(Math.max(0, vp - 1))}{' '}
-        </Text>
-      ) : (
+      {/* Nothing to scroll → draw nothing (the width={1} Box still reserves
+          the column). Drawn-blank cells composite to a black bar on
+          transparent terminals — same class as the removed opaque fills. */}
+      {!scrollable ? null : (
         <>
           {thumbTop > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}
-            </Text>
+            <Text color={trackColor}>{`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}</Text>
           ) : null}
           {thumb > 0 ? (
             <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
           ) : null}
           {vp - thumbTop - thumb > 0 ? (
-            <Text color={trackColor} dim={!hover}>
-              {`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}
-            </Text>
+            <Text
+              color={trackColor}
+            >{`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}</Text>
           ) : null}
         </>
       )}
@@ -770,6 +855,9 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  battery?: BatteryInfo | null
+  // Focus view (/focus) badge — display-only reduced-output indicator.
+  focusView?: boolean
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number
@@ -782,6 +870,7 @@ interface StatusRuleProps {
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
+  sessionTitle?: string
   status: string
   statusColor: string
   t: Theme

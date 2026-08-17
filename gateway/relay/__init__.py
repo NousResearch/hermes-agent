@@ -19,7 +19,19 @@ that don't set it are unaffected — exactly the same shape as ``gateway.proxy_u
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
+
+# Shape gate for ambient-endpoint token bodies (mode 1b in
+# _resolve_relay_identity_token). Accepts a bearer-token-shaped string:
+# either a multi-segment dotted token (JWT: header.payload.signature) or a
+# single long opaque token (>= 32 chars of the base64url alphabet). Short
+# bare words — 'unauthorized', 'error', 'null' — match the alphabet but are
+# plain-text error bodies, not credentials, and must fail closed.
+_AMBIENT_TOKEN_SHAPE = re.compile(
+    r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}"  # JWT-like: 3+ dotted segments
+    r"|[A-Za-z0-9_-]{32,}"  # long opaque bearer token
+)
 
 
 def relay_url() -> Optional[str]:
@@ -77,6 +89,21 @@ def relay_platform_identities() -> list[tuple[str, str]]:
         bot_id = str(entry.get("botId", "")).strip() if isinstance(entry, dict) else ""
         out.append((platform, bot_id))
     return out
+
+
+def relay_fronted_platforms() -> set[str]:
+    """The logical platform names the relay connector fronts for this gateway.
+
+    Thin, env-derived wrapper over :func:`relay_platform_identities` (the
+    ``GATEWAY_RELAY_PLATFORMS`` deploy stamp) minus the generic ``relay``
+    fallback. This is the SAME source ``ws_transport`` seeds the live
+    adapter's identity set from (``RelayAdapter.fronts_platform``), so
+    config-time validation (e.g. cron delivery preflight) and fire-time
+    routing can never disagree — and it needs no live adapter handle, so a
+    standalone scheduler process can consult it too. Empty set when the
+    relay fronts nothing.
+    """
+    return {p for p, _ in relay_platform_identities() if p != "relay"}
 
 
 def _relay_bot_ids_map() -> dict:
@@ -256,6 +283,44 @@ def relay_wake_url() -> Optional[str]:
     return value.rstrip("/") or None
 
 
+def relay_display_name() -> Optional[str]:
+    """The human-facing agent display name, forwarded at provision (Phase 1 parity).
+
+    The PRIMARY source for the connector's multi-agent reply-attribution prefix
+    (gateway-gateway #171): in a multi-agent scope the shared bot prepends
+    ``**<displayName>:** `` to this instance's replies. Gateway-asserted but
+    safely scoped exactly like ``relay_instance_id()`` / ``relay_wake_url()`` —
+    the tenant stays token-verified, so a dishonest gateway can only label its
+    OWN instance. Absent -> the connector stores null and attribution falls
+    back to the instance's linked-owner identity, else skips the prefix.
+
+    Env first (Docker/NAS stamps ``GATEWAY_RELAY_DISPLAY_NAME``), then the
+    skin's branded agent name (``get_branding("agent_name")`` — the same value
+    the CLI banner shows), so a self-hosted rename via skin config propagates
+    on the next boot's re-provision (the connector rotates on change, same as
+    a wake-url move).
+    """
+    value = os.environ.get("GATEWAY_RELAY_DISPLAY_NAME", "").strip()
+    if not value:
+        try:
+            from hermes_cli.skin_engine import get_active_skin  # late import: boot-safe
+
+            value = str(
+                get_active_skin().get_branding("agent_name", "") or ""
+            ).strip()
+        except Exception:  # noqa: BLE001 - branding absence must never crash boot
+            value = ""
+        # The stock brand name is IDENTICAL on every default install, so in a
+        # multi-agent scope it would prefix every reply "**Hermes Agent:**" —
+        # shadowing the connector's linked-owner fallback, which actually
+        # disambiguates. Only a deliberately customized name is forwarded.
+        if value == "Hermes Agent":
+            value = ""
+    # Mirror the connector's ingest sanitization (trim + 64-char cap) so what
+    # we send is what gets stored.
+    return value[:64] or None
+
+
 def _provision_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/provision`` POST URL."""
     raw = relay_dial_url.rstrip("/")
@@ -309,7 +374,9 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     the ``{PLATFORM}_*`` env. ``platform`` defaults to the PRIMARY fronted
     platform (back-compat). Returns the generic dict, or None when relay isn't
     configured or the platform exposes no relevance knobs (⇒ the connector's
-    quiet default already matches, so there's nothing to declare).
+    default — mention-gated — applies unchallenged; an EXPLICIT
+    ``require_mention: false`` IS a knob and is declared so the connector
+    doesn't mention-gate an agent configured to free-respond).
     """
     if platform is None:
         platform, _bot_id = relay_platform_identity()
@@ -326,7 +393,10 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
         cfg = _load_gateway_config() or {}
         plat_cfg = cfg.get(platform)
         if not isinstance(plat_cfg, dict):
-            plat_cfg = ((cfg.get("gateway") or {}).get("platforms") or {}).get(platform)
+            _gw_platforms = (cfg.get("gateway") or {}).get("platforms") or {}
+            if not isinstance(_gw_platforms, dict):
+                _gw_platforms = {}
+            plat_cfg = _gw_platforms.get(platform)
         if not isinstance(plat_cfg, dict):
             plat_cfg = (cfg.get("platforms") or {}).get(platform)
         plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
@@ -351,12 +421,17 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     allow_bots_env = os.environ.get(f"{platform.upper()}_ALLOW_BOTS", "").lower().strip()
     allow_other_bots = allow_bots_env in {"mentions", "all"}
 
-    require_address = bool(require_mention) if require_mention is not None else False
-
-    # Nothing non-default to declare ⇒ let the connector keep its quiet default
-    # (matches absence-of-row semantics on the connector side).
-    if not require_address and not free_response and not allow_other_bots:
+    # Nothing CONFIGURED to declare ⇒ let the connector keep its default policy
+    # (mention-gated with agent-thread continuation — matches absence-of-row
+    # semantics on the connector side). NOTE the condition is "require_mention
+    # is unset", NOT "require_mention is falsy": the connector's default is now
+    # requireAddress=true, so an EXPLICIT `require_mention: false` is a
+    # non-default choice that MUST be declared or the connector would
+    # mention-gate an agent configured to free-respond.
+    if require_mention is None and not free_response and not allow_other_bots:
         return None
+
+    require_address = bool(require_mention) if require_mention is not None else False
 
     return {
         "platform": platform,
@@ -377,6 +452,7 @@ def _post_provision(
     route_keys: list[str],
     instance_id: Optional[str] = None,
     wake_url: Optional[str] = None,
+    display_name: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the connector's ``/relay/provision`` and return the JSON body.
@@ -406,6 +482,11 @@ def _post_provision(
     # stores null and simply can't wake this instance (buffering still works).
     if wake_url:
         body["wakeUrl"] = wake_url
+    # Same for the display name (Phase 1 parity, gg#171): omit when absent so
+    # the connector stores null and attribution falls back to the linked-owner
+    # identity.
+    if display_name:
+        body["displayName"] = display_name
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         provision_url,
@@ -441,14 +522,22 @@ def _resolve_relay_identity_token() -> str:
     """Resolve the caller-identity bearer token the connector introspects to a tenant.
 
     Canonical resolver shared by the runtime self-provision path and the
-    ``hermes gateway enroll`` CLI. Two modes, in precedence order:
+    ``hermes gateway enroll`` CLI. Three modes, in precedence order:
 
       1. **Generic OIDC client-credentials** (air-gapped / self-hosted-IdP, NO
          Nous Portal): when ``gateway.idp.token_url`` (or
-         ``GATEWAY_RELAY_IDP_TOKEN_URL``) is configured, obtain a workload access
-         token via the OAuth2 ``client_credentials`` grant against the operator's
-         own IdP (Entra; Authentik in the sandbox). The connector's Seam-A OIDC
+         ``GATEWAY_RELAY_IDP_TOKEN_URL``) is configured together with a client
+         id/secret, obtain a workload access token via the OAuth2
+         ``client_credentials`` grant against the operator's own IdP (Entra;
+         Keycloak; Authentik in the sandbox). The connector's Seam-A OIDC
          verifier reads a claim (default ``tid``) off it as the tenant.
+      1b. **Ambient token endpoint**: when ``token_url`` is configured with
+         NEITHER client_id nor client_secret, the URL is treated as a metadata-server-style
+         ambient credential endpoint (e.g. Domino's
+         ``$DOMINO_API_PROXY/access-token``): a plain GET whose response body
+         IS the token — either a raw JWT string or a JSON envelope with an
+         ``access_token`` field. No client registration involved; possession
+         of the (typically loopback) endpoint is the credential.
       2. **Nous Portal** (default): ``resolve_nous_access_token()`` — existing
          managed/hosted behaviour.
 
@@ -477,16 +566,56 @@ def _resolve_relay_identity_token() -> str:
 
         return resolve_nous_access_token()
 
-    # Mode 1 — generic OAuth2 client_credentials grant.
     import json
     import urllib.error
     import urllib.parse
     import urllib.request
 
-    if not client_id or not client_secret:
-        raise RuntimeError(
-            "gateway.idp.token_url configured but client_id/client_secret missing"
+    if not client_id and not client_secret:
+        # Mode 1b — ambient token endpoint (no client credentials configured).
+        # Plain GET; the body is the token, raw or JSON-enveloped.
+        req = urllib.request.Request(
+            token_url,
+            method="GET",
+            headers={"Accept": "application/json, text/plain"},
         )
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            body = resp.read().decode().strip()
+        token = ""
+        if body.startswith("{"):
+            try:
+                envelope_token = (json.loads(body) or {}).get("access_token")
+            except ValueError:
+                envelope_token = None
+            # Same contract as the client_credentials path below: the value
+            # must be a non-empty STRING. No shape gate here — a JSON envelope
+            # is a deliberate token response (and opaque tokens may use the
+            # standard-base64 alphabet the raw-body gate would reject).
+            if isinstance(envelope_token, str):
+                token = envelope_token.strip()
+        elif _AMBIENT_TOKEN_SHAPE.fullmatch(body):
+            token = body
+        if not token:
+            raise RuntimeError(
+                "no client_id/client_secret configured, so gateway.idp.token_url was "
+                "treated as an ambient token endpoint (GET), but the response body "
+                "was not a token. For the OAuth2 client_credentials grant, configure "
+                "client_id and client_secret alongside token_url."
+            )
+        return token
+
+    if not client_id or not client_secret:
+        # Exactly one credential configured: this is a mistyped client_credentials
+        # setup, not an ambient endpoint. Keep the loud error (never GET the IdP).
+        missing = "client_secret" if client_id else "client_id"
+        raise RuntimeError(
+            f"gateway.idp.token_url is configured with a partial client credential "
+            f"({missing} missing). Configure both client_id and client_secret for "
+            f"the OAuth2 client_credentials grant, or neither to treat token_url "
+            f"as an ambient token endpoint (plain GET returning the token)."
+        )
+
+    # Mode 1 — generic OAuth2 client_credentials grant.
     form = {
         "grant_type": "client_credentials",
         "client_id": client_id,
@@ -584,6 +713,7 @@ def self_provision_relay() -> bool:
     route_keys = relay_route_keys()
     instance_id = relay_instance_id()
     wake_url = relay_wake_url()
+    display_name = relay_display_name()
 
     # Phase 1.5 (D-Q1.5c): provision EACH fronted platform under the SAME
     # gatewayId + the SAME (platform-less) per-gateway secret. The connector's
@@ -608,6 +738,7 @@ def self_provision_relay() -> bool:
                 route_keys=route_keys,
                 instance_id=instance_id,
                 wake_url=wake_url,
+                display_name=display_name,
             )
         except RuntimeError as exc:
             logger.warning(

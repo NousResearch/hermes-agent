@@ -162,9 +162,17 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
     try:
         env_path = get_env_path()
         if env_path.exists():
+            # Read the .env as UTF-8 with BOM tolerance, matching the
+            # canonical reader in hermes_cli/config.py. read_text() with no
+            # encoding falls back to the system locale (cp1252/GBK on Windows)
+            # and never strips a BOM, so a Notepad-edited .env (BOM + non-ASCII
+            # values) would make the first line fail the startswith() check —
+            # misreporting a .env-backed var as a shell export.
             env_in_dotenv = any(
                 line.strip().startswith(f"{env_var}=")
-                for line in env_path.read_text(errors="replace").splitlines()
+                for line in env_path.read_text(
+                    encoding="utf-8-sig", errors="replace"
+                ).splitlines()
             )
     except OSError:
         pass

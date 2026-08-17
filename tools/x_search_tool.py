@@ -11,12 +11,15 @@ The tool registers when **either** xAI credential path is available:
   i.e. ``hermes auth add xai-oauth`` has been run and the stored refresh
   token still works.
 
-Credential preference at call time matches
-:func:`tools.xai_http.resolve_xai_http_credentials`: SuperGrok OAuth first,
-direct OAuth resolver second, ``XAI_API_KEY`` last. That helper also
-auto-refreshes the OAuth access token when it's within the refresh skew
-window, so a ``True`` from :func:`check_x_search_requirements` means the
-bearer is fetchable AND non-empty.
+Credential preference at call time uses
+:func:`tools.xai_http.resolve_xai_http_credentials` with
+``prefer_api_key=True``: an explicit ``XAI_API_KEY`` wins when configured
+(x_search is API-metered; the subscription OAuth bearer answers
+``/v1/responses`` in a degraded no-citation mode — #88040), with SuperGrok
+OAuth as the fallback. That helper also auto-refreshes the OAuth access
+token when it's within the refresh skew window, so a ``True`` from
+:func:`check_x_search_requirements` means the bearer is fetchable AND
+non-empty.
 
 Defensive output
 ----------------
@@ -56,9 +59,10 @@ from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 logger = logging.getLogger(__name__)
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
+DEFAULT_X_SEARCH_MODEL = "grok-4.5"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
+X_SEARCH_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 MAX_HANDLES = 10
 
 
@@ -78,6 +82,22 @@ def _load_x_search_config() -> Dict[str, Any]:
 def _get_x_search_model() -> str:
     cfg = _load_x_search_config()
     return (str(cfg.get("model") or "").strip() or DEFAULT_X_SEARCH_MODEL)
+
+
+def _get_x_search_reasoning_effort() -> Optional[str]:
+    cfg = _load_x_search_config()
+    raw_value = cfg.get("reasoning_effort")
+    if raw_value is None or not str(raw_value).strip():
+        return None
+
+    effort = str(raw_value).strip().lower()
+    if effort not in X_SEARCH_REASONING_EFFORTS:
+        allowed = ", ".join(X_SEARCH_REASONING_EFFORTS)
+        raise ValueError(
+            f"x_search.reasoning_effort must be one of: {allowed} "
+            f"(got {raw_value!r})"
+        )
+    return effort
 
 
 def _get_x_search_timeout_seconds() -> int:
@@ -111,8 +131,16 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     gate makes that case unreachable in normal operation, but the runtime
     check exists so a credential that expires between registration and
     invocation produces a clean tool error instead of a 401.
+
+    x_search is API-index access: when a subscription OAuth credential is
+    configured alongside a paid ``XAI_API_KEY``, the OAuth path authorizes
+    but answers ``/v1/responses`` in a degraded Grok explanatory mode with
+    no citations, while the API key returns real posts (#88040). Pass
+    ``prefer_api_key=True`` so the shared resolver checks the explicit API
+    key first — same root cause as the TTS fix for #87045 (#87081) —
+    keeping OAuth as the fallback when no API key is configured.
     """
-    creds = resolve_xai_http_credentials()
+    creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError(
@@ -299,6 +327,11 @@ def x_search_tool(
         except ValueError as exc:
             return tool_error(str(exc))
 
+        try:
+            reasoning_effort = _get_x_search_reasoning_effort()
+        except ValueError as exc:
+            return tool_error(str(exc))
+
         tool_def: Dict[str, Any] = {"type": "x_search"}
         if allowed:
             tool_def["allowed_x_handles"] = allowed
@@ -324,6 +357,8 @@ def x_search_tool(
             "tools": [tool_def],
             "store": False,
         }
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
 
         timeout_seconds = _get_x_search_timeout_seconds()
         max_retries = _get_x_search_retries()
@@ -456,9 +491,12 @@ X_SEARCH_SCHEMA = {
     "name": "x_search",
     "description": (
         "Search X (Twitter) posts, profiles, and threads using xAI's built-in "
-        "X Search tool. Use this for current discussion, reactions, or claims "
-        "on X rather than general web pages. Available when xAI credentials "
-        "are configured (SuperGrok OAuth or XAI_API_KEY)."
+        "X Search tool. Read-only discovery only: use this for current "
+        "discussion, reactions, or claims on public X rather than general web "
+        "pages. Do not use it to post, reply, like, DM, upload media, delete, "
+        "or inspect the user's authenticated X account — those require a "
+        "separate authenticated X API surface outside this tool. Available "
+        "when xAI credentials are configured (SuperGrok OAuth or XAI_API_KEY)."
     ),
     "parameters": {
         "type": "object",

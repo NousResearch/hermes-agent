@@ -5,9 +5,12 @@
  */
 
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { EventEmitter } from 'node:events'
+
+import { test, vi } from 'vitest'
 
 import {
+  bindGeometryPersistence,
   computeWindowOptions,
   debounce,
   DEFAULT_HEIGHT,
@@ -118,8 +121,8 @@ test('computeWindowOptions does not clamp when displays are unknown', () => {
 
 // ─── debounce ──────────────────────────────────────────────────────────────
 
-test('debounce coalesces a burst into one trailing run', t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+test('debounce coalesces a burst into one trailing run', () => {
+  vi.useFakeTimers()
   let calls = 0
 
   const d = debounce(() => {
@@ -130,14 +133,16 @@ test('debounce coalesces a burst into one trailing run', t => {
   d()
   d()
   assert.equal(calls, 0)
-  t.mock.timers.tick(249)
+  vi.advanceTimersByTime(249)
   assert.equal(calls, 0)
-  t.mock.timers.tick(1)
+  vi.advanceTimersByTime(1)
   assert.equal(calls, 1)
+
+  vi.useRealTimers()
 })
 
-test('debounce.flush runs now and cancels the pending timer', t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+test('debounce.flush runs now and cancels the pending timer', () => {
+  vi.useFakeTimers()
   let calls = 0
 
   const d = debounce(() => {
@@ -147,6 +152,38 @@ test('debounce.flush runs now and cancels the pending timer', t => {
   d()
   d.flush()
   assert.equal(calls, 1)
-  t.mock.timers.tick(1000)
+  vi.advanceTimersByTime(1000)
   assert.equal(calls, 1)
+
+  vi.useRealTimers()
+})
+
+// ─── bindGeometryPersistence ───────────────────────────────────────────────
+
+test('bindGeometryPersistence saves on drag and on resize', () => {
+  const win = new EventEmitter()
+  let saves = 0
+
+  bindGeometryPersistence(win, () => {
+    saves += 1
+  })
+
+  win.emit('move')
+  win.emit('resize')
+  assert.equal(saves, 2)
+})
+
+// The regression this exists for: `moved`/`resized` never fire on Linux, so a
+// window bound only to those pretends to persist and silently forgets its place
+// every launch. A window that emits nothing else must still save.
+test('a window that never emits moved/resized still saves its geometry', () => {
+  const win = new EventEmitter()
+  let saves = 0
+
+  bindGeometryPersistence(win, () => {
+    saves += 1
+  })
+
+  win.emit('move')
+  assert.ok(saves > 0)
 })

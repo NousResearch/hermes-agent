@@ -1,7 +1,8 @@
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -17,20 +18,28 @@ import {
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listAllProfileSessions } from '@/hermes'
+import { getAllSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { resolveBrandIcon } from '@/lib/brand-icon'
+import {
+  ExternalLink,
+  ExternalLinkIcon,
+  hostPathLabel,
+  shortHostLabel,
+  urlSlugTitleLabel,
+  useLinkTitle
+} from '@/lib/external-link'
+import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { openSession } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
-import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import {
@@ -38,7 +47,7 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
-  collectArtifactsForSession
+  loadArtifactsForSessions
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
@@ -88,7 +97,7 @@ type CellCtx = {
 }
 
 interface ArtifactColumn {
-  Cell: (props: { artifact: ArtifactRecord; ctx: CellCtx }) => React.ReactElement
+  Cell: React.ComponentType<{ artifact: ArtifactRecord; ctx: CellCtx }>
   bodyClassName: string
   header: (filter: ArtifactFilter, a: Translations['artifacts']) => string
   id: 'location' | 'primary' | 'session'
@@ -116,29 +125,54 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [filePage, setFilePage] = useState(1)
 
   const [refreshing, setRefreshing] = useState(false)
+  const refreshInFlightRef = useRef(false)
 
   const refreshArtifacts = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      return
+    }
+
+    refreshInFlightRef.current = true
     setRefreshing(true)
 
     try {
       const sessions = (await listAllProfileSessions(30, 1)).sessions
-      const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id, session.profile)))
-      const nextArtifacts: ArtifactRecord[] = []
 
-      results.forEach((result, index) => {
-        if (result.status !== 'fulfilled') {
-          return
-        }
+      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
+        sessions,
+        async session => (await getAllSessionMessages(session.id, session.profile)).messages
+      )
 
-        const session = sessions[index]
-        nextArtifacts.push(...collectArtifactsForSession(session, result.value.messages))
-      })
+      if (failures.length > 0) {
+        const safeLimitFailures = failures.filter(({ error }) =>
+          String(error instanceof Error ? error.message : error).includes('safe-load limit')
+        ).length
+
+        const otherFailures = failures.length - safeLimitFailures
+
+        const detail = [
+          safeLimitFailures ? `${safeLimitFailures} exceeded the safe transcript load limit.` : '',
+          otherFailures ? `${otherFailures} could not be read.` : ''
+        ]
+          .filter(Boolean)
+          .join(' ')
+
+        notify({
+          id: 'artifacts-partial-load',
+          kind: 'warning',
+          title: a.failedLoad,
+          message: `Skipped ${failures.length} of ${sessions.length} recent sessions while indexing artifacts.`,
+          detail,
+          durationMs: 10_000
+        })
+      }
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
     } catch (err) {
       notifyError(err, a.failedLoad)
       setArtifacts([])
     } finally {
+      refreshInFlightRef.current = false
       setRefreshing(false)
     }
   }, [a])
@@ -270,10 +304,12 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     })
   }, [])
 
-  const cellCtx: CellCtx = {
-    onOpen: openArtifact,
-    onOpenChat: sessionId => navigate(sessionRoute(sessionId))
-  }
+  // Stable ctx: recreating it (or its onOpenChat closure) every render made
+  // every artifact cell re-render whenever the page did — and a link cell's
+  // async title fetch re-rendered the page repeatedly. openArtifact is already
+  // a useCallback; navigate is stable, so onOpenChat can be too.
+  const openChat = useCallback((sessionId: string) => openSession(sessionId, navigate), [navigate])
+  const cellCtx: CellCtx = useMemo(() => ({ onOpen: openArtifact, onOpenChat: openChat }), [openArtifact, openChat])
 
   return (
     <PageSearchShell
@@ -294,7 +330,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
             size="icon-titlebar"
             variant="ghost"
           >
-            {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {refreshing ? <TitlebarIcon name="loading" spinning /> : <TitlebarIcon name="refresh" />}
           </Button>
         </Tip>
       }
@@ -337,7 +373,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
-                      onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
+                      onOpenChat={sessionId => openSession(sessionId, navigate)}
                     />
                   ))}
                 </div>
@@ -438,7 +474,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value, artifact.href)
+    void artifactImageSrc(artifact.value)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -541,9 +577,10 @@ function ArtifactCellAction({
   )
 }
 
-function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
+const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
-  const Icon = isLink ? Link2 : FileText
+  const brand = isLink ? resolveBrandIcon(shortHostLabel(artifact.href)) : null
+  const Icon = brand ?? (isLink ? Link2 : FileText)
   const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
@@ -562,9 +599,9 @@ function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
       </span>
     </ArtifactCellAction>
   )
-}
+})
 
-function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) {
+const LocationCell = memo(function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const { t } = useI18n()
   const isLink = artifact.kind === 'link'
   const value = isLink ? hostPathLabel(artifact.value) : artifact.value
@@ -593,9 +630,9 @@ function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) 
       />
     </div>
   )
-}
+})
 
-function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
+const SessionCell = memo(function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   return (
     <ArtifactCellAction onClick={() => ctx.onOpenChat(artifact.sessionId)} title={artifact.sessionTitle}>
       <span className="flex min-w-0 flex-col">
@@ -606,7 +643,7 @@ function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
       </span>
     </ArtifactCellAction>
   )
-}
+})
 
 const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
   {

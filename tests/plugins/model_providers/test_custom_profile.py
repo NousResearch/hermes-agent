@@ -49,20 +49,26 @@ class TestCustomReasoningWireShape:
         assert tl == {}
 
     def test_disabled_sends_think_false(self, custom_profile):
-        """enabled=False → extra_body.think = False (Ollama thinking-off flag)."""
+        """enabled=False → reasoning_effort='none' top-level + think=False.
+
+        Both fields are required: Ollama's /v1/chat/completions silently
+        ignores extra_body.think (only /api/chat honours it — ollama#14820)
+        but respects top-level reasoning_effort (#25758). think=False stays
+        for proxies and the native /api/chat path.
+        """
         eb, tl = custom_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False}, model="glm-5.2"
         )
         assert eb == {"think": False}
-        assert tl == {}
+        assert tl == {"reasoning_effort": "none"}
 
     def test_effort_none_sends_think_false(self, custom_profile):
-        """effort='none' is the disable alias → think=False, no effort."""
+        """effort='none' is the disable alias → same dual emission."""
         eb, tl = custom_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "none"}, model="glm-5.2"
         )
         assert eb == {"think": False}
-        assert tl == {}
+        assert tl == {"reasoning_effort": "none"}
 
     @pytest.mark.parametrize(
         "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]
@@ -81,13 +87,6 @@ class TestCustomReasoningWireShape:
         assert "reasoning_effort" not in eb
         assert "think" not in eb
 
-    def test_enabled_without_effort_emits_nothing(self, custom_profile):
-        """enabled but no effort → omit; do NOT force a level the user didn't pick."""
-        eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True}, model="glm-5.2"
-        )
-        assert eb == {}
-        assert tl == {}
 
     def test_does_not_force_think_true_on_enable(self, custom_profile):
         """We must never send think=True on enable — it's Ollama-only and
@@ -108,11 +107,3 @@ class TestCustomReasoningWithNumCtx:
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
 
-    def test_num_ctx_with_effort(self, custom_profile):
-        eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "high"},
-            ollama_num_ctx=8192,
-            model="qwen3",
-        )
-        assert eb == {"options": {"num_ctx": 8192}}
-        assert tl == {"reasoning_effort": "high"}

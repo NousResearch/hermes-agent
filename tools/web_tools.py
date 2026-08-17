@@ -422,7 +422,7 @@ def _web_requires_env() -> list[str]:
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
 # Hard ceiling on the full-text file written to cache/web. The truncate-store
-# path otherwise calls path.write_text(content) with no upper bound, so a
+# path otherwise calls path.write_text(content, encoding="utf-8") with no upper bound, so a
 # multi-MB page (some backends return very large markdown) writes unbounded
 # bytes to disk on every extract. Cap the stored copy; the model only ever
 # sees char_limit anyway, and a 2MB page is already far more than any single
@@ -506,7 +506,14 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
                 + f"\n\n[... stored copy truncated at {MAX_STORED_TEXT_CHARS:,} chars "
                 f"of {len(content):,}; re-extract a more specific URL for the rest ...]"
             )
-        path.write_text(content, encoding="utf-8")
+        from tools.spill_safety import write_text_exclusive
+
+        # Deterministic filename in a well-known dir: refuse symlinks via
+        # lstat-unlink + exclusive create. Re-extraction of the same URL
+        # legitimately overwrites (same slug-digest name). Not private:
+        # cache/web is bind-mounted into remote backends whose container UID
+        # must be able to read it, and content is fetched public text.
+        write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to store full web_extract text for %s: %s", url, exc)
@@ -545,7 +552,6 @@ def _truncate_with_footer(
 
     total = len(content)
     stored_path = _store_full_text(url, content)
-    shown = len(head) + len(tail)
 
     footer_lines = [
         "",

@@ -38,9 +38,12 @@ _DOH_PROVIDERS: list[dict] = [
     },
 ]
 
-# Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
-# endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
-_SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
+# Last-resort IPv4 Telegram Bot API endpoints in 149.154.160.0/20
+# (same seed used by OpenClaw). Used when DoH is blocked AND as the
+# first-try connect targets so a blackholed IPv6 AAAA for the hostname
+# cannot pin initialize() (#87015).
+SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
+_UNSET = object()
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -50,73 +53,142 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
-    """Retry Telegram Bot API requests via fallback IPs while preserving TLS/SNI.
+    """Reach Telegram Bot API via known IPv4 literals first, hostname last.
 
-    Requests continue to target https://api.telegram.org/... logically, but on
-    connect failures the underlying TCP connection is retried against a known
-    reachable IP. This is effectively the programmatic equivalent of
-    ``curl --resolve api.telegram.org:443:<ip>``.
+    Requests still target https://api.telegram.org/... logically (Host + SNI
+    stay on the hostname). TCP connects to a known A-record IP first so a
+    blackholed IPv6 AAAA cannot pin initialize(). Equivalent to
+    ``curl --resolve api.telegram.org:443:<ip>``. The dual-stack hostname
+    is last resort for IPv6-only networks.
     """
+
+    # Bound every pool. httpx defaults to 100 connections per pool, so a wedged
+    # endpoint plus the seed IPs can outgrow the process file-descriptor limit
+    # on its own (#63311).
+    _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        transport_kwargs.setdefault("limits", self._POOL_LIMITS)
+        self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
-        self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
-        }
-        self._sticky_ip: Optional[str] = None
+        self._primary_lock = asyncio.Lock()
+        self._primary_closed = False
+        # Built on demand and discarded on failure — see _reset_fallback.
+        self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
+        self._fallback_lock = asyncio.Lock()
+        # ``_UNSET`` vs ``None`` vs ``str``: unset / sticky hostname / sticky IPv4.
+        # ``None`` cannot mean both "no sticky yet" and "sticky dual-stack
+        # hostname" (#87015).
+        self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
+
+    async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
+        async with self._fallback_lock:
+            transport = self._fallbacks.get(ip)
+            if transport is None:
+                transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+                self._fallbacks[ip] = transport
+            return transport
+
+    async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
+        # Retryable primary failures can leave half-closed sockets in the pool;
+        # replace and close the failed generation before trying fallback.
+        async with self._primary_lock:
+            if self._primary_closed or transport is not self._primary:
+                return
+            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+        try:
+            await transport.aclose()
+        except Exception as exc:
+            logger.debug("[Telegram] Error closing primary transport: %s", exc)
+
+    async def _reset_fallback(self, ip: str) -> None:
+        """Discard a failed fallback pool so its dead sockets are released.
+
+        A connect that reaches ESTABLISHED and is then closed by the peer leaves
+        its socket in CLOSE_WAIT inside the pool. Retaining the poisoned pool
+        leaks one descriptor per retry until the process hits its file limit and
+        can no longer accept connections or resolve DNS (#63311).
+        """
+        async with self._fallback_lock:
+            transport = self._fallbacks.pop(ip, None)
+        if transport is None:
+            return
+        try:
+            await transport.aclose()
+        except Exception as exc:  # closing a broken pool must never mask the real error
+            logger.debug("[Telegram] Error closing fallback transport %s: %s", ip, exc)
+
+    def _attempt_order(self) -> list[Optional[str]]:
+        """IPv4 literals first; dual-stack hostname last.
+
+        A blackholed IPv6 path to ``api.telegram.org`` never errors — Happy
+        Eyeballs waits on AAAA until the OS TCP timeout, which can pin the
+        event loop so ``_await_with_thread_deadline`` never fires (#87015).
+        Known A-record IPs connect over IPv4 immediately. The hostname is
+        kept as a last resort for IPv6-only networks.
+        """
+        order: list[Optional[str]] = []
+        if self._sticky_ip is not _UNSET:
+            sticky = self._sticky_ip
+            order.append(sticky if sticky is None else str(sticky))
+        for ip in self._fallback_ips:
+            if ip not in order:
+                order.append(ip)
+        if None not in order:
+            order.append(None)
+        return order
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
 
-        sticky_ip = self._sticky_ip
-        attempt_order: list[Optional[str]] = [sticky_ip] if sticky_ip else [None]
-        if sticky_ip:
-            attempt_order.append(None)  # retry primary DNS after sticky failure
-        for ip in self._fallback_ips:
-            if ip != sticky_ip:
-                attempt_order.append(ip)
+        attempt_order = self._attempt_order()
 
         last_error: Exception | None = None
         for ip in attempt_order:
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
-            transport = self._primary if ip is None else self._fallbacks[ip]
+            transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
-                if ip is not None and self._sticky_ip != ip:
+                if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                     async with self._sticky_lock:
-                        if self._sticky_ip != ip:
+                        if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                             self._sticky_ip = ip
-                            logger.warning(
-                                "[Telegram] Primary api.telegram.org path unreachable; using sticky fallback IP %s",
-                                ip,
-                            )
+                            if ip is not None:
+                                log = logger.warning if last_error is not None else logger.info
+                                log(
+                                    "[Telegram] Using sticky IPv4 Telegram API path %s "
+                                    "(dual-stack hostname tried last — #87015)",
+                                    ip,
+                                )
                 return response
             except Exception as exc:
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
                     raise
-                if ip is not None and ip == self._sticky_ip:
+                if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
                     async with self._sticky_lock:
-                        if self._sticky_ip == ip:
-                            self._sticky_ip = None
+                        if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
+                            self._sticky_ip = _UNSET
                             logger.warning(
-                                "[Telegram] Sticky fallback IP %s failed; resetting to primary DNS path",
-                                ip,
+                                "[Telegram] Sticky Telegram path %s failed; "
+                                "re-walking IPv4 literals before the hostname",
+                                ip if ip is not None else "api.telegram.org",
                             )
                 if ip is None:
+                    await self._reset_primary(transport)
                     logger.warning(
-                        "[Telegram] Primary api.telegram.org connection failed (%s); trying fallback IPs %s",
+                        "[Telegram] Dual-stack api.telegram.org path failed (%s)",
                         exc,
-                        ", ".join(self._fallback_ips),
                     )
                     continue
-                logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
+                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, exc)
+                await self._reset_fallback(ip)
                 continue
 
         if last_error is None:
@@ -124,8 +196,14 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         raise last_error
 
     async def aclose(self) -> None:
-        await self._primary.aclose()
-        for transport in self._fallbacks.values():
+        async with self._primary_lock:
+            self._primary_closed = True
+            primary = self._primary
+        await primary.aclose()
+        async with self._fallback_lock:
+            transports = list(self._fallbacks.values())
+            self._fallbacks.clear()
+        for transport in transports:
             await transport.aclose()
 
 
@@ -205,14 +283,24 @@ async def discover_fallback_ips() -> list[str]:
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
-        system_dns_task = asyncio.to_thread(_resolve_system_dns)
-        results = await asyncio.gather(system_dns_task, *doh_tasks, return_exceptions=True)
+        system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
+        results = await asyncio.gather(*doh_tasks, return_exceptions=True)
 
-    # results[0] = system DNS IPs (set), results[1:] = DoH IP lists
-    system_ips: set[str] = results[0] if isinstance(results[0], set) else set()
+    # The system-resolver leg runs socket.getaddrinfo in a worker thread with
+    # no timeout of its own — a wedged OS resolver (broken VPN/DNS) can sit for
+    # minutes. Its result only feeds the no-usable-answers log line below, so
+    # it must never gate discovery: bound it and move on (#63309). The DoH legs
+    # are already bounded by the client timeout above.
+    system_ips: set[str] = set()
+    try:
+        system_result = await asyncio.wait_for(system_dns_task, timeout=_DOH_TIMEOUT)
+        if isinstance(system_result, set):
+            system_ips = system_result
+    except Exception:
+        logger.debug("System-DNS resolution for %s did not complete in time", _TELEGRAM_API_HOST)
 
     doh_ips: list[str] = []
-    for r in results[1:]:
+    for r in results:
         if isinstance(r, list):
             doh_ips.extend(r)
 
@@ -234,9 +322,9 @@ async def discover_fallback_ips() -> list[str]:
     logger.info(
         "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",
         ", ".join(system_ips) or "unknown",
-        ", ".join(_SEED_FALLBACK_IPS),
+        ", ".join(SEED_FALLBACK_IPS),
     )
-    return list(_SEED_FALLBACK_IPS)
+    return list(SEED_FALLBACK_IPS)
 
 
 def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:

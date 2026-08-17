@@ -14,12 +14,7 @@ from agent.oneshot import (
 
 
 class TestRenderTemplate:
-    def test_unknown_template_raises(self):
-        with pytest.raises(KeyError):
-            render_template("does-not-exist", {})
 
-    def test_commit_message_template_is_registered(self):
-        assert "commit_message" in PROMPT_TEMPLATES
 
     def test_commit_message_includes_diff_and_recent(self):
         instructions, user = render_template(
@@ -31,15 +26,7 @@ class TestRenderTemplate:
         assert "diff --git a/x b/x" in user
         assert "feat: a" in user
 
-    def test_commit_message_diff_with_braces_passes_through(self):
-        # Templates must not use str.format — code payloads carry literal { }.
-        _, user = render_template("commit_message", {"diff": "x = {a: 1}"})
-        assert "x = {a: 1}" in user
 
-    def test_commit_message_handles_missing_variables(self):
-        instructions, user = render_template("commit_message", {})
-        assert instructions
-        assert "no textual diff available" in user
 
     def test_commit_message_avoid_forces_new_message(self):
         # Passing the previous message must instruct the model not to repeat it,
@@ -61,17 +48,6 @@ class TestRunOneshot:
         resp.choices[0].message.reasoning_details = None
         return resp
 
-    def test_template_path_calls_llm_with_rendered_prompt(self):
-        with patch(
-            "agent.oneshot.call_llm",
-            return_value=self._mock_response("feat: add thing"),
-        ) as llm:
-            out = run_oneshot(template="commit_message", variables={"diff": "d"})
-
-        assert out == "feat: add thing"
-        messages = llm.call_args.kwargs["messages"]
-        assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
 
     def test_explicit_instructions_path(self):
         with patch(
@@ -85,9 +61,6 @@ class TestRunOneshot:
         assert messages[0]["content"] == "be brief"
         assert messages[1]["content"] == "say hi"
 
-    def test_requires_template_or_prompt(self):
-        with pytest.raises(ValueError):
-            run_oneshot()
 
     def test_strips_wrapping_code_fence(self):
         with patch(

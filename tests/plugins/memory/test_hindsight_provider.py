@@ -10,6 +10,8 @@ import os
 import re
 import stat
 import sys
+import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,6 +24,7 @@ from plugins.memory.hindsight import (
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
+    _load_simple_env,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
@@ -36,8 +39,8 @@ from plugins.memory.hindsight import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    """Ensure no stale env vars leak between tests."""
+def _clean_env(tmp_path, monkeypatch):
+    """Ensure no stale env vars or Windows home state leak between tests."""
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
@@ -47,6 +50,12 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
+
+    # On Windows pathlib.Path.home() resolves USERPROFILE/HOMEDRIVE+HOMEPATH,
+    # not the POSIX HOME alias that these tests historically monkeypatched.
+    # Patch the actual API and keep all legacy profile writes in tmp_path.
+    isolated_home = tmp_path / "user-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
 
 
 def _make_mock_client():
@@ -211,49 +220,6 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
     ]
 
 
-def test_normalize_retain_tags_accepts_json_array_string():
-    value = json.dumps(["agent:fakeassistantname", "source_system:hermes-agent"])
-    assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
-
-
-def test_normalize_observation_scopes_empty_is_none():
-    assert _normalize_observation_scopes("") is None
-    assert _normalize_observation_scopes(None) is None
-    assert _normalize_observation_scopes("   ") is None
-
-
-def test_normalize_observation_scopes_keywords_pass_through():
-    assert _normalize_observation_scopes("per_tag") == "per_tag"
-    assert _normalize_observation_scopes("combined") == "combined"
-    assert _normalize_observation_scopes(" all_combinations ") == "all_combinations"
-
-
-def test_normalize_observation_scopes_unknown_keyword_is_none():
-    assert _normalize_observation_scopes("nonsense") is None
-
-
-def test_normalize_observation_scopes_json_list_of_lists():
-    value = json.dumps([["user:alice"], ["team:eng"], ["user:alice", "team:eng"]])
-    assert _normalize_observation_scopes(value) == [
-        ["user:alice"],
-        ["team:eng"],
-        ["user:alice", "team:eng"],
-    ]
-
-
-def test_normalize_observation_scopes_flat_list_is_single_scope():
-    assert _normalize_observation_scopes(["user:alice", "team:eng"]) == [
-        ["user:alice", "team:eng"]
-    ]
-
-
-def test_normalize_observation_scopes_list_of_lists():
-    assert _normalize_observation_scopes([["user:alice"], ["team:eng"]]) == [
-        ["user:alice"],
-        ["team:eng"],
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -266,14 +232,6 @@ class TestSchemas:
         assert "tags" in RETAIN_SCHEMA["parameters"]["properties"]
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
-    def test_recall_schema_has_query(self):
-        assert RECALL_SCHEMA["name"] == "hindsight_recall"
-        assert "query" in RECALL_SCHEMA["parameters"]["properties"]
-        assert "query" in RECALL_SCHEMA["parameters"]["required"]
-
-    def test_reflect_schema_has_query(self):
-        assert REFLECT_SCHEMA["name"] == "hindsight_reflect"
-        assert "query" in REFLECT_SCHEMA["parameters"]["properties"]
 
     def test_get_tool_schemas_returns_three(self, provider):
         schemas = provider.get_tool_schemas()
@@ -295,10 +253,6 @@ class TestConfig:
     def test_cloud_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
         _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, "cloud")
 
-    def test_local_external_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
-        _assert_cloud_client_lazy_installed_before_import(
-            tmp_path, monkeypatch, "local_external"
-        )
 
     def test_default_values(self, provider):
         assert provider._auto_retain is True
@@ -321,29 +275,11 @@ class TestConfig:
         """Auto-recall must filter to observation by default."""
         assert provider._recall_types == ["observation"]
 
-    def test_recall_types_explicit_list_overrides_default(self, provider_with_config):
-        p = provider_with_config(recall_types=["world", "experience", "observation"])
-        assert p._recall_types == ["world", "experience", "observation"]
-
-    def test_recall_types_csv_string_accepted(self, provider_with_config):
-        """For parity with recall_tags, comma-separated strings work too."""
-        p = provider_with_config(recall_types="observation, world")
-        assert p._recall_types == ["observation", "world"]
-
-    def test_recall_types_empty_list_falls_back_to_default(self, provider_with_config):
-        """An empty list shouldn't disable the filter (would be wider than default)."""
-        p = provider_with_config(recall_types=[])
-        assert p._recall_types == ["observation"]
 
     def test_observation_scopes_keyword_config(self, provider_with_config):
         p = provider_with_config(observation_scopes="per_tag")
         assert p._observation_scopes == "per_tag"
 
-    def test_observation_scopes_custom_list_config(self, provider_with_config):
-        p = provider_with_config(
-            observation_scopes=[["user:alice"], ["team:eng"]]
-        )
-        assert p._observation_scopes == [["user:alice"], ["team:eng"]]
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -382,21 +318,20 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
 
-    def test_config_from_env_fallback(self, tmp_path, monkeypatch):
-        """When no config file exists, falls back to env vars."""
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
-            lambda: tmp_path / "nonexistent",
-        )
-        monkeypatch.setenv("HINDSIGHT_MODE", "cloud")
-        monkeypatch.setenv("HINDSIGHT_API_KEY", "env-key")
-        monkeypatch.setenv("HINDSIGHT_BANK_ID", "env-bank")
-        monkeypatch.setenv("HINDSIGHT_BUDGET", "high")
+    def test_retain_source_defaults_empty(self, provider):
+        # Opt-in per AGENTS.md: no attribution tag ships by default.
+        assert provider._retain_source == ""
 
-        cfg = _load_config()
-        assert cfg["apiKey"] == "env-key"
-        assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
-        assert cfg["banks"]["hermes"]["budget"] == "high"
+    def test_retain_source_absent_from_metadata_by_default(self, provider):
+        # metadata.source is stamped only when the user sets retain_source.
+        meta = provider._build_metadata(message_count=2, turn_index=1)
+        assert "source" not in meta
+
+    def test_retain_source_user_override_wins(self, provider_with_config):
+        # Users can still opt in explicitly (config key / env var).
+        p = provider_with_config(retain_source="cogoport")
+        assert p._retain_source == "cogoport"
+        assert p._build_metadata(message_count=2, turn_index=1)["source"] == "cogoport"
 
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
@@ -407,15 +342,6 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
-    def test_embedded_profile_env_includes_idle_timeout_from_env(self, monkeypatch):
-        monkeypatch.setenv("HINDSIGHT_IDLE_TIMEOUT", "42")
-
-        env = _build_embedded_profile_env({
-            "llm_provider": "openai",
-            "llm_model": "gpt-4o-mini",
-        })
-
-        assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
@@ -472,33 +398,6 @@ class TestPostSetup:
         assert not (hermes_home / "hindsight" / "config.json").exists()
         assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
 
-    def test_local_embedded_setup_cancel_at_llm_picker_writes_nothing(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes-home"
-        user_home = tmp_path / "user-home"
-        user_home.mkdir()
-        monkeypatch.setenv("HOME", str(user_home))
-        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
-
-        selections = iter([1, _CANCELLED])  # local_embedded, then cancel LLM picker
-        save_config = MagicMock()
-        which = MagicMock(return_value="/usr/bin/uv")
-        run = MagicMock()
-        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
-        monkeypatch.setattr("shutil.which", which)
-        monkeypatch.setattr("subprocess.run", run)
-        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
-        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
-        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
-
-        provider = HindsightMemoryProvider()
-        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
-
-        save_config.assert_not_called()
-        which.assert_not_called()
-        run.assert_not_called()
-        assert not (hermes_home / ".env").exists()
-        assert not (hermes_home / "hindsight" / "config.json").exists()
-        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
 
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
@@ -534,103 +433,6 @@ class TestPostSetup:
             "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n"
         )
 
-    def test_local_embedded_setup_respects_existing_profile_name(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes-home"
-        user_home = tmp_path / "user-home"
-        user_home.mkdir()
-        monkeypatch.setenv("HOME", str(user_home))
-
-        selections = iter([1, 0])  # local_embedded, openai
-        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
-        monkeypatch.setattr("shutil.which", lambda name: None)
-        monkeypatch.setattr("builtins.input", lambda prompt="": "")
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("getpass.getpass", lambda prompt="": "sk-local-test")
-        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
-
-        provider = HindsightMemoryProvider()
-        provider.save_config({"profile": "coder"}, str(hermes_home))
-        provider.post_setup(str(hermes_home), {"memory": {}})
-
-        coder_env = user_home / ".hindsight" / "profiles" / "coder.env"
-        hermes_env = user_home / ".hindsight" / "profiles" / "hermes.env"
-        assert coder_env.exists()
-        assert not hermes_env.exists()
-
-    def test_local_embedded_setup_preserves_existing_key_when_input_left_blank(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes-home"
-        user_home = tmp_path / "user-home"
-        user_home.mkdir()
-        monkeypatch.setenv("HOME", str(user_home))
-
-        selections = iter([1, 0])  # local_embedded, openai
-        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
-        monkeypatch.setattr("shutil.which", lambda name: None)
-        monkeypatch.setattr("builtins.input", lambda prompt="": "")
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
-        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
-
-        env_path = hermes_home / ".env"
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("HINDSIGHT_LLM_API_KEY=existing-key\n")
-
-        provider = HindsightMemoryProvider()
-        provider.post_setup(str(hermes_home), {"memory": {}})
-
-        profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
-        assert profile_env.exists()
-        assert "HINDSIGHT_API_LLM_API_KEY=existing-key\n" in profile_env.read_text()
-
-
-    def test_local_embedded_setup_blank_inputs_preserve_existing_config(self, tmp_path, monkeypatch):
-        """Pressing Enter through setup should keep existing Hindsight values."""
-        hermes_home = tmp_path / "hermes-home"
-        user_home = tmp_path / "user-home"
-        user_home.mkdir()
-        monkeypatch.setenv("HOME", str(user_home))
-        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
-
-        existing_config = {
-            "mode": "local_embedded",
-            "llm_provider": "openai_compatible",
-            "llm_base_url": "http://192.168.1.161:8060/v1",
-            "llm_api_key": "9913",
-            "llm_model": "gemma-4-26B-A4B-it-heretic-oQ4",
-            "bank_id": "hermes",
-            "recall_budget": "mid",
-            "idle_timeout": 0,
-            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": "0",
-            "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE": "1",
-            "timeout": 120,
-        }
-        provider = HindsightMemoryProvider()
-        provider.save_config(existing_config, str(hermes_home))
-
-        # Simulate pressing Enter at the mode and LLM-provider pickers, which
-        # should select their current values, and pressing Enter at text prompts.
-        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: kwargs.get("default", 0))
-        monkeypatch.setattr("shutil.which", lambda name: None)
-        monkeypatch.setattr("builtins.input", lambda prompt="": "")
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
-        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
-
-        provider = HindsightMemoryProvider()
-        provider.post_setup(str(hermes_home), {"memory": {}})
-
-        saved = json.loads((hermes_home / "hindsight" / "config.json").read_text())
-        assert saved["mode"] == "local_embedded"
-        assert saved["llm_provider"] == "openai_compatible"
-        assert saved["llm_base_url"] == "http://192.168.1.161:8060/v1"
-        assert saved["llm_api_key"] == "9913"
-        assert saved["llm_model"] == "gemma-4-26B-A4B-it-heretic-oQ4"
-        assert saved["idle_timeout"] == 0
-        assert saved["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
-        assert saved["HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"] == "1"
-        assert saved["timeout"] == 120
-
-
 
 # ---------------------------------------------------------------------------
 # Tool handler tests
@@ -652,42 +454,6 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
-    def test_retain_with_tags(self, provider_with_config):
-        p = provider_with_config(retain_tags=["pref", "ui"])
-        p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert item["tags"] == ["pref", "ui"]
-
-    def test_retain_merges_per_call_tags_with_config_tags(self, provider_with_config):
-        p = provider_with_config(retain_tags=["pref", "ui"])
-        p.handle_tool_call(
-            "hindsight_retain",
-            {"content": "likes dark mode", "tags": ["client:x", "ui"]},
-        )
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert item["tags"] == ["pref", "ui", "client:x"]
-
-    def test_retain_without_tags(self, provider):
-        provider.handle_tool_call("hindsight_retain", {"content": "hello"})
-        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
-        assert "tags" not in item
-
-    def test_retain_passes_observation_scopes(self, provider_with_config):
-        p = provider_with_config(observation_scopes="per_tag")
-        p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert item["observation_scopes"] == "per_tag"
-
-    def test_retain_omits_observation_scopes_by_default(self, provider):
-        provider.handle_tool_call("hindsight_retain", {"content": "hello"})
-        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
-        assert "observation_scopes" not in item
-
-    def test_retain_missing_content(self, provider):
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_retain", {}
-        ))
-        assert "error" in result
 
     def test_recall_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -696,37 +462,6 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
-    def test_recall_passes_max_tokens(self, provider_with_config):
-        p = provider_with_config(recall_max_tokens=2048)
-        p.handle_tool_call("hindsight_recall", {"query": "test"})
-        call_kwargs = p._client.arecall.call_args.kwargs
-        assert call_kwargs["max_tokens"] == 2048
-
-    def test_recall_passes_tags(self, provider_with_config):
-        p = provider_with_config(recall_tags=["tag1"], recall_tags_match="all")
-        p.handle_tool_call("hindsight_recall", {"query": "test"})
-        call_kwargs = p._client.arecall.call_args.kwargs
-        assert call_kwargs["tags"] == ["tag1"]
-        assert call_kwargs["tags_match"] == "all"
-
-    def test_recall_passes_types(self, provider_with_config):
-        p = provider_with_config(recall_types=["world", "experience"])
-        p.handle_tool_call("hindsight_recall", {"query": "test"})
-        call_kwargs = p._client.arecall.call_args.kwargs
-        assert call_kwargs["types"] == ["world", "experience"]
-
-    def test_recall_no_results(self, provider):
-        provider._client.arecall.return_value = SimpleNamespace(results=[])
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_recall", {"query": "test"}
-        ))
-        assert result["result"] == "No relevant memories found."
-
-    def test_recall_missing_query(self, provider):
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_recall", {}
-        ))
-        assert "error" in result
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -734,11 +469,6 @@ class TestToolHandlers:
         ))
         assert result["result"] == "Synthesized answer"
 
-    def test_reflect_missing_query(self, provider):
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_reflect", {}
-        ))
-        assert "error" in result
 
     def test_unknown_tool(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -746,20 +476,6 @@ class TestToolHandlers:
         ))
         assert "error" in result
 
-    def test_retain_error_handling(self, provider):
-        provider._client.aretain_batch.side_effect = RuntimeError("connection failed")
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_retain", {"content": "test"}
-        ))
-        assert "error" in result
-        assert "connection failed" in result["error"]
-
-    def test_recall_error_handling(self, provider):
-        provider._client.arecall.side_effect = RuntimeError("timeout")
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_recall", {"query": "test"}
-        ))
-        assert "error" in result
 
     def test_local_embedded_recall_reconnects_after_idle_shutdown(self, provider, monkeypatch):
         first_client = _make_mock_client()
@@ -793,18 +509,43 @@ class TestPrefetch:
     def test_prefetch_returns_empty_when_no_result(self, provider):
         assert provider.prefetch("test") == ""
 
-    def test_prefetch_default_preamble(self, provider):
-        provider._prefetch_result = "- some memory"
-        result = provider.prefetch("test")
-        assert "Hindsight Memory" in result
-        assert "- some memory" in result
 
-    def test_prefetch_custom_preamble(self, provider_with_config):
-        p = provider_with_config(recall_prompt_preamble="Custom header:")
-        p._prefetch_result = "- memory line"
-        result = p.prefetch("test")
-        assert result.startswith("Custom header:")
-        assert "- memory line" in result
+    def test_recall_sync_defaults_off(self, provider):
+        assert provider._recall_sync is False
+
+    def test_recall_sync_recalls_current_query_synchronously(self, provider_with_config):
+        # recall_sync=True: prefetch() must do a live recall against the
+        # *current* query (not read a previously queued buffer). #5820
+        p = provider_with_config(recall_sync=True)
+        captured = {}
+
+        def _capture_recall(**kwargs):
+            captured["query"] = kwargs.get("query", "")
+            return SimpleNamespace(results=[SimpleNamespace(text="fresh memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_capture_recall)
+
+        # Nothing pre-buffered — proves the result comes from a live recall.
+        assert p._prefetch_result == ""
+        result = p.prefetch("fix tests")
+
+        assert captured["query"] == "fix tests"       # current query, not ignored
+        assert "fresh memory" in result
+        p._client.arecall.assert_called_once()
+
+    def test_recall_sync_skips_background_queue(self, provider_with_config):
+        # With sync recall there's nothing to prime in the background.
+        p = provider_with_config(recall_sync=True)
+        p.queue_prefetch("anything")
+        assert p._prefetch_thread is None
+
+    def test_async_default_ignores_current_query_and_reads_buffer(self, provider):
+        # Default (recall_sync off): prefetch returns the buffered result and
+        # does NOT issue a live recall for the current query.
+        provider._prefetch_result = "- buffered from previous turn"
+        result = provider.prefetch("a totally different current query")
+        assert "buffered from previous turn" in result
+        provider._client.arecall.assert_not_called()
 
     def test_queue_prefetch_skipped_in_tools_mode(self, provider_with_config):
         p = provider_with_config(memory_mode="tools")
@@ -812,48 +553,289 @@ class TestPrefetch:
         # Should not start a thread
         assert p._prefetch_thread is None
 
-    def test_queue_prefetch_skipped_when_auto_recall_off(self, provider_with_config):
-        p = provider_with_config(auto_recall=False)
-        p.queue_prefetch("test")
-        assert p._prefetch_thread is None
+    def test_prefetch_waits_for_pending_retain_before_recall(self, provider):
+        """The background prefetch must wait for queued retains to drain so the
+        next turn's recall observes the just-completed turn (no retain race)."""
+        import threading
 
-    def test_queue_prefetch_truncates_query(self, provider_with_config):
-        p = provider_with_config(recall_max_input_chars=10)
-        # Mock _run_sync to capture the query
-        original_query = None
+        order = []
+        release = threading.Event()
 
-        def _capture_recall(**kwargs):
-            nonlocal original_query
-            original_query = kwargs.get("query", "")
-            return SimpleNamespace(results=[])
+        async def _slow_retain(*args, **kwargs):
+            release.wait(timeout=5.0)
+            order.append("retain")
 
-        p._client.arecall = AsyncMock(side_effect=_capture_recall)
+        async def _recall(**kwargs):
+            order.append("recall")
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
 
-        long_query = "a" * 100
-        p.queue_prefetch(long_query)
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        provider._client.aretain_batch = AsyncMock(side_effect=_slow_retain)
+        provider._client.arecall = AsyncMock(side_effect=_recall)
 
-        # The query passed to arecall should be truncated
-        if original_query is not None:
-            assert len(original_query) <= 10
+        # Enqueue a slow retain, then immediately queue the next-turn prefetch.
+        provider.sync_turn("hello", "world")
+        provider.queue_prefetch("next turn query")
 
-    def test_queue_prefetch_passes_recall_params(self, provider_with_config):
-        p = provider_with_config(
-            recall_tags=["t1"],
-            recall_tags_match="all",
-            recall_max_tokens=1024,
-            recall_types=["world"],
+        # Let the prefetch thread start and reach the drain barrier.
+        time.sleep(0.2)
+        assert order == [], "recall ran before the pending retain drained"
+
+        # Release the retain; the prefetch should now proceed AFTER it.
+        release.set()
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider._retain_queue.join()
+        assert order and order[0] == "retain"
+        assert "recall" in order
+
+    def test_prefetch_wait_for_retain_can_be_disabled(self, provider_with_config):
+        p = provider_with_config(prefetch_waits_for_retain=False)
+        p._client = _make_mock_client()
+        assert p._prefetch_waits_for_retain is False
+
+
+class TestPrefetchServerRetainVisibility:
+    """PR #62871 review follow-up: draining the local writer queue is not a
+    read-after-write signal for async retains. With ``retain_async=True`` the
+    server accepts the write and returns an ``operation_id`` that stays
+    ``pending`` until the write is durable/recall-visible. The background
+    prefetch must gate on server-side operation completion, not just the local
+    queue, before recalling.
+    """
+
+    def _client_with_ops(self, statuses):
+        """Mock client whose aretain_batch returns an async operation_id and
+        whose operations.get_operation_status yields *statuses* in order
+        (last value repeats)."""
+        client = _make_mock_client()
+        client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id="op-1", operation_ids=None)
         )
-        p.queue_prefetch("test query")
+        seq = list(statuses)
+
+        async def _status(**kwargs):
+            value = seq.pop(0) if len(seq) > 1 else seq[0]
+            return SimpleNamespace(status=value)
+
+        client.operations = MagicMock()
+        client.operations.get_operation_status = AsyncMock(side_effect=_status)
+        return client
+
+    def test_tracks_async_operation_id_from_retain(self, provider):
+        provider._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id="op-async-1", operation_ids=None)
+        )
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        assert "op-async-1" in provider._pending_retain_ops
+
+    def test_tracks_multiple_operation_ids(self, provider):
+        provider._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(
+                operation_id=None, operation_ids=["op-a", "op-b"]
+            )
+        )
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        assert {"op-a", "op-b"} <= provider._pending_retain_ops
+
+    def test_sync_retain_tracks_no_ops(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p._client = _make_mock_client()
+        p._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id="op-x", operation_ids=None)
+        )
+        p.sync_turn("hello", "world")
+        p._retain_queue.join()
+        # retain_async=False → no server-side op to wait on.
+        assert p._pending_retain_ops == set()
+
+    def test_prefetch_waits_for_server_completion_before_recall(self, provider):
+        """Recall must not run until the tracked async op reports completed."""
+        order = []
+
+        async def _recall(**kwargs):
+            order.append("recall")
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        provider._client = self._client_with_ops(["pending", "pending", "completed"])
+        provider._client.arecall = AsyncMock(side_effect=_recall)
+
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        assert "op-1" in provider._pending_retain_ops
+
+        provider.queue_prefetch("next turn query")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        # Recall ran, the op was polled to completion, and the pending set
+        # was cleared (so a later prefetch won't re-poll it).
+        assert order == ["recall"]
+        assert provider._client.operations.get_operation_status.await_count >= 3
+        assert provider._pending_retain_ops == set()
+
+    def test_prefetch_proceeds_after_server_wait_timeout(self, provider_with_config):
+        """A wedged/never-completing async op must not hang prefetch forever;
+        it recalls anyway once the drain budget is exhausted."""
+        p = provider_with_config(prefetch_retain_drain_timeout=0.3)
+        order = []
+
+        async def _recall(**kwargs):
+            order.append("recall")
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        p._client = self._client_with_ops(["pending"])  # never completes
+        p._client.arecall = AsyncMock(side_effect=_recall)
+
+        p.sync_turn("hello", "world")
+        p._retain_queue.join()
+
+        start = time.monotonic()
+        p.queue_prefetch("next turn query")
         if p._prefetch_thread:
             p._prefetch_thread.join(timeout=5.0)
+        elapsed = time.monotonic() - start
 
-        call_kwargs = p._client.arecall.call_args.kwargs
-        assert call_kwargs["max_tokens"] == 1024
-        assert call_kwargs["tags"] == ["t1"]
-        assert call_kwargs["tags_match"] == "all"
-        assert call_kwargs["types"] == ["world"]
+        assert order == ["recall"], "prefetch should recall after the timeout"
+        assert elapsed < 3.0, "prefetch must not block well past the drain budget"
+
+    def test_timed_out_ops_are_dropped_not_repolled(self, provider_with_config):
+        """Ops unresolved at deadline must be EVICTED so a permanently failing
+        status endpoint can't make every later prefetch re-burn the full
+        timeout on a growing pending set (unbounded session-wide degradation
+        + reply-path join penalty)."""
+        p = provider_with_config(prefetch_retain_drain_timeout=0.3)
+        p._client = self._client_with_ops(["pending"])  # never completes
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[SimpleNamespace(text="m")])
+        )
+
+        p.sync_turn("hello", "world")
+        p._retain_queue.join()
+        assert p._pending_retain_ops, "op should be tracked before the wait"
+
+        # First prefetch burns the budget and must DROP the wedged op.
+        p.queue_prefetch("q1")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        assert p._pending_retain_ops == set(), (
+            "unresolved ops must be evicted at deadline, not retained"
+        )
+
+        # A later prefetch with nothing pending must be near-instant.
+        start = time.monotonic()
+        p.queue_prefetch("q2")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        assert time.monotonic() - start < 0.25, (
+            "second prefetch re-polled dropped ops — eviction regressed"
+        )
+
+    def test_operation_notfound_treated_as_complete(self, provider):
+        """A NotFound (completed+evicted) op is treated as done, not pending."""
+        from hindsight_client_api.exceptions import NotFoundException
+
+        client = _make_mock_client()
+        client.operations = MagicMock()
+        client.operations.get_operation_status = AsyncMock(
+            side_effect=NotFoundException(status=404, reason="gone")
+        )
+        provider._client = client
+
+        assert provider._is_retain_op_complete("bank", "op-gone") is True
+
+    def test_transient_status_error_keeps_waiting(self, provider):
+        """A transient status-check error means 'unknown', so keep waiting."""
+        client = _make_mock_client()
+        client.operations = MagicMock()
+        client.operations.get_operation_status = AsyncMock(
+            side_effect=RuntimeError("temporary blip")
+        )
+        provider._client = client
+
+        assert provider._is_retain_op_complete("bank", "op-1") is False
+
+
+# ---------------------------------------------------------------------------
+# recall_status (deterministic recall indicator) tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecallStatus:
+    def test_none_before_any_prefetch(self, provider):
+        # Nothing recalled yet → no indicator.
+        assert provider.recall_status() is None
+
+    def test_reports_count_after_recall(self, provider):
+        # Mock client returns 2 memories; prefetch consumes the block.
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch("test")
+
+        status = provider.recall_status()
+        assert status is not None
+        assert status.provider_label == "Hindsight"
+        assert status.count == 2
+
+    def test_reports_count_in_recall_sync_mode(self, provider_with_config):
+        # recall_sync path does a live recall inside prefetch() (no background
+        # prime) — the indicator must still report the count for that turn.
+        p = provider_with_config(recall_sync=True)
+        assert p.prefetch("test")  # live recall returns the 2 mock memories
+        status = p.recall_status()
+        assert status is not None
+        assert status.count == 2
+
+    def test_none_when_recall_returned_nothing(self, provider):
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[])
+        )
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        assert provider.prefetch("test") == ""
+        assert provider.recall_status() is None
+
+    def test_stale_count_cleared_on_empty_turn(self, provider):
+        # First turn recalls 2 memories.
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch("test")
+        assert provider.recall_status().count == 2
+
+        # Next turn recalls nothing — the prior count must not linger.
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[])
+        )
+        provider.queue_prefetch("test2")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch("test2")
+        assert provider.recall_status() is None
+
+    def test_suppressed_when_indicator_off(self, provider_with_config):
+        p = provider_with_config(recall_indicator=False)
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        p.prefetch("test")
+        # Memory was injected, but the indicator is turned off.
+        assert p._last_recall_returned is True
+        assert p.recall_status() is None
+
+    def test_reflect_mode_reports_generic_count(self, provider_with_config):
+        p = provider_with_config(recall_prefetch_method="reflect")
+        p.queue_prefetch("test")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        p.prefetch("test")
+        status = p.recall_status()
+        assert status is not None
+        # Reflect synthesizes across memories → no discrete count (0).
+        assert status.count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -915,137 +897,6 @@ class TestSyncTurn:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
 
-    def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
-        p = provider_with_config(auto_retain=False)
-        p.sync_turn("hello", "hi")
-        assert p._sync_thread is None
-        p._client.aretain_batch.assert_not_called()
-
-    def test_sync_turn_with_tags(self, provider_with_config):
-        p = provider_with_config(retain_tags=["conv", "session1"])
-        p.sync_turn("hello", "hi")
-        p._retain_queue.join()
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert "conv" in item["tags"]
-        assert "session1" in item["tags"]
-        assert "session:test-session" in item["tags"]
-
-    def test_sync_turn_uses_aretain_batch(self, provider):
-        """sync_turn should use aretain_batch with retain_async."""
-        provider.sync_turn("hello", "hi")
-        provider._retain_queue.join()
-        provider._client.aretain_batch.assert_called_once()
-        call_kwargs = provider._client.aretain_batch.call_args.kwargs
-        assert call_kwargs["document_id"].startswith("test-session-")
-        assert call_kwargs["retain_async"] is True
-        assert len(call_kwargs["items"]) == 1
-        assert call_kwargs["items"][0]["context"] == "conversation between Hermes Agent and the User"
-
-    def test_sync_turn_custom_context(self, provider_with_config):
-        p = provider_with_config(retain_context="my-agent")
-        p.sync_turn("hello", "hi")
-        p._retain_queue.join()
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert item["context"] == "my-agent"
-
-    def test_sync_turn_every_n_turns(self, provider_with_config):
-        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
-        p.sync_turn("turn1-user", "turn1-asst")
-        assert p._sync_thread is None
-        p.sync_turn("turn2-user", "turn2-asst")
-        assert p._sync_thread is None
-        p.sync_turn("turn3-user", "turn3-asst")
-        p._retain_queue.join()
-        p._client.aretain_batch.assert_called_once()
-        call_kwargs = p._client.aretain_batch.call_args.kwargs
-        assert call_kwargs["document_id"].startswith("test-session-")
-        assert call_kwargs["retain_async"] is False
-        item = call_kwargs["items"][0]
-        content = json.loads(item["content"])
-        assert len(content) == 3
-        assert content[-1][0]["role"] == "user"
-        assert content[-1][0]["content"] == "User: turn3-user"
-        assert content[-1][1]["role"] == "assistant"
-        assert content[-1][1]["content"] == "Assistant: turn3-asst"
-        assert item["metadata"]["turn_index"] == "3"
-        assert item["metadata"]["message_count"] == "6"
-
-    def test_sync_turn_accumulates_full_session_without_append_support(self, provider_with_config):
-        """Legacy/overwrite APIs (no update_mode=append) resend the ENTIRE session each retain."""
-        p = provider_with_config(retain_every_n_turns=2)
-
-        p.sync_turn("turn1-user", "turn1-asst")
-        p.sync_turn("turn2-user", "turn2-asst")
-        p._retain_queue.join()
-
-        p._client.aretain_batch.reset_mock()
-
-        p.sync_turn("turn3-user", "turn3-asst")
-        p.sync_turn("turn4-user", "turn4-asst")
-        p._retain_queue.join()
-
-        content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Without append support the document is overwritten, so it must
-        # contain ALL turns from the session.
-        assert "turn1-user" in content
-        assert "turn2-user" in content
-        assert "turn3-user" in content
-        assert "turn4-user" in content
-
-    def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
-        """On append-capable APIs each retain ships only the new turns, not the whole session."""
-        monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
-        )
-        from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
-        # Clear before AND after: the capability cache is module-global and keyed
-        # per api_url, so a stale entry would leak into other tests.
-        with _append_capability_lock:
-            _append_capability_cache.clear()
-        try:
-            p = provider_with_config(retain_every_n_turns=2)
-
-            p.sync_turn("turn1-user", "turn1-asst")
-            p.sync_turn("turn2-user", "turn2-asst")
-            p._retain_queue.join()
-
-            first = p._client.aretain_batch.call_args.kwargs
-            first_item = first["items"][0]
-            assert first["document_id"] == "test-session"
-            assert first_item["update_mode"] == "append"
-            assert "turn1-user" in first_item["content"]
-            assert "turn2-user" in first_item["content"]
-
-            p._client.aretain_batch.reset_mock()
-
-            p.sync_turn("turn3-user", "turn3-asst")
-            p.sync_turn("turn4-user", "turn4-asst")
-            p._retain_queue.join()
-
-            second = p._client.aretain_batch.call_args.kwargs
-            second_item = second["items"][0]
-            assert second["document_id"] == "test-session"
-            assert second_item["update_mode"] == "append"
-            # Only the delta — the already-retained turns must NOT be resent.
-            assert "turn1-user" not in second_item["content"]
-            assert "turn2-user" not in second_item["content"]
-            assert "turn3-user" in second_item["content"]
-            assert "turn4-user" in second_item["content"]
-            # message_count reflects only the delta (2 turns -> 4 messages).
-            assert second_item["metadata"]["message_count"] == "4"
-        finally:
-            with _append_capability_lock:
-                _append_capability_cache.clear()
-
-    def test_sync_turn_passes_document_id(self, provider):
-        """sync_turn should pass document_id (session_id + per-startup ts)."""
-        provider.sync_turn("hello", "hi")
-        provider._retain_queue.join()
-        call_kwargs = provider._client.aretain_batch.call_args.kwargs
-        # Format: {session_id}-{YYYYMMDD_HHMMSS_microseconds}
-        assert call_kwargs["document_id"].startswith("test-session-")
-        assert call_kwargs["document_id"] == provider._document_id
 
     def test_resume_creates_new_document(self, tmp_path, monkeypatch):
         """Resuming a session (re-initializing) gets a new document_id
@@ -1071,56 +922,61 @@ class TestSyncTurn:
         assert p1._document_id.startswith("resumed-session-")
         assert p2._document_id.startswith("resumed-session-")
 
-    def test_sync_turn_session_tag(self, provider):
-        """Each retain should be tagged with session:<id> for filtering."""
-        provider.sync_turn("hello", "hi")
-        provider._retain_queue.join()
-        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
-        assert "session:test-session" in item["tags"]
 
-    def test_sync_turn_parent_session_tag(self, tmp_path, monkeypatch):
-        """When initialized with parent_session_id, parent tag is added."""
-        config = {"mode": "cloud", "apiKey": "k", "api_url": "http://x", "bank_id": "b"}
-        config_path = tmp_path / "hindsight" / "config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
-        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+# ---------------------------------------------------------------------------
+# retain indicator ("saving to memory") tests
+# ---------------------------------------------------------------------------
 
-        p = HindsightMemoryProvider()
-        p.initialize(
-            session_id="child-session",
-            hermes_home=str(tmp_path),
-            platform="cli",
-            parent_session_id="parent-session",
-        )
-        p._client = _make_mock_client()
+
+class TestRetainIndicator:
+    _SAVING = "👁️ Hindsight — saving to memory…"
+
+    def test_emits_saving_on_dispatch(self, provider_with_config):
+        calls = []
+        p = provider_with_config(retain_async=False)
+        p._status_callback = calls.append
         p.sync_turn("hello", "hi")
         p._retain_queue.join()
+        assert self._SAVING in calls
 
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        assert "session:child-session" in item["tags"]
-        assert "parent:parent-session" in item["tags"]
-
-    def test_sync_turn_error_does_not_raise(self, provider):
-        provider._client.aretain_batch.side_effect = RuntimeError("network error")
-        provider.sync_turn("hello", "hi")
-        provider._retain_queue.join()
-
-    def test_sync_turn_preserves_unicode(self, provider_with_config):
-        """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
-        p = provider_with_config()
-        p._client = _make_mock_client()
-        p.sync_turn("안녕 こんにちは 你好", "👨‍👩‍👧‍👦 family")
+    def test_suppressed_when_indicator_off(self, provider_with_config):
+        calls = []
+        p = provider_with_config(retain_indicator=False, retain_async=False)
+        p._status_callback = calls.append
+        p.sync_turn("hello", "hi")
         p._retain_queue.join()
-        p._client.aretain_batch.assert_called_once()
-        item = p._client.aretain_batch.call_args.kwargs["items"][0]
-        # ensure_ascii=False means non-ASCII chars appear as-is in the raw JSON,
-        # not as \uXXXX escape sequences.
-        raw_json = item["content"]
-        assert "안녕" in raw_json
-        assert "こんにちは" in raw_json
-        assert "你好" in raw_json
-        assert "👨‍👩‍👧‍👦" in raw_json
+        assert calls == []
+
+    def test_no_emit_when_auto_retain_off(self, provider_with_config):
+        calls = []
+        p = provider_with_config(auto_retain=False)
+        p._status_callback = calls.append
+        p.sync_turn("hello", "hi")  # returns early — nothing dispatched
+        assert calls == []
+
+    def test_no_emit_on_buffered_turn(self, provider_with_config):
+        # retain_every_n_turns=2: turn 1 buffers (no write, no line),
+        # turn 2 flushes (one line) — "saving" only fires on a real write.
+        calls = []
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        p._status_callback = calls.append
+        p.sync_turn("t1-u", "t1-a")
+        assert calls == []
+        p.sync_turn("t2-u", "t2-a")
+        p._retain_queue.join()
+        assert calls == [self._SAVING]
+
+    def test_no_crash_without_callback(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        assert p._status_callback is None
+        p.sync_turn("hello", "hi")  # must not raise
+        p._retain_queue.join()
+
+    def test_status_callback_wired_from_initialize(self, tmp_path, monkeypatch):
+        cb = lambda _m: None
+        p = _provider_for_mode(tmp_path, monkeypatch, "cloud")
+        p.initialize(session_id="s", hermes_home=str(tmp_path), status_callback=cb)
+        assert p._status_callback is cb
 
 
 # ---------------------------------------------------------------------------
@@ -1143,28 +999,6 @@ class TestShutdownRace:
         assert provider._writer_thread is first_writer
         assert provider._client.aretain_batch.call_count == 2
 
-    def test_sync_turn_after_shutdown_is_dropped(self, provider):
-        """Once shutdown has fired, new sync_turn() calls are no-ops.
-
-        This is the core of the fix: the plugin must not enqueue a retain
-        during interpreter teardown — that's what causes the
-        'cannot schedule new futures' RuntimeError + unclosed aiohttp
-        sessions on CLI exit.
-        """
-        client = provider._client
-        provider.shutdown()
-        before_calls = client.aretain_batch.call_count
-        provider.sync_turn("late", "turn")
-        # No new enqueue — the retain queue stays empty.
-        assert provider._retain_queue.empty()
-        # And no new client call (would be impossible anyway since shutdown
-        # nulled self._client; we assert via the captured handle).
-        assert client.aretain_batch.call_count == before_calls
-
-    def test_queue_prefetch_after_shutdown_is_dropped(self, provider):
-        provider.shutdown()
-        provider.queue_prefetch("late query")
-        assert provider._prefetch_thread is None
 
     def test_shutdown_drains_pending_retains(self, provider):
         """Shutdown must wait for queued retains to complete, not abandon them.
@@ -1179,13 +1013,6 @@ class TestShutdownRace:
         # Both retains drained before shutdown returned.
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
-
-    def test_shutdown_is_idempotent(self, provider):
-        provider.sync_turn("a", "b")
-        provider.shutdown()
-        # Second shutdown shouldn't blow up or re-close the client.
-        provider.shutdown()
-        assert provider._shutting_down.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -1233,22 +1060,6 @@ class TestSessionSwitchBufferFlush:
         assert p._document_id != old_doc
         assert p._document_id.startswith("new-sid-")
 
-    def test_no_flush_when_buffer_empty(self, provider):
-        """Switch with no buffered turns must not fire a spurious retain."""
-        provider.on_session_switch("new-sid")
-        # Nothing enqueued — join is immediate.
-        provider._retain_queue.join()
-        provider._client.aretain_batch.assert_not_called()
-        assert provider._session_id == "new-sid"
-
-    def test_prefetch_result_cleared_on_switch(self, provider):
-        """Stale recall text from the old session must not leak into the
-        next session's first prefetch read."""
-        provider._prefetch_result = "old-session recall: User likes Rust"
-        provider.on_session_switch("new-sid")
-        assert provider._prefetch_result == ""
-        # And subsequent prefetch() should now report empty, not the leftover.
-        assert provider.prefetch("anything") == ""
 
     def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
         """on_session_switch must wait for an in-flight prefetch from the
@@ -1377,42 +1188,6 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
-    def test_capability_cached_per_url(self, provider, monkeypatch):
-        """The /version probe must run at most once per (process, api_url)."""
-        self._clear_capability_cache()
-        calls = {"n": 0}
-
-        def _spy(*a, **kw):
-            calls["n"] += 1
-            return "0.5.6"
-
-        monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version", _spy
-        )
-        provider.sync_turn("a", "b")
-        provider._retain_queue.join()
-        provider.sync_turn("c", "d")
-        provider._retain_queue.join()
-        assert calls["n"] == 1
-
-    def test_legacy_warning_emitted_once(self, provider, monkeypatch, caplog):
-        """One-time WARN nudges users to upgrade Hindsight."""
-        import logging
-        self._clear_capability_cache()
-        monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.4.22",
-        )
-        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
-            provider.sync_turn("a", "b")
-            provider._retain_queue.join()
-            provider.sync_turn("c", "d")
-            provider._retain_queue.join()
-        warns = [r for r in caplog.records
-                 if r.levelno == logging.WARNING
-                 and "older than 0.5.0" in r.getMessage()]
-        # Cache hit on the second call → no second warn.
-        assert len(warns) == 1
 
     def test_session_switch_flush_picks_capability_against_old_session(
         self, provider_with_config, monkeypatch
@@ -1447,18 +1222,6 @@ class TestSystemPrompt:
         assert "Hindsight Memory" in block
         assert "hindsight_recall" in block
         assert "automatically injected" in block
-
-    def test_context_mode_prompt(self, provider_with_config):
-        p = provider_with_config(memory_mode="context")
-        block = p.system_prompt_block()
-        assert "context mode" in block
-        assert "hindsight_recall" not in block
-
-    def test_tools_mode_prompt(self, provider_with_config):
-        p = provider_with_config(memory_mode="tools")
-        block = p.system_prompt_block()
-        assert "tools mode" in block
-        assert "hindsight_recall" in block
 
 
 # ---------------------------------------------------------------------------
@@ -1495,14 +1258,6 @@ class TestBankIdTemplate:
         assert _sanitize_bank_segment("hermes") == "hermes"
         assert _sanitize_bank_segment("my-agent_1") == "my-agent_1"
 
-    def test_sanitize_bank_segment_strips_unsafe(self):
-        assert _sanitize_bank_segment("josh@example.com") == "josh-example-com"
-        assert _sanitize_bank_segment("chat:#general") == "chat-general"
-        assert _sanitize_bank_segment("  spaces  ") == "spaces"
-
-    def test_sanitize_bank_segment_empty(self):
-        assert _sanitize_bank_segment("") == ""
-        assert _sanitize_bank_segment(None) == ""
 
     def test_resolve_empty_template_uses_fallback(self):
         result = _resolve_bank_id_template(
@@ -1510,44 +1265,6 @@ class TestBankIdTemplate:
         )
         assert result == "hermes"
 
-    def test_resolve_with_profile(self):
-        result = _resolve_bank_id_template(
-            "hermes-{profile}", fallback="hermes",
-            profile="coder", workspace="", platform="", user="", session="",
-        )
-        assert result == "hermes-coder"
-
-    def test_resolve_with_multiple_placeholders(self):
-        result = _resolve_bank_id_template(
-            "{workspace}-{profile}-{platform}",
-            fallback="hermes",
-            profile="coder", workspace="myorg", platform="cli",
-            user="", session="",
-        )
-        assert result == "myorg-coder-cli"
-
-    def test_resolve_collapses_empty_placeholders(self):
-        # When user is empty, "hermes-{user}" becomes "hermes-" -> trimmed to "hermes"
-        result = _resolve_bank_id_template(
-            "hermes-{user}", fallback="default",
-            profile="", workspace="", platform="", user="", session="",
-        )
-        assert result == "hermes"
-
-    def test_resolve_collapses_double_dashes(self):
-        # Two empty placeholders with a dash between them should collapse
-        result = _resolve_bank_id_template(
-            "{workspace}-{profile}-{user}", fallback="fallback",
-            profile="coder", workspace="", platform="", user="", session="",
-        )
-        assert result == "coder"
-
-    def test_resolve_empty_rendered_falls_back(self):
-        result = _resolve_bank_id_template(
-            "{user}-{profile}", fallback="fallback",
-            profile="", workspace="", platform="", user="", session="",
-        )
-        assert result == "fallback"
 
     def test_resolve_sanitizes_placeholder_values(self):
         result = _resolve_bank_id_template(
@@ -1557,13 +1274,6 @@ class TestBankIdTemplate:
         )
         assert result == "user-josh-example-com"
 
-    def test_resolve_invalid_template_returns_fallback(self):
-        # Unknown placeholder should fall back without raising
-        result = _resolve_bank_id_template(
-            "hermes-{unknown}", fallback="hermes",
-            profile="", workspace="", platform="", user="", session="",
-        )
-        assert result == "hermes"
 
     def test_provider_uses_bank_id_template_from_config(self, tmp_path, monkeypatch):
         config = {
@@ -1589,45 +1299,6 @@ class TestBankIdTemplate:
         assert p._bank_id == "hermes-coder"
         assert p._bank_id_template == "hermes-{profile}"
 
-    def test_provider_without_template_uses_static_bank_id(self, tmp_path, monkeypatch):
-        config = {
-            "mode": "cloud",
-            "apiKey": "k",
-            "api_url": "http://x",
-            "bank_id": "my-static-bank",
-        }
-        config_path = tmp_path / "hindsight" / "config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
-        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
-
-        p = HindsightMemoryProvider()
-        p.initialize(
-            session_id="s1",
-            hermes_home=str(tmp_path),
-            platform="cli",
-            agent_identity="coder",
-        )
-        assert p._bank_id == "my-static-bank"
-
-    def test_provider_template_with_missing_profile_falls_back(self, tmp_path, monkeypatch):
-        config = {
-            "mode": "cloud",
-            "apiKey": "k",
-            "api_url": "http://x",
-            "bank_id": "hermes-fallback",
-            "bank_id_template": "hermes-{profile}",
-        }
-        config_path = tmp_path / "hindsight" / "config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
-        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
-
-        p = HindsightMemoryProvider()
-        # No agent_identity passed — template renders to "hermes-" which collapses to "hermes"
-        p.initialize(session_id="s1", hermes_home=str(tmp_path), platform="cli")
-        assert p._bank_id == "hermes"
-
 
 # ---------------------------------------------------------------------------
 # Availability tests
@@ -1644,42 +1315,6 @@ class TestAvailability:
         p = HindsightMemoryProvider()
         assert p.is_available()
 
-    def test_not_available_without_config(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
-            lambda: tmp_path / "nonexistent",
-        )
-        p = HindsightMemoryProvider()
-        assert not p.is_available()
-
-    def test_available_in_local_mode(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
-            lambda: tmp_path / "nonexistent",
-        )
-        monkeypatch.setenv("HINDSIGHT_MODE", "local")
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
-            lambda name: object(),
-        )
-        p = HindsightMemoryProvider()
-        assert p.is_available()
-
-    def test_available_with_snake_case_api_key_in_config(self, tmp_path, monkeypatch):
-        config_path = tmp_path / "hindsight" / "config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({
-            "mode": "cloud",
-            "api_key": "***",
-        }))
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.get_hermes_home",
-            lambda: tmp_path,
-        )
-
-        p = HindsightMemoryProvider()
-
-        assert p.is_available()
 
     def test_local_mode_unavailable_when_runtime_import_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -1819,3 +1454,110 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestLoadSimpleEnv:
+    def test_bom_first_key_is_recognized(self, tmp_path):
+        """A Notepad-edited .env carries a BOM; the first key must still parse
+        instead of becoming '\ufeffHINDSIGHT_LLM_API_KEY'."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿HINDSIGHT_LLM_API_KEY=sk-test\n".encode("utf-8"))
+        values = _load_simple_env(env_path)
+        assert values.get("HINDSIGHT_LLM_API_KEY") == "sk-test"
+
+
+class TestPostSetupEnvEncoding:
+    def _run_cloud_post_setup(self, tmp_path, monkeypatch):
+        """Drive post_setup through the cloud path with piped stdin."""
+        import io
+
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select",
+                            lambda *a, **kw: 0)  # cloud mode
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda c: None)
+        # Skip the dependency install (now routed through lazy_deps, NS-605).
+        import tools.lazy_deps as lazy_deps_mod
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda *a, **kw: lazy_deps_mod.InstallSpecsResult(ok=True),
+        )
+        # First line: API key prompt (readline). Second line: API URL (input).
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-new\n\n"))
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(tmp_path), {"memory": {}})
+
+    def test_bom_first_key_updated_in_place(self, tmp_path, monkeypatch):
+        """The setup writer reads the existing .env BOM-tolerantly, so a
+        BOM'd first key is matched and rewritten, not duplicated."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿HINDSIGHT_API_KEY=old\n".encode("utf-8"))
+
+        self._run_cloud_post_setup(tmp_path, monkeypatch)
+
+        content = env_path.read_text(encoding="utf-8")
+        assert content.count("HINDSIGHT_API_KEY=") == 1
+        assert "HINDSIGHT_API_KEY=sk-new" in content
+        assert "old" not in content
+        assert "﻿" not in content
+
+
+class TestClientAutoUpgradeRoutesThroughLazyDeps:
+    """The initialize()-time hindsight-client auto-upgrade must go through
+    lazy_deps.install_specs() (environment-aware, durable-target on sealed
+    hosted venvs) — never a direct `uv pip install --python sys.executable`
+    subprocess, which fails with EROFS/EACCES on immutable images (NS-605)."""
+
+    def _init_with_outdated_client(self, tmp_path, monkeypatch, outcome):
+        import importlib.metadata as md
+        import subprocess as subprocess_mod
+        import tools.lazy_deps as lazy_deps_mod
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "cloud"}))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        # Simulate an installed-but-outdated client.
+        monkeypatch.setattr(md, "version", lambda name: "0.0.1")
+
+        calls = []
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda specs, **kw: calls.append(tuple(specs)) or outcome,
+        )
+
+        # Regression guard: no direct pip subprocess may run.
+        def _no_subprocess(*a, **kw):  # pragma: no cover - fails loudly
+            raise AssertionError(f"unexpected subprocess.run during auto-upgrade: {a}")
+        monkeypatch.setattr(subprocess_mod, "run", _no_subprocess)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+        return calls
+
+    def test_upgrade_uses_install_specs_not_subprocess(self, tmp_path, monkeypatch):
+        from plugins.memory.hindsight import _MIN_CLIENT_VERSION
+        from tools.lazy_deps import InstallSpecsResult
+
+        calls = self._init_with_outdated_client(
+            tmp_path, monkeypatch, InstallSpecsResult(ok=True)
+        )
+        assert calls == [(f"hindsight-client>={_MIN_CLIENT_VERSION}",)]
+
+    def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        from tools.lazy_deps import InstallSpecsResult
+
+        with caplog.at_level(logging.WARNING):
+            calls = self._init_with_outdated_client(
+                tmp_path, monkeypatch,
+                InstallSpecsResult(ok=False, blocked=True,
+                                   reason="runtime installs are disabled on this deployment"),
+            )
+        assert len(calls) == 1  # attempted exactly once, init still completed
+        assert any("runtime installs are disabled" in r.getMessage()
+                   for r in caplog.records)

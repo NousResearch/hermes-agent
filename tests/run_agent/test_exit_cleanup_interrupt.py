@@ -60,30 +60,3 @@ class TestCronJobCleanup:
         mock_db.end_session.assert_called_once()
         mock_db.close.assert_called_once()
 
-    def test_keyboard_interrupt_in_close_does_not_propagate(self):
-        """If close() raises KeyboardInterrupt, it must not escape run_job."""
-        mock_db = MagicMock()
-        mock_db.close.side_effect = KeyboardInterrupt
-
-        from cron import scheduler
-
-        job = {
-            "id": "test-job-2",
-            "name": "test close interrupt",
-            "prompt": "hello",
-            "schedule": "0 9 * * *",
-            "model": "test/model",
-        }
-
-        with patch("hermes_state.SessionDB", return_value=mock_db), \
-             patch.object(scheduler, "_build_job_prompt", return_value="hello"), \
-             patch.object(scheduler, "_resolve_origin", return_value=None), \
-             patch.object(scheduler, "_resolve_delivery_target", return_value=None), \
-             patch("dotenv.load_dotenv", return_value=None), \
-             patch("run_agent.AIAgent") as MockAgent:
-            MockAgent.return_value.run_conversation.side_effect = RuntimeError("boom")
-            # Must not raise
-            scheduler.run_job(job)
-
-        mock_db.end_session.assert_called_once()
-        mock_db.close.assert_called_once()

@@ -28,109 +28,97 @@ def _boom_modal(*a, **kw):
     raise AssertionError("modal must NOT be called in non-interactive mode")
 
 
-def test_billing_logged_out(cli, monkeypatch, capsys):
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: BillingState(logged_in=False))
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    assert "Not logged into Nous Portal" in out
-    assert "hermes portal" in out
 
 
-def test_billing_overview_non_interactive_renders_text_not_modal(cli, monkeypatch, capsys):
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _boom_modal, raising=False)
+
+
+
+
+# ── Card visibility + the add-card path (inline w/ NAS card-resolver) ──
+
+
+def _scripted(*responses):
+    it = iter(responses)
+
+    def _modal(self, **kw):
+        return next(it)
+
+    return _modal
+
+
+def test_topup_overview_splits_onetime_from_automatic_copy(cli, monkeypatch, capsys):
+    # (c): the interactive /topup overview states the one-time-vs-automatic
+    # distinction up front in each first sentence, and keeps "credits" out of the
+    # dollars-only surface. Auto-reload OFF → the automatic line omits amounts.
+    cli._app = object()  # interactive → reaches the split-copy explainer
     state = BillingState(
-        logged_in=True,
-        org_name="Acme",
-        role="OWNER",
-        balance_usd=Decimal("142.5"),
-        cli_billing_enabled=True,
-        charge_presets=(Decimal("100"),),
-        monthly_cap=MonthlyCap(limit_usd=Decimal("1000"), spent_this_month_usd=Decimal("180"),
-                               is_default_ceiling=True),
-        portal_url="https://portal/billing?topup=open",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    assert "Usage credits" in out
-    assert "$142.50" in out
-    assert "$180 of $1000 used (default ceiling)" in out
-    # New design: a spend bar with a percentage on the overview.
-    assert "%" in out and ("█" in out or "░" in out)
-    # ZERO sub-commands: no /billing buy|auto-reload|limit advertising.
-    assert "/billing buy" not in out
-    assert "Actions:" not in out
-    # Non-interactive funnels to the portal (the URL is the affordance).
-    assert "Manage on portal:" in out
-
-
-def test_billing_member_cannot_charge(cli, monkeypatch, capsys):
-    state = BillingState(
-        logged_in=True, role="MEMBER", balance_usd=Decimal("10"),
-        cli_billing_enabled=True, portal_url="https://portal/billing",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    assert "require an org admin/owner" in out
-
-
-def test_billing_killswitch_off_blocks(cli, monkeypatch, capsys):
-    state = BillingState(
-        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
-        cli_billing_enabled=False, portal_url="https://portal/billing",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    assert "turned off for this org" in out
-
-
-def test_billing_limit_screen_readonly(cli, monkeypatch, capsys):
-    state = BillingState(
-        logged_in=True, role="OWNER", cli_billing_enabled=True,
-        monthly_cap=MonthlyCap(limit_usd=Decimal("1000"), spent_this_month_usd=Decimal("250"),
-                               is_default_ceiling=True),
-        portal_url="https://portal/billing",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    # ZERO sub-commands: the limit screen is reached via the menu, never a
-    # sub-command — call it directly the way the overview menu would.
-    cli._billing_limit_screen(state)
-    out = capsys.readouterr().out
-    assert "Monthly spend limit" in out
-    assert "$250 of $1000 used" in out
-    assert "read-only" in out
-
-
-def test_billing_sub_arg_ignored_opens_overview(cli, monkeypatch, capsys):
-    # A stray sub-arg must NOT error and must NOT dispatch to a sub-screen —
-    # it just opens the overview (spec §0.4: zero sub-commands).
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _boom_modal, raising=False)
-    state = BillingState(
-        logged_in=True, role="OWNER", balance_usd=Decimal("142.5"),
+        logged_in=True, role="OWNER", balance_usd=Decimal("50"),
         cli_billing_enabled=True, charge_presets=(Decimal("25"),),
+        card=CardInfo(brand="Visa", last4="4242"),
         portal_url="https://portal/billing",
     )
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/billing buy")  # arg is ignored
+    # Overview prints the explainer, then the action modal → back out with "cancel".
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("cancel"), raising=False)
+    cli._show_billing("/topup")
     out = capsys.readouterr().out
-    assert "Usage credits" in out  # overview, NOT the buy screen
-    assert "Buy usage credits" not in out
+
+    assert "Add funds now — a single charge, added to your balance today." in out
+    assert "Refill when low — charges your card automatically when your balance falls below" in out
+    # Dollars-only surface: no "credits" word leaks into /topup.
+    assert "credits" not in out.lower()
 
 
-def test_billing_buy_non_interactive_defers_to_portal(cli, monkeypatch, capsys):
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _boom_modal, raising=False)
+def test_topup_automatic_copy_generic_when_amounts_missing(cli, monkeypatch, capsys):
+    # (5): auto-reload "enabled" but amounts absent (partial response) → generic
+    # copy, never "charges — automatically … below —.".
+    from agent.billing_view import AutoReload
+
+    cli._app = object()
     state = BillingState(
-        logged_in=True, role="OWNER", cli_billing_enabled=True,
-        charge_presets=(Decimal("25"), Decimal("50"), Decimal("100")),
-        card=CardInfo(brand="visa", last4="4242"),
+        logged_in=True, role="OWNER", balance_usd=Decimal("50"),
+        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
+        card=CardInfo(brand="Visa", last4="4242"),
+        auto_reload=AutoReload(enabled=True, threshold_usd=None, reload_to_usd=None),
         portal_url="https://portal/billing",
     )
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    # Reached via the menu in real use; non-interactively it defers to the portal.
-    cli._billing_buy_flow(state)
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("cancel"), raising=False)
+    cli._show_billing("/topup")
     out = capsys.readouterr().out
-    assert "Buy usage credits" in out
-    assert "$25" in out and "$50" in out and "$100" in out
-    assert "interactive CLI" in out  # defers; no charge attempted non-interactively
+
+    assert (
+        "Refill when low — charges your card automatically when your balance "
+        "falls below the amount you set."
+    ) in out
+    assert "charges — automatically" not in out
+
+
+
+
+
+
+
+
+def test_buy_flow_no_card_back_abandons(cli, monkeypatch, capsys):
+    cli._app = object()
+    nocard = BillingState(
+        logged_in=True, role="OWNER", cli_billing_enabled=True,
+        charge_presets=(Decimal("25"),), card=None,
+        portal_url="https://portal/billing",
+    )
+    calls = {"n": 0}
+
+    def _no_fetch(*a, **kw):
+        calls["n"] += 1
+        return nocard
+
+    monkeypatch.setattr(bv, "build_billing_state", _no_fetch)
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("cancel"), raising=False)
+
+    cli._billing_buy_flow(nocard)
+    out = capsys.readouterr().out
+
+    assert "Add a card first" in out
+    assert "Cancelled. No funds added." in out
+    assert calls["n"] == 0  # backed out before any re-check

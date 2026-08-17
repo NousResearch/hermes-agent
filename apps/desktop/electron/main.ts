@@ -9533,12 +9533,6 @@ async function ensureBackend(profile) {
       : connection
   }
 
-  const stopping = poolStopper.inFlight(key)
-
-  if (stopping) {
-    await stopping
-  }
-
   // A backend for this key may still be dying (idle reap, LRU eviction, a
   // just-finished delete). Wait for its bounded exit before reusing or
   // spawning, so two children never share one profile's HERMES_HOME.

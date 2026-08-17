@@ -10,6 +10,8 @@ No LLM calls — every shape returns actual DB messages.
 
 import json
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -32,6 +34,9 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 _DISCOVER_SCAN_LIMIT = 300
 # exclude_session_ids: ids already inspected this task; capped so a runaway list can't fan out lineage walks.
 _EXCLUDE_SESSION_IDS_CAP = 20
+# Relative time bounds: "7d" / "24h" / "2w" = now minus N hours/days/weeks.
+_RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
+_RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
 _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
@@ -111,21 +116,26 @@ def _resolve_lineage(db, session_id: str) -> str:
 
 
 def _parse_iso_bound(value: Optional[str], *, as_exclusive_end: bool = False) -> Optional[int]:
-    """Parse an ISO date/datetime into a UTC unix timestamp.
+    """Parse an ISO date/datetime OR a relative duration into a UTC unix timestamp.
 
-    A date-only value (``YYYY-MM-DD``) is midnight UTC on that day. When
-    ``as_exclusive_end`` is True, that midnight is the exclusive upper bound
-    (``before=2026-07-01`` keeps June, drops July 1 00:00).
+    ISO: a date-only value (``YYYY-MM-DD``) is midnight UTC on that day; with
+    ``as_exclusive_end`` that midnight is the exclusive upper bound
+    (``before=2026-07-01`` keeps June, drops July 1 00:00). Relative: ``"7d"``,
+    ``"24h"``, ``"2w"`` = now minus N hours/days/weeks, so ``after="7d"`` is the
+    last week and ``before="7d"`` is everything older than a week.
     """
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
+    if rel := _RELATIVE_BOUND_RE.match(text):
+        return int(time.time()) - int(rel.group(1)) * _RELATIVE_UNIT_SECONDS[rel.group(2).lower()]
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        raise ValueError(f"invalid ISO timestamp: {value!r}") from None
+        raise ValueError(f"invalid time bound: {value!r} (expected ISO date/datetime like "
+                         "2026-07-01, or a relative duration like 7d, 24h, 2w)") from None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return int(parsed.timestamp())
@@ -691,17 +701,18 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Discovery shape only. Inclusive lower bound on session start "
-                    "time (ISO date or datetime, e.g. 2026-06-01). Use only when the "
-                    "user names a time frame. sort is a ranking bias, not a bound."
+                    "time. ISO date/datetime (e.g. 2026-06-01) or relative duration "
+                    "(7d, 24h, 2w = within the last N). Use only when the user names "
+                    "a time frame. sort is a ranking bias, not a bound."
                 ),
             },
             "before": {
                 "type": "string",
                 "description": (
                     "Discovery shape only. Exclusive upper bound on session start "
-                    "time (ISO date or datetime, e.g. 2026-07-01). A date-only value "
-                    "is midnight UTC that day. Use only when the user names a time "
-                    "frame."
+                    "time. ISO date/datetime (a date-only value is midnight UTC that "
+                    "day) or relative duration (7d = older than a week). Use only "
+                    "when the user names a time frame."
                 ),
             },
             "exclude_session_ids": {

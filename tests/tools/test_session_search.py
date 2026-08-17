@@ -99,7 +99,13 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [
+            *historical_prefix,
+            "detail",
+            "after",
+            "before",
+            "exclude_session_ids",
+        ]
 
 
 class TestFormatTimestamp:
@@ -1219,6 +1225,75 @@ class TestDiscoveryTemporalNarrowing:
             query="modpack", after="not-a-date", db=db,
         ))
         assert result["success"] is False
+
+    def test_relative_after_keeps_only_recent_sessions(self, db):
+        """Amp-style relative bounds: after="7d" = started within the last week."""
+        _seed_modpack_sessions(db)
+        now = int(time.time())
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 2 * 86400, "s_newest"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 30 * 86400, "s_middle"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 60 * 86400, "s_oldest"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="modpack", limit=5, after="7d", db=db,
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_newest" in sids
+        assert "s_middle" not in sids
+        assert "s_oldest" not in sids
+
+    def test_relative_before_finds_only_stale_sessions(self, db):
+        """before="7d" = no session started more recently than a week ago."""
+        _seed_modpack_sessions(db)
+        now = int(time.time())
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 2 * 86400, "s_newest"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 30 * 86400, "s_middle"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 60 * 86400, "s_oldest"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="modpack", limit=5, before="7d", db=db,
+        ))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_newest" not in sids
+        assert "s_middle" in sids
+        assert "s_oldest" in sids
+
+    def test_relative_bound_units_hours_and_weeks(self):
+        from tools.session_search_tool import _parse_iso_bound
+        now = int(time.time())
+        h = _parse_iso_bound("24h")
+        d = _parse_iso_bound("1d")
+        w = _parse_iso_bound("2w")
+        assert h is not None and abs((now - h) - 86400) < 5
+        assert d is not None and abs((now - d) - 86400) < 5
+        assert w is not None and abs((now - w) - 2 * 604800) < 5
+        # Case-insensitive + internal whitespace tolerated
+        assert _parse_iso_bound("7D") is not None
+        # Bad units still error
+        with pytest.raises(ValueError):
+            _parse_iso_bound("7x")
 
     def test_window_finds_in_range_session_buried_by_fts_limit(self, db, monkeypatch):
         """A June hit must survive even if FTS rank would fill the scan with August.

@@ -5917,8 +5917,11 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             )
             return
         if kind == "worktree":
-            _cleanup_worktree_workspace(task_id, path, row["branch_name"])
+            # Kill the (dead) tmux worker session BEFORE removing the
+            # worktree so a lingering worker never has its cwd deleted out
+            # from under it. Both steps stay best-effort.
             _cleanup_worker_tmux(conn, task_id)
+            _cleanup_worktree_workspace(task_id, path, row["branch_name"])
             _try_cleanup_parent_workspaces(conn, task_id)
             return
         import shutil

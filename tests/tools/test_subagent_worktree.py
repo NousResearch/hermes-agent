@@ -18,9 +18,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from tools import subagent_worktree as sw  # noqa: E402
 
 
-def _git(args, cwd):
+def _git(args, cwd, check=True):
     return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=check
     )
 
 
@@ -131,6 +131,38 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertFalse(payload["pruned"])
         self.assertTrue(payload["dirty"])
         self.assertTrue(os.path.isdir(info["path"]))
+
+    def test_finalize_keeps_worktree_when_git_inspection_fails(self):
+        """#88113: a non-zero git status exit must not be read as "clean".
+
+        Corrupting the index makes the real `git status --porcelain` probe
+        exit 128. The old code kept the payload defaults (commits=0,
+        dirty=False) and pruned on them — permanently deleting the child's
+        uncommitted work. A destructive cleanup requires affirmative proof
+        of a clean tree."""
+        repo = _make_repo(self.tmp)
+        info = sw.create_subagent_worktree(str(repo), "inspect-fail1")
+        assert info is not None
+        wt = Path(info["path"])
+        (wt / "UNCOMMITTED-WORK.txt").write_text(
+            "irreplaceable\n", encoding="utf-8"
+        )
+
+        git_dir = Path(_git(["rev-parse", "--git-dir"], wt).stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = (wt / git_dir).resolve()
+        (git_dir / "index").write_bytes(b"not-a-valid-git-index\n")
+        # Sanity: the probe really fails now.
+        broken = _git(["status", "--porcelain"], wt, check=False)
+        self.assertNotEqual(broken.returncode, 0)
+
+        payload = sw.finalize_subagent_worktree(info)
+
+        self.assertFalse(payload["pruned"])
+        self.assertTrue(os.path.isdir(info["path"]))
+        self.assertTrue((wt / "UNCOMMITTED-WORK.txt").exists())
+        branches = _git(["branch", "--list", info["branch"]], repo).stdout
+        self.assertNotEqual(branches.strip(), "")
 
     def test_finalize_missing_path_reports_pruned(self):
         payload = sw.finalize_subagent_worktree(

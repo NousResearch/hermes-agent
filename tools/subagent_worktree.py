@@ -196,6 +196,7 @@ def finalize_subagent_worktree(
         payload["pruned"] = True  # nothing on disk to review
         return payload
 
+    inspection_ok = True
     try:
         if base_commit:
             counted = _run_git(
@@ -203,12 +204,31 @@ def finalize_subagent_worktree(
             )
             if counted.returncode == 0:
                 payload["commits"] = int(counted.stdout.strip() or 0)
+            else:
+                inspection_ok = False
         status = _run_git(["status", "--porcelain"], cwd=path)
         if status.returncode == 0:
             payload["dirty"] = bool(status.stdout.strip())
+        else:
+            inspection_ok = False
     except Exception as exc:
         logger.debug("subagent worktree: finalize inspection failed: %s", exc)
         # Unknown state — keep the worktree rather than risk deleting work.
+        return payload
+
+    if not inspection_ok:
+        # Fail-safe (#88113): a non-zero git exit proves nothing about the
+        # tree — the payload defaults (0 commits, clean) were never
+        # overwritten, and pruning on them permanently deleted uncommitted
+        # child work. A destructive cleanup requires affirmative proof of
+        # "zero commits + clean tree"; otherwise keep the worktree and
+        # branch for manual inspection.
+        logger.warning(
+            "subagent worktree: git inspection failed (rev-list/status "
+            "non-zero) — keeping %s (branch %s) for manual review",
+            path,
+            branch,
+        )
         return payload
 
     if prune and payload["commits"] == 0 and not payload["dirty"]:

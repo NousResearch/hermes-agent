@@ -579,9 +579,41 @@ class TestCodexBuildKwargs:
         assert kw["prompt_cache_key"] == "caller-top-level"
         assert kw["extra_body"]["prompt_cache_key"] == "caller-top-level"
 
+    @pytest.mark.parametrize("verbosity", ["low", "medium", "high"])
+    def test_codex_backend_sets_output_verbosity(self, transport, verbosity):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            output_verbosity=verbosity,
+        )
 
+        assert kw["text"] == {"verbosity": verbosity}
 
+        preflight = transport.preflight_kwargs(kw)
+        assert preflight["text"] == {"verbosity": verbosity}
 
+    def test_non_codex_responses_omit_output_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            output_verbosity="low",
+        )
+
+        assert "text" not in kw
+
+    def test_codex_backend_omits_invalid_output_verbosity(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_codex_backend=True,
+            output_verbosity="extra-short",
+        )
+
+        assert "text" not in kw
 
     @pytest.mark.parametrize("length", [64, 65])
     def test_codex_cache_scope_boundary(self, transport, length):

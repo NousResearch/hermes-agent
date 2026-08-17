@@ -11,6 +11,7 @@ import {
   applyDesktopBootProgress,
   completeDesktopBoot,
   failDesktopBoot,
+  resumeDesktopBootForRetry,
   setDesktopBootStep
 } from '@/store/boot'
 import {
@@ -69,6 +70,20 @@ import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './ga
 // 1→15s ladder took ~45s to reach six failures — this threshold keeps that
 // original ~45s calibration.
 const RECONNECT_ESCALATE_AFTER_MS = 45_000
+
+// Bounded self-heal for a failed REMOTE boot (#82679): when the primary boot
+// fails on a transient remote fault (dropped SSH/HTTP registered connection,
+// mint timeout — main tags those `retryable` on the boot progress), the
+// renderer re-attempts the whole boot with the same full-jitter backoff the
+// post-boot reconnect loop uses, up to this many attempts. Retries are
+// bounded and end in the real recovery affordance (the boot-failure overlay
+// with Retry / Settings), never an infinite spinner. Local failures and
+// confirmed reauth rejections never enter this loop — a missing capability
+// differs from a transient failure.
+const BOOT_RETRY_MAX_ATTEMPTS = 5
+// Base delay for boot retries. Deliberately slower than the socket reconnect
+// loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
+const BOOT_RETRY_BASE_DELAY_MS = 2_000
 
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
@@ -148,6 +163,30 @@ export function useGatewayBoot({
     // dead-end CONNECTING screen. Reset on a clean open or a manual/
     // wake-driven reconnect.
     let escalated = false
+    // Bounded automatic boot retry for transient REMOTE failures (#82679).
+    let bootRetryAttempt = 0
+    let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+    const clearBootRetryTimer = () => {
+      if (bootRetryTimer !== null) {
+        clearTimeout(bootRetryTimer)
+        bootRetryTimer = null
+      }
+    }
+
+    // Whether the failed boot is a TRANSIENT remote fault main marked as
+    // retryable (dropped SSH/HTTP registered connection, mint timeout).
+    // Local failures and confirmed reauth rejections come back false and go
+    // straight to the recovery overlay.
+    const bootFailureIsRetryable = async (): Promise<boolean> => {
+      try {
+        const snapshot = await desktop.getBootProgress()
+
+        return snapshot?.retryable === true
+      } catch {
+        return false
+      }
+    }
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
     // `connectionState` to a constant across the early-return guards (the state
@@ -322,6 +361,8 @@ export function useGatewayBoot({
 
       $gatewaySwitching.set(true)
       clearReconnectTimer()
+      clearBootRetryTimer()
+      bootRetryAttempt = 0
       reconnectAttempt = 0
       reconnectFailingSince = null
       escalated = false
@@ -650,9 +691,32 @@ export function useGatewayBoot({
 
         completeDesktopBoot()
         bootCompleted = true
+        bootRetryAttempt = 0
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+
+          // Transient remote failure (dropped SSH/HTTP registered connection,
+          // mint timeout): self-heal with bounded, jittered retries instead of
+          // parking on "Desktop boot failed" until the user re-enters the same
+          // connection details (#82679). Main already cleared the failed cached
+          // descriptor, so the next getConnection() rebuilds the connection —
+          // exactly what manual re-entry forced. Exhausted retries, local
+          // failures, and confirmed reauth rejections end in the real recovery
+          // affordance (the boot-failure overlay), never an infinite spinner.
+          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && (await bootFailureIsRetryable()) && !cancelled) {
+            const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
+            bootRetryAttempt += 1
+            resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
+            clearBootRetryTimer()
+            bootRetryTimer = setTimeout(() => {
+              bootRetryTimer = null
+              void boot()
+            }, delay)
+
+            return
+          }
+
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
@@ -701,6 +765,7 @@ export function useGatewayBoot({
       cancelled = true
       $gatewaySwitching.set(false)
       clearReconnectTimer()
+      clearBootRetryTimer()
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()

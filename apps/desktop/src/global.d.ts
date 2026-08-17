@@ -914,6 +914,13 @@ export interface DesktopBootProgress {
   message: string
   phase: string
   progress: number
+  /**
+   * True when the boot failure carried by `error` was a TRANSIENT remote
+   * failure (dropped SSH/HTTP registered connection, mint timeout) that the
+   * renderer may retry automatically. Absent/false on success updates,
+   * local failures, and confirmed reauth rejections.
+   */
+  retryable?: boolean
   running: boolean
   timestamp: number
 }

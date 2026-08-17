@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import { isRetryableRemoteBootFailure, shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 
 test('latches a LOCAL backend failure so the install-retry loop is broken', () => {
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false }), true)
@@ -48,5 +48,32 @@ test('the two latches never fire for the same failure', () => {
       const reauth = shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth })
       assert.ok(!(start && reauth), `both latched for remote=${attemptedRemote} reauth=${isReauth}`)
     }
+  }
+})
+
+test('FIX #82679: a transient remote failure is retryable so a dropped SSH/HTTP connection self-heals', () => {
+  // The dropped-registered-connection class: "Could not verify the existing
+  // SSH backend", ERR_CONNECTION_RESET on an HTTP remote, mint timeouts. All
+  // surface as non-reauth remote boot failures and must enter the bounded
+  // renderer retry loop instead of parking on "Desktop boot failed".
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: false }), true)
+})
+
+test('a CONFIRMED reauth rejection is never auto-retried (missing capability, not transient failure)', () => {
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: true }), false)
+})
+
+test('local failures are never auto-retried by the remote self-heal loop', () => {
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: false, isReauth: false }), false)
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: false, isReauth: true }), false)
+})
+
+test('retryable and reauth-latch are mutually exclusive for remote failures', () => {
+  // Every remote failure either self-heals (transient) or latches for sign-in
+  // (confirmed reauth) — never both, never neither.
+  for (const isReauth of [true, false]) {
+    const retry = isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth })
+    const latch = shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth })
+    assert.equal(retry !== latch, true, `remote failure with reauth=${isReauth} must pick exactly one path`)
   }
 })

@@ -68,6 +68,7 @@ export const zh: Translations = {
       connectingGateway: '正在连接桌面网关',
       loadingSettings: '正在加载 Hermes 设置',
       loadingSessions: '正在加载最近会话',
+      retryingRemoteBackend: '正在重新连接远程 Hermes 后端…',
       startingDesktopConnection: '正在启动桌面连接',
       startingHermesDesktop: '正在启动 Hermes 桌面版…'
     },

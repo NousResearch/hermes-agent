@@ -104,12 +104,13 @@ function fakeDesktop() {
     }),
     getGatewayWsUrl: vi.fn(async (conn?: { wsUrl?: string }) => conn?.wsUrl ?? primaryConn.wsUrl),
     getBootProgress: vi.fn(async () => ({
-      error: null,
+      error: null as null | string,
       fakeMode: false,
       message: '',
       phase: 'init',
       progress: 0,
-      running: true,
+      retryable: false as boolean,
+      running: true as boolean,
       timestamp: Date.now()
     })),
     onBootProgress: vi.fn(() => () => undefined),
@@ -412,7 +413,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     })
 
     expect(desktop.revalidateConnection).toHaveBeenCalledOnce()
-    expect(desktop.getConnection).toHaveBeenLastCalledWith('default')
+    // The manual reconnect dials the WINDOW-owned primary backend (no profile
+    // arg) — same contract as the sleep/wake reconnect: passing the active
+    // profile would retarget the primary socket after a live profile swap.
+    const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
+    expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '').toBe(true)
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect($gatewayState.get()).toBe('open')
@@ -524,5 +529,110 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(primaryReconnectSockets.length).toBeGreaterThan(0)
     expect($connection.get()?.profile).toBe('coder')
     expect($connection.get()?.baseUrl).toBe(coderConn.baseUrl)
+  })
+
+  it('FIX #82679: a transient remote boot failure self-heals — the next attempt rebuilds the dropped connection', async () => {
+    // The reported class: the app relaunches (or wakes) against a registered
+    // SSH/HTTP remote whose transport dropped. startHermes() rejects with a
+    // transient transport error ("Could not verify the existing SSH backend"),
+    // main tags the boot progress `retryable`, and — before the fix — the app
+    // parked on "Desktop boot failed" until the user re-entered the exact same
+    // connection details. Now the renderer retries the boot with backoff and
+    // the second attempt (fresh bootstrap, same details) succeeds.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Could not verify the existing SSH backend.'))
+      .mockImplementation(async () => primaryConn)
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Could not verify the existing SSH backend.',
+      fakeMode: false,
+      message: 'Desktop boot failed: Could not verify the existing SSH backend.',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    // First attempt failed but the failure is retryable: no terminal error,
+    // the overlay shows the retry status instead of the dead-end failure.
+    expect($desktopBoot.get().error).toBeNull()
+    expect($gatewayState.get()).not.toBe('open')
+
+    // Walk past the first backoff delay (2s base, 15s cap, full jitter).
+    await advanceBackoff()
+
+    // Second boot attempt rebuilt the connection — no manual re-entry.
+    expect(desktop.getConnection.mock.calls.length).toBeGreaterThan(1)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('FIX #82679: boot retries are BOUNDED — a persistently dead remote ends in the recovery overlay, not a spinner', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('Could not verify the existing SSH backend.')
+    })
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Could not verify the existing SSH backend.',
+      fakeMode: false,
+      message: 'Desktop boot failed: Could not verify the existing SSH backend.',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    // Exhaust the bounded retry budget (5 attempts, ≤15s jittered delay each).
+    for (let i = 0; i < 7; i += 1) {
+      await advanceBackoff()
+    }
+
+    // 1 initial + 5 bounded retries; the loop then STOPS retrying and the
+    // terminal boot error surfaces the real recovery affordance.
+    expect(desktop.getConnection).toHaveBeenCalledTimes(6)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    // No further attempts after the budget is spent — bounded, not infinite.
+    await advanceBackoff()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(6)
+  })
+
+  it('FIX #82679: a NON-retryable boot failure (local / confirmed reauth) fails immediately without auto-retry', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('401: gateway session expired')
+    })
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: '401: gateway session expired',
+      fakeMode: false,
+      message: 'Desktop boot failed: 401: gateway session expired',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: false,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+
+    // Still no retry later: a missing capability is not a transient failure.
+    await advanceBackoff()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
   })
 })

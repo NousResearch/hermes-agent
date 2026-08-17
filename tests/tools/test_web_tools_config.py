@@ -224,7 +224,9 @@ class TestBackendSelection:
         """
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
@@ -661,6 +663,28 @@ class TestSiblingProvidersEnvResolution:
                 f"{cls_name}.is_available() ignored {env_key} from the "
                 "config-aware env layer (get_env_value)"
             )
+
+    def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
+        """Keyed Tavily must Bearer-auth with a key that lives only in .env."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"results": []}
+        mock_response.text = "{}"
+
+        with patch(
+            "hermes_cli.config.get_env_value",
+            side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
+        ), patch(
+            "plugins.web.tavily.provider.httpx.post", return_value=mock_response
+        ) as mock_post:
+            from plugins.web.tavily.provider import _tavily_request
+
+            _tavily_request("search", {"query": "q"})
+            headers = mock_post.call_args.kwargs["headers"]
+            assert headers["Authorization"] == "Bearer tvly-from-dotenv"
+            assert headers["X-Client-Name"] == "hermes-agent"
+            assert "X-Tavily-Access-Mode" not in headers
 
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):

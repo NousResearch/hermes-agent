@@ -358,6 +358,14 @@ def _get_capability_backend(capability: str) -> str:
     return _get_backend()
 
 
+def _tavily_explicitly_configured() -> bool:
+    cfg = _load_web_config()
+    return any(
+        (cfg.get(key) or "").lower().strip() == "tavily"
+        for key in ("backend", "search_backend", "extract_backend")
+    )
+
+
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable.
 
@@ -382,7 +390,7 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "firecrawl":
         return check_firecrawl_api_key()
     if backend == "tavily":
-        return _has_env("TAVILY_API_KEY")
+        return _has_env("TAVILY_API_KEY") or _tavily_explicitly_configured()
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
@@ -1224,7 +1232,10 @@ if __name__ == "__main__":
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
-            print("   Using Tavily API (https://tavily.com)")
+            if _has_env("TAVILY_API_KEY"):
+                print("   Using Tavily API (https://tavily.com)")
+            else:
+                print("   Using Tavily keyless (https://docs.tavily.com/documentation/keyless)")
         elif backend == "searxng":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":

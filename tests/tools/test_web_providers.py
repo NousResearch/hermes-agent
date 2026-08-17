@@ -202,19 +202,38 @@ class TestUnconfiguredErrorEnvelopeParity:
         from agent import web_search_registry
 
         self._clear_web_creds(monkeypatch)
-        # Reset firecrawl client cache so the unconfigured state is re-evaluated
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
         assert "Error searching web:" in result["error"]
         assert "FIRECRAWL_API_KEY" in result["error"]
-        # No per-result burying
+        assert "results" not in result
+
+
+    def test_explicit_firecrawl_unconfigured_emits_top_level_error(self, monkeypatch):
+        """``web.backend: firecrawl`` with no creds still uses the Firecrawl
+        error envelope — keyless Tavily must not silently take over.
+        """
+        from tools import web_tools
+
+        self._clear_web_creds(monkeypatch)
+        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
+        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+
+        result = json.loads(web_tools.web_search_tool("hello world", limit=3))
+        assert "error" in result, f"expected top-level 'error' key, got {result}"
+        assert "Error searching web:" in result["error"]
+        assert "FIRECRAWL_API_KEY" in result["error"]
         assert "results" not in result
 
 
@@ -317,6 +336,10 @@ class TestDispatchersTriggerPluginDiscovery:
                 web_tools, "_load_web_config",
                 lambda: {"extract_backend": "firecrawl"},
             )
+            monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+            async def _allow_ssrf(_url: str) -> bool:
+                return True
+            monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
             # Sanity: registry IS empty before the tool call.
             assert web_search_registry.get_provider("firecrawl") is None
 

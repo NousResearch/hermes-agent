@@ -22,7 +22,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
+| **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless when selected · 1 000 searches/mo with a free key |
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless free tier · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
@@ -239,14 +239,17 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 ### Tavily
 
-AI-optimised search and extract with a generous free tier.
+AI-optimised search and extract. Select Tavily in `hermes tools` (or set `web.backend: tavily`) to use it **keyless** with no account (rate-limited). Set an API key when you want higher limits.
 
 ```bash
+# optional — skip this for keyless access after selecting Tavily
 # ~/.hermes/.env
 TAVILY_API_KEY=tvly-your-key-here
 ```
 
-Get a key at [app.tavily.com](https://app.tavily.com/home). The free tier includes 1 000 searches/month.
+Get a key at [app.tavily.com](https://app.tavily.com/home). See [Tavily keyless](https://docs.tavily.com/documentation/keyless).
+
+Empty installs keep Firecrawl as the named default. Keyless Tavily is not auto-selected.
 
 ---
 

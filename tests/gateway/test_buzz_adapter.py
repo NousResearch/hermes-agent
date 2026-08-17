@@ -485,6 +485,91 @@ class TestCredentialResolution:
 # ── Env enablement / registration / standalone send ──────────────────────
 
 
+class TestCheckRequirements:
+    """check_requirements() must gate on the CLI binary, not just creds (OOF-208).
+
+    If it passes while the binary is absent, create_adapter() constructs the
+    adapter and connect() dies with a fatal — which, when Buzz is the only
+    enabled platform, used to escalate to gateway startup_failed + exit 78
+    on hosted images that don't ship the binary. Returning False instead
+    makes the registry skip the platform and the gateway degrade gracefully
+    (#5196), matching the Photon missing-node/npm precedent.
+    """
+
+    def _configure_creds(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://test.relay")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1test")
+
+    def test_false_when_relay_missing(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1test")
+        assert check_requirements() is False
+
+    def test_false_when_key_missing(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://test.relay")
+        assert check_requirements() is False
+
+    def test_false_when_cli_binary_missing(self, monkeypatch):
+        """Creds present but no binary anywhere -> requirements NOT met."""
+        self._configure_creds(monkeypatch)
+        monkeypatch.setattr(_buzz_mod, "_resolve_cli_path", lambda configured="": "")
+        assert check_requirements() is False
+
+    def test_true_when_cli_binary_present(self, monkeypatch, tmp_path):
+        self._configure_creds(monkeypatch)
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n")
+        fake_cli.chmod(0o755)
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        assert check_requirements() is True
+
+    def test_binary_check_respects_explicit_cli_path(self, monkeypatch, tmp_path):
+        """BUZZ_CLI_PATH pointing at a nonexistent file -> False, and the
+        check must not silently fall back to PATH (explicit config wins)."""
+        self._configure_creds(monkeypatch)
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(tmp_path / "definitely-missing"))
+        # Even with a `buzz` shim on PATH, the explicit path must win.
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "buzz"
+        shim.write_text("#!/bin/sh\n")
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", str(shim_dir))
+        assert check_requirements() is False
+
+    def test_missing_binary_warns_once(self, monkeypatch, caplog):
+        """The configured-but-broken warning fires once per process, not on
+        every status poll."""
+        self._configure_creds(monkeypatch)
+        monkeypatch.setattr(_buzz_mod, "_resolve_cli_path", lambda configured="": "")
+        monkeypatch.setattr(_buzz_mod, "_WARNED_CLI_MISSING", False)
+        with caplog.at_level("WARNING", logger=_buzz_mod.logger.name):
+            assert check_requirements() is False
+            assert check_requirements() is False
+        warnings = [r for r in caplog.records if "CLI binary was not" in r.getMessage()]
+        assert len(warnings) == 1
+
+
+class TestConnectMissingBinary:
+    """connect() with no binary must park the platform as RETRYABLE (OOF-208).
+
+    Defense-in-depth behind the check_requirements gate: if the binary
+    vanishes between the passive check and connect(), the failure must go to
+    the reconnect queue (operator can install the binary live), never to
+    startup_nonretryable_errors, which hard-exits the gateway (exit 78)
+    when no other platform connected.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connect_missing_cli_is_retryable(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.cli_path = ""
+        ok = await adapter.connect()
+        assert ok is False
+        assert adapter.has_fatal_error
+        assert adapter.fatal_error_code == "cli_missing"
+        assert adapter.fatal_error_retryable is True
+
+
 class TestEnvEnablement:
 
     def test_returns_none_when_unconfigured(self):

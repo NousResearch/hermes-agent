@@ -115,3 +115,40 @@ def test_dockerfile_bakes_photon_sidecar_deps() -> None:
     assert not re.search(
         r"chown\s+-R\s+hermes:hermes\s+/opt/hermes/plugins", text
     )
+
+
+def test_dockerfile_bakes_buzz_cli_binary() -> None:
+    """The buzz CLI binary must be baked into the image (OOF-208).
+
+    The Buzz platform adapter shells out to the `buzz` binary for every
+    relay operation, but block/buzz publishes no prebuilt CLI artifacts —
+    so the binary must be built from source in a dedicated stage and copied
+    onto PATH. Without this bake, a Buzz-enabled config boots into a
+    runtime that lacks the binary and the platform can never come up
+    (five hosted instances hit exactly that in the 2026-08-14 health
+    briefing). Guards the contract between the Dockerfile and
+    plugins/platforms/buzz/adapter.py's _resolve_cli_path(), which looks
+    for `buzz` on PATH.
+    """
+    text = _dockerfile_text()
+
+    # Dedicated build stage, pinned to an immutable commit SHA (tags move).
+    assert re.search(r"FROM rust:[^\n]+ AS buzz_build", text), (
+        "buzz CLI must be built in a dedicated rust stage"
+    )
+    ref = re.search(r"ARG BUZZ_GIT_REF=([0-9a-f]+)\n", text)
+    assert ref, "buzz source ref must be pinned via ARG BUZZ_GIT_REF"
+    assert len(ref.group(1)) == 40, (
+        "BUZZ_GIT_REF must be a full 40-char commit SHA, not a tag or "
+        "abbreviated ref — tags are mutable"
+    )
+    # Deterministic build from the committed lockfile.
+    assert "cargo build --release -p buzz-cli --locked" in text
+
+    # The binary must land on PATH in the runtime image, where the buzz
+    # adapter's _resolve_cli_path() finds it via shutil.which("buzz").
+    assert re.search(
+        r"COPY --chmod=0755 --from=buzz_build /usr/local/bin/buzz "
+        r"/usr/local/bin/buzz",
+        text,
+    ), "buzz binary must be copied from the build stage onto PATH"

@@ -49,6 +49,34 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
 FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
+
+# Buzz CLI build stage (OOF-208). The Buzz platform adapter shells out to the
+# `buzz` binary for every relay operation, but block/buzz publishes no
+# prebuilt CLI artifacts (releases only contain the desktop app bundles), so
+# hosted images shipped the adapter without its binary — Buzz-enabled
+# instances then died at startup. Build the CLI from a pinned source tag.
+# The workspace is pure-rustls (ring provider, no OpenSSL linkage), so the
+# resulting binary carries no shared-lib deps beyond glibc; bookworm's
+# glibc 2.36 runs cleanly on the trixie (2.41) runtime, mirroring the
+# node_source rationale above. Layer-cached: only re-runs when the pinned
+# ref changes. Bumping Buzz is a one-line ARG change.
+FROM rust:1.90-slim-bookworm@sha256:64232e656c058f4468e8d024e990acff04f0fd5a5c0a88a574dc37773d7325c9 AS buzz_build
+# v0.5.2 — pin the commit SHA, not the tag: tags are mutable, SHAs are not.
+ARG BUZZ_GIT_REF=3e48f1b2365d326ee1c9582448d86a99b44ecd5d
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        ca-certificates curl git pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+RUN git init /tmp/buzz && \
+    cd /tmp/buzz && \
+    git remote add origin https://github.com/block/buzz && \
+    git fetch --depth 1 origin "${BUZZ_GIT_REF}" && \
+    git checkout FETCH_HEAD && \
+    cargo build --release -p buzz-cli --locked && \
+    install -m 0755 target/release/buzz /usr/local/bin/buzz && \
+    rm -rf /tmp/buzz "${CARGO_HOME:-/usr/local/cargo}/registry" \
+        "${CARGO_HOME:-/usr/local/cargo}/git"
+
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -165,6 +193,11 @@ COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Buzz CLI binary (OOF-208): baked from the buzz_build stage so a
+# Buzz-enabled config never boots into a runtime that lacks the binary.
+# plugins/platforms/buzz/adapter.py resolves it via `buzz` on PATH.
+COPY --chmod=0755 --from=buzz_build /usr/local/bin/buzz /usr/local/bin/buzz
 
 WORKDIR /opt/hermes
 

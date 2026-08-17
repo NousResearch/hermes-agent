@@ -12376,6 +12376,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 else:
                     logger.warning("No adapter available for %s", _pval)
+                # Surface the parked platform in runtime status (OOF-208):
+                # before this, a platform whose adapter couldn't be created
+                # (missing binary/SDK — e.g. Buzz without the buzz CLI on the
+                # hosted image) was invisible in /api/status: enabled in
+                # config, absent from platforms{}, no error anywhere. Use
+                # "fatal" (a recognised dead state) with a specific code so
+                # dashboards and the health briefing can attribute the outage
+                # to the platform instead of the gateway.
+                self._update_platform_runtime_status(
+                    _pval,
+                    platform_state="fatal",
+                    error_code="adapter_unavailable",
+                    error_message=(
+                        "adapter could not be created — missing dependency, "
+                        "binary, or credentials (see gateway log)"
+                    ),
+                    needs_attention=True,
+                )
                 continue
 
             # Set up message + fatal error handlers. Under multiplexing the

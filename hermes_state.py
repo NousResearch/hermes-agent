@@ -6016,6 +6016,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # means a legacy shape that doesn't index tool metadata → optimize.
         return "tool_name" not in sql
 
+    @staticmethod
+    def _db_has_trigram_tool_calls_projection(cursor: sqlite3.Cursor) -> bool:
+        """True when the trigram vtable still includes tool_calls payload."""
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'messages_fts_trigram'"
+        ).fetchone()
+        if row is None:
+            return False
+        sql = (row[0] if not isinstance(row, sqlite3.Row) else row["sql"]) or ""
+        return "tool_calls" in sql.lower()
+
+    @classmethod
+    def _db_needs_fts_storage_upgrade(
+        cls, cursor: sqlite3.Cursor
+    ) -> bool:
+        """True when the current FTS storage layout should be treated as stale."""
+        return (
+            cls._db_has_legacy_inline_fts(cursor)
+            or cls._db_has_trigram_tool_calls_projection(cursor)
+        )
+
     def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
         """Log once that the trigram tokenizer is missing; base FTS5 stays enabled."""
         if getattr(self, "_trigram_unavailable_warned", False):

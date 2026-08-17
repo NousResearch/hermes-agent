@@ -1234,15 +1234,27 @@ def test_managed_service_uses_authenticated_health_probe(monkeypatch):
     def fake_get(url, **kwargs):
         headers = kwargs["headers"]
         calls.append((url, headers))
-        assert headers["X-API-Key"] == "service-key"
-        assert headers["Authorization"] == "Bearer service-key"
         if url.endswith("/health"):
+            if "X-API-Key" not in headers:
+                return response(
+                    {
+                        "error": {
+                            "code": "AuthenticationError",
+                            "message": "The API key in the request is missing or invalid.",
+                        }
+                    },
+                    status_code=401,
+                )
+            assert "X-OpenViking-Account" not in headers
+            assert "X-OpenViking-User" not in headers
             return response({
                 "status": "ok",
                 "healthy": True,
                 "version": "0.4.11",
                 "auth_mode": "api_key",
             })
+        assert headers["X-API-Key"] == "service-key"
+        assert headers["Authorization"] == "Bearer service-key"
         if url.endswith("/api/v1/system/status"):
             return response({"status": "ok", "result": {"initialized": True}})
         if url.endswith("/api/v1/admin/accounts"):
@@ -1265,16 +1277,20 @@ def test_managed_service_uses_authenticated_health_probe(monkeypatch):
     })
 
     assert (valid, message, role) == (True, "", "user")
-    assert [url.removeprefix(openviking_module._OPENVIKING_SERVICE_ENDPOINT) for url, _ in calls] == [
+    assert [
+        url.removeprefix(openviking_module._OPENVIKING_SERVICE_ENDPOINT) for url, _ in calls
+    ] == [
+        "/health",
         "/health",
         "/api/v1/system/status",
         "/api/v1/admin/accounts",
     ]
+    assert calls[0][1] == {"Accept": "application/json"}
 
 
-def test_managed_service_runtime_health_uses_authenticated_probe():
+def test_managed_service_runtime_health_uses_standard_health_probe():
     client = MagicMock()
-    client.authenticated_health_payload.return_value = {
+    client.health_payload.return_value = {
         "status": "ok",
         "healthy": True,
         "version": "0.4.11",
@@ -1286,8 +1302,7 @@ def test_managed_service_runtime_health_uses_authenticated_probe():
     )
 
     assert (state, message) == ("healthy", "")
-    client.authenticated_health_payload.assert_called_once_with()
-    client.health_payload.assert_not_called()
+    client.health_payload.assert_called_once_with()
 
 
 def test_repeated_openviking_health_probes_never_send_credentials_or_tenant_headers(
@@ -2340,46 +2355,37 @@ def test_is_available_false_without_any_endpoint(monkeypatch):
 
 
 class TestOpenVikingEnvWriter:
-    """``_write_env_vars`` copies existing .env lines through on every update,
-    so how it *reads* them decides whether a credential update lands.
-
-    f1ea4a56c ("cover the remaining setup-time .env reads with utf-8-sig")
-    swept this class; this writer was missed.
-    """
+    """``_write_env_vars`` must preserve unrelated ``.env`` contents."""
 
     def test_bom_prefixed_env_updates_in_place(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars
 
         env = tmp_path / ".env"
-        env.write_bytes(b"\xef\xbb\xbfOPENAI_API_KEY=old\nOTHER=1\n")
+        env.write_bytes(b"\xef\xbb\xbfOPENVIKING_ENDPOINT=http://legacy\nOTHER=1\n")
 
-        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+        _write_env_vars(env, {}, remove_keys=("OPENVIKING_ENDPOINT",))
 
         lines = [l for l in env.read_text(encoding="utf-8-sig").splitlines() if l]
-        # The stale value must be gone, not left as a duplicate. Hermes and
-        # python-dotenv use the last occurrence, but the file must have one value.
-        assert lines.count("OPENAI_API_KEY=new") == 1
-        assert not any(l.endswith("=old") for l in lines)
-        assert "OTHER=1" in lines
+        assert lines == ["OTHER=1"]
 
     def test_non_utf8_env_preserves_unrelated_bytes(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars
 
         env = tmp_path / ".env"
-        env.write_bytes(b"NAME=caf\xe9\nOPENAI_API_KEY=old\n")
+        env.write_bytes(b"NAME=caf\xe9\nOPENVIKING_AGENT=legacy\n")
 
-        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+        _write_env_vars(env, {}, remove_keys=("OPENVIKING_AGENT",))
 
-        assert env.read_bytes() == b"NAME=caf\xe9\nOPENAI_API_KEY=new\n"
+        assert env.read_bytes() == b"NAME=caf\xe9\n"
 
-    def test_plain_env_is_unchanged_apart_from_the_write(self, tmp_path):
+    def test_plain_env_is_unchanged_apart_from_the_removal(self, tmp_path):
         from plugins.memory.openviking import _write_env_vars
 
         env = tmp_path / ".env"
-        env.write_text("A=1\nOPENAI_API_KEY=old\nB=2\n", encoding="utf-8")
+        env.write_text(
+            "A=1\nOPENVIKING_ENDPOINT=http://legacy\nB=2\n", encoding="utf-8"
+        )
 
-        _write_env_vars(env, {"OPENAI_API_KEY": "new"})
+        _write_env_vars(env, {}, remove_keys=("OPENVIKING_ENDPOINT",))
 
-        assert env.read_text(encoding="utf-8").splitlines() == [
-            "A=1", "OPENAI_API_KEY=new", "B=2",
-        ]
+        assert env.read_text(encoding="utf-8").splitlines() == ["A=1", "B=2"]

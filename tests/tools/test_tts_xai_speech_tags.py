@@ -98,6 +98,10 @@ def test_apply_xai_auto_speech_tags_accepts_valid_rewrite(rewriter_output):
         "[pause] It has many features.",
         "<whisper>Welcome to a different demo.</whisper> "
         "[pause] It has many features.",
+        "<whisper>welcome to the demo of our new product line.</whisper> "
+        "[pause] It has many features.",
+        "<whisper>Welcome to the demo of our new product line!</whisper> "
+        "[pause] It has many features.",
     ],
     ids=[
         "unknown-inline",
@@ -105,6 +109,8 @@ def test_apply_xai_auto_speech_tags_accepts_valid_rewrite(rewriter_output):
         "unclosed-wrapping",
         "misnested-wrapping",
         "changed-transcript",
+        "changed-capitalisation",
+        "changed-punctuation",
     ],
 )
 def test_apply_xai_auto_speech_tags_rejects_invalid_rewrite(rewriter_output):

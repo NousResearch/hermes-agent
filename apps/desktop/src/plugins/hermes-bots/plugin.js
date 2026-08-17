@@ -1104,28 +1104,46 @@ function walkMathFaces(root, acc) {
 }
 
 function startFaceClock() {
-  if (typeof window === 'undefined' || window.__hbFaceClock) {
+  if (typeof window === 'undefined') {
     return
   }
 
-  window.__hbFaceClock = true
+  if (window.__hbFaceClock) {
+    // Already initialized (possibly parked) — make sure it's awake. BotFace
+    // renders route here, so a face mounting is what wakes a dormant clock.
+    window.__hbFaceClock.wake()
+
+    return
+  }
+
   const t0 = performance.now()
   // A large roster can mount hundreds of faces. Observe the cached nodes so
   // off-screen cards do not consume a full animation frame by themselves.
   let faces = []
   let lastScan = -Infinity
   let lastPaint = -Infinity
+  let rafId = 0
+  let dormant = false
+  let stopped = false
   const visibleFaces = new Set()
   const observedFaces = new Set()
   const observer =
     typeof IntersectionObserver === 'function'
       ? new IntersectionObserver(entries => {
+          let becameVisible = false
+
           for (const entry of entries) {
             if (entry.isIntersecting) {
               visibleFaces.add(entry.target)
+              becameVisible = true
             } else {
               visibleFaces.delete(entry.target)
             }
+          }
+
+          // A parked clock (no visible faces) resumes when one scrolls in.
+          if (becameVisible) {
+            wake()
           }
         })
       : null
@@ -1156,6 +1174,11 @@ function startFaceClock() {
   }
 
   const tick = now => {
+    if (stopped) {
+      return
+    }
+
+    rafId = 0
     // 15fps is smooth at avatar scale and bounds SVG/DOM churn. The clock
     // still uses rAF so Chromium can pause it when the window is occluded.
     if (!document.hidden && now - lastPaint >= 1000 / 15) {
@@ -1173,10 +1196,58 @@ function startFaceClock() {
       }
       lastPaint = now
     }
-    window.requestAnimationFrame(tick)
+
+    // Dormancy: no faces mounted (BotFace wakes us on the next mount), or
+    // none visible (the observer wakes us when one scrolls in). Park the
+    // clock instead of burning frames + 1Hz whole-document shadow walks.
+    if (faces.length === 0 || (observer && visibleFaces.size === 0)) {
+      dormant = true
+
+      return
+    }
+
+    rafId = window.requestAnimationFrame(tick)
   }
 
-  window.requestAnimationFrame(tick)
+  const wake = () => {
+    if (stopped || !dormant) {
+      return
+    }
+
+    dormant = false
+    // Faces may have mounted/unmounted while parked — rescan on first tick.
+    lastScan = -Infinity
+    rafId = window.requestAnimationFrame(tick)
+  }
+
+  const stop = () => {
+    stopped = true
+
+    if (rafId) {
+      window.cancelAnimationFrame(rafId)
+      rafId = 0
+    }
+
+    if (observer) {
+      observer.disconnect()
+    }
+
+    visibleFaces.clear()
+    observedFaces.clear()
+    faces = []
+    delete window.__hbFaceClock
+  }
+
+  window.__hbFaceClock = { stop, wake }
+  rafId = window.requestAnimationFrame(tick)
+}
+
+/** Tear the face clock down (plugin disable/reload) — cancels the animation
+ *  frame, disconnects the visibility observer, and drops all cached nodes. */
+function stopFaceClock() {
+  if (typeof window !== 'undefined' && window.__hbFaceClock) {
+    window.__hbFaceClock.stop()
+  }
 }
 
 /**
@@ -6777,6 +6848,11 @@ export default {
   register(ctx) {
     pluginCtx = ctx
     startFaceClock()
+    // Disabling the plugin (or a hot reload) must actually stop the clock —
+    // before this, the rAF loop + 1Hz document scan ran until app restart.
+    if (typeof ctx.onDispose === 'function') {
+      ctx.onDispose(stopFaceClock)
+    }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
     // roster's handles (issue #88060). Reads the roster straight from the

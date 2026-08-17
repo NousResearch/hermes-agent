@@ -1110,24 +1110,68 @@ function startFaceClock() {
 
   window.__hbFaceClock = true
   const t0 = performance.now()
-  // The shadow-root walk over the whole document is the expensive part —
-  // do it at ~1Hz and paint the cached list per frame. Skip paints while
-  // the window is hidden; rAF is throttled there anyway, but be explicit.
+  // A large roster can mount hundreds of faces. Observe the cached nodes so
+  // off-screen cards do not consume a full animation frame by themselves.
   let faces = []
   let lastScan = -Infinity
+  let lastPaint = -Infinity
+  const visibleFaces = new Set()
+  const observedFaces = new Set()
+  const observer =
+    typeof IntersectionObserver === 'function'
+      ? new IntersectionObserver(entries => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              visibleFaces.add(entry.target)
+            } else {
+              visibleFaces.delete(entry.target)
+            }
+          }
+        })
+      : null
+
+  const scanFaces = () => {
+    faces = walkMathFaces(document, [])
+
+    if (!observer) {
+      return
+    }
+
+    const currentFaces = new Set(faces)
+
+    for (const svg of observedFaces) {
+      if (!currentFaces.has(svg)) {
+        observer.unobserve(svg)
+        observedFaces.delete(svg)
+        visibleFaces.delete(svg)
+      }
+    }
+
+    for (const svg of faces) {
+      if (!observedFaces.has(svg)) {
+        observedFaces.add(svg)
+        observer.observe(svg)
+      }
+    }
+  }
 
   const tick = now => {
-    if (!document.hidden) {
+    // 15fps is smooth at avatar scale and bounds SVG/DOM churn. The clock
+    // still uses rAF so Chromium can pause it when the window is occluded.
+    if (!document.hidden && now - lastPaint >= 1000 / 15) {
       if (now - lastScan > 1000) {
-        faces = walkMathFaces(document, [])
+        scanFaces()
         lastScan = now
       }
       const t = (now - t0) / 1000
-      for (const svg of faces) {
+      const facesToPaint = observer ? visibleFaces : faces
+
+      for (const svg of facesToPaint) {
         if (svg.isConnected) {
           paintMathFace(svg, t)
         }
       }
+      lastPaint = now
     }
     window.requestAnimationFrame(tick)
   }

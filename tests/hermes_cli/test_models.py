@@ -483,3 +483,73 @@ class TestFormatPricePerMtok:
     def test_one_cent_boundary_stays_two_decimals(self):
         from hermes_cli.models import _format_price_per_mtok
         assert _format_price_per_mtok("0.00000001") == "$0.01"
+
+
+class TestTildeRedirectAliasLookup:
+    """OpenRouter redirect aliases (~vendor/model) must be recognized as the
+    equivalent vendor/model instead of surfacing a false not-found warning
+    (#88181)."""
+
+    def test_tilde_alias_matches_redirect_target_directly(self):
+        # The /v1/models listing returns the redirect TARGET (no tilde).
+        # The tilde prefix must be normalized away for lookup so the alias
+        # hits the set-membership check instead of relying on auto-correct.
+        with patch.object(
+            _models_mod, "fetch_api_models",
+            return_value=["deepseek/deepseek-v4-flash-latest", "deepseek/deepseek-v4-flash"],
+        ):
+            result = _models_mod.validate_requested_model(
+                "~deepseek/deepseek-v4-flash-latest",
+                "openrouter",
+                api_key="sk-test",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result.get("message") is None
+
+    def test_tilde_alias_matches_tilde_form(self):
+        with patch.object(
+            _models_mod, "fetch_api_models",
+            return_value=["~deepseek/deepseek-v4-flash-latest"],
+        ):
+            result = _models_mod.validate_requested_model(
+                "~deepseek/deepseek-v4-flash-latest",
+                "openrouter",
+                api_key="sk-test",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_non_tilde_vendor_model_name_unchanged(self):
+        with patch.object(
+            _models_mod, "fetch_api_models",
+            return_value=["deepseek/deepseek-v4-flash-latest"],
+        ):
+            result = _models_mod.validate_requested_model(
+                "deepseek/deepseek-v4-flash-latest",
+                "openrouter",
+                api_key="sk-test",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_tilde_without_vendor_slash_kept_for_lookup(self):
+        # A tilde-prefixed name with no vendor/ part is not an OpenRouter
+        # redirect alias — leave it untouched so a matching literal entry
+        # still resolves.
+        with patch.object(
+            _models_mod, "fetch_api_models",
+            return_value=["~weird"],
+        ):
+            result = _models_mod.validate_requested_model(
+                "~weird",
+                "openrouter",
+                api_key="sk-test",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        assert result["accepted"] is True
+        assert result["recognized"] is True

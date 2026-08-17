@@ -5294,6 +5294,13 @@ def validate_requested_model(
             requested,
             api_key=api_key,
         ) or requested
+    # OpenRouter redirect aliases use a tilde prefix (~vendor/model) that is
+    # equivalent to vendor/model on the wire. Normalize it away for catalog
+    # and API lookups so a redirect alias is recognized instead of surfacing
+    # a false "not found" warning (#88181). The original name is kept for
+    # display, so users still see exactly what they typed.
+    if requested_for_lookup.startswith("~") and "/" in requested_for_lookup[1:]:
+        requested_for_lookup = requested_for_lookup[1:]
 
     if not requested:
         return {

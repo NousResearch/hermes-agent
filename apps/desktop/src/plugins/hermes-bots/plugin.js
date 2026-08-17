@@ -1516,6 +1516,13 @@ function McpSetupButton({ profile, entry, onDone, ensureProfile }) {
   }
 
   const beginOAuth = async () => {
+    // A second click (retry, impatient double-click) must not orphan the
+    // previous poll interval — an overwritten pollRef leaks a 2s poller that
+    // runs until unmount and can flip phase from a stale OAuth session.
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
     setPhase('busy')
     setMessage('')
     const profile = await resolveProfile()
@@ -6647,14 +6654,15 @@ function RoutinesPane() {
               })
             }),
       jsx(CreateRoutineDialog, {
-        key: createTarget,
         bot: createTarget,
         open: createOpen,
         onClose: () => {
           setCreateOpen(false)
           setCreateOwner(null)
         }
-      })
+        // key is the jsx() THIRD argument — as a prop it is silently ignored
+        // and the dialog kept stale per-bot form state when the target changed.
+      }, createTarget)
     ]
   })
 }
@@ -7910,12 +7918,26 @@ export default {
     }
 
     // Routines follow the chat you're in: track the live gateway profile.
-    host.state.profile.listen(profile => {
+    // Capture the unbinds: without them a disable → re-enable cycle stacks a
+    // duplicate listener per cycle (same survives-disable class as the face
+    // clock before its onDispose hook — these kept firing until app restart).
+    const unbindProfileListener = host.state.profile.listen(profile => {
       if (profile && typeof profile === 'string') {
         $selectedBot.set(profile)
       }
     })
-    host.state.gateway.listen(handleSessionsGatewayTransition)
+    const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
+
+    if (typeof ctx.onDispose === 'function') {
+      ctx.onDispose(() => {
+        if (typeof unbindProfileListener === 'function') {
+          unbindProfileListener()
+        }
+        if (typeof unbindGatewayListener === 'function') {
+          unbindGatewayListener()
+        }
+      })
+    }
 
     // Reconciliation sweep: hide every Bot Mode session we know about, on
     // load and again on each reconnect (a swap can land on a gateway whose

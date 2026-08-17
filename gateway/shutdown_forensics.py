@@ -140,7 +140,9 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    # macOS launchd uses ppid==1 just like systemd, so we must exclude darwin
+    # to avoid treating normal launchd-supervised runs as "under_systemd"
+    ctx["under_systemd"] = bool(invocation_id) or (ppid == 1 and sys.platform != "darwin")
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".

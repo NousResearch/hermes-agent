@@ -74,6 +74,23 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "devin-acp": [
+        "swe-1-7",
+        "swe-1-7-lightning",
+        "swe-1-7-medium",
+        "adaptive",
+        "claude-opus-5-high",
+        "claude-sonnet-5-high",
+        "claude-5-fable-medium",
+        "gpt-5-6-sol-medium",
+        "gpt-5-6-luna-medium",
+        "gpt-5-6-terra-medium",
+        "glm-5-2",
+        "gemini-3-7-flash-medium",
+        "kimi-k3-low",
+        "deepseek-v4-flash-high",
+        "grok-4-6-medium",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",

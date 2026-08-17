@@ -337,6 +337,29 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "devin-acp": [
+        "swe-1-7",
+        "swe-1-7-lightning",
+        "swe-1-7-medium",
+        "swe-1-7-lightning-medium",
+        "adaptive",
+        "claude-opus-5-high",
+        "claude-opus-5-max",
+        "claude-opus-5-medium",
+        "claude-sonnet-5-high",
+        "claude-sonnet-5-max",
+        "claude-sonnet-5-medium",
+        "claude-5-fable-medium",
+        "gpt-5-6-sol-medium",
+        "gpt-5-6-luna-medium",
+        "gpt-5-6-terra-medium",
+        "glm-5-2",
+        "glm-5-2-max",
+        "gemini-3-7-flash-medium",
+        "kimi-k3-low",
+        "deepseek-v4-flash-high",
+        "grok-4-6-medium",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1166,6 +1189,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("devin-acp",      "Devin (Cognition)",        "Devin ACP — SWE-1.7, Adaptive, Claude, GPT, GLM, Gemini, Kimi, DeepSeek, Grok (spawns devin acp)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -1329,6 +1353,10 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "devin": "devin-acp",
+    "cognition": "devin-acp",
+    "devin-acp-agent": "devin-acp",
+    "swe": "devin-acp",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -2607,11 +2635,13 @@ _AGGREGATOR_PROVIDERS = frozenset(
     {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 )
 
-# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
-# would be listed here (tried only as a last resort for bare short-alias
-# resolution, after every native-vendor catalog, so they never hijack an alias
-# away from the model's native vendor). None are currently defined.
-_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
+# Subscription/OAuth/ACP providers whose catalogs RE-EXPOSE other vendors'
+# models are listed here. They are tried only as a last resort for bare
+# short-alias resolution, after every native-vendor catalog, so they never
+# hijack an alias away from the model's native vendor. Devin ACP exposes
+# Claude, GPT, GLM, Gemini, Kimi, DeepSeek, and Grok families under its own
+# ACP routing, so it belongs here.
+_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset({"devin-acp"})
 
 # Providers whose live /v1/models endpoint is the authoritative catalog, so the
 # curated list is a discovery-only fallback. For these, the picker merges
@@ -3161,6 +3191,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "devin-acp":
+        # Devin ACP has no REST /models endpoint; the catalog is the static
+        # curated list. `devin models list` drives the aliases, but we surface
+        # the common agentic picks here.
+        return list(_PROVIDER_MODELS.get("devin-acp", []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

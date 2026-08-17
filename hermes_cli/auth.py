@@ -134,6 +134,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_DEVIN_ACP_BASE_URL = "acp://devin"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
@@ -304,6 +305,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "devin-acp": ProviderConfig(
+        id="devin-acp",
+        name="Devin (Cognition)",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_DEVIN_ACP_BASE_URL,
+        base_url_env_var="DEVIN_ACP_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1982,6 +1990,17 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
+    # 5. Subprocess-backed ACP providers (devin-acp, copilot-acp) are
+    # configured by installing the provider's CLI and/or setting the command
+    # env var. Treat them as explicitly configured when the executable is
+    # resolvable, so they survive explicit-only desktop pickers.
+    if pconfig and pconfig.auth_type == "external_process":
+        try:
+            resolve_external_process_provider_credentials(normalized)
+            return True
+        except Exception:
+            pass
+
     return False
 
 
@@ -2110,6 +2129,8 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "devin": "devin-acp", "cognition": "devin-acp",
+        "devin-acp-agent": "devin-acp", "swe": "devin-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
@@ -7123,13 +7144,9 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command = _resolve_external_process_command(provider_id)
+    raw_args = os.getenv(_EXTERNAL_PROCESS_ARGS_ENVS.get(provider_id, ""), "").strip()
+    args = shlex.split(raw_args) if raw_args else _EXTERNAL_PROCESS_DEFAULT_ARGS.get(provider_id, [])
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -7165,6 +7182,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
+        return get_external_process_provider_status(target)
+    if target == "devin-acp":
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -7340,6 +7359,43 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     }
 
 
+# Subprocess-backed (ACP) provider defaults.  Order within each tuple is
+# the env-var lookup order; the final element is the fallback command.
+_EXTERNAL_PROCESS_COMMAND_ENVS: Dict[str, tuple[str, ...]] = {
+    "copilot-acp": ("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH", "copilot"),
+    "devin-acp": ("HERMES_DEVIN_ACP_COMMAND", "DEVIN_CLI_PATH", "devin"),
+}
+
+_EXTERNAL_PROCESS_ARGS_ENVS: Dict[str, str] = {
+    "copilot-acp": "HERMES_COPILOT_ACP_ARGS",
+    "devin-acp": "HERMES_DEVIN_ACP_ARGS",
+}
+
+_EXTERNAL_PROCESS_DEFAULT_ARGS: Dict[str, list[str]] = {
+    "copilot-acp": ["--acp", "--stdio"],
+    "devin-acp": ["acp"],
+}
+
+_EXTERNAL_PROCESS_INSTALL_HINTS: Dict[str, str] = {
+    "copilot-acp": "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+    "devin-acp": "Install Devin CLI or set HERMES_DEVIN_ACP_COMMAND/DEVIN_CLI_PATH.",
+}
+
+
+def _resolve_external_process_command(provider_id: str) -> str:
+    """Return the best candidate command for a subprocess-backed provider."""
+    for env_var in _EXTERNAL_PROCESS_COMMAND_ENVS.get(provider_id, ()):
+        if "=" not in env_var and env_var.isupper():
+            # env_var is an environment variable name
+            val = os.getenv(env_var, "").strip()
+            if val:
+                return val
+        else:
+            # fallback literal command
+            return env_var
+    return provider_id
+
+
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -7354,25 +7410,24 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command = _resolve_external_process_command(provider_id)
+    raw_args = os.getenv(_EXTERNAL_PROCESS_ARGS_ENVS.get(provider_id, ""), "").strip()
+    args = shlex.split(raw_args) if raw_args else _EXTERNAL_PROCESS_DEFAULT_ARGS.get(provider_id, [])
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        hint = _EXTERNAL_PROCESS_INSTALL_HINTS.get(
+            provider_id,
+            f"Set the command env var for {provider_id}.",
+        )
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the {pconfig.name} CLI command '{command}'. {hint}",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code=f"missing_{provider_id.replace('-', '_')}_cli",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

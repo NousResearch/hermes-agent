@@ -3173,3 +3173,80 @@ def _model_flow_anthropic(config, current_model=""):
         print(f"Default model set to: {selected} (via Anthropic)")
     else:
         print("No change.")
+
+
+def _model_flow_devin_acp(config, current_model=""):
+    """Devin (Cognition) ACP flow using the local Devin CLI."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "devin-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or "devin"
+    )
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Devin (Cognition) ACP delegates Hermes turns to `devin acp`.")
+    print("  Hermes starts its own ACP subprocess for each request.")
+    print("  Select a model slug that `devin acp --model <slug>` accepts.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print(
+            "  Set HERMES_DEVIN_ACP_COMMAND or DEVIN_CLI_PATH if Devin CLI is installed elsewhere."
+        )
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+    model_list = list(_PROVIDER_MODELS.get(provider_id, []))
+    if not model_list:
+        try:
+            model_list = input("Model name: ").strip().split()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=current_model,
+        confirm_provider=provider_id,
+        confirm_base_url=effective_base,
+        confirm_api_key="",
+    )
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")

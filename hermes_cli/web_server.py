@@ -10291,6 +10291,23 @@ def _copilot_acp_status() -> Dict[str, Any]:
     }
 
 
+def _devin_acp_status() -> Dict[str, Any]:
+    """Status for devin-acp — credentials are owned by the Devin CLI.
+
+    There is no cheap programmatic credential probe for the ACP subprocess, so
+    this is a read-only "managed by the Devin CLI" card (like claude-code):
+    Hermes never claims a login state it can't verify.
+    """
+    return {
+        "logged_in": False,
+        "source": "devin_cli",
+        "source_label": "Managed by the Devin CLI",
+        "token_preview": None,
+        "expires_at": None,
+        "has_refresh_token": False,
+    }
+
+
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
 # can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
 # the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
@@ -10360,6 +10377,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "copilot /login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
+    },
+    {
+        "id": "devin-acp",
+        "name": "Devin (Cognition)",
+        "flow": "external",
+        "cli_command": "devin auth login",
+        "docs_url": "https://docs.devin.ai",
+        "status_fn": _devin_acp_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
     # first, then the subscription OAuth path (which only works with extra

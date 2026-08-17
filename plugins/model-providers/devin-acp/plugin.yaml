@@ -1,0 +1,5 @@
+name: devin-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Devin (Cognition) via ACP subprocess (SWE, Adaptive, and frontier models)
+author: Hermes + user bridge

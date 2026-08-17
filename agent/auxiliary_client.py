@@ -2348,6 +2348,12 @@ def _maybe_wrap_anthropic(
             return client_obj
     except ImportError:
         pass
+    try:
+        from agent.devin_acp_client import DevinACPClient
+        if _safe_isinstance(client_obj, DevinACPClient):
+            return client_obj
+    except ImportError:
+        pass
 
     # Explicit non-anthropic api_mode wins over URL heuristics.
     if api_mode and api_mode != "anthropic_messages":
@@ -6011,6 +6017,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return sync_client, model
     except ImportError:
         pass
+    try:
+        from agent.devin_acp_client import DevinACPClient
+        if isinstance(sync_client, DevinACPClient):
+            return sync_client, model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -6768,23 +6780,37 @@ def resolve_provider_client(
             or _read_main_model_for_aux(),
             provider,
         )
+        if not final_model:
+            logger.warning(
+                "resolve_provider_client: %s requested but no model "
+                "was provided or configured", provider
+            )
+            return None, None
+        api_key = str(creds.get("api_key", "")).strip()
+        base_url = str(creds.get("base_url", "")).strip()
+        command = str(creds.get("command", "")).strip() or None
+        args = list(creds.get("args") or [])
+        if not api_key or not base_url:
+            logger.warning(
+                "resolve_provider_client: %s requested but external "
+                "process credentials are incomplete", provider
+            )
+            return None, None
+        if provider == "devin-acp":
+            from agent.devin_acp_client import DevinACPClient
+
+            client = DevinACPClient(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+                model=final_model,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+
         if provider == "copilot-acp":
-            api_key = str(creds.get("api_key", "")).strip()
-            base_url = str(creds.get("base_url", "")).strip()
-            command = str(creds.get("command", "")).strip() or None
-            args = list(creds.get("args") or [])
-            if not final_model:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but no model "
-                    "was provided or configured"
-                )
-                return None, None
-            if not api_key or not base_url:
-                logger.warning(
-                    "resolve_provider_client: copilot-acp requested but external "
-                    "process credentials are incomplete"
-                )
-                return None, None
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(

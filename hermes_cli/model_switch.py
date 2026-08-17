@@ -2704,6 +2704,17 @@ def list_authenticated_providers(
                 has_creds = has_vertex_credentials()
             except Exception as exc:
                 logger.debug("Vertex credential check failed: %s", exc)
+        elif overlay.auth_type == "external_process":
+            # Subprocess-backed ACP providers (Copilot CLI, Devin CLI) have no
+            # API key / OAuth credential. They are routable when the executable
+            # is found. Try the same resolver the runtime uses so the desktop
+            # /model picker shows them as soon as the CLI is installed.
+            try:
+                from hermes_cli.auth import resolve_external_process_provider_credentials
+                resolve_external_process_provider_credentials(hermes_slug)
+                has_creds = True
+            except Exception as exc:
+                logger.debug("External-process credential check failed for %s: %s", hermes_slug, exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
@@ -2774,7 +2785,7 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        if hermes_slug in {"openai-codex", "copilot", "copilot-acp", "devin-acp"}:
             # Use live OAuth-backed discovery so the gateway /model picker
             # matches what the user's authenticated Codex/Copilot backend
             # actually serves — including ChatGPT-Pro-only Codex slugs

@@ -1859,6 +1859,29 @@ _MAX_MALFORMED_BACKUPS = 3
 # header on any real recovery), while staying O(1) on a multi-GB file.
 _FINGERPRINT_SAMPLE_BYTES = 65536
 
+# Byte ranges inside SQLite's 100-byte database header that move on ordinary
+# commits rather than on repair, and are therefore masked out of the content
+# sample. In rollback-journal (DELETE) mode a commit writes the main file
+# directly, bumping the file change counter (24-27) and version-valid-for
+# (92-95); a malformed-SCHEMA DB still accepts those writes, so without the
+# mask any live session write re-keys the ledger and the repair budget resets
+# to 1 forever — the exact unbounded loop this ledger exists to stop. (WAL mode
+# routes commits to the -wal sidecar, so the main file's header only moves on
+# checkpoint; masking is harmless there and correct for both.) Everything that
+# matters for repair identity — the page-1 sqlite_master b-tree — sits after
+# byte 100 and stays in the sample.
+_FINGERPRINT_VOLATILE_HEADER_RANGES = ((24, 28), (92, 96))
+
+
+def _mask_volatile_header(head: bytes) -> bytes:
+    """Zero the commit-counter fields so ordinary writes don't re-key the ledger."""
+    if len(head) < 96:
+        return head
+    buf = bytearray(head)
+    for start, end in _FINGERPRINT_VOLATILE_HEADER_RANGES:
+        buf[start:end] = b"\x00" * (end - start)
+    return bytes(buf)
+
 # Free-space headroom for the pre-repair forensic backup. The backup is a
 # full raw copy of the damaged DB (plus its -wal/-shm sidecars), so a repair
 # loop on a large state.db is a disk amplifier: the reporting incident wrote
@@ -1952,7 +1975,7 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
                         tail = b""
         except LiveConnectionError:
             return None
-        digest = hashlib.sha256(head + tail).hexdigest()[:32]
+        digest = hashlib.sha256(_mask_volatile_header(head) + tail).hexdigest()[:32]
         return f"{st.st_size}:{digest}"
     except OSError:
         return None

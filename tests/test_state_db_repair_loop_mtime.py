@@ -157,7 +157,13 @@ def test_backup_allowed_on_small_volume_with_room(tmp_path):
     50MB DB on a 10GB volume with 1.5GB free fits with ~30x headroom; the
     guard must allow it rather than hard-stopping repair forever.
     """
-    db = _damaged_db(tmp_path, size=50_000_000)
+    # Sparse: this test DOES copy the file, but the guard and copy both care
+    # about st_size, not content — 50MB of os.urandom would only cost CI time.
+    db = tmp_path / "state.db"
+    with open(db, "wb") as handle:
+        handle.write(b"SQLite format 3\x00")
+        handle.truncate(50_000_000)
+    assert db.stat().st_size == 50_000_000
     small_vm = type(
         "Usage", (), {"total": 10_000_000_000, "used": 8_500_000_000, "free": 1_500_000_000}
     )()
@@ -175,7 +181,12 @@ def test_headroom_scales_with_volume_size():
 def test_disk_guard_accounts_for_sidecars(tmp_path):
     """The copy includes -wal/-shm, so the space check must count them."""
     db = _damaged_db(tmp_path, size=1_000_000)
-    db.with_name(db.name + "-wal").write_bytes(os.urandom(400_000_000))
+    # Sparse: the guard reads st_size, so allocating 400MB of real bytes would
+    # only buy CI cost (and an ENOSPC risk on tmpfs runners).
+    wal = db.with_name(db.name + "-wal")
+    with open(wal, "wb") as handle:
+        handle.truncate(400_000_000)
+    assert wal.stat().st_size == 400_000_000
     usage = type(
         "Usage",
         (),
@@ -518,3 +529,92 @@ def test_fingerprint_returns_none_rather_than_a_mtime_shaped_key(tmp_path):
         )
     finally:
         live.close()
+
+
+# ---------------------------------------------------------------------------
+# The content sample must exclude SQLite's commit counters
+# ---------------------------------------------------------------------------
+
+
+def _populated_db(path: Path, journal_mode: str, rows: int = 600) -> None:
+    """A DB comfortably larger than the fingerprint sample window (~270KB)."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(f"PRAGMA journal_mode={journal_mode}")
+    conn.execute("CREATE TABLE sessions(id TEXT, blob TEXT)")
+    conn.executemany(
+        "INSERT INTO sessions VALUES(?,?)",
+        [(str(i), "x" * 400) for i in range(rows)],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_ordinary_commit_does_not_rekey_the_fingerprint(tmp_path):
+    """A malformed-SCHEMA DB still accepts writes, so commits must not re-key.
+
+    In rollback-journal (DELETE) mode a commit writes the main file directly and
+    bumps the header's file change counter (bytes 24-27) and version-valid-for
+    (92-95). Those live inside the head sample, so an unmasked fingerprint
+    changed on every ordinary session write — resetting the repair budget to 1
+    forever, which is exactly the unbounded loop this suite exists to pin.
+    """
+    for journal_mode in ("DELETE", "WAL"):
+        db = tmp_path / f"state_{journal_mode}.db"
+        _populated_db(db, journal_mode)
+        before = _db_fingerprint(db)
+
+        writer = sqlite3.connect(str(db), isolation_level=None)
+        try:
+            writer.execute("UPDATE sessions SET blob='peer' WHERE id='20000'")
+        finally:
+            writer.close()
+
+        assert _db_fingerprint(db) == before, (
+            f"{journal_mode} mode: an ordinary commit re-keyed the ledger"
+        )
+
+
+def test_budget_exhausts_while_a_writer_commits_between_passes(tmp_path):
+    """End-to-end shape of the original incident, in DELETE mode."""
+    db = tmp_path / "state.db"
+    _populated_db(db, "DELETE")
+
+    for index in range(_MAX_PERSISTENT_REPAIR_ATTEMPTS):
+        assert not _persistent_repair_attempts_exhausted(db)
+        _record_repair_outcome(db, repaired=False)
+        writer = sqlite3.connect(str(db), isolation_level=None)
+        try:
+            writer.execute("UPDATE sessions SET blob=? WHERE id='20000'", (f"v{index}",))
+        finally:
+            writer.close()
+
+    assert _persistent_repair_attempts_exhausted(db), (
+        "a live writer's commits reset the repair budget every pass"
+    )
+
+
+def test_genuine_recovery_still_resets_the_budget(tmp_path):
+    """Masking the commit counters must not blind us to real repair."""
+    db = tmp_path / "state.db"
+    _populated_db(db, "DELETE")
+
+    def _mutate(sql: str) -> None:
+        conn = sqlite3.connect(str(db), isolation_level=None)
+        try:
+            conn.execute(sql)
+        finally:
+            conn.close()
+
+    for label, sql in (
+        ("sqlite_master rewrite", "CREATE TABLE healed(x)"),
+        ("index rebuild", "CREATE INDEX ix_sessions_id ON sessions(id)"),
+        ("VACUUM", "VACUUM"),
+    ):
+        before = _db_fingerprint(db)
+        _mutate(sql)
+        assert _db_fingerprint(db) != before, f"{label} left the fingerprint unchanged"
+
+    before = _db_fingerprint(db)
+    with open(db, "r+b") as handle:
+        handle.truncate(4096)
+    assert _db_fingerprint(db) != before, "truncation left the fingerprint unchanged"

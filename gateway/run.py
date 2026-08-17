@@ -5362,7 +5362,17 @@ class TurnRunner:
             _platforms_gw_cfg = {}
         _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
         _skip_context = _plat_gw_cfg.get("skip_context_files")
-        skip_context_files = bool(_skip_context) if _skip_context is not None else False
+        platform_skip_context = bool(_skip_context) if _skip_context is not None else False
+
+        # Isolation contract: --ignore-rules / --safe-mode (normalized to
+        # HERMES_IGNORE_RULES / HERMES_SAFE_MODE at CLI startup) must behave
+        # like the CLI and TUI entries. It composes with the per-platform
+        # latency opt-out: either one skips context-file discovery, while
+        # memory skipping follows isolation alone.
+        from agent.isolation import resolve_agent_isolation
+
+        isolation_skip_context, skip_memory = resolve_agent_isolation()
+        skip_context_files = isolation_skip_context or platform_skip_context
 
         # Check agent cache — reuse the AIAgent from the previous message
         # in this session to preserve the frozen system prompt and tool
@@ -5376,6 +5386,7 @@ class TurnRunner:
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            skip_memory=skip_memory,
         )
         agent = None
         reused_cached_agent = False
@@ -5612,6 +5623,7 @@ class TurnRunner:
                 # Reload from disk — do not reuse the startup snapshot (#60955).
                 fallback_model=self._runner._refresh_fallback_model(),
                 skip_context_files=skip_context_files,
+                skip_memory=skip_memory,
                 # Keep the persona even with minimal context: soul identity is
                 # a single small file, not part of the expensive walk.
                 load_soul_identity=True,
@@ -25829,6 +25841,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_id: str | None = None,
         user_id_alt: str | None = None,
         skip_context_files: bool = False,
+        skip_memory: bool = False,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -25887,6 +25900,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (context files in vs out) — a toggled config edit must
                 # rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
+                # skip_memory changes the memory injection state baked at
+                # construction; an isolation toggle must also rebuild.
+                bool(skip_memory),
             ],
             sort_keys=True,
             default=str,

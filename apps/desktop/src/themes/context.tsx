@@ -35,7 +35,9 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
+// `default` is the live CLI classic skin (Classic Hermes gold) once registered
+// by backend-sync — not retired. `gold` remains a legacy alias (see use-skin-command).
+const RETIRED_SKINS = new Set(['nous-light', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 

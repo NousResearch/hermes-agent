@@ -95,7 +95,7 @@ class SessionSchemaMixin:
         the remainder. Letting the error propagate aborted schema init
         entirely, left the version below 25, and made every subsequent
         ``SessionDB.__init__`` re-enter this migration against the same
-        contended DB (Coatue field report, 2026-08-14: gateway watchdog
+        contended DB (enterprise field report, 2026-08-14: gateway watchdog
         crash loop).
         """
         try:

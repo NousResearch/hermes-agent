@@ -1,6 +1,6 @@
 """SessionDB bootstrap must never run schema init on an event-loop thread.
 
-Coatue field report (2026-08-14): after an unclean shutdown plus a
+Enterprise field report (2026-08-14): after an unclean shutdown plus a
 double-instance startup race, the v25 schema migration inside
 ``SessionDB.__init__`` blocked the gateway's event-loop thread (reached via
 ``_post_turn_goal_continuation`` → ``GoalManager()`` → ``load_goal`` →

@@ -1,6 +1,6 @@
 """The v25 dedupe migration must degrade gracefully on a contended DB.
 
-Coatue field report (2026-08-14): with state.db locked by another process,
+Enterprise field report (2026-08-14): with state.db locked by another process,
 ``_dedupe_legacy_system_prompts`` raised ``sqlite3.OperationalError``
 mid-loop (only the initial SELECT was guarded), which aborted schema init,
 left the schema version below 25, and made EVERY subsequent

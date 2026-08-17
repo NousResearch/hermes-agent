@@ -703,7 +703,7 @@ def _get_session_db() -> Optional[Any]:
     runs schema init, and a migration against a contended state.db blocks for
     seconds — on the gateway's loop thread that starves the loop-liveness
     watchdog, which hard-exits the process (exit 75) and crash-loops the
-    gateway (Coatue field report, 2026-08-14). On a cache miss with a running
+    gateway (enterprise field report, 2026-08-14). On a cache miss with a running
     loop we kick a one-shot background bootstrap and return None; every
     caller already degrades gracefully on None, and a later call returns the
     cached instance.

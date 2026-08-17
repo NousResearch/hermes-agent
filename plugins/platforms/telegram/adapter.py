@@ -308,6 +308,7 @@ from plugins.platforms.telegram.telegram_network import (
     parse_fallback_ip_env,
 )
 from utils import atomic_replace, env_float, env_int
+from agent.i18n import t
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -6098,11 +6099,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             default_hint = f" (default: {default})" if default else ""
-            text = self.format_message(f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}")
+            text = self.format_message(f"{t('gateway.tg_update_prompt_header')}{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
-                    InlineKeyboardButton("✗ No", callback_data="update_prompt:n"),
+                    InlineKeyboardButton(t("gateway.tg_btn_yes"), callback_data="update_prompt:y"),
+                    InlineKeyboardButton(t("gateway.tg_btn_no"), callback_data="update_prompt:n"),
                 ]
             ])
             thread_id = self._metadata_thread_id(metadata)
@@ -6137,6 +6138,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
 
+    def _ea_header(self) -> str:
+        return f"{t('gateway.tg_approval_header')}\n\n"
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -6168,17 +6172,31 @@ class TelegramAdapter(BasePlatformAdapter):
             approval_id = next(self._approval_counter)
 
             buttons = [
-                InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")
+                InlineKeyboardButton(
+                    t("gateway.tg_btn_allow_once"),
+                    callback_data=f"ea:once:{approval_id}",
+                )
             ]
             if not smart_denied and allow_session:
                 buttons.append(
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
+                    InlineKeyboardButton(
+                        t("gateway.tg_btn_allow_session"),
+                        callback_data=f"ea:session:{approval_id}",
+                    )
                 )
                 if allow_permanent:
                     buttons.append(
-                        InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
+                        InlineKeyboardButton(
+                            t("gateway.tg_btn_allow_always"),
+                            callback_data=f"ea:always:{approval_id}",
+                        )
                     )
-            buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
+            buttons.append(
+                InlineKeyboardButton(
+                    t("gateway.tg_btn_deny"),
+                    callback_data=f"ea:deny:{approval_id}",
+                )
+            )
             # Pair into rows (2x2 for the full set) so labels stay readable on
             # mobile — a single 4-button row truncates to "Allo… / Ses… / …".
             rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
@@ -6226,11 +6244,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                    InlineKeyboardButton(t("gateway.tg_btn_approve_once"), callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton(t("gateway.tg_btn_always_approve"), callback_data=f"sc:always:{confirm_id}"),
                 ],
                 [
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    InlineKeyboardButton(t("gateway.tg_btn_cancel"), callback_data=f"sc:cancel:{confirm_id}"),
                 ],
             ])
 
@@ -6632,15 +6650,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if total_pages > 1:
             nav: list = []
             if page > 0:
-                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mg:{page - 1}"))
+                nav.append(InlineKeyboardButton(t("gateway.tg_btn_prev"), callback_data=f"mg:{page - 1}"))
             nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
             if page < total_pages - 1:
-                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:{page + 1}"))
+                nav.append(InlineKeyboardButton(t("gateway.tg_btn_next"), callback_data=f"mg:{page + 1}"))
             rows.append(nav)
 
         rows.append([
-            InlineKeyboardButton("◀ Back", callback_data="mb"),
-            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            InlineKeyboardButton(t("gateway.tg_btn_back"), callback_data="mb"),
+            InlineKeyboardButton(t("gateway.tg_btn_cancel_x"), callback_data="mx"),
         ])
 
         return InlineKeyboardMarkup(rows), page_meta["page_info"]
@@ -6651,7 +6669,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle model picker inline keyboard callbacks (mp:/mm:/mc:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — use /model again.")
+            await query.answer(text=t("gateway.tg_picker_expired"))
             return
 
         try:
@@ -6668,7 +6686,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 None,
             )
             if not provider:
-                await query.answer(text="Provider not found.")
+                await query.answer(text=t("gateway.tg_provider_not_found"))
                 return
 
             models = provider.get("models", [])
@@ -6682,14 +6700,14 @@ class TelegramAdapter(BasePlatformAdapter):
             pname = provider.get("name", provider_slug)
             total = provider.get("total_models", len(models))
             shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+            extra = t("gateway.tg_more_available", n=total - shown) if total > shown else ""
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"{t('gateway.tg_model_config_header')}\n\n"
+                        f"{t('gateway.tg_provider_bold', provider=pname, page_info=page_info)}\n"
+                        f"{t('gateway.tg_select_model', extra=extra)}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -6702,7 +6720,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 page = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid page.")
+                await query.answer(text=t("gateway.tg_invalid_page"))
                 return
 
             models = state.get("model_list", [])
@@ -6718,14 +6736,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             total = provider.get("total_models", len(models)) if provider else len(models)
             shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+            extra = t("gateway.tg_more_available", n=total - shown) if total > shown else ""
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"{t('gateway.tg_model_config_header')}\n\n"
+                        f"{t('gateway.tg_provider_bold', provider=pname, page_info=page_info)}\n"
+                        f"{t('gateway.tg_select_model', extra=extra)}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -6770,12 +6788,12 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 idx = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid selection.")
+                await query.answer(text=t("gateway.tg_invalid_selection"))
                 return
 
             model_list = state.get("model_list", [])
             if idx < 0 or idx >= len(model_list):
-                await query.answer(text="Invalid model index.")
+                await query.answer(text=t("gateway.tg_invalid_model_index"))
                 return
 
             model_id = model_list[idx]
@@ -6783,7 +6801,7 @@ class TelegramAdapter(BasePlatformAdapter):
             callback = state.get("on_model_selected")
 
             if not callback:
-                await query.answer(text="Picker expired.")
+                await query.answer(text=t("gateway.tg_picker_expired_short"))
                 return
 
             switch_failed = False
@@ -6791,7 +6809,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
-                result_text = f"Error switching model: {exc}"
+                result_text = t("gateway.tg_error_switching_model", error=exc)
                 switch_failed = True
 
             try:
@@ -6810,7 +6828,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             await query.answer(
-                text="Switch failed." if switch_failed else "Model switched!"
+                text=t("gateway.tg_switch_failed") if switch_failed else t("gateway.tg_model_switched")
             )
             self._model_picker_state.pop(chat_id, None)
 
@@ -6819,12 +6837,12 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 idx = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid selection.")
+                await query.answer(text=t("gateway.tg_invalid_selection"))
                 return
 
             model_list = state.get("model_list", [])
             if idx < 0 or idx >= len(model_list):
-                await query.answer(text="Invalid model index.")
+                await query.answer(text=t("gateway.tg_invalid_model_index"))
                 return
 
             model_id = model_list[idx]
@@ -6832,7 +6850,7 @@ class TelegramAdapter(BasePlatformAdapter):
             callback = state.get("on_model_selected")
 
             if not callback:
-                await query.answer(text="Picker expired.")
+                await query.answer(text=t("gateway.tg_picker_expired_short"))
                 return
 
             try:
@@ -6849,10 +6867,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 warning = None
             if warning is not None:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")],
+                    [InlineKeyboardButton(t("gateway.tg_btn_switch_anyway"), callback_data=f"mc:{idx}")],
                     [
-                        InlineKeyboardButton("◀ Back", callback_data="mb"),
-                        InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+                        InlineKeyboardButton(t("gateway.tg_btn_back"), callback_data="mb"),
+                        InlineKeyboardButton(t("gateway.tg_btn_cancel_x"), callback_data="mx"),
                     ],
                 ])
                 await query.edit_message_text(
@@ -6862,7 +6880,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=keyboard,
                 )
-                await query.answer(text="Confirm model selection")
+                await query.answer(text=t("gateway.tg_confirm_expensive"))
                 return
 
             switch_failed = False
@@ -6870,7 +6888,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
-                result_text = f"Error switching model: {exc}"
+                result_text = t("gateway.tg_error_switching_model", error=exc)
                 switch_failed = True
 
             # Edit message to show confirmation, remove buttons
@@ -6891,7 +6909,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             await query.answer(
-                text="Switch failed." if switch_failed else "Model switched!"
+                text=t("gateway.tg_switch_failed") if switch_failed else t("gateway.tg_model_switched")
             )
 
             # Clean up state
@@ -6909,7 +6927,7 @@ class TelegramAdapter(BasePlatformAdapter):
             by_slug = {p["slug"]: p for p in state["providers"]}
             members = [by_slug[m] for m in member_slugs if m in by_slug]
             if not members:
-                await query.answer(text="Group not found.")
+                await query.answer(text=t("gateway.tg_group_not_found"))
                 return
 
             buttons = []
@@ -6923,17 +6941,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
             rows.append([
-                InlineKeyboardButton("◀ Back", callback_data="mb"),
-                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+                InlineKeyboardButton(t("gateway.tg_btn_back"), callback_data="mb"),
+                InlineKeyboardButton(t("gateway.tg_btn_cancel_x"), callback_data="mx"),
             ])
             keyboard = InlineKeyboardMarkup(rows)
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider family: *{_label or group_id}*\n\n"
-                        f"Select a provider:"
+                        f"{t('gateway.tg_model_config_header')}\n\n"
+                        f"{t('gateway.tg_provider_family', family=_label or group_id)}\n\n"
+                        f"{t('gateway.tg_select_provider')}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -6971,7 +6989,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # --- Cancel ---
             self._model_picker_state.pop(chat_id, None)
             await query.edit_message_text(
-                text="Model selection cancelled.",
+                text=t("gateway.tg_model_selection_cancelled"),
                 reply_markup=None,
             )
             await query.answer()
@@ -7054,7 +7072,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     approval_id = int(parts[2])
                 except (ValueError, IndexError):
-                    await query.answer(text="Invalid approval data.")
+                    await query.answer(text=t("gateway.tg_invalid_approval_data"))
                     return
 
                 # Only authorized users may click approval buttons.
@@ -7066,12 +7084,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to approve commands.")
+                    await query.answer(text=t("gateway.tg_not_authorized_approve"))
                     return
 
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
-                    await query.answer(text="This approval has already been resolved.")
+                    await query.answer(text=t("gateway.tg_approval_resolved"))
                     return
 
                 user_display = getattr(query.from_user, "first_name", "User")
@@ -7096,19 +7114,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 if count:
                     # Map choice to human-readable label
                     label_map = {
-                        "once": "✅ Approved once",
-                        "session": "✅ Approved for session",
-                        "always": "✅ Approved permanently",
-                        "deny": "❌ Denied",
+                        "once": t("gateway.tg_approved_once"),
+                        "session": t("gateway.tg_approved_session"),
+                        "always": t("gateway.tg_approved_permanently"),
+                        "deny": t("gateway.tg_denied"),
                     }
-                    label = label_map.get(choice, "Resolved")
-                    edit_text = f"{label} by {user_display}"
-                else:
-                    label = "⌛ Approval expired"
-                    edit_text = (
-                        f"{label} — no command was waiting. "
-                        f"It already timed out (and was denied) or was resolved elsewhere."
+                    label = label_map.get(choice, t("gateway.tg_resolved"))
+                    edit_text = t(
+                        "gateway.tg_decision_by", label=label, user=user_display
                     )
+                else:
+                    label = t("gateway.tg_approval_expired")
+                    edit_text = t("gateway.tg_approval_expired_detail", label=label)
 
                 await query.answer(text=label)
 
@@ -7146,27 +7163,27 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    await query.answer(text=t("gateway.tg_not_authorized_prompt"))
                     return
 
                 session_key = self._slash_confirm_state.pop(confirm_id, None)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t("gateway.tg_prompt_resolved"))
                     return
 
                 label_map = {
-                    "once": "✅ Approved once",
-                    "always": "🔒 Always approve",
-                    "cancel": "❌ Cancelled",
+                    "once": t("gateway.tg_approved_once"),
+                    "always": t("gateway.tg_always_approve_label"),
+                    "cancel": t("gateway.tg_cancelled_label"),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
+                label = label_map.get(choice, t("gateway.tg_resolved"))
 
                 await query.answer(text=label)
 
                 try:
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
+                        text=self.format_message(t("gateway.tg_decision_by", label=label, user=user_display)),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=None,
                     )
@@ -7246,12 +7263,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    await query.answer(text=t("gateway.tg_not_authorized_prompt"))
                     return
 
                 session_key = self._clarify_state.get(clarify_id)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t("gateway.tg_prompt_resolved"))
                     return
 
                 user_display = getattr(query.from_user, "first_name", "User")
@@ -7277,7 +7294,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._notify_clarify_expired(query, user_display)
                         return
 
-                    await query.answer(text="✏️ Type your answer in the chat.")
+                    await query.answer(text=t("gateway.tg_type_answer"))
                     try:
                         await query.edit_message_text(
                             text=f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>",
@@ -7292,7 +7309,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     idx = int(choice_token)
                 except (ValueError, TypeError):
-                    await query.answer(text="Invalid choice.")
+                    await query.answer(text=t("gateway.tg_invalid_choice"))
                     return
 
                 # Look up the choice text from the entry registered in the
@@ -7323,7 +7340,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     resolved = False
 
                 if resolved:
-                    await query.answer(text=f"✓ {resolved_text[:60]}")
+                    await query.answer(text=t("gateway.tg_clarify_resolved", resolved_text=resolved_text[:60]))
                     try:
                         await query.edit_message_text(
                             text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
@@ -7359,14 +7376,14 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
+            await query.answer(text=t("gateway.tg_not_authorized_update"))
             return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
+        await query.answer(text=t("gateway.tg_sent_answer", answer=answer))
         # Edit the message to show the choice and remove buttons
         label = "Yes" if answer == "y" else "No"
         try:
             await query.edit_message_text(
-                text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
+                text=self.format_message(t("gateway.tg_update_answered", label=label)),
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=None,
             )
@@ -7418,7 +7435,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
         parts = data.split(":", 2)
         if len(parts) != 3:
-            await query.answer(text="Invalid gmail-triage data.")
+            await query.answer(text=t("gateway.tg_gmail_invalid_data"))
             return
         verb, arg = parts[1], parts[2]
 
@@ -7430,18 +7447,18 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to act on this email.")
+            await query.answer(text=t("gateway.tg_not_authorized_email"))
             return
 
         entry = self._GT_VERB_DISPATCH.get(verb)
         if not entry:
-            await query.answer(text=f"Unknown verb: {verb}")
+            await query.answer(text=t("gateway.tg_gmail_unknown_verb", verb=verb))
             return
         script_name, extra_args, success_label, is_state_verb = entry
 
         script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
-            await query.answer(text=f"❌ {script_name} missing")
+            await query.answer(text=t("gateway.tg_gmail_script_missing", script_name=script_name))
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
 
@@ -7466,16 +7483,16 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
                 last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
-                label = f"❌ {verb} failed: {last_line[:80]}"
+                label = t("gateway.tg_gmail_verb_failed", verb=verb, detail=last_line[:80])
                 logger.error(
                     "[%s] gmail-triage callback failed: verb=%s arg=%s rc=%s stderr=%s",
                     self.name, verb, arg, proc.returncode, stderr_text,
                 )
         except asyncio.TimeoutError:
-            label = f"❌ {verb} timed out"
+            label = t("gateway.tg_gmail_verb_timed_out", verb=verb)
             logger.error("[%s] gmail-triage callback timed out: verb=%s arg=%s", self.name, verb, arg)
         except Exception as exc:
-            label = f"❌ {verb} error: {exc}"
+            label = t("gateway.tg_gmail_verb_error", verb=verb, error=exc)
             logger.error(
                 "[%s] gmail-triage callback exception: verb=%s arg=%s err=%s",
                 self.name, verb, arg, exc, exc_info=True,
@@ -7487,7 +7504,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         user_display = getattr(query.from_user, "first_name", "User")
         original_text = (query.message.text or "") if query.message else ""
-        appended = f"{original_text}\n— {label} by {user_display}"
+        appended = t("gateway.tg_decision_appended", original=original_text, label=label, user=user_display)
         try:
             if is_state_verb:
                 # Sticky state change: append confirmation, KEEP keyboard so

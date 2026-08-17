@@ -38,7 +38,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -1471,20 +1471,46 @@ class GoalManager:
         save_goal(self.session_id, self._state)
         return prev
 
-    def render_gates(self) -> str:
+    def render_gates(self, *, translate: Optional[Callable[..., str]] = None) -> str:
         """Public helper for the /goal gate slash command."""
         if self._state is None:
+            if translate is not None:
+                return translate("gateway.goal_gate_no_active")
             return "(no active goal)"
         if not self._state.gates:
+            if translate is not None:
+                return translate("gateway.goal_gate_none")
             return "(no quality gates — use /goal gate add <command> to require one)"
         lines = []
         for i, g in enumerate(self._state.gates, start=1):
             status = ""
             if g.last_exit_code is not None:
-                status = " ✓ passing" if g.last_exit_code == 0 else (
-                    f" ✗ failing (exit {g.last_exit_code}, attempt {g.attempts}/{g.max_retries})"
+                if g.last_exit_code == 0:
+                    status = (
+                        translate("gateway.goal_gate_status_passing")
+                        if translate is not None
+                        else " ✓ passing"
+                    )
+                elif translate is not None:
+                    status = translate(
+                        "gateway.goal_gate_status_failing",
+                        exit_code=g.last_exit_code,
+                        attempts=g.attempts,
+                        max_retries=g.max_retries,
+                    )
+                else:
+                    status = f" ✗ failing (exit {g.last_exit_code}, attempt {g.attempts}/{g.max_retries})"
+            if translate is not None:
+                lines.append(
+                    translate(
+                        "gateway.goal_gate_item",
+                        index=i,
+                        command=g.command,
+                        status=status,
+                    )
                 )
-            lines.append(f"- {i}. $ {g.command}{status}")
+            else:
+                lines.append(f"- {i}. $ {g.command}{status}")
         return "\n".join(lines)
 
     def _check_gates(self) -> Optional[Dict[str, Any]]:

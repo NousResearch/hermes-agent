@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -4112,6 +4113,10 @@ class BasePlatformAdapter(ABC):
         """
         return text
 
+    def _ea_header(self) -> str:
+        """Resolve the approval header at send time for localized adapters."""
+        return self._EA_HEADER
+
     def _format_exec_approval(
         self,
         command: str,
@@ -4128,7 +4133,7 @@ class BasePlatformAdapter(ABC):
         """
         cmd_preview = self._truncate_preview(str(command or ""), self._EA_CMD_BUDGET)
         text = (
-            f"{self._EA_HEADER}"
+            f"{self._ea_header()}"
             f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
             f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
         )
@@ -4250,25 +4255,21 @@ class BasePlatformAdapter(ABC):
                 _is_multi = bool(_entry and getattr(_entry, "multi_select", False))
             except Exception:
                 _is_multi = False
-            lines = [f"❓ {question}", ""]
+            lines = [t("gateway.clarify_question", question=question), ""]
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
             if _is_multi:
-                lines.append(
-                    "Multiple selections allowed — reply with the numbers "
-                    "separated by commas or spaces (e.g. \"1, 3\"), the option "
-                    "text, or your own answer."
-                )
+                lines.append(t("gateway.clarify_instructions_multi"))
             else:
-                lines.append("Reply with the number, the option text, or your own answer.")
+                lines.append(t("gateway.clarify_instructions"))
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).
             from tools.clarify_gateway import mark_awaiting_text
             mark_awaiting_text(clarify_id)
         else:
-            text = f"❓ {question}"
+            text = t("gateway.clarify_question", question=question)
         return await self.send(
             chat_id=chat_id,
             content=text,
@@ -5535,10 +5536,7 @@ class BasePlatformAdapter(ABC):
             else:
                 # All retries exhausted (loop completed without break) — notify user
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
-                notice = (
-                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent."
-                )
+                notice = t("gateway.delivery_failed")
                 try:
                     await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
                 except Exception as notify_err:
@@ -5549,7 +5547,7 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=t("gateway.response_formatting_failed", content=content[:3500]),
             reply_to=reply_to,
             metadata=metadata,
         )

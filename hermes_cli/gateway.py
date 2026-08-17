@@ -863,12 +863,24 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     manager. Starting Hermes's detached watcher as well would escape the
     manager and race its replacement process. Ordinary foreground gateways
     retain the existing detached-watcher behavior.
+
+    When the profile-derived relaunch cannot be armed -- typically because
+    ``_gateway_run_args_for_profile`` cannot rebuild a run argv for this
+    profile -- fall back to replaying the process's own captured command
+    line, which is what ``launch_detached_gateway_restart_by_cmdline``
+    exists for and what the Windows post-update path already does for its
+    unmapped gateways.  Without this the caller has no way to relaunch the
+    process and (before #88654) silently left it running pre-update modules
+    against post-update code on disk.  ``argv`` is already captured above,
+    so the fallback costs nothing extra.
     """
     argv = _capture_gateway_argv(pid)
     if argv and "--external-supervisor" in argv:
         return "external-supervisor"
     if launch_detached_profile_gateway_restart(profile, pid):
         return "detached"
+    if argv and launch_detached_gateway_restart_by_cmdline(pid, list(argv)):
+        return "detached-cmdline"
     return None
 
 

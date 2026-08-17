@@ -7890,11 +7890,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 for proc in find_profile_gateway_processes(exclude_pids=service_pids)
                 if proc.pid in manual_pids
             }
+            # Profile gateways we could not arm a relaunch for.  These must
+            # NOT be left running: their modules are the pre-update ones and
+            # every lazy import from here on mixes versions against the new
+            # code on disk (#88654).  Handing them to the unmapped sweep
+            # below stops them and surfaces them in the "Stopped N manual
+            # gateway process(es) / Restart manually" summary, which is the
+            # contract already used for gateways with no profile mapping.
+            unrestartable_pids = set()
             for pid, proc in profile_processes.items():
                 restart_mode = _prepare_profile_gateway_update_restart(
                     proc.profile, pid
                 )
                 if restart_mode is None:
+                    # Previously a bare ``continue``: the gateway was neither
+                    # relaunched nor stopped nor mentioned, so it kept serving
+                    # from stale modules with no operator signal at all.
+                    print(
+                        f"  ⚠ {proc.profile}: could not arm an automatic "
+                        f"gateway restart for PID {pid} — stopping it instead "
+                        "so it cannot keep running pre-update code"
+                    )
+                    unrestartable_pids.add(pid)
                     continue
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
@@ -7961,7 +7978,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
-                if pid in profile_processes:
+                if pid in profile_processes and pid not in unrestartable_pids:
                     continue
                 try:
                     os.kill(pid, _signal.SIGTERM)

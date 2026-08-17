@@ -12596,7 +12596,6 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 
           raw = { connection, profiles }
         }
-
       } catch (error: any) {
         raw = { connection, profiles: null, error: String(error?.message || error) }
       }
@@ -12606,6 +12605,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
       }
 
       const remembered = rememberSshEnumeration(raw, sshRosterCache.get(connection.id), connection.kind)
+
       return { connection, ...remembered }
     })
   )

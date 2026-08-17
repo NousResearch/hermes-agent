@@ -96,10 +96,14 @@ test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawn
 test('listRemoteHermesProfiles rejects a hostile HERMES_HOME', async () => {
   const ssh = fakeSsh([[/HERMES_HOME/, '/tmp/x; echo pwned\n']])
 
-  await assert.rejects(() => listRemoteHermesProfiles(ssh), (err: any) => {
-    assert.equal(err.kind, 'unsafe-path')
-    return true
-  })
+  await assert.rejects(
+    () => listRemoteHermesProfiles(ssh),
+    (err: any) => {
+      assert.equal(err.kind, 'unsafe-path')
+
+      return true
+    }
+  )
   assert.equal(
     ssh.calls.some(cmd => cmd.includes('ls -1')),
     false

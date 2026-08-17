@@ -169,6 +169,7 @@ if (typeof window !== 'undefined') {
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
 const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
+
 const $activeConnectionId = computed($connection, connection => {
   if (!connection) {
     return null

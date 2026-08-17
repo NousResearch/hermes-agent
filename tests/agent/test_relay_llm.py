@@ -860,6 +860,23 @@ def test_stream_current_preserves_real_relay_interceptor_chunks(relay_turn):
         )
 
 
+def test_stream_current_surfaces_managed_factory_error_before_return(relay_turn):
+    """Shape detection preserves the unmanaged factory-error boundary."""
+
+    def fail_factory(_request):
+        raise RuntimeError("provider failed before streaming")
+
+    with pytest.raises(RuntimeError, match="provider failed before streaming"):
+        relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            fail_factory,
+            name="test-provider",
+            model_name="test-model",
+            finalizer=dict,
+            completed_response_predicate=_choices_predicate,
+        )
+
+
 def _completed_response(content: str = "done") -> SimpleNamespace:
     return SimpleNamespace(
         model="test-model",

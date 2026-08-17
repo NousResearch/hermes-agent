@@ -214,6 +214,27 @@ function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
 }
 
+/** Which Hermes profile the remote SSH dashboard should actually run as.
+ *  Registry pool keys (`conn:mac-mini::default`) are desktop routing labels —
+ *  they must never be sent to the remote as a profile name. `default` and
+ *  empty mean the remote root home. */
+function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfileKey) {
+  const configured = String(configuredRemoteProfile || '').trim()
+
+  if (configured && configured !== 'default') {
+    return configured
+  }
+
+  const key = String(poolOrProfileKey || '').trim()
+  const requested = key.startsWith('conn:') ? key.split('::').pop() || '' : key
+
+  if (!requested || requested === 'default') {
+    return ''
+  }
+
+  return requested
+}
+
 // Coerce a remote auth mode to one of the two supported values ('token' default).
 function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
@@ -802,6 +823,7 @@ export {
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileBackendRoute,
+  resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,

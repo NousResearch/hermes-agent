@@ -2548,6 +2548,13 @@ async function prepareBotSource(bot, pinnedChat) {
     return pinnedChat
   }
 
+  const liveId = String(typeof host.activeConnectionId === 'function' ? host.activeConnectionId() || '' : '').trim()
+  const targetId = String(bot.connectionId || '').trim()
+
+  if (targetId && targetId !== 'local' && liveId !== targetId) {
+    throw new Error(`Still on ${liveId || 'this device'}, not ${bot.connectionLabel || targetId}`)
+  }
+
   // Thin rows deliberately omit metadata from the active source. Once their
   // owner is active, recover that source's canonical-chat pointer so
   // same-named agents never reuse or overwrite each other's pin.

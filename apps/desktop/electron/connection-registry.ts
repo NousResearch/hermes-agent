@@ -178,6 +178,79 @@ export interface RegistryLocalRoute {
   poolKey: string
 }
 
+export interface ResolvedConnectionDescriptor {
+  baseUrl?: string
+  mode?: 'local' | 'remote'
+  remoteHost?: string
+  remoteKind?: 'cloud' | 'ssh' | 'url'
+}
+
+/**
+ * Recover registry identity for a descriptor resolved through the legacy v1
+ * profile path. Registry-scoped routes already carry `connectionId`; this
+ * bridge keeps migrated per-profile remotes truthful until v1 is retired.
+ */
+export function resolvedConnectionId(
+  registry: ConnectionRegistry,
+  descriptor: ResolvedConnectionDescriptor
+): null | string {
+  if (descriptor.mode === 'local') {
+    return registry.connections.find(connection => connection.kind === 'local')?.id ?? null
+  }
+
+  if (descriptor.mode !== 'remote') {
+    return null
+  }
+
+  if (descriptor.remoteKind === 'ssh') {
+    const remoteHost = String(descriptor.remoteHost || '')
+      .trim()
+      .toLowerCase()
+
+    if (!remoteHost) {
+      return null
+    }
+
+    return (
+      registry.connections.find(connection => {
+        if (connection.kind !== 'ssh') {
+          return false
+        }
+
+        const host = String(connection.host || '')
+          .trim()
+          .toLowerCase()
+
+        const target = connection.user ? `${String(connection.user).trim().toLowerCase()}@${host}` : host
+
+        return target === remoteHost
+      })?.id ?? null
+    )
+  }
+
+  let baseUrl = ''
+
+  try {
+    baseUrl = normalizeRemoteBaseUrl(descriptor.baseUrl)
+  } catch {
+    return null
+  }
+
+  return (
+    registry.connections.find(connection => {
+      if (connection.kind !== 'cloud' && connection.kind !== 'remote') {
+        return false
+      }
+
+      try {
+        return normalizeRemoteBaseUrl(connection.url) === baseUrl
+      } catch {
+        return false
+      }
+    })?.id ?? null
+  )
+}
+
 /**
  * How the registry's 'local' entry resolves a backend for `profile`.
  *

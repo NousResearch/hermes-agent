@@ -661,6 +661,10 @@ export interface HermesConnection {
   // secondaries carry it directly; legacy primary remotes preserve it from
   // their selected stored route before dialing.
   connectionId?: string
+  // True only when getConnectionFor explicitly resolved a v2 registry route.
+  // An inferred connectionId identifies the visible source but its v1 profile
+  // name may still be a client-side routing alias rather than a backend profile.
+  registryScoped?: boolean
   // True only when `profile` is a request scope on the shared primary backend.
   // A pooled backend also carries `profile`, so presence alone cannot identify
   // the shared-primary routing case.
@@ -1076,8 +1080,8 @@ export interface HermesApiRequest {
   // Route this REST call to a specific REGISTERED gateway connection (v2
   // registry). Data owned by a remote gateway — cron jobs and their run
   // sessions — lives in that host's state.db, so requests for it must resolve
-  // through the owning connection, not the local profile pool. Omit / '' /
-  // 'local' keep the legacy profile-routed path.
+  // through the owning connection, not the local profile pool. Omit / '' to
+  // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
 }
 

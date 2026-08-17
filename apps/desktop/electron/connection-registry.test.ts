@@ -28,6 +28,7 @@ import {
   REGISTRY_VERSION,
   rememberSshEnumeration,
   removeConnection,
+  resolvedConnectionId,
   resolveRegistryLocalRoute,
   setPrimaryConnection,
   shouldDeferLocalEnumeration,
@@ -52,6 +53,49 @@ test('labelSlug kebab-cases and never returns empty for non-empty input', () => 
   assert.equal(labelSlug('Work Laptop'), 'work-laptop')
   assert.equal(labelSlug('Spark Box #2'), 'spark-box-2')
   assert.equal(labelSlug('!!!'), 'connection')
+})
+
+test('resolvedConnectionId identifies local and migrated remote descriptors', () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'local',
+    profiles: {
+      personal: { mode: 'remote', url: 'https://personal.example:9443/', authMode: 'token' },
+      work: { mode: 'ssh', host: 'work-host', user: 'root' }
+    }
+  })
+
+  const personal = registry.connections.find(connection => connection.kind === 'remote')
+  const work = registry.connections.find(connection => connection.kind === 'ssh')
+
+  assert.equal(resolvedConnectionId(registry, { mode: 'local' }), LOCAL_CONNECTION_ID)
+  assert.equal(
+    resolvedConnectionId(registry, {
+      baseUrl: 'https://personal.example:9443',
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    personal?.id
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      baseUrl: 'http://127.0.0.1:49152',
+      mode: 'remote',
+      remoteHost: 'root@work-host',
+      remoteKind: 'ssh'
+    }),
+    work?.id
+  )
+})
+
+test('resolvedConnectionId does not guess an unregistered remote', () => {
+  assert.equal(
+    resolvedConnectionId(emptyRegistry(), {
+      baseUrl: 'https://unknown.example',
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    null
+  )
 })
 
 test('agentHandle bare when unique, @name-device shape when duplicated', () => {

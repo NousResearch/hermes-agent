@@ -455,10 +455,13 @@ test('apiRequestRegistryConnectionId extracts a genuinely non-local connection i
   assert.equal(apiRequestRegistryConnectionId({ connectionId: '  gw-1  ', path: '/x' }), 'gw-1')
 })
 
-test('apiRequestRegistryConnectionId resolves null for the legacy/local routes', () => {
+test('apiRequestRegistryConnectionId preserves an explicit local registry route', () => {
+  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), 'local')
+})
+
+test('apiRequestRegistryConnectionId resolves null for unscoped legacy routes', () => {
   assert.equal(apiRequestRegistryConnectionId({ path: '/api/cron/jobs' }), null)
   assert.equal(apiRequestRegistryConnectionId({ connectionId: '', path: '/x' }), null)
-  assert.equal(apiRequestRegistryConnectionId({ connectionId: 'local', path: '/x' }), null)
   assert.equal(apiRequestRegistryConnectionId({ connectionId: null, path: '/x' }), null)
   assert.equal(apiRequestRegistryConnectionId(null), null)
   assert.equal(apiRequestRegistryConnectionId(undefined), null)

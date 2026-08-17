@@ -532,7 +532,7 @@ class TestSlashCommands:
         state.agent._session_db = original_session_db
 
         def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
-            assert state.agent._session_db is None
+            assert state.agent._session_db is original_session_db
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40

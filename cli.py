@@ -9503,6 +9503,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _model_config = CLI_CONFIG.get("model", {})
         _raw_default2 = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _config_model, _ = _split_model_config_default(_raw_default2)
+        # /new always returns ownership to config/default routing. Clear the
+        # explicit-selection lock even when the configured model is already
+        # active and no runtime client swap is required.
+        if self.agent:
+            self.agent._model_explicitly_selected = False
         if _config_model and _config_model != getattr(self, "model", None):
             _config_provider = (
                 _model_config.get("provider", "")
@@ -20735,6 +20740,13 @@ def main(
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
                 cli.tool_progress_mode = "off"
+                # Startup resume must restore the session route before the
+                # first credential resolution and turn-route snapshot. The
+                # quiet path previously resolved the ambient provider first,
+                # then built the turn route from Luna even though the resume
+                # banner said Qwen/Turbohaul had been restored.
+                if getattr(cli, "_resumed", False) and not cli.conversation_history:
+                    cli._preload_resumed_session()
                 if cli._ensure_runtime_credentials():
                     effective_query: Any = query
                     if single_query_images or single_query_image_urls:
@@ -20916,6 +20928,8 @@ def main(
                 # facing single-query path in line so all non-interactive
                 # invocations are fast.
                 _query_label = query or ("[image attached]" if single_query_images else "")
+                if getattr(cli, "_resumed", False) and not cli.conversation_history:
+                    cli._preload_resumed_session()
                 if _query_label:
                     cli.console.print(f"[bold blue]Query:[/] {_query_label}")
                 # Surface security advisories before the agent runs — short

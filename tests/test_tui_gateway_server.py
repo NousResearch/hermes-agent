@@ -8772,6 +8772,7 @@ def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch
         base_url = "https://api.anthropic.com"
         api_key = "sk-temp"
         api_mode = "anthropic_messages"
+        _model_explicitly_selected = True
 
         def switch_model(self, **kwargs):
             self.model = kwargs["new_model"]
@@ -8822,6 +8823,7 @@ def test_restore_agent_model_runtime_falls_back_to_switch_model():
         base_url = "https://api.anthropic.com"
         api_key = "sk-temp"
         api_mode = "anthropic_messages"
+        _model_explicitly_selected = True
 
         def switch_model(self, **kwargs):
             self.model = kwargs["new_model"]
@@ -8846,6 +8848,28 @@ def test_restore_agent_model_runtime_falls_back_to_switch_model():
     assert agent.model == "old/model"
     assert agent.provider == "openrouter"
     assert agent.base_url == "https://openrouter.ai/api/v1"
+    assert agent._model_explicitly_selected is False
+
+
+@pytest.mark.parametrize("saved_flag", [True, False])
+def test_restore_agent_model_runtime_primary_path_restores_explicit_flag(saved_flag):
+    agent = types.SimpleNamespace(
+        _primary_runtime={},
+        _fallback_activated=False,
+        _rate_limited_until=99,
+        _model_explicitly_selected=not saved_flag,
+        _restore_primary_runtime=lambda: True,
+    )
+
+    server._restore_agent_model_runtime(
+        agent,
+        {
+            "model_explicitly_selected": saved_flag,
+            "primary_runtime": {"model": "old/model"},
+        },
+    )
+
+    assert agent._model_explicitly_selected is saved_flag
 
 
 def test_config_set_personality_rejects_unknown_name(monkeypatch):

@@ -24,6 +24,25 @@ def test_streams_shape():
         assert s.get("structure") and len(s["structure"]) > 20, f"{name}: structure required"
 
 
+def test_streams_encode_the_purpose_led_editorial_contract():
+    """Goals, source categories, voices and structures are executable stream config."""
+    expected_categories = {
+        "ai": {"ai_concepts", "prompt_harness_loop_engineering", "ai_theory_strategy"},
+        "pm": {"enterprise_saas_ai_adoption", "product_strategy", "human_led_transformation"},
+        "builder": {"kensei_shipped_features", "oss_contributions", "infrastructure_notes"},
+    }
+    for stream, categories in expected_categories.items():
+        config = bs.STREAMS[stream]
+        assert config["goal"]
+        assert categories <= set(config["source_categories"])
+    ai_goal = bs.STREAMS["ai"]["goal"].lower()
+    for topic in ("speculative decoding", "memory management", "mcps", "skills"):
+        assert topic in ai_goal
+    assert "problem" in bs.STREAMS["builder"]["structure"].lower()
+    assert "impact" in bs.STREAMS["builder"]["structure"].lower()
+    assert "intended outcome" in bs.STREAMS["builder"]["structure"].lower()
+
+
 def test_ai_is_ai_tier_with_ai_tag():
     """AI stream is tier=ai (its own page on SahilBlog)."""
     assert bs.STREAMS["ai"]["tier"] == "ai"

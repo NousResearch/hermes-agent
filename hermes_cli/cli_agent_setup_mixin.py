@@ -21,6 +21,23 @@ from rich.markup import escape as _escape
 from utils import base_url_host_matches
 
 
+def propagate_explicit_model_selection(cli, agent, *, runtime: dict | None = None) -> None:
+    """Copy CLI ``-m/--model`` intent and its resumable runtime identity."""
+    explicit = bool(getattr(cli, "_explicit_model_override", False))
+    agent._model_explicitly_selected = explicit
+    if not explicit or not runtime:
+        return
+    route = {
+        "provider": runtime.get("requested_provider") or runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_mode": runtime.get("api_mode"),
+    }
+    agent._session_init_model_config = dict(
+        getattr(agent, "_session_init_model_config", None) or {}
+    )
+    agent._session_init_model_config["gateway_runtime"] = route
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -542,6 +559,11 @@ class CLIAgentSetupMixin:
                 notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction,
             )
+            # ``-m/--model`` is an explicit user selection just like the
+            # interactive model picker. Preserve that intent on the runtime
+            # agent so turbohaul-local exhaustion cannot silently route it to
+            # a cloud fallback.
+            propagate_explicit_model_selection(self, self.agent, runtime=runtime)
             # Store reference for atexit memory provider shutdown.
             # NOTE: this MUST write to the ``cli`` module's global, not a
             # local module global. ``_run_cleanup`` (in cli.py) reads

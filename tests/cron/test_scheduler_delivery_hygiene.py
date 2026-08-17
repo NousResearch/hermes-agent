@@ -48,3 +48,35 @@ def test_raw_html_stripped_keeps_media():
 def test_raw_html_strip_noop_when_clean():
     resp = "Summary line\n\nMEDIA:/tmp/x.html"
     assert _simulate_raw_html_strip(resp) == resp
+
+
+def test_prepares_run_scoped_artifact_and_recovers_only_that_run(tmp_path):
+    """Delivery must bind to this execution ID, never the newest matching file."""
+    job = {
+        "name": "research-paper-synthesis-daily",
+        "delivery_artifact_template": str(tmp_path / "{execution_id}" / "report.html"),
+        "delivery_artifact_summary": "📄 Research Paper Synthesis — {date}\nReport attached.",
+    }
+
+    artifact, prompt = S._prepare_delivery_artifact(job, "run-current")
+    assert artifact == tmp_path / "run-current" / "report.html"
+    assert "run-current" in prompt
+    assert not artifact.exists()
+
+    stale = tmp_path / "run-older" / "report.html"
+    stale.parent.mkdir()
+    stale.write_text("old", encoding="utf-8")
+    artifact.write_text("current", encoding="utf-8")
+
+    recovered = S._recover_run_scoped_artifact_delivery(job, "old summary\nMEDIA:" + str(stale))
+    assert recovered is not None
+    assert "MEDIA:" + str(artifact) in recovered
+    assert str(stale) not in recovered
+
+
+def test_rejects_artifact_template_without_execution_id(tmp_path):
+    """A reusable path cannot prove which run produced its report."""
+    job = {"delivery_artifact_template": str(tmp_path / "report.html")}
+    artifact, prompt = S._prepare_delivery_artifact(job, "run-current")
+    assert artifact is None
+    assert prompt is None

@@ -1,37 +1,40 @@
 """Blog stream configuration - the single source of per-stream truth.
 
-Three streams map to the VERIFIED SahilBlog ingestion contract:
-  - ai:      tier=pm + an AI-recognised tag (surfaced on /ai). source=research-paper.
+Three streams map to the verified SahilBlog ingestion contract:
+  - ai:      tier=ai (surfaced on /ai). source=research-paper.
   - pm:      tier=pm with non-AI tags. source=research-paper.
   - builder: tier=builder. source=manual.
 
-Voices match the real blog pages and the back-population refined voice brief:
-  - AI: numbers-first, thesis-driven; two modes — evergreen technical concept
-    analysis AND strict-bar industry/economics analysis (compute, GPUs, pricing,
-    acquisitions, regulation) with what/why/how/implications. Verify named events.
-  - PM: research-to-PM translation — explain the research concept, apply it to
-    PM work (workflows, adoption, skills, decisions). Mandatory reflective section.
-  - Builder's Log: practitioner learning log — concept from paper/repo, then
-    application and problem it solves, then hype-vs-reality reality-check.
+Voices match the public pillar pages and the approved editorial contract:
+  - AI: long-view analysis of AI concepts, practices, strategies and news.
+  - PM: enterprise SaaS AI adoption, product strategy and human-led transformation.
+  - Builder's Log: evidence-backed, plain-English accounts of real work.
 
-Imagery reuses the sahil_twitter palette pool via imagery_transplant, so all
-streams set image_palette_brand="sahil_twitter".
+All streams use the SahilBlog house visual contract.
 """
 from __future__ import annotations
 
 STREAMS: dict[str, dict] = {
     "ai": {
+        "goal": (
+            "Long-view analysis of AI concepts, movements, practices and news, "
+            "including prompt, harness and loop engineering plus AI theory and strategy "
+            "such as speculative decoding, memory management, MCPs and skills."
+        ),
+        "source_categories": [
+            "ai_concepts", "ai_movements_practices_news",
+            "prompt_harness_loop_engineering", "ai_theory_strategy",
+        ],
         # Surfaced on /ai (tier=ai, its own page).
         "tier": "ai",
         "base_tags": ["ai"],
         "source": "research-paper",
         "format": "essay",
         "voice": (
-            "Analytical, numbers-first, thesis-driven (a la groktop token-maxing). "
-            "Lead with a counterintuitive, concretely-grounded claim; bold 'signal' "
-            "callouts; clinical, no hype. Two modes: (a) evergreen technical concept "
-            "analysis, (b) strict-bar industry/economics analysis (compute, GPUs, "
-            "pricing, acquisitions, regulation) with what/why/how/implications."
+            "Professional, analytical and thesis-driven. Lead with a concrete, "
+            "well-supported claim; explain the mechanism plainly; avoid hype. Cover "
+            "durable technical concepts or rigorously sourced industry/economics "
+            "analysis with what, why, how and implications."
         ),
         "structure": (
             "Open with the thesis. Explain the mechanism with real figures. For any "
@@ -49,6 +52,14 @@ STREAMS: dict[str, dict] = {
         "formats": ["essay", "blueprint"],
     },
     "pm": {
+        "goal": (
+            "Practical PM insight on enterprise SaaS AI adoption, product strategy, "
+            "usable frameworks and human-led AI transformation."
+        ),
+        "source_categories": [
+            "enterprise_saas_ai_adoption", "product_strategy",
+            "practical_frameworks", "human_led_transformation",
+        ],
         "tier": "pm",
         "base_tags": ["product-management"],
         "source": "research-paper",
@@ -72,23 +83,28 @@ STREAMS: dict[str, dict] = {
         "image_palette_brand": "sahil_twitter",
     },
     "builder": {
+        "goal": (
+            "Plain-English shipped-feature, post-mortem and infrastructure notes from "
+            "KENSEI work and OSS contributions."
+        ),
+        "source_categories": [
+            "kensei_shipped_features", "oss_contributions", "infrastructure_notes",
+            "mnemosyne", "hermes_agent", "turbofit", "turbohaul_manager",
+        ],
         "tier": "builder",
         "base_tags": ["kensei", "build"],
         "source": "manual",
         "format": "essay",
         "voice": (
-            "Practitioner learning log. Lead with a useful concept or idea found in a "
-            "research paper or GitHub repo, then what it means in practice and what you "
-            "built or explored with it. Explain tools for the TAKEAWAY, never the "
-            "proprietary internals (guard the secret sauce). Honest hype-vs-reality "
-            "throughout: share what others won't, call out oversold claims when the "
-            "real practice is harder. Failures only as the occasional honest aside."
+            "Professional practitioner log in plain English. Explain a shipped feature, "
+            "post-mortem or infrastructure change with evidence appropriate to the "
+            "public record. Be candid about trade-offs and uncertainty; never imply a "
+            "result that has not been supported."
         ),
         "structure": (
-            "1) the concept/idea (from a paper or repo) and why it is useful; 2) how it "
-            "applies / what you built or explored and the problem it solves; 3) a candid "
-            "reality-check vs the hype. Code snippets illustrate the concept, they do not "
-            "expose internals."
+            "1) problem; 2) impact; 3) change or build; 4) intended outcome; 5) a "
+            "candid reality-check on trade-offs and what remains unproven. Code snippets "
+            "may illustrate public concepts but must not expose proprietary internals."
         ),
         "word_target": 1400,
         "section_target": 5,

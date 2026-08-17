@@ -6201,6 +6201,45 @@ def _strip_inline_verification(text: str) -> str:
     return "\n".join(cleaned).rstrip()
 
 
+def _prepare_delivery_artifact(job: dict, execution_id: str) -> tuple[Optional[Path], Optional[str]]:
+    """Reserve a unique report path and tell the current run to write it."""
+    template = str(job.get("delivery_artifact_template") or "").strip()
+    if not template or "{execution_id}" not in template:
+        return None, None
+    try:
+        path = Path(template.format(execution_id=execution_id)).expanduser()
+    except (KeyError, ValueError):
+        logger.warning("Job '%s': invalid delivery_artifact_template", job.get("id"))
+        return None, None
+    if not path.is_absolute() or path.exists():
+        return None, None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    job["_active_delivery_artifact"] = str(path)
+    return path, (
+        "## Run-scoped delivery artifact (mandatory)\n"
+        f"Write this run's final HTML report exactly to: {path}\n"
+        "Do not reuse a date-only path or another run's artifact."
+    )
+
+
+def _recover_run_scoped_artifact_delivery(job: dict, _response: str) -> Optional[str]:
+    """Deliver only the artifact reserved for this exact scheduler execution."""
+    raw_path = str(job.get("_active_delivery_artifact") or "").strip()
+    artifact = Path(raw_path) if raw_path else None
+    if artifact is None or not artifact.is_file() or artifact.stat().st_size == 0:
+        return None
+    template = str(job.get("delivery_artifact_summary") or "📄 {name} — {date}\nReport attached.")
+    try:
+        summary = template.format(
+            name=job.get("name") or job.get("id", "Cron report"),
+            date=datetime.now().astimezone().strftime("%d/%m/%Y"),
+        )
+    except (KeyError, ValueError):
+        logger.warning("Job '%s': invalid delivery_artifact_summary", job.get("id"))
+        return None
+    return f"{summary.strip()}\nMEDIA:{artifact}"
+
+
 def run_one_job(
     job: dict,
     *,
@@ -6332,6 +6371,12 @@ def _run_one_job_body(
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
+        _, artifact_context = _prepare_delivery_artifact(job, execution_id)
+        if artifact_context:
+            extra_prompt = (
+                f"{extra_prompt}\n\n{artifact_context}"
+                if extra_prompt else artifact_context
+            )
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -6445,18 +6490,26 @@ def _run_one_job_body(
             # filled its response with verification noise.
             stripped_to_silent = False
             if success and final_response:
-                stripped = _strip_verification_leak(final_response)
-                if stripped != final_response and not stripped.strip():
-                    stripped_to_silent = True
-                    # Log as deliberate silence so the cron shows ok status
+                recovered = _recover_run_scoped_artifact_delivery(job, final_response)
+                if recovered:
                     logger.info(
-                        "Job '%s': _strip_verification_leak caught verification-only "
-                        "output — treating as [SILENT] (suppressed %d chars)",
-                        job.get("name", job["id"]), len(final_response),
+                        "Job '%s': delivering this execution's configured report artifact",
+                        job.get("name", job["id"]),
                     )
-                    final_response = SILENT_MARKER
+                    final_response = recovered
                 else:
-                    final_response = stripped
+                    stripped = _strip_verification_leak(final_response)
+                    if stripped != final_response and not stripped.strip():
+                        stripped_to_silent = True
+                        # Log as deliberate silence so the cron shows ok status
+                        logger.info(
+                            "Job '%s': _strip_verification_leak caught verification-only "
+                            "output — treating as [SILENT] (suppressed %d chars)",
+                            job.get("name", job["id"]), len(final_response),
+                        )
+                        final_response = SILENT_MARKER
+                    else:
+                        final_response = stripped
 
             # KENSEI CUSTOM — strip raw HTML blocks the model pastes into the
             # chat body. The report belongs in the .html file (attached via

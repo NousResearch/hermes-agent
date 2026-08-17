@@ -50,6 +50,22 @@ def test_build_blog_prompt_includes_stream_voice(monkeypatch):
     assert "k1" in prompts["user"]
 
 
+def test_build_blog_prompt_includes_approved_idea_editorial_brief():
+    """A purpose-led intake brief reaches the writer instead of dying in routing."""
+    plan = {
+        "topic_id": "t1", "title_hint": "token-maxing", "tags": [],
+        "source": "research-paper", "signals": [],
+        "editorial_brief": {
+            "post_thesis": "The thesis", "concrete_takeaway": "Do this",
+            "evidence_anchor": "PR #42", "gap_claim": "Different angle",
+            "stream_format_rationale": "AI essay",
+        },
+    }
+    prompts = bg.build_blog_prompt("ai", plan, context_blob="", kb_snippets=[])
+    for value in plan["editorial_brief"].values():
+        assert value in prompts["user"]
+
+
 def test_build_blog_prompt_includes_word_and_section_target(monkeypatch):
     """The stream word_target and section_target are in the system prompt."""
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",

@@ -4703,6 +4703,7 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "api_key": getattr(agent, "api_key", ""),
         "base_url": getattr(agent, "base_url", ""),
         "api_mode": getattr(agent, "api_mode", ""),
+        "model_explicitly_selected": getattr(agent, "_model_explicitly_selected", False),
         "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
     }
 
@@ -4718,6 +4719,9 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent._fallback_activated = True
             agent._rate_limited_until = 0
             if agent._restore_primary_runtime():
+                agent._model_explicitly_selected = bool(
+                    snapshot.get("model_explicitly_selected", False)
+                )
                 return
         except Exception:
             logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
@@ -4728,6 +4732,9 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             api_key=snapshot.get("api_key", ""),
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
+        )
+        agent._model_explicitly_selected = bool(
+            snapshot.get("model_explicitly_selected", False)
         )
 
 
@@ -6932,7 +6939,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    return AIAgent(
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
@@ -6979,6 +6986,20 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    # A per-session model_override exists only for a user/composer selection.
+    # Preserve that ownership across agent rebuild/resume. If resolving the
+    # override itself required an auth fallback, the resulting runtime is no
+    # longer the explicitly selected model and must not inherit the lock.
+    setattr(
+        agent,
+        "_model_explicitly_selected",
+        bool(
+            isinstance(model_override, dict)
+            and model_override.get("model")
+            and not resolution.used_fallback
+        ),
+    )
+    return agent
 
 
 def _init_session(

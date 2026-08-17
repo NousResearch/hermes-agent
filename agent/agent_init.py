@@ -701,6 +701,9 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
+    # Set by the live /model switch seam. Constructor values can also be
+    # configured/default routing, so they are not themselves a user pin.
+    agent._model_explicitly_selected = False
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])

@@ -3425,6 +3425,20 @@ def compress_context(
                         split_status="aborted",
                         failure_class="would_grow",
                     )
+                    # Record the rejected attempt as an ineffective
+                    # compaction strike so the anti-thrash breaker latches
+                    # after the normal threshold. Without this, the unchanged
+                    # transcript stays over the compression threshold and
+                    # automatic compression retries the identical summary
+                    # request on every turn (#88568). Manual /compress keeps
+                    # bypassing the latch (force=True skips the guards).
+                    try:
+                        agent.context_compressor.record_rejected_compaction()
+                    except Exception:
+                        logger.debug(
+                            "could not record rejected-compaction strike",
+                            exc_info=True,
+                        )
                     _release_lock()
                     return messages, _existing_sp
 

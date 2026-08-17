@@ -2373,6 +2373,31 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = count
         self._persist_ineffective_compression_count()
 
+    def record_rejected_compaction(self) -> None:
+        """Record one compaction whose result was REJECTED before committing.
+
+        The anti-growth guard in the commit layer (conversation_compression)
+        discards a candidate that would grow the transcript and keeps the
+        original. Without recording the attempt, the anti-thrash breaker
+        never sees a strike, so automatic compression retries the SAME
+        unchanged transcript on every turn — same summary request, same
+        refusal, same user-facing warning (#88568). This counts one
+        ineffective strike (persisted, so the normal >= 2 latch and its
+        recovery window apply) WITHOUT arming post-compaction real-usage
+        verification — nothing was committed, so there is no new compaction
+        to verify — and without touching the fallback-summary streak (no
+        summary was accepted).
+        """
+        self._record_ineffective_compression_verdict(
+            self._ineffective_compression_count + 1
+        )
+        if not self.quiet_mode:
+            logger.warning(
+                "Compaction rejected before commit (would grow the "
+                "transcript); ineffective_compression_count=%d",
+                self._ineffective_compression_count,
+            )
+
     def record_completed_compaction(
         self, *, used_fallback: bool = False, feasibility_skip: bool = False,
     ) -> None:

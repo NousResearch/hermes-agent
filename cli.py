@@ -1475,6 +1475,86 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str) -> None:
+    """Make a failed/timed-out ``git worktree add`` atomic after the fact.
+
+    ``git worktree add`` is not transactional: killed mid-checkout (the 30s
+    timeout) it leaves (a) the partially-materialized worktree directory,
+    (b) an admin entry under ``.git/worktrees/<name>`` that is LOCKED with a
+    reason naming the *current, live* pid — so the startup pruner's
+    dead-pid unlock will never touch it — and (c) sometimes the new branch.
+    Any retry of the same name then fails on the leftovers. Sweep all three,
+    quietly; every step is fail-soft because this runs on an error path.
+    """
+    import shutil
+    import subprocess
+
+    def _git(*args: str) -> None:
+        try:
+            subprocess.run(
+                ["git", *args],
+                capture_output=True, text=True, timeout=15, cwd=repo_root, check=False,
+            )
+        except Exception:
+            pass
+
+    try:
+        # Unlock first: `worktree remove --force` refuses a locked tree.
+        _git("worktree", "unlock", str(wt_path))
+        _git("worktree", "remove", "--force", str(wt_path))
+        if wt_path.exists():
+            shutil.rmtree(wt_path, ignore_errors=True)
+        # Drop the orphaned admin entry when the dir is already gone
+        # (`remove` needs the dir; `prune` handles the dirless case).
+        _git("worktree", "prune")
+        _git("branch", "-D", branch_name)
+    except Exception as e:
+        logger.debug("cleanup after failed worktree add: %s", e)
+
+
+_PACK_SPRAWL_THRESHOLD = 15
+
+
+def _maintain_pack_health(repo_root: str) -> None:
+    """Repack the object store when pack files sprawl (background thread).
+
+    On a multi-agent box every fetch/salvage session adds packs; git never
+    consolidates them on its own aggressively enough (``gc --auto``'s
+    threshold is 50 *and* it counts only non-kept packs). Past a few dozen
+    packs every object lookup scans every pack index, and worktree creation
+    can blow its 30s timeout under concurrent load (Aug 2026 incident: 39
+    packs, 638MB → ``hermes -w`` timing out; a full repack halved the store
+    and restored 0.5s creates). Threshold 15 keeps lookups fast without
+    repacking on every startup; ``nice`` + background thread keeps it off
+    the startup path. Fail-soft everywhere.
+    """
+    import subprocess
+
+    try:
+        pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
+        if not pack_dir.is_dir():
+            return
+        packs = len(list(pack_dir.glob("*.pack")))
+        if packs < _PACK_SPRAWL_THRESHOLD:
+            return
+        logger.info("git pack sprawl (%d packs) — repacking in background", packs)
+        cmd = ["git", "repack", "-a", "-d", "--quiet"]
+        if os.name == "posix":
+            cmd = ["nice", "-n", "19", *cmd]
+        subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=1800, cwd=repo_root, check=False,
+        )
+        # Repacking can strand now-duplicated admin files; a prune here keeps
+        # the worktree bookkeeping tight on the same maintenance pass.
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            capture_output=True, text=True, timeout=60, cwd=repo_root, check=False,
+        )
+    except Exception as e:
+        logger.debug("pack maintenance skipped: %s", e)
+
+
 def _resolve_worktree_base(
     repo_root: str,
     fetch_timeout: float = 5,
@@ -1711,15 +1791,25 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
                     "worktree add from %s failed (%s); retrying from local HEAD",
                     base_ref, result.stderr.strip(),
                 )
+                _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)
                 base_ref, base_label = "HEAD", "HEAD (fallback — remote base failed)"
                 result = subprocess.run(
                     ["git", "worktree", "add", str(wt_path), "-b", branch_name, base_ref],
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, cwd=repo_root,
                 )
             if result.returncode != 0:
+                _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)
                 print(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
                 return None
     except Exception as e:
+        # A timed-out/failed `worktree add` is NOT atomic: git leaves the
+        # partially-materialized directory plus a LOCKED admin entry under
+        # .git/worktrees/<name> whose lock pid is THIS live process — so the
+        # startup pruner's dead-pid unlock never reaps it and every retry of
+        # the same name fails. Clean up our own wreckage before surfacing
+        # the error (Aug 2026 incident: 30s timeout during pack-sprawl left
+        # exactly this poison).
+        _cleanup_failed_worktree_add(repo_root, wt_path, branch_name)
         print(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
         return None
 
@@ -19730,8 +19820,16 @@ def main(
                     # is immune to reaping (<24h age gate + live pid lock).
                     _repo = _git_repo_root()
                     if _repo:
+                        def _worktree_maintenance(repo: str) -> None:
+                            _prune_stale_worktrees(repo)
+                            # Same pass: repack when packs sprawl, so object
+                            # lookups (and the next `worktree add`) stay fast
+                            # on multi-agent boxes. After the pruner so the
+                            # repack sees final refs.
+                            _maintain_pack_health(repo)
+
                         threading.Thread(
-                            target=_prune_stale_worktrees,
+                            target=_worktree_maintenance,
                             args=(_repo,),
                             name="worktree-prune",
                             daemon=True,

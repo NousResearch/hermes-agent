@@ -2707,6 +2707,7 @@ def _launch_tui(
             from cli import (
                 _cleanup_worktree,
                 _git_repo_root,
+                _maintain_pack_health,
                 _prune_stale_worktrees,
                 _setup_worktree,
             )
@@ -2714,6 +2715,19 @@ def _launch_tui(
             repo = _git_repo_root()
             if repo:
                 _prune_stale_worktrees(repo)
+                # Same maintenance pass as the CLI path: repack on pack
+                # sprawl so `worktree add` never crawls on a multi-agent box
+                # (cli._maintain_pack_health is a cheap no-op below the
+                # threshold). Runs on a thread — the TUI path calls the
+                # pruner synchronously, and a repack must not block launch.
+                import threading as _threading
+
+                _threading.Thread(
+                    target=_maintain_pack_health,
+                    args=(repo,),
+                    name="pack-maintenance",
+                    daemon=True,
+                ).start()
             wt_info = _setup_worktree()
         except Exception as exc:
             print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)

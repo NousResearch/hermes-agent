@@ -153,6 +153,66 @@ def test_unknown_terminal_does_not_enable_extended_enter_keys():
     assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "unknown"}) is False
 
 
+# ---------------------------------------------------------------------------
+# Ghostty: must push ONLY modifyOtherKeys, not the Kitty keyboard protocol.
+# Ghostty's Kitty disambiguate mode strips the Alt modifier from Backspace,
+# so Option+Backspace arrives as bare \x7f instead of \x1b[27;3;127~,
+# breaking backward-kill-word.  modifyOtherKeys mode works correctly.
+# ---------------------------------------------------------------------------
+class _FakeOutput:
+    """Minimal output object with write_raw + flush for _enable_extended_enter_keys."""
+    def __init__(self):
+        self.written = b""
+    def write_raw(self, data):
+        self.written += data.encode() if isinstance(data, str) else data
+    def flush(self):
+        pass
+
+
+def test_ghostty_uses_modify_other_keys_only():
+    """Ghostty must NOT push the Kitty keyboard protocol (CSI >1u)."""
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM_PROGRAM": "ghostty", "TERM": "xterm-ghostty"},
+    )
+    assert result is True
+    # Must contain modifyOtherKeys push ...
+    assert b"\x1b[>4;2m" in out.written
+    # ... but NOT the Kitty protocol push.
+    assert b"\x1b[>1u" not in out.written
+
+
+def test_ghostty_via_term_var_uses_modify_other_keys_only():
+    """xterm-ghostty TERM (without TERM_PROGRAM) also skips Kitty protocol."""
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM": "xterm-ghostty"},
+    )
+    assert result is True
+    assert b"\x1b[>4;2m" in out.written
+    assert b"\x1b[>1u" not in out.written
+
+
+def test_non_ghostty_terminals_still_push_kitty_protocol():
+    """iTerm2 and others still get the full dual-protocol push."""
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM_PROGRAM": "iTerm.app", "TERM": "xterm-256color"},
+    )
+    assert result is True
+    assert b"\x1b[>1u" in out.written
+    assert b"\x1b[>4;2m" in out.written
+
+
 @pytest.mark.linux_only
 def test_proc_version_microsoft_marker_preserves_newline():
     """WSL detection via /proc when env vars are scrubbed (sudo etc.).

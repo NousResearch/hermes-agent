@@ -4095,6 +4095,13 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[?25h"    # ensure cursor visible
 )
 _EXTENDED_ENTER_KEYS_SEQ = "\x1b[>1u\x1b[>4;2m"
+# Ghostty: push ONLY modifyOtherKeys, not the Kitty keyboard protocol.
+# Ghostty's Kitty disambiguate-mode implementation strips the Alt modifier
+# from the Backspace key — Option+Backspace arrives as bare \x7f instead of
+# the expected \x1b[27;3;127~, breaking backward-kill-word (#87630
+# regression).  modifyOtherKeys mode works correctly on Ghostty and covers
+# every modified key combo the alias table handles.
+_GHOSTTY_EXTENDED_ENTER_KEYS_SEQ = "\x1b[>4;2m"
 
 
 _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
@@ -4148,20 +4155,37 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     Ctrl+C, which is handled by prompt_toolkit's ``c-c`` binding (raw mode
     clears ISIG, so the kernel INTR path was never in play for the CLI).
 
+    Ghostty exception: Ghostty's Kitty disambiguate mode strips the Alt
+    modifier from the Backspace key, so Option+Backspace arrives as bare
+    \x7f instead of \x1b[27;3;127~, breaking backward-kill-word.  Ghostty
+    implements modifyOtherKeys correctly, so for Ghostty we push only
+    modifyOtherKeys and skip the Kitty protocol push.
+
     The exit reset sequence pops/resets both modes, so this is safe across
     normal exits, Ctrl+C, and SIGTERM cleanup.
     """
     if not _terminal_supports_extended_enter_keys(env):
         return False
     try:
+        # Ghostty: skip Kitty protocol, use only modifyOtherKeys.
+        if env is None:
+            env = os.environ
+        term_program = (env.get("TERM_PROGRAM") or "").strip()
+        term = (env.get("TERM") or "").strip().lower()
+        is_ghostty = (
+            term_program == "ghostty"
+            or term == "xterm-ghostty"
+        )
+        seq = _GHOSTTY_EXTENDED_ENTER_KEYS_SEQ if is_ghostty else _EXTENDED_ENTER_KEYS_SEQ
+
         target = output
         if target is not None and hasattr(target, "write_raw"):
-            target.write_raw(_EXTENDED_ENTER_KEYS_SEQ)
+            target.write_raw(seq)
             target.flush()
             return True
         stream = sys.stdout
         if stream is not None and stream.isatty():
-            stream.write(_EXTENDED_ENTER_KEYS_SEQ)
+            stream.write(seq)
             stream.flush()
             return True
     except Exception:

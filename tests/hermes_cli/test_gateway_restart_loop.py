@@ -858,6 +858,45 @@ class TestLifecycleGuardModule:
         assert text is None
         assert unsafe is True
 
+    def test_cron_script_scan_blocks_cloud_script_without_opening(
+        self, tmp_path, monkeypatch
+    ):
+        """The cron-script scan path (_read_script_for_scanning via
+        check_gateway_lifecycle) must also refuse a cloud-resident script
+        without opening it, and the surfaced reason must attribute the
+        refusal to the cloud-synced path — not to a lifecycle command."""
+        import cron.lifecycle_guard as lifecycle_guard
+        from cron.lifecycle_guard import (
+            GatewayLifecycleBlocked,
+            check_gateway_lifecycle,
+        )
+
+        cloud_dir = (
+            tmp_path
+            / "Library"
+            / "Mobile Documents"
+            / "com~apple~CloudDocs"
+            / "scripts"
+        )
+        cloud_dir.mkdir(parents=True)
+        script = cloud_dir / "nightly.sh"
+        script.write_text("#!/bin/sh\necho safe\n", encoding="utf-8")
+
+        real_open = lifecycle_guard.os.open
+
+        def reject_cloud_open(path, flags, *args, **kwargs):
+            if str(path) == str(script):
+                pytest.fail("cron-script scan opened a cloud-resident script")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(lifecycle_guard.os, "open", reject_cloud_open)
+
+        with pytest.raises(GatewayLifecycleBlocked) as excinfo:
+            check_gateway_lifecycle("nightly job", str(script))
+        message = str(excinfo.value)
+        assert "cloud-synced" in message
+        assert "lifecycle command" not in message
+
     # -- Whole-class regression tests (tilllt's T1-T4 on PR #79454) --------
 
     def test_tilde_nul_candidate_does_not_crash_terminal_walk(self):

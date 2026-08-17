@@ -746,6 +746,29 @@ def check_gateway_lifecycle(
     python_script = False
     if script:
         resolved_script = _resolve_script_path(script)
+        if resolved_script is not None:
+            try:
+                real_script = resolved_script.resolve(strict=False)
+            except (OSError, ValueError):
+                real_script = resolved_script
+            if _is_cloud_placeholder_path(resolved_script) or _is_cloud_placeholder_path(
+                real_script
+            ):
+                # Attribute the refusal correctly: the script is not known to
+                # contain a lifecycle command — it lives on a cloud-synced
+                # FileProvider path (iCloud Drive / ~/Library/CloudStorage)
+                # that the guard refuses to open because an evicted
+                # placeholder can hang preflight indefinitely (#88052).
+                # Fail closed with the real reason instead of implying a
+                # dangerous lifecycle command.
+                raise GatewayLifecycleBlocked(
+                    "Blocked: the cron script lives on a cloud-synced path "
+                    "(iCloud Drive / ~/Library/CloudStorage). Opening an "
+                    "evicted FileProvider placeholder can hang the guard's "
+                    "preflight scan indefinitely, so it is refused without "
+                    "being read. Move the script to a local, non-cloud path "
+                    "(e.g. ~/.hermes/scripts/) and recreate the job."
+                )
         python_script = resolved_script is not None and resolved_script.suffix == ".py"
         script_text = _read_script_for_scanning(script)
         if script_text:

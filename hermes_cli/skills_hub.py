@@ -111,10 +111,10 @@ def _print_tier1_advisory(skill_dir, console) -> None:
         report = run_tier1_scan(Path(skill_dir))
         if not report.available:
             return
-        if not report.findings:
-            console.print("[dim]SkillEvaluator Tier 1: no findings.[/]")
-            return
         text = format_tier1_report(report)
+        if not report.findings:
+            console.print(f"[dim]{text}[/]")
+            return
         style = "red" if report.secrets_findings else "yellow"
         console.print(Panel(
             text,

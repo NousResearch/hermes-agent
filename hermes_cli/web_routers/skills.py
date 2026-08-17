@@ -356,6 +356,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
                     if t1.available:
                         tier1 = {
                             "passed": t1.passed,
+                            "incomplete_checks": t1.incomplete_checks,
                             "findings": [
                                 {
                                     "check": f.check,

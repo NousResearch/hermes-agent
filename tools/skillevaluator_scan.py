@@ -50,11 +50,18 @@ logger = logging.getLogger(__name__)
 SCANNER_BIN = "skillevaluator"
 SCANNER_NAME = "skillevaluator-tier1"
 
-# Keyless, deterministic Tier 1 checks only. Schema/license/quality are
-# hygiene signal for the index pipeline (scripts/scan_skills_index.py),
-# not install-time signal — a missing author field should never make an
-# install noisier.
-TIER1_CHECKS = "pii,unicode,lint"
+# Keyless, deterministic Tier 1 checks. Schema/quality are excluded on
+# purpose: they are hygiene signal for the index pipeline
+# (scripts/scan_skills_index.py), not install-time signal — a missing
+# author field should never make an install noisier.
+#
+# `security` invokes NVIDIA SkillSpector (a second optional binary,
+# pinned separately: uv tool install
+# "git+https://github.com/NVIDIA/SkillSpector.git") in its static-rules
+# mode — still keyless, no LLM calls. When SkillSpector is absent or its
+# report fails SkillEvaluator's internal consistency checks, the check
+# reports status="incomplete" and is treated as "no opinion" here.
+TIER1_CHECKS = "pii,unicode,lint,license,security"
 SCAN_TIMEOUT_SECONDS = 120
 
 # check_name values (from SkillEvaluator's pii_patterns.yaml categories)
@@ -96,6 +103,7 @@ class Tier1Report:
     available: bool                 # scanner ran and produced a report
     passed: bool = True
     findings: List[Tier1Finding] = field(default_factory=list)
+    incomplete_checks: List[str] = field(default_factory=list)
     error: str = ""                 # why the scan is unavailable (debug only)
 
     @property
@@ -133,10 +141,25 @@ def tier1_advisory_enabled() -> bool:
 
 
 def _parse_report(report: dict) -> Tier1Report:
-    """Reduce a SkillEvaluator JSON report to install-relevant findings."""
+    """Reduce a SkillEvaluator JSON report to install-relevant findings.
+
+    A validator whose ``status`` is ``"incomplete"`` produced no usable
+    evidence (e.g. SkillSpector missing, or its report failed
+    SkillEvaluator's internal consistency checks) — its fail verdict
+    carries no findings, so it is recorded as an incomplete check and
+    excluded from the pass/fail signal rather than rendered as an
+    unexplained failure.
+    """
     findings: List[Tier1Finding] = []
+    incomplete: List[str] = []
+    any_complete_failed = False
     for res in report.get("results", []) or []:
         validator = str(res.get("validator", "unknown"))
+        if str(res.get("status", "")).lower() == "incomplete":
+            incomplete.append(validator)
+            continue
+        if not res.get("passed", True):
+            any_complete_failed = True
         for f in res.get("findings", []) or []:
             if not isinstance(f, dict):
                 continue
@@ -151,8 +174,9 @@ def _parse_report(report: dict) -> Tier1Report:
             ))
     return Tier1Report(
         available=True,
-        passed=bool(report.get("overall_passed", not findings)),
+        passed=not any_complete_failed and not findings,
         findings=findings,
+        incomplete_checks=incomplete,
     )
 
 
@@ -193,16 +217,21 @@ def format_tier1_report(report: Tier1Report, limit: int = 10) -> str:
     """Plain-text advisory summary for console display."""
     if not report.available:
         return ""
+    lines: List[str] = []
     if not report.findings:
-        return "SkillEvaluator Tier 1: no findings."
-    lines = [
-        f"SkillEvaluator Tier 1 (advisory): "
-        f"{len(report.findings)} finding(s) — informational, verify before relying on this skill."
-    ]
-    shown = report.secrets_findings + report.advisory_findings
-    for f in shown[:limit]:
-        tag = "SECRETS" if f.is_secrets_class else f.severity.upper()
-        lines.append(f"  [{tag}] {f.location()} — {f.message}")
-    if len(shown) > limit:
-        lines.append(f"  … and {len(shown) - limit} more")
+        lines.append("SkillEvaluator Tier 1: no findings.")
+    else:
+        lines.append(
+            f"SkillEvaluator Tier 1 (advisory): "
+            f"{len(report.findings)} finding(s) — informational, verify before relying on this skill."
+        )
+        shown = report.secrets_findings + report.advisory_findings
+        for f in shown[:limit]:
+            tag = "SECRETS" if f.is_secrets_class else f.severity.upper()
+            lines.append(f"  [{tag}] {f.location()} — {f.message}")
+        if len(shown) > limit:
+            lines.append(f"  … and {len(shown) - limit} more")
+    if report.incomplete_checks:
+        names = ", ".join(report.incomplete_checks)
+        lines.append(f"  (not run: {names} — no opinion from these checks)")
     return "\n".join(lines)

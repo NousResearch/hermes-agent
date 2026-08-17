@@ -87,6 +87,36 @@ class TestParseReport:
         report = _parse_report(raw)
         assert len(report.findings) == 1
 
+    def test_incomplete_check_excluded_from_verdict(self):
+        """A fail-with-zero-findings incomplete validator (e.g. SkillSpector
+        consistency-check trip) must not fail the advisory verdict."""
+        raw = _report_json([])
+        raw["results"].append({
+            "validator": "Security Scan",
+            "passed": False,
+            "status": "incomplete",
+            "findings": [],
+        })
+        report = _parse_report(raw)
+        assert report.passed
+        assert report.findings == []
+        assert report.incomplete_checks == ["Security Scan"]
+
+    def test_incomplete_check_findings_not_collected(self):
+        raw = _report_json([])
+        raw["results"].append({
+            "validator": "Security Scan",
+            "passed": False,
+            "status": "incomplete",
+            "findings": [_finding("hardcoded_secrets", severity="critical")],
+        })
+        report = _parse_report(raw)
+        assert report.findings == []
+
+    def test_complete_failed_check_still_fails(self):
+        report = _parse_report(_report_json([_finding("emails")]))
+        assert not report.passed
+
 
 class TestRunTier1Scan:
     def test_scanner_missing_degrades(self, tmp_path):
@@ -152,6 +182,18 @@ class TestFormatReport:
         assert "SKILL.md:3" in text
         assert "SKILL.md:8" in text
         assert "informational" in text
+
+    def test_incomplete_checks_noted(self):
+        raw = _report_json([])
+        raw["results"].append({
+            "validator": "Security Scan",
+            "passed": False,
+            "status": "incomplete",
+            "findings": [],
+        })
+        text = format_tier1_report(_parse_report(raw))
+        assert "not run: Security Scan" in text
+        assert "no findings" in text
 
     def test_limit_truncates(self):
         findings = [_finding("emails", message=f"m{i}", line=i) for i in range(1, 15)]

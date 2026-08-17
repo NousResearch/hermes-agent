@@ -30,6 +30,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -377,6 +378,7 @@ export function ChatSidebar({
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const activeConnectionId = useStore($activeConnectionId)
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
@@ -742,7 +744,7 @@ export function ChatSidebar({
     const warm = window.setTimeout(() => void refreshProjectTree(), PROJECT_TREE_WARM_MS)
 
     return () => window.clearTimeout(warm)
-  }, [worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
+  }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
 
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills

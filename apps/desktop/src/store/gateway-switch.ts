@@ -4,6 +4,7 @@ import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-syn
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
+import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
@@ -61,6 +62,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
   setCronSessions([])
+  invalidateCronJobsRequests()
+  setCronJobs([])
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)

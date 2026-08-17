@@ -34,6 +34,7 @@ import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
+import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $previewTarget } from '@/store/preview'
@@ -212,6 +213,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
+  const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
@@ -491,25 +493,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft()
   }, [freshSessionRequest, startFreshSessionDraft])
 
-  // Swapping the live gateway to another profile must re-pull that profile's
-  // global model + active-profile pill (both are nanostores — the blanket
-  // invalidateQueries on swap doesn't touch them).
-  const lastGatewayProfileRef = useRef(activeGatewayProfile)
+  // Swapping the live gateway to another source or profile must re-pull that
+  // source's model/config/profile state. Two sources commonly both expose a
+  // `default` profile, so profile alone is not a sufficient identity.
+  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
+  const lastGatewayScopeRef = useRef(gatewayScope)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (activeGatewayProfile === lastGatewayProfileRef.current) {
+    if (gatewayScope === lastGatewayScopeRef.current) {
       return
     }
 
-    lastGatewayProfileRef.current = activeGatewayProfile
-    // Force: the new profile has its own defaults, so reseed the selector even
-    // if the composer already shows values from the previous profile. Both
-    // refreshes carry an intent token so a picker click made in flight wins.
+    lastGatewayScopeRef.current = gatewayScope
+    // Force: the new source/profile pair has its own defaults, so reseed the
+    // selector even if the composer already shows values from the previous
+    // backend. These refreshes carry intent tokens so an in-flight picker
+    // click still wins.
     void refreshCurrentModel(true)
     void refreshHermesConfig(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
+    resetProjectTreeState()
+  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that
@@ -776,6 +781,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
+    activeConnectionId,
     activeGatewayProfile,
     activeIsMessaging,
     activeSessionId,

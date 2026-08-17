@@ -8,6 +8,7 @@ import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaul
 
 import {
   $activeProjectId,
+  $projects,
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
@@ -398,6 +399,34 @@ describe('projects RPC capability', () => {
     await refreshProjects()
 
     expect($projectsRpcAvailable.get()).toBe(false)
+  })
+
+  it('does not publish a late project list from the previous source', async () => {
+    let resolveA: ((value: unknown) => void) | undefined
+
+    const responseA = new Promise(resolve => {
+      resolveA = resolve
+    })
+
+    const gatewayA = { connectionState: 'open', request: vi.fn(() => responseA) }
+
+    const gatewayB = {
+      connectionState: 'open',
+      request: vi.fn().mockResolvedValue({ active_id: null, projects: [{ id: 'source-b', name: 'Source B' }] })
+    }
+
+    let current = gatewayA
+
+    activeGateway.mockImplementation(() => current as never)
+    const pendingA = refreshProjects()
+
+    current = gatewayB
+    await refreshProjects()
+
+    resolveA?.({ active_id: null, projects: [{ id: 'source-a', name: 'Source A' }] })
+    await pendingA
+
+    expect($projects.get().map(project => project.id)).toEqual(['source-b'])
   })
 
   it('blocks opening the create dialog once the backend is known stale', () => {

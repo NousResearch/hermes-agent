@@ -11,6 +11,7 @@ import { ChatRoutesSurface } from './surfaces'
 import type { WiringActions } from './types'
 
 vi.mock('@/contrib/react/use-contributions', () => ({ useContributions: vi.fn() }))
+vi.mock('@/store/connections', () => ({ $activeConnectionId: atom('local') }))
 vi.mock('@/store/gateway', () => ({ $gateway: atom<unknown>(null) }))
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
 vi.mock('@/store/session', () => ({

@@ -81,7 +81,7 @@ def _measure(page: Path, width: int) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[2]
     playwright_candidates = [
         repo_root / "node_modules" / "playwright",
-        repo_root.parent / "hermes-agent" / "node_modules" / "playwright",
+        repo_root.parent.parent / "node_modules" / "playwright",
     ]
     playwright = next((path for path in playwright_candidates if path.exists()), None)
     if playwright is None:

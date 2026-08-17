@@ -62,11 +62,15 @@ function load(turnScript) {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, disbandGroupChat, $groupChats, $groupNeedsYou, $groupChatWorkspace, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
-  context.plugin.register({ storage: { get: () => null, set: () => undefined }, register: () => undefined })
-  return { ...context.__gc, calls }
+  const storageWrites = new Map()
+  context.plugin.register({
+    storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
+    register: () => undefined
+  })
+  return { ...context.__gc, calls, storageWrites }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -242,4 +246,69 @@ test('source contract: workspace + header affordance + prompt rules are wired', 
   assert.match(pluginSource, /Open chat/)
   assert.match(pluginSource, /reply with exactly "\(pass\)"/i)
   assert.match(pluginSource, /\[Group chat: "\$\{groupName\}"\]/)
+})
+
+test('disband: clears grouping meta, room log, workspace, needs-you; keeps sessions in storage map only for other rooms', async () => {
+  const gc = load(() => '(pass)')
+
+  // Two rooms; disband one.
+  gc.sendToGroupChat('Keep', [{ name: 'research', title: '' }], 'hello keepers')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Keep || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  gc.sendToGroupChat('Gone', [{ name: 'builder', title: '' }], 'hello goners')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Gone || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  gc.$botMeta.set({ builder: { group: 'Gone' }, research: { group: 'Keep' } })
+  gc.$groupChatWorkspace.set('Gone')
+  gc.$groupNeedsYou.set({ Gone: true, Keep: true })
+
+  await gc.disbandGroupChat('Gone', ['builder'])
+
+  // Room state: gone from the atom (no running drive, so no tombstone).
+  assert.equal(gc.$groupChats.get().Gone, undefined)
+  assert.ok(gc.$groupChats.get().Keep, 'other rooms untouched')
+  // The open room view closed; needs-you cleared for the disbanded room only.
+  assert.equal(gc.$groupChatWorkspace.get(), null)
+  assert.equal(gc.$groupNeedsYou.get().Gone, undefined)
+  assert.equal(gc.$groupNeedsYou.get().Keep, true)
+  // Members ungrouped; other bots keep their group.
+  assert.equal(gc.$botMeta.get().builder.group, null)
+  assert.equal(gc.$botMeta.get().research.group, 'Keep')
+  // Persisted room map no longer carries the room.
+  const durable = gc.storageWrites.get('group-chats')
+  assert.ok(durable && !('Gone' in durable), 'disbanded room not persisted')
+  assert.ok('Keep' in durable, 'surviving room still persisted')
+})
+
+test('disband: a running room leaves an epoch-bumped empty tombstone so in-flight turns bail', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.sendToGroupChat('Live', [{ name: 'research', title: '' }], 'kick off')
+  for (let i = 0; i < 200 && (gc.$groupChats.get().Live || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  // Simulate a drive still in flight at disband time.
+  const rooms = { ...gc.$groupChats.get() }
+  rooms.Live = { ...rooms.Live, running: true, epoch: 3 }
+  gc.$groupChats.set(rooms)
+
+  await gc.disbandGroupChat('Live', ['research'])
+
+  const tomb = gc.$groupChats.get().Live
+  assert.ok(tomb, 'tombstone present while a drive is mid-turn')
+  assert.equal(tomb.log.length, 0)
+  assert.equal(tomb.running, false)
+  assert.equal(tomb.epoch, 4, 'epoch bumped so the loop bails at its member boundary')
+  const durable = gc.storageWrites.get('group-chats')
+  assert.ok(!durable || !('Live' in (durable || {})), 'tombstone is never persisted')
+})
+
+test('source contract: workspace header offers disband behind a ConfirmDialog', () => {
+  assert.match(pluginSource, /function disbandGroupChat\(/)
+  assert.match(pluginSource, /Disband group chat\?/)
+  assert.match(pluginSource, /title: `Disband the \$\{group\} group chat`/)
 })

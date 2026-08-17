@@ -2825,6 +2825,61 @@ function updateGroupChat(group, mutate) {
   return next
 }
 
+/** Soft-disband a group chat: clear every member's group assignment (the
+ *  grouping is bot-meta, so the disband syncs cross-machine via ui_meta),
+ *  drop the room log from the atom + plugin storage, and close the room view
+ *  if it's open. The members' per-group gateway sessions ("Group: <name>")
+ *  are intentionally KEPT — they stay reachable through each bot's session
+ *  browser. */
+async function disbandGroupChat(group, memberNames) {
+  // Invalidate any in-flight round-robin FIRST: bump the epoch so a running
+  // drive bails at its next member boundary instead of appending to a room
+  // the user just discarded.
+  const all = { ...$groupChats.get() }
+  const prior = all[group] || {}
+
+  delete all[group]
+  // Keep a runtime-only tombstone while a drive may still be mid-turn; it
+  // carries no log and is never persisted, so it can't rehydrate.
+  if (prior.running) {
+    all[group] = { log: [], watermarks: {}, sessions: {}, epoch: (prior.epoch || 0) + 1, running: false }
+  }
+
+  $groupChats.set(all)
+
+  if ($groupChatWorkspace.get() === group) {
+    $groupChatWorkspace.set(null)
+  }
+
+  const needs = { ...$groupNeedsYou.get() }
+
+  delete needs[group]
+  $groupNeedsYou.set(needs)
+
+  // Persist the room map WITHOUT the disbanded room so it can't come back
+  // on the next window load.
+  try {
+    const durable = {}
+
+    for (const [name, room] of Object.entries($groupChats.get())) {
+      if (name !== group && Array.isArray(room.log)) {
+        durable[name] = { log: room.log, watermarks: room.watermarks, sessions: room.sessions || {} }
+      }
+    }
+
+    await Promise.resolve(pluginCtx?.storage?.set?.('group-chats', durable))
+  } catch {
+    /* storage unavailable — the atom reset above still empties the room */
+  }
+
+  // Ungroup the members last. saveBotMeta never throws (local storage +
+  // best-effort profiles.configure per member), so a flaky gateway can't
+  // strand the disband halfway with the room log already gone.
+  for (const name of memberNames) {
+    await saveBotMeta(name, { group: null })
+  }
+}
+
 function appendGroupChatEntry(group, from, text) {
   const entry = { from, text: String(text).trim(), at: Date.now() }
 
@@ -6465,6 +6520,7 @@ function GroupChatWorkspace({ group, members }) {
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [], running: false }
   const [draft, setDraft] = useState('')
+  const [confirmDisband, setConfirmDisband] = useState(false)
 
   const header = jsxs('div', {
     className: 'flex items-center gap-2 px-2.5 pt-2.5 pb-2',
@@ -6482,6 +6538,14 @@ function GroupChatWorkspace({ group, members }) {
       jsx('span', {
         className: 'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
         children: `${members.length} bots`
+      }),
+      jsx(Button, {
+        variant: 'ghost',
+        size: 'sm',
+        className: 'shrink-0 text-(--ui-text-tertiary) hover:text-destructive',
+        title: `Disband the ${group} group chat`,
+        onClick: () => setConfirmDisband(true),
+        children: jsx(Codicon, { name: 'trash' })
       })
     ]
   })
@@ -6574,6 +6638,30 @@ function GroupChatWorkspace({ group, members }) {
             jsx(Button, { type: 'submit', size: 'sm', disabled: !draft.trim(), children: 'Send' })
           ]
         })
+      }),
+      jsx(ConfirmDialog, {
+        open: confirmDisband,
+        title: 'Disband group chat?',
+        description: jsxs('span', {
+          children: [
+            'This removes the ',
+            jsx('span', { className: 'font-medium text-foreground', children: group }),
+            ' grouping from its ',
+            String(members.length),
+            ' bots and clears the shared room log. The bots themselves and their “Group: ',
+            group,
+            '” sessions are kept — you can still open those from each bot’s session browser.'
+          ]
+        }),
+        destructive: true,
+        confirmLabel: 'Disband',
+        busyLabel: 'Disbanding…',
+        doneLabel: 'Disbanded',
+        onClose: () => setConfirmDisband(false),
+        onConfirm: async () => {
+          await disbandGroupChat(group, members.map(bot => bot.name))
+          host.notify({ kind: 'success', message: `Disbanded “${group}”` })
+        }
       })
     ]
   })

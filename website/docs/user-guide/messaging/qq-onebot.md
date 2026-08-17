@@ -76,8 +76,15 @@ gateway:
 | `split_length` | `100` | long-reply split threshold |
 | `text_image_threshold` | `150` | t2i card threshold; `<=0` disables the card path |
 | `image_max_size` | `2048` | inbound image long-edge cap (px); `0` keeps originals |
+| `hot_reload` | `false` | dev only: reload `onebot_utils.py` / `t2i_render.py` on mtime change (saves a gateway restart while iterating styles; keep off in production — an in-place write during upgrade can reload a half-written module) |
 
 Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEBOT_ALLOW_ALL_USERS=true` (dev only), and the global `GATEWAY_ALLOW_ALL_USERS`.
+
+> **`dm_policy: open` + allow-all env**: `ONEBOT_ALLOW_ALL_USERS=true` (or
+> `GATEWAY_ALLOW_ALL_USERS=true`) is the explicit opt-in that makes `open`
+> actually open to non-admins. Without it, `open` means **admins only** —
+> the adapter rejects non-admin DMs at intake, before the gateway's
+> allow-all check would ever run.
 
 ### Connection modes
 

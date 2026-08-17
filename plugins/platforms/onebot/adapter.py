@@ -27,6 +27,7 @@ Configuration (config.yaml):
             allow_from: []             # user ids when dm_policy=allowlist
             group_policy: open         # open | allowlist | disabled
             group_allow_from: []       # group ids when group_policy=allowlist
+            hot_reload: false          # dev only: reload onebot_utils/t2i_render on mtime change
 """
 
 from __future__ import annotations
@@ -89,20 +90,31 @@ DEFAULT_TEXT_IMAGE_THRESHOLD = 150
 
 _UTILS_MTIME: float = 0.0
 _utils_lock = threading.Lock()
+_HOT_RELOAD: bool = False  # 由 adapter 初始化时从 extra.hot_reload 读取
+
+
+def _set_hot_reload(enabled: bool) -> None:
+    """开关 mtime 热加载（生产部署建议关闭；开发迭代样式时开启）。"""
+    global _HOT_RELOAD
+    _HOT_RELOAD = bool(enabled)
 
 
 def _load_onebot_utils():
-    """加载 onebot_utils 模块；检测文件 mtime 变化时自动 importlib.reload。
+    """加载 onebot_utils 模块；extra.hot_reload=true 时检测 mtime 变化自动 reload。
 
     热加载语义：onebot_utils.py 每次修改后（保存即生效），下一次调用
     自动使用新逻辑，无需重启 gateway。覆盖 CQ 解析、Markdown 剥离、
-    长消息分段、表情映射等纯规则。
+    长消息分段、表情映射等纯规则。默认关闭——生产环境避免升级/部署
+    期间半写入文件触发 reload。
     """
     global _UTILS_MTIME
     try:
         from . import onebot_utils as mod
     except ImportError:  # 插件以裸模块方式加载时
         import onebot_utils as mod
+
+    if not _HOT_RELOAD:
+        return mod
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "onebot_utils.py")
     try:
@@ -127,17 +139,21 @@ _t2i_lock = threading.Lock()
 
 
 def _load_t2i_render():
-    """加载 t2i_render 模块；检测文件 mtime 变化时自动 importlib.reload。
+    """加载 t2i_render 模块；extra.hot_reload=true 时检测 mtime 变化自动 reload。
 
     热加载语义：t2i_render.py 每次修改后（保存即生效），下一次渲染
     自动使用新样式，无需重启 gateway。reload 后模块级缓存
     （_FONT_CACHE / _EMOJI_BITMAP_CACHE 等）随之重建，不会用旧字号。
+    默认关闭——生产环境避免升级/部署期间半写入文件触发 reload。
     """
     global _T2I_MTIME
     try:
         from . import t2i_render as mod
     except ImportError:  # 插件以裸模块方式加载时
         import t2i_render as mod
+
+    if not _HOT_RELOAD:
+        return mod
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "t2i_render.py")
     try:
@@ -201,6 +217,10 @@ class OneBotAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("onebot"))
         extra = config.extra or {}
+        # 开发迭代开关：hot_reload=true 时 onebot_utils/t2i_render 修改即生效
+        _set_hot_reload(
+            str(extra.get("hot_reload", False)).strip().lower() in {"true", "1", "yes"}
+        )
         self._mode = str(extra.get("mode", "reverse")).strip().lower() or "reverse"
         self._host = str(extra.get("host", "127.0.0.1"))
         try:
@@ -495,7 +515,11 @@ class OneBotAdapter(BasePlatformAdapter):
     # -- 昵称持久化（t2i 顶栏；重启后 cron 推送/会话恢复也能画出顶栏） --
 
     def _nicknames_file(self) -> str:
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "nicknames.json")
+        # Runtime state lives under HERMES_HOME, not the plugin package dir
+        # (read-only pip installs / profile isolation).
+        from hermes_constants import get_hermes_home
+
+        return str(get_hermes_home() / "onebot_nicknames.json")
 
     def _load_nicknames(self) -> None:
         try:
@@ -656,8 +680,20 @@ class OneBotAdapter(BasePlatformAdapter):
             return False
         if policy == "allowlist":
             return user_id in self._allow_from
-        # open / pairing 策略下也仅管理员可用私聊（普通用户私聊拒绝）
+        # open：默认仅管理员可用私聊（与文档一致）。设置
+        # ONEBOT_ALLOW_ALL_USERS=true / GATEWAY_ALLOW_ALL_USERS=true 时
+        # 才是真正开放，否则该 opt-in 在 adapter 入站就被拦掉，
+        # gateway 端的 allow-all 判定永远不会生效。
+        if self._allow_all_users():
+            return True
         return user_id in self._admin_users
+
+    def _allow_all_users(self) -> bool:
+        """allow-all opt-in（与 gateway authz 同语义：true/1/yes）"""
+        for var in ("ONEBOT_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"):
+            if os.getenv(var, "").strip().lower() in {"true", "1", "yes"}:
+                return True
+        return False
 
     def _group_allowed(self, group_id: str) -> bool:
         policy = self._group_policy
@@ -1319,7 +1355,7 @@ class OneBotAdapter(BasePlatformAdapter):
         if ws is None:
             raise ConnectionError("OneBot WebSocket not connected")
         echo = str(uuid.uuid4())
-        fut: "asyncio.Future[Dict[str, Any]]" = asyncio.get_event_loop().create_future()
+        fut: "asyncio.Future[Dict[str, Any]]" = asyncio.get_running_loop().create_future()
         self._pending_actions[echo] = fut
         try:
             await ws.send_str(json.dumps({"action": action, "params": params, "echo": echo}))

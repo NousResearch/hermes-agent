@@ -684,11 +684,16 @@ export const ar = defineLocale({
       envOverride: 'تجاوز من البيئة',
       intro:
         'يشغّل Hermes Desktop بوابة محلية خاصة افتراضياً. استخدم بوابة بعيدة عندما تريد أن يتحكم هذا التطبيق بخلفية Hermes تعمل مسبقاً على جهاز آخر أو خلف وكيل موثوق.',
-      appliesTo: 'ينطبق على',
       allProfiles: 'كل الملفات الشخصية',
       defaultConnection: 'الاتصال الافتراضي لكل ملف شخصي لا يملك تجاوزاً خاصاً.',
       profileConnection: profile =>
         `الاتصال المستخدم فقط عندما يكون "${profile}" هو الملف الشخصي النشط. اختر "استخدام البوابة الافتراضية" لإزالة التجاوز الخاص به.`,
+      profileOverridesTitle: 'تجاوزات لكل ملف شخصي',
+      profileOverridesDesc:
+        'يمكن لكل ملف شخصي أن يشير إلى بوابته الخاصة. عناصر التحكم بالاتصال أدناه تحرر الهدف المحدد؛ بقية هذه الصفحة تنطبق على التطبيق بأكمله.',
+      overrideEdit: 'تحرير',
+      overrideEditing: 'قيد التحرير',
+      overrideSelectHint: 'اختر لعرض أو تغيير البوابة التي يستخدمها هذا الملف الشخصي.',
       envOverrideTitle: 'متغيرات البيئة تتحكم في جلسة سطح المكتب هذه.',
       envOverrideDesc: 'أزل HERMES_DESKTOP_REMOTE_URL و HERMES_DESKTOP_REMOTE_TOKEN لاستخدام الإعداد المحفوظ أدناه.',
       localTitle: 'بوابة محلية',

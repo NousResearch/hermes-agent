@@ -14,7 +14,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
@@ -33,6 +33,9 @@ interface EditorState {
   token: string
   host: string
   keyPath: string
+  // ssh remote profile, hydrated on edit so the duplicate key matches the
+  // main-process one (user@host:port + profile); the editor doesn't expose it.
+  remoteProfile: string
   // Extra gateway headers (access proxies such as Cloudflare Access).
   // `value: ''` on a row that came from storage means "keep the saved
   // secret" (sent as null); a typed value replaces it; a removed row clears
@@ -56,21 +59,113 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     // would silently resurrect the old values.
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || '',
+    remoteProfile: conn.remoteProfile || '',
     headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
   }
 }
 
 function emptyEditor(kind: DesktopConnectionKind): EditorState {
-  return { id: null, kind, label: '', url: '', authMode: 'token', token: '', host: '', keyPath: '', headers: [] }
+  return {
+    id: null,
+    kind,
+    label: '',
+    url: '',
+    authMode: 'token',
+    token: '',
+    host: '',
+    keyPath: '',
+    remoteProfile: '',
+    headers: []
+  }
+}
+
+/** Dedupe key for a remote/cloud gateway URL: trim, drop trailing slashes, lowercase. */
+export function normalizeGatewayUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '').toLowerCase()
 }
 
 /**
- * Settings → Connections: manage the registry of named agent sources (local
- * runtime + any number of remote gateways / Hermes Cloud instances / SSH
- * hosts). Storage-level management only — the active/primary switchover UX
- * stays in Settings → Gateway until the routing generalization lands.
+ * Dedupe key for the composite ssh host string the editor shows
+ * (`user@host:port`, user/port optional): normalized to `user@host:port` with
+ * the default port made explicit so `box` and `box:22` collide.
  */
-export function ConnectionsSettings() {
+export function sshCompositeKey(composite: string): string {
+  const raw = composite.trim().toLowerCase()
+
+  if (!raw) {
+    return ''
+  }
+
+  const at = raw.lastIndexOf('@')
+  const user = at > 0 ? raw.slice(0, at) : ''
+  const rest = at >= 0 ? raw.slice(at + 1) : raw
+  const portMatch = rest.match(/^(.*?):(\d+)$/)
+  const host = portMatch ? portMatch[1] : rest
+  const port = portMatch ? portMatch[2] : '22'
+
+  if (!host) {
+    return ''
+  }
+
+  return `${user}@${host}:${port}`
+}
+
+/**
+ * The renderer-side duplicate rule, mirrored by the main process
+ * (normalizeConnectionInput enforces the same keys in the save path):
+ *  - at most ONE local entry, ever;
+ *  - remote/cloud entries are duplicates when their normalized URLs match;
+ *  - ssh entries are duplicates on user@host:port + remote profile.
+ * Returns the existing entry the candidate collides with, or null.
+ */
+export function findDuplicateConnection(
+  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile' | 'url'>,
+  connections: DesktopRegistryConnection[]
+): DesktopRegistryConnection | null {
+  if (editor.kind === 'local') {
+    return connections.find(c => c.kind === 'local' && c.id !== editor.id) ?? null
+  }
+
+  if (editor.kind === 'remote' || editor.kind === 'cloud') {
+    const key = normalizeGatewayUrl(editor.url)
+
+    if (!key) {
+      return null
+    }
+
+    return (
+      connections.find(
+        c => (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
+      ) ?? null
+    )
+  }
+
+  const key = sshCompositeKey(editor.host)
+
+  if (!key) {
+    return null
+  }
+
+  const profile = editor.remoteProfile.trim()
+
+  return (
+    connections.find(
+      c =>
+        c.kind === 'ssh' &&
+        c.id !== editor.id &&
+        sshCompositeKey(`${c.user ? `${c.user}@` : ''}${c.host ?? ''}${c.port ? `:${c.port}` : ''}`) === key &&
+        (c.remoteProfile || '').trim() === profile
+    ) ?? null
+  )
+}
+
+/**
+ * The connections registry section of Settings → Gateways: manage the named
+ * agent sources (local runtime + any number of remote gateways / Hermes Cloud
+ * instances / SSH hosts). Storage-level management — the active/primary
+ * switchover UX is the connection-mode controls above this section.
+ */
+export function ConnectionsRegistrySection() {
   const { t } = useI18n()
   const s = t.settings.connections
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
@@ -82,8 +177,13 @@ export function ConnectionsSettings() {
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  // Inline duplicate rejection from the save path (dedupe is also enforced in
+  // the main process, so a crafted payload can't slip past the UI check).
+  const [dupeError, setDupeError] = useState<null | string>(null)
 
   const bridge = window.hermesDesktop?.connections
+
+  const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
 
   const load = useCallback(async () => {
     if (!bridge) {
@@ -107,12 +207,35 @@ export function ConnectionsSettings() {
     void load()
   }, [load])
 
+  const openEditor = (next: EditorState | null) => {
+    setDupeError(null)
+    setEditor(next)
+  }
+
   const save = useCallback(
     async (allowPlainTextToken = false) => {
       if (!bridge || !editor) {
         return
       }
 
+      // Duplicate prevention lives in the save path (not just a disabled
+      // button): reject a candidate that collides with an existing entry with
+      // an inline error before anything crosses the IPC boundary.
+      const dupe = findDuplicateConnection(editor, registry?.connections ?? [])
+
+      if (dupe) {
+        setDupeError(
+          editor.kind === 'local'
+            ? s.duplicateLocal
+            : editor.kind === 'ssh'
+              ? s.duplicateSsh(dupe.label)
+              : s.duplicateUrl(dupe.label)
+        )
+
+        return
+      }
+
+      setDupeError(null)
       setSaving(true)
 
       try {
@@ -162,8 +285,8 @@ export function ConnectionsSettings() {
         setPlainTextConfirm(false)
       } catch (err) {
         // Keyring-less machine and the user hasn't consented to plain-text
-        // storage yet: raise the same opt-in dialog Settings → Gateway uses
-        // instead of dead-ending the save.
+        // storage yet: raise the same opt-in dialog the connection-mode form
+        // uses instead of dead-ending the save.
         if (
           !allowPlainTextToken &&
           registry?.secureTokenStorage === false &&
@@ -181,7 +304,7 @@ export function ConnectionsSettings() {
         setSaving(false)
       }
     },
-    [bridge, editor, registry?.secureTokenStorage, s.saveFailed]
+    [bridge, editor, registry?.connections, registry?.secureTokenStorage, s]
   )
 
   const remove = useCallback(async () => {
@@ -283,12 +406,12 @@ export function ConnectionsSettings() {
     ssh: { desc: s.kindSshDesc, label: s.kindSsh }
   }
 
-  if (loading) {
-    return <SettingsSkeleton />
+  if (!bridge) {
+    return null
   }
 
   return (
-    <SettingsContent>
+    <div className="mt-8 border-t border-border/60 pt-6">
       <SectionHeading icon={Globe} title={s.title} />
       <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
       {/* Storage-only slice: be explicit that routing consumption is staged so
@@ -297,7 +420,11 @@ export function ConnectionsSettings() {
         {s.stagedNote}
       </p>
 
-      {!registry || registry.connections.length === 0 ? (
+      {loading ? (
+        <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+          <Loader2 className="size-4 animate-spin" />
+        </div>
+      ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
       ) : (
         registry.connections.map(conn => {
@@ -329,7 +456,7 @@ export function ConnectionsSettings() {
                     <>
                       <Button
                         aria-label={s.editConnection}
-                        onClick={() => setEditor(editorFromConnection(conn))}
+                        onClick={() => openEditor(editorFromConnection(conn))}
                         size="icon-sm"
                         variant="ghost"
                       >
@@ -372,15 +499,17 @@ export function ConnectionsSettings() {
       {editor ? (
         <div className="mt-4 space-y-3 rounded-lg border border-border/60 p-4">
           <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
-            {/* Cloud creation is deliberately absent: a dialable cloud entry
-                comes from the Hermes Cloud sign-in/discovery flow (Settings →
-                Gateway), not a hand-typed URL. Migrated/discovered cloud
-                entries remain editable (kind buttons are disabled on edit). */}
-            {(editor.kind === 'cloud' ? (['cloud'] as const) : (['remote', 'ssh'] as const)).map(kind => (
+            {/* Kind is fixed once created (buttons disable on edit). On create
+                every kind is offered; Local is disabled while the managed
+                local entry exists (the registry holds at most one). */}
+            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh'] as const)).map(kind => (
               <Button
-                disabled={Boolean(editor.id)}
+                disabled={Boolean(editor.id) || (kind === 'local' && hasLocal)}
                 key={kind}
-                onClick={() => setEditor({ ...editor, kind })}
+                onClick={() => {
+                  setDupeError(null)
+                  setEditor({ ...editor, kind })
+                }}
                 size="sm"
                 variant={editor.kind === kind ? 'default' : 'outline'}
               >
@@ -389,6 +518,10 @@ export function ConnectionsSettings() {
             ))}
           </div>
           <p className="text-xs text-muted-foreground">{kindMeta[editor.kind].desc}</p>
+          {!editor.id && hasLocal ? <p className="text-xs text-muted-foreground">{s.localAddHint}</p> : null}
+          {!editor.id && editor.kind === 'cloud' ? (
+            <p className="text-xs text-muted-foreground">{s.cloudAddHint}</p>
+          ) : null}
 
           <ListRow
             action={
@@ -406,7 +539,10 @@ export function ConnectionsSettings() {
             <ListRow
               action={
                 <Input
-                  onChange={e => setEditor({ ...editor, url: e.target.value })}
+                  onChange={e => {
+                    setDupeError(null)
+                    setEditor({ ...editor, url: e.target.value })
+                  }}
                   placeholder="http://homelab.lan:9119"
                   value={editor.url}
                 />
@@ -509,7 +645,10 @@ export function ConnectionsSettings() {
             <ListRow
               action={
                 <Input
-                  onChange={e => setEditor({ ...editor, host: e.target.value })}
+                  onChange={e => {
+                    setDupeError(null)
+                    setEditor({ ...editor, host: e.target.value })
+                  }}
                   placeholder="user@host:22"
                   value={editor.host}
                 />
@@ -518,8 +657,10 @@ export function ConnectionsSettings() {
             />
           )}
 
+          {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}
+
           <div className="flex justify-end gap-2">
-            <Button disabled={saving} onClick={() => setEditor(null)} size="sm" variant="ghost">
+            <Button disabled={saving} onClick={() => openEditor(null)} size="sm" variant="ghost">
               {s.cancel}
             </Button>
             <Button disabled={saving || !editor.label.trim()} onClick={() => void save()} size="sm">
@@ -532,7 +673,7 @@ export function ConnectionsSettings() {
           <Button
             onClick={() => {
               triggerHaptic('selection')
-              setEditor(emptyEditor('remote'))
+              openEditor(emptyEditor('remote'))
             }}
             size="sm"
             variant="outline"
@@ -573,7 +714,7 @@ export function ConnectionsSettings() {
         title={s.removeConfirmTitle}
       />
 
-      {/* Keyring-less opt-in: same consent flow as Settings → Gateway. */}
+      {/* Keyring-less opt-in: same consent flow as the connection-mode form. */}
       <ConfirmDialog
         confirmLabel={t.settings.gateway.plainTextConfirmAction}
         description={t.settings.gateway.plainTextConfirmDesc}
@@ -583,6 +724,6 @@ export function ConnectionsSettings() {
         open={plainTextConfirm}
         title={t.settings.gateway.plainTextConfirmTitle}
       />
-    </SettingsContent>
+    </div>
   )
 }

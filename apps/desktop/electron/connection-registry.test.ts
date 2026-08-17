@@ -417,6 +417,54 @@ test('editing an entry does not collide with its own label', () => {
   assert.equal(edited.url, 'http://10.0.0.6:9119')
 })
 
+test('duplicate gateway URLs are rejected across remote and cloud kinds', () => {
+  let registry = emptyRegistry()
+  registry = upsertConnection(
+    registry,
+    normalizeConnectionInput({ kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }, registry)
+  )
+
+  // Same URL modulo trailing slash → dupe, even as a different kind.
+  assert.throws(
+    () => normalizeConnectionInput({ kind: 'remote', label: 'Twin', url: 'http://10.0.0.5:9119/' }, registry),
+    /already exists/
+  )
+  assert.throws(
+    () => normalizeConnectionInput({ kind: 'cloud', label: 'Cloud twin', url: 'http://10.0.0.5:9119' }, registry),
+    /already exists/
+  )
+  // Editing the entry itself keeps its own URL without self-colliding.
+  const existing = registry.connections.find(c => c.kind === 'remote')!
+
+  const edited = normalizeConnectionInput(
+    { id: existing.id, kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' },
+    registry
+  )
+
+  assert.equal(edited.id, existing.id)
+})
+
+test('duplicate ssh targets are rejected on user@host:port + remote profile', () => {
+  let registry = emptyRegistry()
+  registry = upsertConnection(
+    registry,
+    normalizeConnectionInput({ kind: 'ssh', label: 'Box', host: 'alice@box:22', remoteProfile: 'work' }, registry)
+  )
+
+  assert.throws(
+    () => normalizeConnectionInput({ kind: 'ssh', label: 'Box twin', host: 'alice@box:22', remoteProfile: 'work' }, registry),
+    /already exists/
+  )
+
+  // A different remote profile on the same host is a distinct agent source.
+  const otherProfile = normalizeConnectionInput(
+    { kind: 'ssh', label: 'Box other', host: 'alice@box:22', remoteProfile: 'other' },
+    registry
+  )
+
+  assert.equal(otherProfile.kind, 'ssh')
+})
+
 test('remote input normalizes URL and auth mode; cloud keeps org', () => {
   const registry = emptyRegistry()
 

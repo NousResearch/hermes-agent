@@ -319,15 +319,16 @@ export function ProfileRail() {
       <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
 
       {/* Multi-gateway discoverability: a plug pinned beside Manage deep-links
-          to Settings → Connections. The registry (local runtime + remote
-          gateways + Hermes Cloud + SSH) is otherwise buried three levels into
-          Settings, and the rail is exactly where a user looks when they wonder
-          "how do I get my other machine's agents in here". */}
+          to Settings → Gateways (the connections registry lives on the unified
+          Gateways page now). The registry (local runtime + remote gateways +
+          Hermes Cloud + SSH) is otherwise buried three levels into Settings,
+          and the rail is exactly where a user looks when they wonder "how do I
+          get my other machine's agents in here". */}
       <ProfilePill
         active={false}
         glyph="plug"
         label={p.connectGateway}
-        onSelect={() => navigate(`${SETTINGS_ROUTE}?tab=connections`)}
+        onSelect={() => navigate(`${SETTINGS_ROUTE}?tab=gateway`)}
       />
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the

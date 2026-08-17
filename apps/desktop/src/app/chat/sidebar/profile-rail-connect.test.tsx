@@ -77,13 +77,13 @@ vi.mock('../../profiles/delete-profile-dialog', () => ({ DeleteProfileDialog: ()
 vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: () => null }))
 
 describe('ProfileRail multi-gateway entry point', () => {
-  it('deep-links to Settings → Connections from the rail', () => {
+  it('deep-links to the unified Settings → Gateways page from the rail', () => {
     render(<ProfileRail />)
 
     const pill = screen.getByRole('button', { name: 'Connect another Hermes gateway…' })
     fireEvent.click(pill)
 
-    expect(navigate).toHaveBeenCalledWith('/settings?tab=connections')
+    expect(navigate).toHaveBeenCalledWith('/settings?tab=gateway')
   })
 
   it('keeps the entry point visible for single-profile users', () => {

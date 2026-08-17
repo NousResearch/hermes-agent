@@ -730,11 +730,16 @@ export const ja = defineLocale({
       envOverride: 'env オーバーライド',
       intro:
         'Hermes Desktop はデフォルトで独自のローカルゲートウェイを起動します。別のマシンや信頼できるプロキシの背後で既に動作している Hermes バックエンドをこのアプリで制御する場合は、リモートゲートウェイを使用してください。以下でプロファイルを選択して、それぞれのリモートホストを設定します。',
-      appliesTo: '適用対象',
       allProfiles: 'すべてのプロファイル',
       defaultConnection: '独自のオーバーライドがないすべてのプロファイルのデフォルト接続。',
       profileConnection: profile =>
         `"${profile}" がアクティブプロファイルのときのみ使用される接続。「デフォルトゲートウェイを使用」を選ぶとオーバーライドが削除されます。`,
+      profileOverridesTitle: 'プロファイルごとのオーバーライド',
+      profileOverridesDesc:
+        '各プロファイルは独自のゲートウェイを指定できます。下の接続コントロールは選択した対象を編集します。このページのその他の設定はアプリ全体に適用されます。',
+      overrideEdit: '編集',
+      overrideEditing: '編集中',
+      overrideSelectHint: '選択すると、このプロファイルが使用するゲートウェイを表示・変更できます。',
       envOverrideTitle: '環境変数がこのデスクトップセッションを制御しています。',
       envOverrideDesc:
         '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',

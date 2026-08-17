@@ -495,12 +495,38 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
 
     const { mode: _mode, ...sshFields } = ssh
 
+    // Duplicate prevention (enforced here so a crafted IPC payload can't slip
+    // past the editor's check): two ssh entries collide on the same
+    // user@host:port + remote profile.
+    const sshKey = (c: { host?: string; port?: number; remoteProfile?: string; user?: string }) =>
+      `${(c.user || '').toLowerCase()}@${(c.host || '').toLowerCase()}:${c.port ?? 22}::${(c.remoteProfile || '').trim()}`
+
+    const sshDupe = registry.connections.find(c => c.kind === 'ssh' && c.id !== id && sshKey(c) === sshKey(sshFields))
+
+    if (sshDupe) {
+      throw new Error(`A connection to this SSH host already exists ("${sshDupe.label}").`)
+    }
+
     return { id, kind: 'ssh', label, ...sshFields }
   }
 
   if (kind === 'remote' || kind === 'cloud') {
     // normalizeRemoteBaseUrl throws its own user-facing message on bad input.
     const url = normalizeRemoteBaseUrl(input.url)
+
+    // Duplicate prevention: remote/cloud entries collide on the normalized URL
+    // (trimmed, trailing slashes stripped, lowercased) regardless of kind — a
+    // cloud entry and a remote entry pointing at the same gateway are dupes.
+    const urlKey = (value: string) => value.trim().replace(/\/+$/, '').toLowerCase()
+
+    const urlDupe = registry.connections.find(
+      c => (c.kind === 'remote' || c.kind === 'cloud') && c.id !== id && urlKey(c.url || '') === urlKey(url)
+    )
+
+    if (urlDupe) {
+      throw new Error(`A connection to this gateway URL already exists ("${urlDupe.label}").`)
+    }
+
     const authMode = normAuthMode(input.authMode)
     const entry: RegistryConnection = { id, kind, label, url, authMode }
 

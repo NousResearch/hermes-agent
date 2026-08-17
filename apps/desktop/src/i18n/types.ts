@@ -304,7 +304,6 @@ export interface Translations {
       providerApiKeys: string
       providerCustomEndpoints: string
       gateway: string
-      connections: string
       apiKeys: string
       keybinds: string
       keysTools: string
@@ -583,6 +582,11 @@ export interface Translations {
       headerValueSaved: string
       headerAdd: string
       headerRemove: string
+      duplicateLocal: string
+      duplicateUrl: (label: string) => string
+      duplicateSsh: (label: string) => string
+      localAddHint: string
+      cloudAddHint: string
       save: string
       saving: string
       cancel: string
@@ -595,10 +599,14 @@ export interface Translations {
       title: string
       envOverride: string
       intro: string
-      appliesTo: string
       allProfiles: string
       defaultConnection: string
       profileConnection: (profile: string) => string
+      profileOverridesTitle: string
+      profileOverridesDesc: string
+      overrideEdit: string
+      overrideEditing: string
+      overrideSelectHint: string
       envOverrideTitle: string
       envOverrideDesc: string
       modeTitle: string

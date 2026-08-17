@@ -857,20 +857,43 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
 
     # Latest durable execution per in-flight job id, loaded in one indexed
     # query.  Used for the persisted-state reconciliation below (t_8b5480b3):
-    # an in-memory claim whose job's MOST RECENT execution row is terminal
+    # an in-memory claim whose OWN run's execution row is terminal
     # (completed/failed/unknown) cannot represent a live run — the durable
     # ledger proves that run already ended — so the claim is stale by
-    # construction, regardless of its in-memory age.  This closes the
-    # restart-survival gap that the age-only sweep left open: the ledger is
-    # written by the worker that ran the job and read by ANY ticker process
-    # (including one that started AFTER the leak), so a leaked claim is
-    # recoverable without force-run/resume and without depending on which
-    # process happens to still hold it in memory.
+    # construction, regardless of its in-memory age.  A leaked claim is then
+    # recoverable without force-run/resume.  The snapshot for the query is
+    # taken under _running_lock: list(set) over a set concurrently mutated by
+    # try_register/release_running_job can raise RuntimeError mid-iteration.
+    with _running_lock:
+        _inflight_snapshot = list(_running_job_ids)
     try:
         from cron.executions import latest_executions as _latest_execs
-        _latest = _latest_execs(list(_running_job_ids))
+        _latest = _latest_execs(_inflight_snapshot)
     except Exception:
         _latest = {}
+
+    def _row_belongs_to_claim(row: dict, claim_started: float) -> bool:
+        """True when the ledger row was claimed at/after this in-memory claim.
+
+        The latest terminal row proves THIS claim's run ended only if it was
+        created by this claim's dispatch (create_execution runs moments AFTER
+        try_register_running_job).  A terminal row older than the in-memory
+        claim is the PREVIOUS run's outcome — for a recurring job that is the
+        common case in the window between try_register and create_execution,
+        and releasing on it would double-dispatch a healthy fresh claim.
+        Unparseable timestamps fail closed (row treated as previous-run; the
+        age-based path below still bounds the claim).
+        """
+        claimed_at = row.get("claimed_at")
+        if not claimed_at:
+            return False
+        try:
+            row_ts = datetime.fromisoformat(claimed_at)
+            if row_ts.tzinfo is None:
+                row_ts = row_ts.astimezone()
+            return row_ts.timestamp() >= claim_started
+        except (ValueError, TypeError, OSError):
+            return False
 
     # Precompute job intervals OUTSIDE _running_lock so croniter evaluation
     # does not block try_register/release_running_job for other jobs.
@@ -899,17 +922,24 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             elif fut is not None and not fut.done():
                 continue  # genuinely still executing
             # Persisted-state reconciliation: if the durable executions ledger
-            # shows this job's last run reached a terminal state, the claim is
+            # shows THIS claim's run reached a terminal state, the claim is
             # provably stale even if it is still inside its in-memory age
             # allowance (or was adopted fresh this tick).  Release it now so
             # the job re-dispatches on the next tick without force-run/resume
-            # (t_8b5480b3 — the 2026-08-14 recurring-router wedge that
-            # survived a gateway restart because the in-memory age bound alone
-            # could not see a run the ledger had already finished).
+            # (t_8b5480b3 — the 2026-08-14 recurring-router wedge where the
+            # in-memory age bound alone could not see a run the ledger had
+            # already finished).  The row must belong to THIS claim
+            # (claimed_at >= claim registration): for a recurring job the
+            # latest terminal row is usually the PREVIOUS run's outcome —
+            # a fresh claim in the try_register→create_execution window, or a
+            # finished run whose worker finally hasn't released yet, would
+            # otherwise be force-released and double-dispatched.
             if fut is None or fut is _FUTURE_PENDING or fut.done():
                 latest = _latest.get(job_id)
-                if latest is not None and latest.get("status") in (
-                    "completed", "failed", "unknown",
+                if (
+                    latest is not None
+                    and latest.get("status") in ("completed", "failed", "unknown")
+                    and _row_belongs_to_claim(latest, started)
                 ):
                     _running_job_ids.discard(job_id)
                     _running_since.pop(job_id, None)

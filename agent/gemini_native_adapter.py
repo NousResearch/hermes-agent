@@ -660,7 +660,7 @@ def _candidate_finish_reason(response: dict[str, Any], candidate: dict[str, Any]
     if not isinstance(reason, str) or reason not in _FINISH_REASON_MAP:
         raise GeminiAPIError("Gemini response has no supported completion reason", code="gemini_invalid_response", details=details)
     verdict = _FINISH_REASON_MAP[reason]
-    return "tool_calls" if has_tools and verdict != "content_filter" else verdict
+    return "tool_calls" if has_tools and reason == "STOP" else verdict
 
 
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:

@@ -200,6 +200,13 @@ def _read_manual_queue(stream: str) -> list[dict]:
     for obj in objs:
         if (obj.get("title_hint") or "").strip().lower() in _PLACEHOLDER_TITLES:
             continue
+        editorial_brief = {
+            key: obj.get(key, "")
+            for key in (
+                "post_thesis", "concrete_takeaway", "evidence_anchor",
+                "gap_claim", "stream_format_rationale",
+            )
+        }
         out.append({
             "topic_id": obj.get("topic_id", ""),
             "title_hint": obj.get("title_hint", ""),
@@ -211,6 +218,7 @@ def _read_manual_queue(stream: str) -> list[dict]:
                 "priority": obj.get("priority", 5),
             }],
             "priority": obj.get("priority", 5),
+            "editorial_brief": editorial_brief,
         })
     return out
 
@@ -265,6 +273,7 @@ def choose(stream: str) -> Optional[dict]:
         "signals": top.get("signals", []),
         "domain": domain,
         "format": "blueprint" if domain else "essay",
+        "editorial_brief": top.get("editorial_brief", {}),
     }
 
 

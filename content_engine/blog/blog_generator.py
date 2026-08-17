@@ -88,6 +88,20 @@ _DEPTH_CONTRACT = (
 )
 
 
+def _editorial_brief(plan: dict) -> str:
+    """Render an approved idea's purpose fields for every writing format."""
+    brief = plan.get("editorial_brief") or {}
+    labels = (
+        ("Post thesis", "post_thesis"),
+        ("Concrete takeaway", "concrete_takeaway"),
+        ("Evidence anchor", "evidence_anchor"),
+        ("Gap claim", "gap_claim"),
+        ("Stream and format rationale", "stream_format_rationale"),
+    )
+    lines = [f"- {label}: {brief[key]}" for label, key in labels if brief.get(key)]
+    return "\n".join(lines) or "(no approved editorial brief)"
+
+
 def build_blog_prompt(stream: str, plan: dict, context_blob: str,
                       kb_snippets: list[str],
                       wiki_entries: Optional[list[dict]] = None,
@@ -180,6 +194,8 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
         f"Title hint: {title_hint}" if title_hint else "",
         "## Chosen signals", signal_lines,
         "",
+        "## Approved editorial brief (honour this contract)", _editorial_brief(plan),
+        "",
         "## Real context (ground the article in this; quote numbers and "
         "tool names verbatim where they help)", context_blob or "(none)",
         "",
@@ -267,6 +283,8 @@ def build_blueprint_prompt(stream: str, plan: dict, context_blob: str,
         f"Title hint: {title_hint}" if title_hint else "",
         "## Chosen signals", signal_lines,
         "",
+        "## Approved editorial brief (honour this contract)", _editorial_brief(plan),
+        "",
         "## Real context", context_blob or "(none)",
         "",
         "## Author's prior takes", takes,
@@ -337,6 +355,8 @@ def _framework_prompt_builder(stream: str, plan: dict, context_blob: str,
 
     user = "\n".join([
         f"Framework seed: {title_hint}" if title_hint else "",
+        "## Approved editorial brief (honour this contract)", _editorial_brief(plan),
+        "",
         "## Context", context_blob or "(none)",
         "",
         "Write the framework post. Name it, define the levels, include the diagram.",

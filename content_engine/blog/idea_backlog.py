@@ -11,10 +11,13 @@ can approve (→ move to the per-stream content backlog for generation) or rejec
 Design:
 - One JSONL append-only store, one record per idea concept.
 - Fields: id, title, concept (why it matters / what to build), angles (list),
-  stream (ai|pm|builder), source (paper id / PR / digest item), created_at,
-  status (pending|approved|rejected|generated), decided_at.
+  stream (ai|pm|builder), source (paper id / PR / digest item), post_thesis,
+  concrete_takeaway, evidence_anchor, gap_claim, stream_format_rationale,
+  created_at, status (pending|approved|rejected|generated), decided_at.
 - CLI (used by the synthesis cron):
-    add        --title --concept --angle "..." --stream --source
+    add        --title --concept --post-thesis --concrete-takeaway
+               --evidence-anchor --gap-claim --stream-format-rationale
+               [--angle "..."] [--stream] [--source]
     approve    <id>      # move into the per-stream backlog (blog_router topic)
     reject     <id>
     list       [--status pending]
@@ -37,8 +40,15 @@ from typing import Optional
 
 STORE_PATH = Path.home() / ".hermes" / "research" / "idea-backlog.jsonl"
 BLOG_TOPICS_DIR = Path(__file__).resolve().parent.parent / "blog_topics"
-BACKLOG_DIR = BLOG_TOPICS_DIR / "backlog"          # per-stream topic queues
-ALLOWED_STREAMS = ("ai", "pm", "builder", "x", "linkedin")
+# This backlog feeds SahilBlog. Social-only ideas stay in their own pipeline.
+ALLOWED_STREAMS = ("ai", "pm", "builder")
+REQUIRED_PURPOSE_FIELDS = (
+    "post_thesis",
+    "concrete_takeaway",
+    "evidence_anchor",
+    "gap_claim",
+    "stream_format_rationale",
+)
 
 
 # ── Store ────────────────────────────────────────────────────────────────────
@@ -71,8 +81,27 @@ def _fingerprint(title: str, source: str = "") -> str:
 
 
 def add(title: str, concept: str, angles: Optional[list[str]] = None,
-        stream: str = "ai", source: str = "", status: str = "pending") -> dict:
-    """Append one idea concept, deduped by (source,title) fingerprint."""
+        stream: str = "ai", source: str = "", status: str = "pending", *,
+        post_thesis: str = "", concrete_takeaway: str = "",
+        evidence_anchor: str = "", gap_claim: str = "",
+        stream_format_rationale: str = "") -> dict:
+    """Append one purpose-led idea, deduped by (source,title) fingerprint.
+
+    New intake is deliberately fail-closed: each purpose field must contain
+    local, non-whitespace text. This validates completeness only; it performs
+    no semantic-similarity check and makes no model call.
+    """
+    purpose_fields = {
+        "post_thesis": post_thesis,
+        "concrete_takeaway": concrete_takeaway,
+        "evidence_anchor": evidence_anchor,
+        "gap_claim": gap_claim,
+        "stream_format_rationale": stream_format_rationale,
+    }
+    missing = [field for field in REQUIRED_PURPOSE_FIELDS
+               if not isinstance(purpose_fields[field], str) or not purpose_fields[field].strip()]
+    if missing:
+        return {"status": "invalid", "missing_fields": missing}
     records = _read()
     fp = _fingerprint(title, source)
     for r in records:
@@ -86,6 +115,7 @@ def add(title: str, concept: str, angles: Optional[list[str]] = None,
         "angles": angles or [],
         "stream": stream if stream in ALLOWED_STREAMS else "ai",
         "source": source,
+        **purpose_fields,
         "status": status,
         "created_at": datetime.now(UTC).isoformat(),
         "decided_at": None,
@@ -107,13 +137,14 @@ def _set_status(idea_id: str, status: str) -> Optional[dict]:
 
 
 def approve(idea_id: str) -> dict:
-    """Mark an idea approved and enqueue it into the per-stream backlog."""
+    """Mark an idea approved and enqueue it where ``blog_router`` reads it."""
     rec = _set_status(idea_id, "approved")
     if not rec:
         return {"status": "not_found", "id": idea_id}
-    # Append to the stream's backlog queue so blog_router.choose can pick it up.
-    BACKLOG_DIR.mkdir(parents=True, exist_ok=True)
-    q = BACKLOG_DIR / f"{rec['stream']}.jsonl"
+    # ``blog_router._manual_queue_path`` reads BLOG_TOPICS_DIR/<stream>.jsonl.
+    # Do not route approved ideas through the legacy blog_topics/backlog path.
+    BLOG_TOPICS_DIR.mkdir(parents=True, exist_ok=True)
+    q = BLOG_TOPICS_DIR / f"{rec['stream']}.jsonl"
     entry = {
         "topic_id": rec["id"],
         "title_hint": rec["title"],
@@ -121,6 +152,12 @@ def approve(idea_id: str) -> dict:
         "source": rec.get("source", ""),
         "concept": rec.get("concept", ""),
         "angles": rec.get("angles", []),
+        "post_thesis": rec.get("post_thesis", ""),
+        "concrete_takeaway": rec.get("concrete_takeaway", ""),
+        "evidence_anchor": rec.get("evidence_anchor", ""),
+        "gap_claim": rec.get("gap_claim", ""),
+        "stream_format_rationale": rec.get("stream_format_rationale", ""),
+        "priority": 9,
         "approved_at": datetime.now(UTC).isoformat(),
     }
     with open(q, "a", encoding="utf-8") as f:
@@ -180,6 +217,11 @@ def _cli() -> int:
     a.add_argument("--angle", action="append", default=[])
     a.add_argument("--stream", default="ai")
     a.add_argument("--source", default="")
+    a.add_argument("--post-thesis", required=True)
+    a.add_argument("--concrete-takeaway", required=True)
+    a.add_argument("--evidence-anchor", required=True)
+    a.add_argument("--gap-claim", required=True)
+    a.add_argument("--stream-format-rationale", required=True)
 
     ap = sub.add_parser("approve"); ap.add_argument("id")
     rj = sub.add_parser("reject"); rj.add_argument("id")
@@ -187,7 +229,14 @@ def _cli() -> int:
 
     args = p.parse_args()
     if args.cmd == "add":
-        print(json.dumps(add(args.title, args.concept, args.angle, args.stream, args.source)))
+        print(json.dumps(add(
+            args.title, args.concept, args.angle, args.stream, args.source,
+            post_thesis=args.post_thesis,
+            concrete_takeaway=args.concrete_takeaway,
+            evidence_anchor=args.evidence_anchor,
+            gap_claim=args.gap_claim,
+            stream_format_rationale=args.stream_format_rationale,
+        )))
     elif args.cmd == "approve":
         print(json.dumps(approve(args.id)))
     elif args.cmd == "reject":

@@ -125,6 +125,8 @@ def test_gather_candidates_builder_uses_activity_collector(monkeypatch):
         "signals": [{"signal_id": "gh1", "summary": "push", "priority": 8,
                      "pillar": "agent_build_notes"}],
     })
+    queued = [_fake_topic("queued-builder", priority=9, summary="approved builder idea")]
+    monkeypatch.setattr(br, "_read_manual_queue", lambda stream: queued if stream == "builder" else [])
     cands = br._gather_candidates("builder")
     ids = {c["topic_id"] for c in cands}
     # Framework seeds present.
@@ -132,7 +134,7 @@ def test_gather_candidates_builder_uses_activity_collector(monkeypatch):
     # Builder's own backlog queue (builder.jsonl) is now wired in. Do not rely
     # on a topic-id prefix: curated builder backlog items can come from research
     # synthesis, repo activity, or manual queue sources.
-    builder_queue_ids = {c["topic_id"] for c in br._read_manual_queue("builder")}
+    builder_queue_ids = {c["topic_id"] for c in queued}
     assert ids & builder_queue_ids, "Builder queue should be present"
     # The activity signal is still present.
     assert "gh1" in ids, "Activity signal should still be present"
@@ -156,3 +158,26 @@ def test_manual_queue_skips_placeholder_stubs(tmp_path, monkeypatch):
     out = br._read_manual_queue("ai")
     ids = {c["topic_id"] for c in out}
     assert ids == {"real-1"}, f"placeholders should be skipped, got {ids}"
+
+
+def test_manual_queue_preserves_approved_idea_editorial_brief(tmp_path, monkeypatch):
+    """Purpose-led fields survive queue ingestion into the generation plan."""
+    qf = tmp_path / "ai.jsonl"
+    qf.write_text(
+        '{"topic_id":"idea-1","title_hint":"A real topic","priority":9,'
+        '"post_thesis":"The thesis","concrete_takeaway":"Do this",'
+        '"evidence_anchor":"PR #42","gap_claim":"Different angle",'
+        '"stream_format_rationale":"AI essay"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(br, "_manual_queue_path", lambda stream: qf)
+    monkeypatch.setattr(br, "_recent_used", lambda stream: [])
+    monkeypatch.setattr(br, "_gather_framework_candidates", lambda: [])
+    out = br.choose("ai")
+    assert out["editorial_brief"] == {
+        "post_thesis": "The thesis",
+        "concrete_takeaway": "Do this",
+        "evidence_anchor": "PR #42",
+        "gap_claim": "Different angle",
+        "stream_format_rationale": "AI essay",
+    }

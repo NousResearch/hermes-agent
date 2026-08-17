@@ -613,7 +613,16 @@ class GatewayKanbanWatchersMixin:
                             # first-class review lane. Wake the origin thread.
                             handoff = ""
                             if ev.payload and ev.payload.get("summary"):
-                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                                summary = str(ev.payload["summary"])
+                                handoff = f"\n{summary[:200]}"
+                                # Carry the worker's handoff into the wake turn
+                                # like ``completed`` does: a reviewer woken with
+                                # a bare "ready for review" has to re-read the
+                                # board to learn what was implemented.
+                                lines = summary.strip().splitlines()
+                                wake_handoff = (
+                                    lines[0][:200] if lines else summary[:200]
+                                )
                             msg = (
                                 f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
                                 f" — {title}{handoff}"

@@ -640,7 +640,11 @@ def _wake_text(adapter):
     return getattr(adapter.handled[0], "text", "") or ""
 
 
-def _review_handoff_task(*, delivery_mode="notify+wake"):
+def _review_handoff_task(
+    *,
+    delivery_mode="notify+wake",
+    summary="PR ready: https://example.invalid/pr/7\nfull details below",
+):
     conn = kb.connect()
     try:
         tid = kb.create_task(
@@ -660,7 +664,7 @@ def _review_handoff_task(*, delivery_mode="notify+wake"):
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
         assert kb.request_review(
-            conn, tid, summary="implementation done", expected_run_id=run_id,
+            conn, tid, summary=summary, expected_run_id=run_id,
         ) is True
         return tid
     finally:
@@ -668,7 +672,7 @@ def _review_handoff_task(*, delivery_mode="notify+wake"):
 
 
 def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
-    """A review handoff wakes the origin on top of the passive ping."""
+    """A review handoff wakes the origin and carries the worker's summary."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "review-wake.db"))
     kb.init_db()
     tid = _review_handoff_task()
@@ -679,7 +683,13 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
 
     assert len(adapter.sent) == 1, "the passive review ping is unchanged"
     assert "ready for review" in adapter.sent[0]["text"]
-    assert tid in _wake_text(adapter)
+
+    wake = _wake_text(adapter)
+    assert tid in wake
+    assert "PR ready: https://example.invalid/pr/7" in wake, (
+        "the worker's handoff must ride the wake turn like it does for "
+        "`completed`, otherwise the woken reviewer has to re-read the board"
+    )
 
 
 def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):

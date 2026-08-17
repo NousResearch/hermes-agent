@@ -1015,7 +1015,16 @@ _WINDOWS_BASH_SHELL_HINT = (
     "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
     "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`)."
+    "POSIX equivalents (`ls`, `$FOO`, `grep`).\n\n"
+    "Shell redirection safety: never use cmd.exe null-device syntax under "
+    "this bash/MSYS shell. Do NOT emit `2>nul`, `>nul`, or `1>nul` — bash "
+    "treats `nul` as an ordinary relative filename and will create a real "
+    "file named `nul` (a Windows reserved device name), which can break "
+    "backups and other Windows tools. Use POSIX null redirection instead: "
+    "`2>/dev/null`, `>/dev/null`. cmd.exe syntax (`>nul`, `2>nul`) is only "
+    "valid inside a confirmed cmd.exe/.bat script — never copy it blindly "
+    "between shells. Also avoid creating files/directories named Windows "
+    "reserved device names: NUL, CON, PRN, AUX, COM1-COM9, LPT1-LPT9."
 )
 
 

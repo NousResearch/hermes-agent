@@ -921,3 +921,61 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+# =========================================================================
+# Shell redirection safety (Windows bash / MSYS != cmd.exe)
+# =========================================================================
+
+
+class TestShellRedirectionSafety:
+    """The agent must never casually emit cmd.exe `2>nul` under bash/MSYS.
+
+    Regression guard for a production incident where `2>nul` under Git Bash
+    created a real Windows reserved-name file `nul`, which broke unattended
+    backups. The rule lives in `_WINDOWS_BASH_SHELL_HINT` and must reach the
+    agent's system prompt on native Windows.
+    """
+
+    def test_hint_prohibits_cmd_nul_redirection(self):
+        from agent.prompt_builder import _WINDOWS_BASH_SHELL_HINT
+        assert "2>nul" in _WINDOWS_BASH_SHELL_HINT
+        assert ">nul" in _WINDOWS_BASH_SHELL_HINT
+        assert "1>nul" in _WINDOWS_BASH_SHELL_HINT
+        # and it points at the POSIX-safe alternative
+        assert "2>/dev/null" in _WINDOWS_BASH_SHELL_HINT
+        assert "/dev/null" in _WINDOWS_BASH_SHELL_HINT
+
+    def test_hint_names_reserved_device_names(self):
+        from agent.prompt_builder import _WINDOWS_BASH_SHELL_HINT
+        for name in ("NUL", "CON", "PRN", "AUX", "COM1", "LPT1"):
+            assert name in _WINDOWS_BASH_SHELL_HINT
+
+    def test_hint_reaches_assembled_prompt_on_native_windows(self, monkeypatch):
+        import sys
+        import agent.prompt_builder as pb
+        from hermes_constants import is_wsl
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(is_wsl, "__call__", lambda: False)
+        # resolve_agent_cwd can raise on some checkouts; the hint must still
+        # appear regardless of cwd resolution.
+        monkeypatch.setattr(
+            pb, "resolve_agent_cwd", staticmethod(lambda: __import__("pathlib").Path.cwd())
+        )
+        hints = pb.build_environment_hints()
+        assert "2>nul" in hints
+        assert "2>/dev/null" in hints
+
+    def test_hint_suppressed_off_windows(self, monkeypatch):
+        import sys
+        import agent.prompt_builder as pb
+        from hermes_constants import is_wsl
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(is_wsl, "__call__", lambda: False)
+        monkeypatch.setattr(
+            pb, "resolve_agent_cwd", staticmethod(lambda: __import__("pathlib").Path.cwd())
+        )
+        hints = pb.build_environment_hints()
+        assert "2>nul" not in hints
+
+

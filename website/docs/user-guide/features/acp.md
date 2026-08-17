@@ -53,7 +53,10 @@ agent:
     - file
 ```
 
-Here `scoped` is the server name under `mcp_servers`. If
+Here `scoped` is the server name under `mcp_servers`; Hermes maps it to
+the internal `mcp-scoped` toolset. An explicit empty ACP list starts with
+no profile-configured tools, but MCP servers supplied by the ACP client for
+that session are still added. If
 `platform_toolsets.acp` is absent, ACP retains its existing default behavior:
 the `hermes-acp` toolset plus globally enabled MCP servers.
 

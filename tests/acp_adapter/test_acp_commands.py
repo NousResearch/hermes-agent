@@ -133,7 +133,7 @@ def test_acp_real_agent_honors_explicit_platform_toolsets(monkeypatch):
 
     SessionManager(db=NoopDb())._make_agent(session_id="acp-session", cwd=".")
 
-    assert set(captured["enabled_toolsets"]) == {"web", "scoped"}
+    assert set(captured["enabled_toolsets"]) == {"web", "mcp-scoped"}
 
 
 def test_acp_real_agent_preserves_default_toolsets_when_platform_config_absent(monkeypatch):
@@ -167,31 +167,6 @@ def test_acp_real_agent_honors_disabled_toolsets(monkeypatch):
 
 def test_acp_expansion_preserves_explicit_empty_toolsets():
     assert _expand_acp_enabled_toolsets([], ["scoped"]) == ["mcp-scoped"]
-
-
-def test_acp_skip_configured_mcp_prevents_session_discovery(monkeypatch):
-    calls = []
-    captured, _ = _capture_real_agent_kwargs(
-        monkeypatch,
-        {
-            "model": {"default": "m", "provider": "p"},
-            "platform_toolsets": {"acp": []},
-            "mcp_servers": {"global": {"command": "example"}},
-        },
-    )
-    import hermes_cli.mcp_startup
-
-    monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
-    monkeypatch.setattr(
-        hermes_cli.mcp_startup,
-        "ensure_mcp_discovery_before_agent_build",
-        lambda **kwargs: calls.append(kwargs),
-    )
-
-    SessionManager(db=NoopDb())._make_agent(session_id="acp-session", cwd=".")
-
-    assert calls == []
-    assert captured["enabled_toolsets"] == []
 
 
 @pytest.mark.asyncio

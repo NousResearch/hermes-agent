@@ -2039,8 +2039,8 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
                 bedrock_cfg.get("region") or ""
             ).strip():
                 return True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed checking keyless provider explicit config for %s: %s", provider_id, exc)
 
     return False
 

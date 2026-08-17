@@ -95,6 +95,34 @@ def test_vertex_ambient_google_creds_env_does_not_count_as_explicit(tmp_path, mo
     assert is_provider_explicitly_configured("vertex") is False
 
 
+def test_vertex_credentials_path_must_be_readable_file(tmp_path, monkeypatch):
+    """VERTEX_CREDENTIALS_PATH must point to an actual readable file, not a directory
+    or non-existent path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("VERTEX_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    _write_config(tmp_path, {"model": {"provider": "anthropic", "default": "claude-opus-4-8"}})
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "active_provider": None})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    # Valid readable file -> True
+    sa_file = tmp_path / "vertex_sa.json"
+    sa_file.write_text("{}")
+    monkeypatch.setenv("VERTEX_CREDENTIALS_PATH", str(sa_file))
+    assert is_provider_explicitly_configured("vertex") is True
+
+    # Directory -> False
+    sa_dir = tmp_path / "vertex_dir"
+    sa_dir.mkdir()
+    monkeypatch.setenv("VERTEX_CREDENTIALS_PATH", str(sa_dir))
+    assert is_provider_explicitly_configured("vertex") is False
+
+    # Non-existent file -> False
+    monkeypatch.setenv("VERTEX_CREDENTIALS_PATH", str(tmp_path / "nonexistent.json"))
+    assert is_provider_explicitly_configured("vertex") is False
+
+
 def test_bedrock_region_counts_as_explicit(tmp_path, monkeypatch):
     """Bedrock (AWS SDK auth, no API key) is explicitly configured once the
     user pins a region in config.yaml, mirroring the Vertex keyless case."""

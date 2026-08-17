@@ -246,6 +246,6 @@ def has_explicit_vertex_config() -> bool:
     if _resolve_project_override():
         return True
     sa_path = _get_secret("VERTEX_CREDENTIALS_PATH")
-    if sa_path and os.path.exists(sa_path):
+    if sa_path and os.path.isfile(sa_path) and os.access(sa_path, os.R_OK):
         return True
     return False

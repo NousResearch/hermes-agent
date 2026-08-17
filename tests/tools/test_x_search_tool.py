@@ -213,7 +213,7 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
 
     _no_xai_env(monkeypatch)
 
-    def _fake_resolve():
+    def _fake_resolve(**_kwargs):
         return {
             "provider": "xai-oauth",
             "api_key": "oauth-bearer-token",
@@ -249,7 +249,7 @@ def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
 
     _no_xai_env(monkeypatch)
 
-    def _fake_resolve():
+    def _fake_resolve(**_kwargs):
         return {
             "provider": "xai",
             "api_key": "",
@@ -318,35 +318,59 @@ def _xcred(prefix: str) -> str:
     return prefix + "-key-" + "x1"
 
 
+def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
+    """Make the shared resolver's OAuth branch yield ``oauth_token``.
+
+    Patches ``agent.credential_pool.load_pool`` (the seam
+    ``resolve_xai_http_credentials`` imports at call time). Any pool key
+    other than ``xai-oauth`` raises so ``resolve_provider_secret``'s
+    credential-pool fallback can't accidentally surface the OAuth bearer
+    as an "explicit key".
+    """
+    from types import SimpleNamespace
+
+    entry = SimpleNamespace(
+        access_token=oauth_token,
+        runtime_api_key=None,
+        runtime_base_url=None,
+        base_url="https://api.x.ai/v1",
+    )
+
+    class _FakePool:
+        def select(self):
+            return entry
+
+        def try_refresh_matching(self, _hint):
+            return entry
+
+    def _fake_load_pool(provider_id):
+        if provider_id == "xai-oauth":
+            return _FakePool()
+        raise KeyError(provider_id)
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", _fake_load_pool)
+
+
 def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
     """#88040: with a paid XAI_API_KEY configured alongside subscription
     OAuth, x_search must use the API key — the OAuth path authorizes but
     answers /v1/responses in a degraded Grok explanatory mode with no
-    citations. Same prefer-API-key shape as the TTS fix (#87045/#87081)."""
+    citations. Same prefer-API-key root cause as the TTS fix (#87045/#87081);
+    the precedence lives in the shared resolver behind ``prefer_api_key``."""
     from tools.registry import invalidate_check_fn_cache
     from tools.x_search_tool import x_search_tool
 
     paid_key = _xcred("paid")
     oauth_token = _xcred("oauth")
 
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "tools.xai_http.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": paid_key,
-            "XAI_BASE_URL": None,
         }.get(name, default),
     )
-
-    def _fake_resolve():
-        return {
-            "provider": "xai-oauth",
-            "api_key": oauth_token,
-            "base_url": "https://api.x.ai/v1",
-        }
-
-    monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
-    )
+    _install_fake_oauth_pool(monkeypatch, oauth_token)
     invalidate_check_fn_cache()
 
     captured = {}
@@ -365,26 +389,17 @@ def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
 
 
 def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch):
-    """No explicit XAI_API_KEY: the OAuth-first resolver path is unchanged."""
+    """No explicit XAI_API_KEY: the OAuth resolver path is unchanged."""
     from tools.x_search_tool import _resolve_xai_bearer
 
     oauth_token = _xcred("oauth")
 
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "tools.xai_http.get_env_value",
         lambda name, default=None: default,
     )
-
-    def _fake_resolve():
-        return {
-            "provider": "xai-oauth",
-            "api_key": oauth_token,
-            "base_url": "https://api.x.ai/v1",
-        }
-
-    monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
-    )
+    _install_fake_oauth_pool(monkeypatch, oauth_token)
 
     api_key, base_url, source = _resolve_xai_bearer()
     assert (api_key, base_url, source) == (
@@ -392,4 +407,28 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
         "https://api.x.ai/v1",
         "xai-oauth",
     )
+
+
+def test_x_search_bearer_requests_prefer_api_key_from_shared_resolver(monkeypatch):
+    """The x_search call site must opt into the shared resolver's
+    ``prefer_api_key`` precedence rather than re-implementing it inline."""
+    from tools.x_search_tool import _resolve_xai_bearer
+
+    captured = {}
+
+    def _fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "xai",
+            "api_key": _xcred("paid"),
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+    )
+
+    _api_key, _base_url, source = _resolve_xai_bearer()
+    assert captured.get("prefer_api_key") is True
+    assert source == "xai"
 

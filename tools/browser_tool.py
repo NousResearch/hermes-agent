@@ -724,6 +724,69 @@ def _pinned_cdp_target_id(task_id: str) -> Optional[str]:
     return None
 
 
+def _close_shared_cdp_target_confirmed(cdp_url: str, target_id: str) -> bool:
+    """Close one shared-CDP target and verify that exact ID disappeared.
+
+    ``agent-browser tab close`` is not authoritative: agent-browser v0.34.0
+    removes the target from its own local list before it sends
+    ``Target.closeTarget`` and ignores that CDP call's error.  Hermes therefore
+    performs the destructive operation at browser level and checks the browser's
+    target list before releasing ownership metadata.  A transport or protocol
+    error is only accepted when a follow-up target list proves that this exact
+    target is gone; otherwise the caller must retain the session for retry.
+    """
+    target_id = str(target_id or "").strip()
+    cdp_url = str(cdp_url or "").strip()
+    if not target_id or not cdp_url:
+        return False
+    try:
+        from tools.browser_cdp_tool import _cdp_call, _run_async
+    except Exception:
+        return False
+
+    def _targets() -> Optional[list[dict[str, Any]]]:
+        try:
+            result = _run_async(
+                _cdp_call(cdp_url, "Target.getTargets", {}, None, 10.0)
+            )
+            raw = result.get("targetInfos", [])
+            return raw if isinstance(raw, list) else None
+        except Exception as exc:
+            logger.debug("Could not verify shared-CDP target %s: %s", target_id, exc)
+            return None
+
+    try:
+        _run_async(
+            _cdp_call(
+                cdp_url,
+                "Target.closeTarget",
+                {"targetId": target_id},
+                None,
+                10.0,
+            )
+        )
+    except Exception as exc:
+        # The close response may have been lost after Chrome performed the
+        # operation.  Exact absence is enough to prove ownership was released;
+        # anything else remains ambiguous and must be retried.
+        logger.debug("Shared-CDP close for target %s was uncertain: %s", target_id, exc)
+
+    deadline = time.monotonic() + 2.0
+    while True:
+        targets = _targets()
+        if targets is not None:
+            if not any(
+                isinstance(target, dict) and target.get("targetId") == target_id
+                for target in targets
+            ):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+        elif time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 # ============================================================================
 # Cloud Provider Registry
 # ============================================================================
@@ -2159,6 +2222,31 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _write_shared_cdp_endpoint(
+    socket_dir: str,
+    session_name: str,
+    cdp_url: str,
+) -> None:
+    """Persist the browser-level endpoint needed for exact orphan cleanup.
+
+    The endpoint may contain authentication material, so the file is created
+    with mode 0600 inside the already private per-session socket directory.
+    Failure is safe: the orphan reaper will preserve the daemon and target
+    metadata rather than falling back to ambiguous tab discovery.
+    """
+    cdp_url = str(cdp_url or "").strip()
+    if not cdp_url:
+        return
+    path = os.path.join(socket_dir, f"{session_name}.cdp_endpoint")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(cdp_url)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.debug("Could not persist shared-CDP endpoint for %s: %s", session_name, exc)
+
+
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
                                     session_name: str) -> bool:
     """Confirm a live PID is genuinely *this* session's agent-browser daemon.
@@ -2319,7 +2407,7 @@ def _orphan_has_pinned_target(socket_dir: str, session_name: str) -> bool:
 
 
 def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
-    """Ask the live pinned daemon to close only its recorded target.
+    """Close an orphan's recorded target through its persisted CDP endpoint.
 
     No target discovery is performed. If the exact close cannot be confirmed,
     return False so the caller preserves both daemon and ownership metadata for
@@ -2330,49 +2418,18 @@ def _close_orphaned_pinned_target(socket_dir: str, session_name: str) -> bool:
     exact-close path.
     """
     try:
-        browser_cmd = _find_agent_browser(require_pin_tab=True)
-    except (AgentBrowserCapabilityError, FileNotFoundError):
-        return False
-    if _is_npx_agent_browser_sentinel(browser_cmd):
-        # Orphan cleanup must not download code in the background. A concrete
-        # compatible CLI can retry on a later sweep.
-        return False
-
-    env = _build_browser_env()
-    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
-    env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
-    try:
-        result = subprocess.run(
-            [
-                browser_cmd,
-                "--session",
-                session_name,
-                "--pin-tab",
-                "--json",
-                "tab",
-                "close",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            env=env,
-            creationflags=windows_hide_flags(),
-            check=False,
+        target_payload = json.loads(
+            (Path(socket_dir) / f"{session_name}.target").read_text(encoding="utf-8")
         )
-    except (OSError, subprocess.SubprocessError, ValueError):
+        target_id = target_payload.get("targetId") if isinstance(target_payload, dict) else None
+        cdp_url = (
+            Path(socket_dir) / f"{session_name}.cdp_endpoint"
+        ).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError, TypeError):
         return False
-    if not result.stdout.strip():
+    if not isinstance(target_id, str) or not target_id.strip() or not cdp_url:
         return False
-    try:
-        payload = json.loads(result.stdout.strip().splitlines()[-1])
-    except (ValueError, TypeError):
-        return False
-    return bool(payload.get("success")) or payload.get("code") in {
-        "tab_gone",
-        "already_gone",
-    }
+    return _close_shared_cdp_target_confirmed(cdp_url, target_id.strip())
 
 
 def _reap_orphaned_browser_sessions():
@@ -2484,29 +2541,25 @@ def _reap_orphaned_browser_sessions():
             )
             continue
         pinned_target_owned = target_ownership is OrphanTargetOwnership.PINNED
+        if pinned_target_owned and not _close_orphaned_pinned_target(
+            socket_dir, session_name
+        ):
+            logger.warning(
+                "Could not confirm exact pinned target close for orphaned session %s; "
+                "retaining daemon and ownership metadata for retry",
+                session_name,
+            )
+            continue
+
         pid_file = os.path.join(socket_dir, f"{session_name}.pid")
         if not os.path.isfile(pid_file):
-            if pinned_target_owned:
-                logger.warning(
-                    "Orphaned pinned target metadata for session %s has no daemon PID; "
-                    "retaining ownership record for manual recovery",
-                    session_name,
-                )
-                continue
-            # No daemon PID or pinned ownership — just a stale dir, remove it.
+            # Exact target ownership is either absent or already released.
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
         try:
             daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
-            if pinned_target_owned:
-                logger.warning(
-                    "Orphaned pinned target metadata for session %s has an unreadable "
-                    "daemon PID; retaining ownership record",
-                    session_name,
-                )
-                continue
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
@@ -2514,13 +2567,6 @@ def _reap_orphaned_browser_sessions():
         # is NOT a no-op — use the handle-based existence check.
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
-            if pinned_target_owned:
-                logger.warning(
-                    "Pinned target owner daemon for session %s is gone; retaining "
-                    "the exact target ownership record",
-                    session_name,
-                )
-                continue
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
 
@@ -2533,16 +2579,6 @@ def _reap_orphaned_browser_sessions():
         # process DoS in issue #14073.
         if not _verify_reapable_browser_daemon(
                 daemon_pid, socket_dir, session_name):
-            continue
-
-        if pinned_target_owned and not _close_orphaned_pinned_target(
-            socket_dir, session_name
-        ):
-            logger.warning(
-                "Could not confirm exact pinned target close for orphaned session %s; "
-                "retaining daemon and ownership metadata for retry",
-                session_name,
-            )
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
@@ -3788,6 +3824,12 @@ def _run_browser_command(
         # Record this hermes PID as the session owner (cross-process safe
         # orphan detection — see _write_owner_pid).
         _write_owner_pid(task_socket_dir, session_info['session_name'])
+        if task_owned_shared_cdp:
+            _write_shared_cdp_endpoint(
+                task_socket_dir,
+                session_info["session_name"],
+                str(session_info.get("cdp_url") or ""),
+            )
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
@@ -4364,6 +4406,12 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         if _is_task_owned_shared_cdp_session(session_info):
             pinned_target_id = _pinned_cdp_target_id(nav_session_key)
             if pinned_target_id:
+                # Keep the opaque target ID in Hermes-owned state. Cleanup must
+                # never rediscover a page by URL or active-tab position.
+                with _cleanup_lock:
+                    current_session = _active_sessions.get(nav_session_key)
+                    if isinstance(current_session, dict) and current_session is session_info:
+                        current_session["target_id"] = pinned_target_id
                 _ensure_cdp_supervisor(
                     nav_session_key,
                     target_id=pinned_target_id,
@@ -6153,8 +6201,28 @@ def _cleanup_single_browser_session(
     task_id: str,
 ) -> bool:
     """Internal: reap a single browser session by its exact session key."""
-    # Stop the CDP supervisor for this task FIRST so we close our WebSocket
-    # before the backend tears down the underlying CDP endpoint.
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id)
+
+    # An owned shared-CDP page must be closed through the browser-level CDP
+    # endpoint and verified by exact target ID before any local ownership is
+    # removed. Do this before stopping the supervisor; it may be the only live
+    # connection available for a reliable close.
+    task_owned_shared_cdp = bool(
+        session_info and _is_task_owned_shared_cdp_session(session_info)
+    )
+    if task_owned_shared_cdp and session_info:
+        target_id = str(session_info.get("target_id") or "").strip()
+        cdp_url = str(session_info.get("cdp_url") or _get_cdp_override()).strip()
+        if not target_id or not _close_shared_cdp_target_confirmed(cdp_url, target_id):
+            logger.warning(
+                "Exact shared-CDP target close could not be confirmed for task %s; "
+                "retaining session ownership for retry",
+                task_id,
+            )
+            return False
+
+    # Stop the CDP supervisor only after the exact target is gone.
     _stop_cdp_supervisor(task_id)
 
     # Also clean up Camofox session if running in Camofox mode.
@@ -6193,33 +6261,10 @@ def _cleanup_single_browser_session(
                 task_id,
             )
         else:
-            task_owned_shared_cdp = _is_task_owned_shared_cdp_session(session_info)
-            tab_close_terminal = not task_owned_shared_cdp
             try:
-                # ``agent-browser close`` disconnects the named session but
-                # does not close its page in an externally-owned shared CDP
-                # browser. Close the pinned tab first so completed tasks do
-                # not leak pages; pinning makes this fail closed if the target
-                # was already removed.
-                if task_owned_shared_cdp:
-                    tab_close_result = _run_browser_command(
-                        task_id,
-                        "tab",
-                        ["close"],
-                        timeout=10,
-                        _allow_cleanup=True,
-                    )
-                    tab_close_terminal = tab_close_result.get("success") or (
-                        tab_close_result.get("code") in {"tab_gone", "already_gone"}
-                    )
-                    if not tab_close_terminal:
-                        logger.warning(
-                            "Pinned browser tab close failed for task %s; "
-                            "retaining session ownership for retry: %s",
-                            task_id,
-                            tab_close_result.get("error", tab_close_result),
-                        )
-                        return False
+                # For shared-CDP sessions, the real page was already closed and
+                # verified above. This command only disconnects the named local
+                # agent-browser session; it must not perform another tab close.
                 close_result = _run_browser_command(
                     task_id,
                     "close",
@@ -6239,8 +6284,6 @@ def _cleanup_single_browser_session(
                 )
             except Exception as e:
                 logger.warning("agent-browser close failed for task %s: %s", task_id, e)
-                if not tab_close_terminal:
-                    return False
 
         # Page/target ownership is now gone (or provider-authoritative close
         # below will release it). Remove it independently from provider API

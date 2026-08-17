@@ -359,6 +359,11 @@ def test_failed_restart_blanking_and_exact_close_stays_fail_closed(monkeypatch):
     monkeypatch.setattr(bt, "check_website_access", lambda _url: None)
     monkeypatch.setattr(bt, "_pinned_cdp_target_id", lambda _task: "TARGET")
     monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        bt,
+        "_close_shared_cdp_target_confirmed",
+        lambda _cdp_url, _target_id: False,
+    )
 
     command_calls: list[tuple[str, list[str]]] = []
 
@@ -374,8 +379,6 @@ def test_failed_restart_blanking_and_exact_close_stays_fail_closed(monkeypatch):
             }
         if command == "open" and args == ["about:blank"]:
             return {"success": False, "error": "blanking failed"}
-        if command == "tab":
-            return {"success": False, "error": "exact close failed"}
         raise AssertionError((command, args))
 
     monkeypatch.setattr(bt, "_run_browser_command", _command)
@@ -388,7 +391,6 @@ def test_failed_restart_blanking_and_exact_close_stays_fail_closed(monkeypatch):
     assert command_calls == [
         ("open", ["https://example.com"]),
         ("open", ["about:blank"]),
-        ("tab", ["close"]),
     ]
 
     # A new explicit navigation is also rejected until exact rollback cleanup
@@ -575,20 +577,28 @@ def test_headed_turn_retains_local_but_cleans_shared_external_cdp(monkeypatch):
         "session_name": "shared-headed",
         "bb_session_id": None,
         "cdp_url": "ws://shared",
+        "target_id": "TARGET-SHARED",
         "features": {"cdp_override": True},
     }
     bt._active_sessions.update({local_task: local, shared_task: shared})
 
-    with patch.object(
-        bt, "_run_browser_command", return_value={"success": True}
-    ) as command:
+    with (
+        patch.object(
+            bt,
+            "_close_shared_cdp_target_confirmed",
+            return_value=True,
+        ),
+        patch.object(
+            bt, "_run_browser_command", return_value={"success": True}
+        ) as command,
+    ):
         assert bt.cleanup_browser_for_turn(local_task) is True
         assert bt.cleanup_browser_for_turn(shared_task) is True
 
     assert bt._active_sessions[local_task] is local
     assert shared_task not in bt._active_sessions
     assert shared_task in bt._retired_browser_tasks
-    assert command.call_count == 2
+    assert command.call_count == 1
 
 
 def test_hard_cleanup_still_closes_untracked_camofox_task(monkeypatch):

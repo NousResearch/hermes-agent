@@ -6521,6 +6521,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "skip_context_files": getattr(agent, "skip_context_files", False),
+        "skip_memory": getattr(agent, "skip_memory", False),
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),

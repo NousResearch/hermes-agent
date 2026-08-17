@@ -19870,3 +19870,40 @@ def test_make_agent_forwards_isolation_env(monkeypatch):
 
     assert captured["skip_context_files"] is True
     assert captured["skip_memory"] is True
+
+
+def test_background_agent_kwargs_inherits_isolation(monkeypatch):
+    """TUI background turns keep the parent session's isolation contract."""
+    from types import SimpleNamespace
+
+    parent = SimpleNamespace(
+        base_url="u",
+        api_key="k",
+        provider="p",
+        api_mode="m",
+        acp_command=None,
+        acp_args=None,
+        model="m",
+        enabled_toolsets=["terminal"],
+        ephemeral_system_prompt=None,
+        providers_allowed=None,
+        providers_ignored=None,
+        providers_order=None,
+        provider_sort=None,
+        provider_require_parameters=False,
+        provider_data_collection=None,
+        openrouter_min_coding_score=None,
+        reasoning_config=None,
+        service_tier=None,
+        request_overrides={},
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_agent_fallback_model", lambda _agent: None)
+
+    kwargs = server._background_agent_kwargs(parent, "task-1")
+
+    assert kwargs["skip_context_files"] is True
+    assert kwargs["skip_memory"] is True

@@ -2944,6 +2944,13 @@ class APIServerAdapter(BasePlatformAdapter):
             else GatewayRunner._load_reasoning_config(model)
         )
 
+        # Isolation contract: --ignore-rules / --safe-mode (via
+        # HERMES_IGNORE_RULES / HERMES_SAFE_MODE) must apply to API-server
+        # sessions the same way they do for CLI and TUI sessions.
+        from agent.isolation import resolve_agent_isolation
+
+        skip_context_files, skip_memory = resolve_agent_isolation()
+
         agent_kwargs = {
             "model": model,
             **runtime_kwargs,
@@ -2953,6 +2960,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets,
+            "skip_context_files": skip_context_files,
+            "skip_memory": skip_memory,
             "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,

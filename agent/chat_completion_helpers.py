@@ -1890,6 +1890,13 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             )
         )
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
+        from agent.output_verbosity import supports_openai_output_verbosity
+
+        supports_output_verbosity = supports_openai_output_verbosity(
+            agent.model,
+            base_url_hostname=agent._base_url_hostname,
+            is_codex_backend=is_codex_backend,
+        )
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
         # Native server-side compaction (gpt-5.6 on direct OpenAI API /
@@ -1941,6 +1948,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
             output_verbosity=getattr(agent, "output_verbosity", None),
+            supports_output_verbosity=supports_output_verbosity,
             session_id=getattr(agent, "session_id", None),
             cache_scope_id=_cache_scope_id,
             base_url=agent.base_url,

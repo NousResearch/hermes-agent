@@ -139,8 +139,8 @@ DEFAULT_CONFIG = {
             # leaves the budget untouched.
             "cost_threshold_usd": 0.25,
         },
-        # OpenAI Codex Responses API output detail: low, medium, high, or
-        # empty to preserve the provider default. Ignored by other backends.
+        # OpenAI Responses API output detail for GPT-5 models. Empty preserves
+        # the provider default. Applied only to Codex OAuth or api.openai.com.
         "output_verbosity": "",
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the

@@ -1568,8 +1568,9 @@ model-family list and passes your effort through unchanged.
 ### OpenAI Codex output verbosity
 
 Reasoning effort controls how much the model thinks; output verbosity separately
-controls how detailed its final response is. Set `agent.text_verbosity` to
-`low`, `medium`, or `high`:
+controls how detailed its final response is. For supported GPT-5 Responses
+requests on the canonical ChatGPT Codex route or exact `api.openai.com` host,
+set `agent.text_verbosity` to `low`, `medium`, or `high`:
 
 ```yaml
 agent:
@@ -1578,9 +1579,9 @@ agent:
 ```
 
 An empty or omitted value preserves the provider default. Hermes sends this as
-`text.verbosity` only for supported GPT-5 Responses requests on the canonical
-ChatGPT Codex route or exact `api.openai.com` host. It is omitted for custom,
-xAI, GitHub, non-GPT, and chat-completions routes.
+`text.verbosity` only on those routes. It is omitted for custom, xAI, GitHub,
+non-GPT, and chat-completions routes.
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

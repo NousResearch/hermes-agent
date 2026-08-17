@@ -4437,6 +4437,21 @@ def _add_comment_inline(
         return int(cur.lastrowid or 0)
 
 
+def add_comment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str,
+    body: str,
+) -> int:
+    """Public transactional comment API used by CLI and swarm callers."""
+    return _add_comment_inline(
+        conn,
+        task_id,
+        author=author,
+        body=body,
+    )
+
+
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     rows = conn.execute(
         "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
@@ -13579,6 +13594,17 @@ def _dispatch_once_locked(
         )
         artifact_dir = os.path.join(artifact_base, row["id"])
         gate_result = gate_fn(artifact_dir)
+        runtime_result = _validate_pipeline_runtime_state(
+            conn, row["id"], stage, artifact_dir,
+        )
+        if runtime_result:
+            # Canonical task state outranks a self-authored artifact.  While
+            # children are still running, wait passively instead of spawning
+            # a parent worker every dispatcher tick.
+            if runtime_result.startswith("Waiting for child tasks:"):
+                gate_result = runtime_result
+            elif gate_result is None:
+                gate_result = runtime_result
         if gate_result is None:
             # Gate passed — promote to next stage.
             # Audit is special: PASS/CONDITIONAL passes the gate, but
@@ -13605,14 +13631,25 @@ def _dispatch_once_locked(
                         followup_id=new_id,
                     )
             elif stage == "decompose" and not dry_run:
-                child_ids = _create_decompose_child_tasks(
-                    conn, row["id"], artifact_dir,
-                )
-                if child_ids:
-                    _append_event(
-                        conn, row["id"], "decompose_children_created",
-                        {"child_ids": child_ids},
+                try:
+                    _create_decompose_child_tasks(
+                        conn, row["id"], artifact_dir,
                     )
+                except Exception as exc:
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            row["id"],
+                            "gate_failed",
+                            {
+                                "stage": stage,
+                                "reason": f"Child task materialisation failed: {exc}",
+                            },
+                        )
+                    _log.exception(
+                        "Decomposition materialisation failed for %s", row["id"]
+                    )
+                    continue
             next_stage = get_next_stage(stage, mode)
             if not dry_run:
                 with write_txn(conn):
@@ -13721,6 +13758,8 @@ def _dispatch_once_locked(
                         conn, row["id"], "gate_failed",
                         {"stage": stage, "reason": gate_result},
                     )
+            if gate_result.startswith("Waiting for child tasks:"):
+                continue
             if not row["assignee"]:
                 result.skipped_unassigned.append(row["id"])
                 continue
@@ -14277,93 +14316,187 @@ def _create_audit_followup_task(
         return None
 
 
-def _parse_decompose_children(artifact_dir: str) -> list[str]:
-    """Extract child task titles from decompose-output.md's Child Tasks section.
-
-    The artifact is prose, not a structured schema (validate_decompose_artifact
-    only checks marker presence) — this pulls '- '/'* ' bullet lines between
-    the Child Tasks heading and the next section, tolerating the same
-    heading variants the gate accepts.
-    """
-    path = os.path.join(artifact_dir, "decompose-output.md")
-    try:
-        with open(path) as f:
-            content = f.read()
-    except OSError:
+def _decompose_children_event(
+    conn: sqlite3.Connection, parent_id: str,
+) -> list[dict[str, str]]:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'decompose_children_created' ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if not row:
         return []
-    in_section = False
-    titles: list[str] = []
-    for line in content.splitlines():
-        stripped = line.strip()
-        lowered = stripped.lower()
-        if not in_section:
-            if "child tasks" in lowered:
-                in_section = True
-            continue
-        if lowered.startswith("#") or any(
-            marker in lowered for marker in
-            ("acceptance criteria", "test plan", "test strategy", "order:")
-        ):
-            break
-        if stripped.startswith(("-", "*")) and not stripped.startswith("**"):
-            title = stripped.lstrip("-*").strip()
-            if title.startswith("[") and "]" in title:
-                title = title.split("]", 1)[1].strip()
-            if title:
-                titles.append(title)
-    return titles
+    try:
+        payload = json.loads(row[0])
+        children = payload.get("children", [])
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(children, list):
+        return []
+    return [child for child in children if isinstance(child, dict)]
 
 
 def _create_decompose_child_tasks(
     conn: sqlite3.Connection, parent_id: str, artifact_dir: str,
-) -> list[str]:
-    """Create real child kanban tasks from the decompose stage's artifact.
+) -> list[dict[str, str]]:
+    """Materialise the validated decomposition manifest as one task DAG.
 
-    validate_decompose_artifact only checked that decompose-output.md
-    contained a '## Child Tasks' section — it never created task rows, so
-    the pipeline reported decompose as passed with zero child tasks
-    actually existing on the board. Mirrors _create_audit_followup_task's
-    pattern: runs inline in the gate-pass branch of dispatch_once, links
-    children via task_links (through create_task's ``parents=``).
-
-    idempotency_key makes re-running this for the same parent (e.g. a
-    dispatcher retry before the stage transition commits) a no-op instead
-    of spawning duplicates — see #kensei-memory-stack-duplicate-children.
+    The operation is idempotent and all task/link rows are written under one
+    transaction.  Markdown is never parsed into executable state.
     """
-    try:
-        raw_parent = conn.execute(
-            "SELECT id, title, tier FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()
-        if not raw_parent:
-            return []
-        # The connection's row_factory is not guaranteed (dispatcher opens
-        # plain sqlite3.Row-less connections) — index by position, not key.
-        parent_title = raw_parent[1] if len(raw_parent) > 1 else parent_id
-        parent_tier = raw_parent[2] if len(raw_parent) > 2 else None
-        titles = _parse_decompose_children(artifact_dir)
-        new_ids = []
-        for i, title in enumerate(titles):
-            new_id = create_task(
-                conn,
-                title=title,
-                body=(
-                    f"## Problem\nChild task decomposed from {parent_id} "
-                    f"({parent_title}).\n\n"
-                    f"See full decomposition in decompose-output.md under {parent_id}."
-                ),
-                tier=parent_tier,
-                board=None,
-                parents=[parent_id],
-                idempotency_key=f"decompose:{parent_id}:{i}",
+    existing = _decompose_children_event(conn, parent_id)
+    if existing:
+        missing = [
+            child.get("task_id", "") for child in existing
+            if not child.get("task_id") or get_task(conn, child["task_id"]) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "decomposition event references missing task rows: "
+                + ", ".join(missing)
             )
-            new_ids.append(new_id)
-        return new_ids
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).exception(
-            "Failed to create decompose child tasks for %s: %s", parent_id, exc
+        return existing
+
+    raw_parent = conn.execute(
+        "SELECT id, title, tier, project_id FROM tasks WHERE id = ?", (parent_id,)
+    ).fetchone()
+    if not raw_parent:
+        raise ValueError(f"unknown parent task {parent_id}")
+
+    from hermes_cli.feature_pipeline import (
+        _validate_decompose_manifest,
+        load_decompose_manifest,
+    )
+
+    manifest = load_decompose_manifest(artifact_dir)
+    validation_error = _validate_decompose_manifest(manifest)
+    if validation_error:
+        raise ValueError(validation_error)
+    if manifest["parent_task_id"] != parent_id:
+        raise ValueError(
+            "decompose-tasks.json parent_task_id does not match the pipeline task"
         )
-        return []
+
+    parent_title = raw_parent[1]
+    parent_tier = raw_parent[2]
+    parent_project_id = raw_parent[3]
+    pending = {task["key"]: task for task in manifest["tasks"]}
+    ids_by_key: dict[str, str] = {}
+    children: list[dict[str, str]] = []
+
+    with write_txn(conn, allow_nested=True):
+        while pending:
+            progressed = False
+            for key, task in list(pending.items()):
+                dependencies = task["dependencies"]
+                if any(dep not in ids_by_key for dep in dependencies):
+                    continue
+                body = task["body"].rstrip() + (
+                    f"\n\n## Pipeline Context\nParent feature: {parent_id} "
+                    f"({parent_title}).\nTask key: {key}.\n"
+                    f"Shared artifacts: {artifact_dir}.\n"
+                )
+                owner = task["owner"].strip()
+                if not _is_profile_spawnable(owner):
+                    raise ValueError(
+                        f"decompose task {key} owner is not spawnable: {owner}"
+                    )
+                task_id = create_task(
+                    conn,
+                    title=task["title"],
+                    body=body,
+                    assignee=owner,
+                    created_by="feature-pipeline",
+                    workspace_kind=task.get("workspace_kind", "scratch"),
+                    tier=parent_tier,
+                    project_id=(
+                        parent_project_id
+                        if task.get("workspace_kind", "scratch") == "worktree"
+                        else None
+                    ),
+                    project_source_task_id=(
+                        parent_id
+                        if task.get("workspace_kind", "scratch") == "worktree"
+                        else None
+                    ),
+                    parents=[ids_by_key[dep] for dep in dependencies],
+                    idempotency_key=f"decompose:{parent_id}:{key}",
+                    skills=task.get("skills"),
+                )
+                ids_by_key[key] = task_id
+                children.append(
+                    {"key": key, "task_id": task_id, "role": task["role"]}
+                )
+                del pending[key]
+                progressed = True
+            if not progressed:
+                raise RuntimeError("decomposition dependency graph could not be resolved")
+        _append_event(
+            conn,
+            parent_id,
+            "decompose_children_created",
+            {"schema_version": 1, "children": children},
+        )
+    return children
+
+
+def _validate_pipeline_runtime_state(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    stage: str,
+    artifact_dir: str,
+) -> Optional[str]:
+    """Cross-check file evidence against canonical child-task state."""
+    if stage not in {"execute", "pr+qa", "audit"}:
+        return None
+    children = _decompose_children_event(conn, parent_id)
+    if not children:
+        return "Missing materialised decomposition child graph"
+    role = {"execute": "implementation", "pr+qa": "qa", "audit": "audit"}[stage]
+    expected = [child for child in children if child.get("role") == role]
+    if not expected:
+        return f"Materialised decomposition has no {role} tasks"
+    rows = {
+        row["id"]: row["status"]
+        for row in conn.execute(
+            f"SELECT id, status FROM tasks WHERE id IN ({','.join('?' for _ in expected)})",
+            [child["task_id"] for child in expected],
+        ).fetchall()
+    }
+    waiting = [
+        child["key"] for child in expected
+        if rows.get(child["task_id"]) != "done"
+    ]
+    if waiting:
+        return "Waiting for child tasks: " + ", ".join(waiting)
+
+    if stage == "execute":
+        path = os.path.join(artifact_dir, "execution-evidence.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                evidence = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None  # artifact gate reports the precise file error
+        if evidence.get("parent_task_id") != parent_id:
+            return "execution-evidence.json parent_task_id does not match task"
+        actual = {
+            (item.get("key"), item.get("task_id"))
+            for item in evidence.get("children", [])
+            if isinstance(item, dict)
+        }
+        wanted = {(item["key"], item["task_id"]) for item in expected}
+        if actual != wanted:
+            return "execution-evidence.json does not exactly cover implementation children"
+    elif stage == "pr+qa":
+        path = os.path.join(artifact_dir, "pr-qa-evidence.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                evidence = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None  # artifact gate reports the precise file error
+        if evidence.get("parent_task_id") != parent_id:
+            return "pr-qa-evidence.json parent_task_id does not match task"
+    return None
 
 
 def _record_bypass_record(

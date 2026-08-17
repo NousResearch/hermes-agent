@@ -26,6 +26,8 @@ from hermes_cli.kanban_db import (
     get_task,
     promote_task,
     _append_event,
+    _create_decompose_child_tasks,
+    _validate_pipeline_runtime_state,
 )
 from hermes_cli.feature_pipeline import (
     PIPELINE_STAGES,
@@ -199,19 +201,40 @@ def cmd_feature_advance(args: argparse.Namespace) -> int:
                 print(f"Task {task_id} is at the end of the pipeline ({current_stage})", file=sys.stderr)
                 return 1
 
-            # Check gate unless forced
+            artifact_base = os.path.join(
+                os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+                "feature-artifacts",
+            )
+            artifact_dir = os.path.join(artifact_base, task_id)
+            integrity_stages = {"decompose", "execute", "pr+qa", "audit"}
+            if force and current_stage in integrity_stages:
+                print(
+                    f"Stage {current_stage} cannot be force-bypassed; "
+                    "materialised task state and evidence are mandatory",
+                    file=sys.stderr,
+                )
+                return 1
+
+            # Check both artifact and canonical child state unless forced.
             if not force:
                 gate_fn = GATE_FUNCTIONS.get(current_stage)
                 if gate_fn:
-                    artifact_base = os.path.join(
-                        os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
-                        "feature-artifacts",
-                    )
-                    artifact_dir = os.path.join(artifact_base, task_id)
                     gate_result = gate_fn(artifact_dir)
+                    if gate_result is None:
+                        gate_result = _validate_pipeline_runtime_state(
+                            conn, task_id, current_stage, artifact_dir,
+                        )
                     if gate_result is not None:
                         print(f"Gate failed: {gate_result}", file=sys.stderr)
-                        print("Use --force to bypass the gate", file=sys.stderr)
+                        return 1
+                if current_stage == "decompose":
+                    try:
+                        _create_decompose_child_tasks(conn, task_id, artifact_dir)
+                    except Exception as exc:
+                        print(
+                            f"Gate failed: child task materialisation failed: {exc}",
+                            file=sys.stderr,
+                        )
                         return 1
 
             # Advance

@@ -11,8 +11,10 @@ Provides:
 - Presence-check functions for each pipeline stage (intake, research, prd, spec)
 - Pipeline state machine (advance_pipeline, get_pipeline_status)
 """
+import hashlib
 import json
 import os
+import re
 from typing import Optional
 
 
@@ -248,63 +250,277 @@ def validate_tech_review_artifact(artifact_dir: str) -> Optional[str]:
     return _check_body_markers(content, _MARKERS)
 
 
-def validate_decompose_artifact(artifact_dir: str) -> Optional[str]:
-    """Input-presence check: decompose-output.md must exist with child task listing.
+_DECOMPOSE_ROLES = {"implementation", "qa", "audit"}
+_DECOMPOSE_WORKSPACE_KINDS = {"scratch", "worktree", "none"}
 
-    Returns None if present, or a human-readable reason string.
-    Does NOT judge quality; only checks required sections exist.
 
-    The decompose stage breaks the parent task into child tasks, each
-    carrying ## Acceptance Criteria and ## Test Plan (WS-1 contract).
-    This gate verifies the decomposition file was produced and lists
-    at least one child task with both required sections.
+def load_decompose_manifest(artifact_dir: str) -> dict:
+    """Load the executable decomposition contract.
+
+    ``decompose-output.md`` remains the human-readable design.  This JSON
+    sidecar is the machine contract used to create real Kanban tasks; prose is
+    deliberately never parsed into task rows.
     """
+    path = os.path.join(artifact_dir, "decompose-tasks.json")
+    with open(path, encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("decompose-tasks.json must contain a JSON object")
+    return payload
+
+
+def _validate_decompose_manifest(payload: dict) -> Optional[str]:
+    if payload.get("schema_version") != 1:
+        return "decompose-tasks.json schema_version must be 1"
+    parent_id = payload.get("parent_task_id")
+    if not isinstance(parent_id, str) or not parent_id.strip():
+        return "decompose-tasks.json parent_task_id is required"
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return "decompose-tasks.json tasks must be a non-empty list"
+
+    keys: list[str] = []
+    for index, task in enumerate(tasks):
+        label = f"task[{index}]"
+        if not isinstance(task, dict):
+            return f"{label} must be an object"
+        key = task.get("key")
+        if not isinstance(key, str) or not key.strip():
+            return f"{label}.key is required"
+        if key in keys:
+            return f"duplicate task key: {key}"
+        keys.append(key)
+        for field in ("title", "owner", "body"):
+            value = task.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return f"{label}.{field} is required"
+        role = task.get("role")
+        if role not in _DECOMPOSE_ROLES:
+            return f"{label}.role must be one of {sorted(_DECOMPOSE_ROLES)}"
+        workspace_kind = task.get("workspace_kind", "scratch")
+        if workspace_kind not in _DECOMPOSE_WORKSPACE_KINDS:
+            return (
+                f"{label}.workspace_kind must be one of "
+                f"{sorted(_DECOMPOSE_WORKSPACE_KINDS)}"
+            )
+        skills = task.get("skills")
+        if skills is not None and (
+            not isinstance(skills, list)
+            or any(not isinstance(skill, str) or not skill.strip() for skill in skills)
+            or len(set(skills)) != len(skills)
+        ):
+            return f"{label}.skills must be a unique list of non-empty skill names"
+        dependencies = task.get("dependencies")
+        if not isinstance(dependencies, list) or any(
+            not isinstance(dep, str) or not dep.strip() for dep in dependencies
+        ):
+            return f"{label}.dependencies must be a list of task keys"
+        if len(set(dependencies)) != len(dependencies):
+            return f"{label}.dependencies contains duplicates"
+
+    key_set = set(keys)
+    graph: dict[str, list[str]] = {}
+    for task in tasks:
+        key = task["key"]
+        dependencies = task["dependencies"]
+        unknown = sorted(set(dependencies) - key_set)
+        if unknown:
+            return f"task {key} has unknown dependency: {', '.join(unknown)}"
+        if key in dependencies:
+            return f"task {key} cannot depend on itself"
+        graph[key] = dependencies
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(key: str) -> bool:
+        if key in visiting:
+            return False
+        if key in visited:
+            return True
+        visiting.add(key)
+        if any(not visit(dep) for dep in graph[key]):
+            return False
+        visiting.remove(key)
+        visited.add(key)
+        return True
+
+    if any(not visit(key) for key in keys):
+        return "decompose-tasks.json dependency graph contains a cycle"
+    if not any(task["role"] == "implementation" for task in tasks):
+        return "decompose-tasks.json requires at least one implementation task"
+    if not any(task["role"] == "qa" for task in tasks):
+        return "decompose-tasks.json requires at least one qa task"
+    if not any(task["role"] == "audit" for task in tasks):
+        return "decompose-tasks.json requires at least one audit task"
+    return None
+
+
+def validate_decompose_artifact(artifact_dir: str) -> Optional[str]:
+    """Validate human-readable decomposition plus executable task manifest."""
     path = os.path.join(artifact_dir, "decompose-output.md")
     if not os.path.exists(path):
         return "Missing decompose-output.md artifact"
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
     except OSError as exc:
         return f"Cannot read decompose-output.md: {exc}"
-
     if not content or not content.strip():
         return "decompose-output.md is empty"
 
-    # At minimum: a child tasks section and at least one AC + Test Plan pair
     content_lower = content.lower()
-    has_children = any(
+    if not any(
         marker in content_lower
         for marker in ("## child tasks", "# child tasks", "child tasks:", "**child tasks**")
-    )
-    if not has_children:
+    ):
         return "Missing required section: Child Tasks"
-
-    # The decomposition may inline multiple children, each with AC + Test Plan.
-    # We require at least one AC marker and one Test Plan marker anywhere
-    # in the document — the per-child validation is the WS-1 contract gate
-    # on the actual child tasks, not this parent-level summary.
-    has_ac = any(
-        marker in content_lower
-        for marker in (
-            "## acceptance criteria", "acceptance criteria:",
-            "## ac", "# ac",
-        )
-    )
-    has_test_plan = any(
-        marker in content_lower
-        for marker in (
-            "## test plan", "## test strategy", "test plan:",
-            "**test plan**",
-        )
-    )
     missing = []
-    if not has_ac:
+    if not any(
+        marker in content_lower
+        for marker in ("## acceptance criteria", "acceptance criteria:", "## ac", "# ac")
+    ):
         missing.append("Acceptance Criteria")
-    if not has_test_plan:
+    if not any(
+        marker in content_lower
+        for marker in ("## test plan", "## test strategy", "test plan:", "**test plan**")
+    ):
         missing.append("Test Plan")
     if missing:
         return f"Decomposition missing required sections: {', '.join(missing)}"
+
+    manifest_path = os.path.join(artifact_dir, "decompose-tasks.json")
+    if not os.path.exists(manifest_path):
+        return "Missing decompose-tasks.json artifact"
+    try:
+        payload = load_decompose_manifest(artifact_dir)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return f"Invalid decompose-tasks.json: {exc}"
+    return _validate_decompose_manifest(payload)
+
+
+def _load_json_artifact(artifact_dir: str, filename: str) -> tuple[Optional[dict], Optional[str]]:
+    path = os.path.join(artifact_dir, filename)
+    if not os.path.exists(path):
+        return None, f"Missing {filename} artifact"
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"Invalid {filename}: {exc}"
+    if not isinstance(payload, dict):
+        return None, f"{filename} must contain a JSON object"
+    return payload, None
+
+
+def validate_execute_artifact(artifact_dir: str) -> Optional[str]:
+    """Require task-bound, digest-bearing evidence for implementation children."""
+    payload, error = _load_json_artifact(artifact_dir, "execution-evidence.json")
+    if error:
+        return error
+    assert payload is not None
+    if payload.get("schema_version") != 1:
+        return "execution-evidence.json schema_version must be 1"
+    if not isinstance(payload.get("parent_task_id"), str) or not payload["parent_task_id"].strip():
+        return "execution-evidence.json parent_task_id is required"
+    children = payload.get("children")
+    if not isinstance(children, list) or not children:
+        return "execution-evidence.json children must be a non-empty list"
+    seen: set[str] = set()
+    for index, child in enumerate(children):
+        if not isinstance(child, dict):
+            return f"execution child[{index}] must be an object"
+        task_id = child.get("task_id")
+        key = child.get("key")
+        digest = child.get("result_digest")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return f"execution child[{index}].task_id is required"
+        if task_id in seen:
+            return f"execution evidence duplicates child task {task_id}"
+        seen.add(task_id)
+        if not isinstance(key, str) or not key.strip():
+            return f"execution child[{index}].key is required"
+        if child.get("status") != "done":
+            return f"execution child {key} is not done"
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest.lower()):
+            return f"execution child {key} result_digest must be a SHA-256 hex digest"
+    return None
+
+
+def _safe_report_path(artifact_dir: str, relative: object) -> Optional[str]:
+    if not isinstance(relative, str) or not relative.strip() or os.path.isabs(relative):
+        return None
+    base = os.path.realpath(artifact_dir)
+    candidate = os.path.realpath(os.path.join(base, relative))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    if not os.path.isfile(candidate) or os.path.getsize(candidate) == 0:
+        return None
+    return candidate
+
+
+def _version_tuple(value: object) -> tuple[int, ...]:
+    if not isinstance(value, str):
+        return ()
+    try:
+        return tuple(int(part) for part in value.split("."))
+    except ValueError:
+        return ()
+
+
+def validate_pr_qa_artifact(artifact_dir: str) -> Optional[str]:
+    """Require PR, tests, and current Hermaguard/Simplify Swarm evidence."""
+    payload, error = _load_json_artifact(artifact_dir, "pr-qa-evidence.json")
+    if error:
+        return error
+    assert payload is not None
+    if payload.get("schema_version") != 1:
+        return "pr-qa-evidence.json schema_version must be 1"
+    if not isinstance(payload.get("parent_task_id"), str) or not payload["parent_task_id"].strip():
+        return "pr-qa-evidence.json parent_task_id is required"
+    commit = payload.get("commit_sha")
+    if not isinstance(commit, str) or len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit.lower()):
+        return "pr-qa-evidence.json commit_sha must be a 40-character hex SHA"
+    pull_request = payload.get("pull_request")
+    if not isinstance(pull_request, dict):
+        return "pr-qa-evidence.json pull_request object is required"
+    url = pull_request.get("url")
+    if not isinstance(url, str) or not url.startswith("https://github.com/") or "/pull/" not in url:
+        return "pr-qa-evidence.json pull_request.url must be a GitHub PR URL"
+    if pull_request.get("state") not in {"open", "merged"}:
+        return "pr-qa-evidence.json pull_request.state must be open or merged"
+    tests = payload.get("tests")
+    if not isinstance(tests, list) or not tests:
+        return "pr-qa-evidence.json tests must be a non-empty list"
+    for index, test in enumerate(tests):
+        if not isinstance(test, dict) or not isinstance(test.get("command"), str) or not test["command"].strip():
+            return f"pr-qa test[{index}].command is required"
+        if test.get("exit_code") != 0:
+            return f"pr-qa test[{index}] did not pass"
+        if not isinstance(test.get("summary"), str) or not test["summary"].strip():
+            return f"pr-qa test[{index}].summary is required"
+    gates = payload.get("quality_gates")
+    if not isinstance(gates, dict):
+        return "pr-qa-evidence.json quality_gates object is required"
+    minimums = {"hermaguard": (2, 1, 0), "simplify_swarm": (2, 0, 0)}
+    for name, minimum in minimums.items():
+        gate = gates.get(name)
+        if not isinstance(gate, dict):
+            return f"missing quality gate: {name}"
+        if gate.get("status") != "pass":
+            return f"quality gate {name} did not pass"
+        if _version_tuple(gate.get("version")) < minimum:
+            return f"quality gate {name} must use version {'.'.join(map(str, minimum))} or newer"
+        report_path = _safe_report_path(artifact_dir, gate.get("report"))
+        if report_path is None:
+            return f"quality gate {name} report is missing, empty, or outside the artifact directory"
+        report_digest = gate.get("report_sha256")
+        if not isinstance(report_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", report_digest):
+            return f"quality gate {name} report_sha256 must be a lowercase SHA-256 digest"
+        with open(report_path, "rb") as report_handle:
+            actual_digest = hashlib.sha256(report_handle.read()).hexdigest()
+        if actual_digest != report_digest:
+            return f"quality gate {name} report SHA-256 mismatch"
     return None
 
 
@@ -568,10 +784,9 @@ PIPELINE_STAGES = [
     "document",      # [13] light → wiki/docs
 ]
 
-# Gate function mapping per stage. Stages without a gate (execute, pr+qa,
-# pass-through) auto-advance; the dispatcher moves tasks forward when no
-# gate function is registered for the current stage.
-# document has its own gate (validate_document_artifact).
+# Gate function mapping per stage. Every execution-bearing stage has an
+# evidence gate; no implementation or QA stage is allowed to pass through on
+# elapsed time alone.
 GATE_FUNCTIONS = {
     "research": validate_research_artifact,
     "prd": validate_prd_artifact,
@@ -579,6 +794,8 @@ GATE_FUNCTIONS = {
     "council": validate_council_artifact,
     "tech_review": validate_tech_review_artifact,
     "decompose": validate_decompose_artifact,
+    "execute": validate_execute_artifact,
+    "pr+qa": validate_pr_qa_artifact,
     "audit": validate_audit_artifact,
     "document": validate_document_artifact,
 }
@@ -588,10 +805,9 @@ GATE_FUNCTIONS = {
 # rather than running a gate function on disk artifacts.
 HUMAN_GATE_STAGES = {"sign_off", "final_sign_off"}
 
-# Pass-through stages: gate function returns None (auto-advance). Workers
-# claim and ship; the dispatcher just moves the task forward when there is
-# no artifact gate blocking.
-PASS_THROUGH_STAGES = {"execute", "pr+qa"}
+# Retained as a compatibility export for callers that imported the symbol.
+# Safety-sensitive pipeline stages are no longer pass-through.
+PASS_THROUGH_STAGES: set[str] = set()
 
 # Express path: drops PRD, Council, Tech Review; keeps the two human gates
 # and the full audit. Used by ``hermes feature create --express`` and the

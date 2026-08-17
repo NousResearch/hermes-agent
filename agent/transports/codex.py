@@ -638,6 +638,9 @@ class ResponsesApiTransport(ProviderTransport):
 
         text_verbosity = params.get("text_verbosity")
         if text_verbosity and supports_text_verbosity:
+            # Invalid configured values fail closed here by being omitted. The
+            # later preflight deliberately still raises on malformed explicit
+            # request overrides that survive the merge into ``text``.
             verbosity = parse_text_verbosity(text_verbosity)
             if verbosity:
                 override_text = kwargs.get("text")

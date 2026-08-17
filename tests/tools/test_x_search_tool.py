@@ -312,3 +312,84 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
 
+
+def _xcred(prefix: str) -> str:
+    """Synthesize a distinct fake credential value (never a bare literal)."""
+    return prefix + "-key-" + "x1"
+
+
+def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
+    """#88040: with a paid XAI_API_KEY configured alongside subscription
+    OAuth, x_search must use the API key — the OAuth path authorizes but
+    answers /v1/responses in a degraded Grok explanatory mode with no
+    citations. Same prefer-API-key shape as the TTS fix (#87045/#87081)."""
+    from tools.registry import invalidate_check_fn_cache
+    from tools.x_search_tool import x_search_tool
+
+    paid_key = _xcred("paid")
+    oauth_token = _xcred("oauth")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": paid_key,
+            "XAI_BASE_URL": None,
+        }.get(name, default),
+    )
+
+    def _fake_resolve():
+        return {
+            "provider": "xai-oauth",
+            "api_key": oauth_token,
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+    )
+    invalidate_check_fn_cache()
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["headers"] = headers
+        return _FakeResponse({"output_text": "Real posts with citations."})
+
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="from:elon latest"))
+
+    assert result["success"] is True
+    assert result["credential_source"] == "xai"
+    assert captured["headers"]["Authorization"] == "Bearer " + paid_key
+
+
+def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch):
+    """No explicit XAI_API_KEY: the OAuth-first resolver path is unchanged."""
+    from tools.x_search_tool import _resolve_xai_bearer
+
+    oauth_token = _xcred("oauth")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda name, default=None: default,
+    )
+
+    def _fake_resolve():
+        return {
+            "provider": "xai-oauth",
+            "api_key": oauth_token,
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+    )
+
+    api_key, base_url, source = _resolve_xai_bearer()
+    assert (api_key, base_url, source) == (
+        oauth_token,
+        "https://api.x.ai/v1",
+        "xai-oauth",
+    )
+

@@ -52,7 +52,6 @@ import requests
 
 from tools.registry import registry, tool_error
 from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
@@ -128,7 +127,22 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     gate makes that case unreachable in normal operation, but the runtime
     check exists so a credential that expires between registration and
     invocation produces a clean tool error instead of a 401.
+
+    x_search is API-index access: when a subscription OAuth credential is
+    configured alongside a paid ``XAI_API_KEY``, the OAuth path authorizes
+    but answers ``/v1/responses`` in a degraded Grok explanatory mode with
+    no citations, while the API key returns real posts (#88040). Prefer the
+    explicit API key — same shape as the TTS fix for #87045 (#87081) —
+    keeping OAuth as the fallback when no API key is configured.
     """
+    from hermes_cli.config import get_env_value
+
+    explicit_key = str(get_env_value("XAI_API_KEY") or "").strip()
+    if explicit_key:
+        base_url = str(
+            get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL
+        ).strip().rstrip("/")
+        return explicit_key, base_url, "xai"
     creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:

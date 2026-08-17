@@ -1110,10 +1110,12 @@ class TestCafConversion:
         """_convert_caf_to_wav uses ffmpeg when available."""
         caf_path = tmp_path / "voice.caf"
         caf_path.write_bytes(b"caff\x00" * 20)
-        wav_path = str(tmp_path / "voice.wav")
+        converted_path = None
 
         def fake_run(cmd, **kwargs):
-            Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
+            nonlocal converted_path
+            converted_path = cmd[-1]
+            Path(converted_path).write_bytes(b"RIFF\x00\x00\x00\x00")
             return MagicMock(returncode=0)
 
         monkeypatch.setattr(
@@ -1124,8 +1126,11 @@ class TestCafConversion:
 
         from tools.transcription_tools import _convert_caf_to_wav
         result = _convert_caf_to_wav(str(caf_path))
-        assert result == wav_path
+        assert result == converted_path
+        assert Path(result).parent != tmp_path
         assert Path(result).exists()
+        Path(result).unlink()
+        Path(result).parent.rmdir()
 
 
     def test_transcribe_caf_not_converted_for_local(self, tmp_path, monkeypatch):
@@ -1145,6 +1150,31 @@ class TestCafConversion:
 
         assert result["success"] is True
         mock_convert.assert_not_called()
+
+    def test_cloud_caf_conversion_directory_is_removed_after_dispatch(self, tmp_path):
+        caf_path = tmp_path / "voice.caf"
+        caf_path.write_bytes(b"caff\x00" * 20)
+        conversion_dir = tmp_path / "converted"
+        conversion_dir.mkdir()
+        converted = conversion_dir / "voice.wav"
+        converted.write_bytes(b"RIFF\x00\x00\x00\x00")
+
+        with (
+            patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}),
+            patch("tools.transcription_tools._get_provider", return_value="openai"),
+            patch("tools.transcription_tools._convert_caf_to_wav", return_value=str(converted)),
+            patch("tools.transcription_tools._trim_silence_for_cloud_stt", return_value=None),
+            patch(
+                "tools.transcription_tools._dispatch_stt_provider",
+                return_value={"success": True, "transcript": "hi", "provider": "openai"},
+            ),
+        ):
+            from tools.transcription_tools import transcribe_audio
+
+            result = transcribe_audio(str(caf_path))
+
+        assert result["success"] is True
+        assert not conversion_dir.exists()
 
 
 class TestTranscribeCredentialReadGuard:
@@ -1170,6 +1200,37 @@ class TestTranscribeCredentialReadGuard:
         # The error is the shared read-guard message, not an audio-validation
         # or provider error — proving the guard fired before dispatch.
         assert result["error"] == expected
+
+
+class TestRequestScopedTranscriptionOverrides:
+    def test_language_and_prompt_reach_provider_without_plugin_hooks(self):
+        from tools.transcription_tools import _dispatch_stt_provider
+
+        with (
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+            patch("tools.transcription_tools._transcribe_openai") as transcribe_openai,
+        ):
+            transcribe_openai.return_value = {
+                "success": True,
+                "transcript": "ok",
+                "provider": "openai",
+            }
+            _dispatch_stt_provider(
+                "/tmp/request.wav",
+                "openai",
+                {"provider": "openai", "openai": {}},
+                model="whisper-1",
+                source="api_server",
+                language="zh",
+                prompt="FunASR SenseVoice",
+            )
+
+        transcribe_openai.assert_called_once_with(
+            "/tmp/request.wav",
+            "whisper-1",
+            language="zh",
+            prompt="FunASR SenseVoice",
+        )
 
 
 class TestRunCommandSttIdleTimeout:

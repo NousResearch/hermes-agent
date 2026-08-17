@@ -73,12 +73,14 @@ carry meaning the text alone misses.
 6. **Use the content.** It's legitimate primary source. Quote it and cite the
    author. Community takes (e.g. a power-user writing about a product) are real
    material for summaries, scripts, and analysis.
-7. **Read the images too.** After extracting the body, collect the article's
-   media image URLs (cover art, diagrams, screenshots — ignore user avatars and
-   profile thumbnails) from the extract or the article HTML, and analyze the
-   meaningful ones with a vision tool. Report any visual info that adds to the
-   text: diagrams that explain a workflow, charts with data, or a cover that
-   sets the tone. Do not skip this — images are part of the article.
+7. **Read the images too.** After extracting the body, the text extractor may
+   drop inline images (screenshots, diagrams, UI captures) that are essential to
+   understanding the article. **Fetch the raw HTML of the page** (curl or similar)
+   and extract all `pbs.twimg.com/media/` URLs — these are the article's inline
+   images. Analyze the meaningful ones (not user avatars) with a vision tool.
+   Report any visual info that adds to the text: screenshots of a UI, diagrams
+   that explain a workflow, charts with data, or a cover that sets the tone.
+   Do not skip this — images are part of the article.
 
 ## Pitfalls
 - Do not assume "articles are paywalled/login-walled." The canonical

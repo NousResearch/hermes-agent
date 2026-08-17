@@ -1051,6 +1051,22 @@ function paintMathFace(svg, t) {
     er.setAttribute('cy', eyeY)
   }
 
+  // Catchlights ride the pupils (upper-left offset) — without this they
+  // stay at the circle-face position and drift outside e.g. the cloud's
+  // lower-set eyes.
+  const hl = svg.querySelector('[data-hb-hl-l]')
+  const hr = svg.querySelector('[data-hb-hl-r]')
+
+  if (hl) {
+    hl.setAttribute('cx', eyeL - 0.6)
+    hl.setAttribute('cy', eyeY - 0.7)
+  }
+
+  if (hr) {
+    hr.setAttribute('cx', eyeR - 0.6)
+    hr.setAttribute('cy', eyeY - 0.7)
+  }
+
   if (open) {
     open.setAttribute('opacity', pose.blink ? '0' : '1')
   }
@@ -1155,6 +1171,10 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
   const eyeFill = isDarkColor(color) ? 'rgba(232,220,195,0.95)' : 'rgba(0,0,0,0.85)'
   const ring = sampleFaceRing(shape)
   const rest = facePose(working ? 'work' : 'idle', 0)
+  // Shape-aware initial eye line — the cloud body sits lower, so its eyes
+  // (and their catchlights) start at the cloud position instead of jumping
+  // there on the first clock paint.
+  const eyeY0 = shape === 'cloud' ? 22 : 17.2
 
   return jsxs('svg', {
     'data-bot-face': name,
@@ -1177,15 +1197,15 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
       jsxs('g', {
         'data-hb-open': '1',
         children: [
-          jsx('ellipse', { 'data-hb-el': '1', cx: 15.4, cy: 17.2, rx: 2.2, ry: working ? 2.6 : 2.3, fill: eyeFill }),
-          jsx('ellipse', { 'data-hb-er': '1', cx: 24.6, cy: 17.2, rx: 2.2, ry: working ? 2.6 : 2.3, fill: eyeFill }),
-          jsx('circle', { cx: 14.8, cy: 16.5, r: 0.65, fill: 'rgba(255,255,255,0.85)' }),
-          jsx('circle', { cx: 24, cy: 16.5, r: 0.65, fill: 'rgba(255,255,255,0.85)' })
+          jsx('ellipse', { 'data-hb-el': '1', cx: 15.4, cy: eyeY0, rx: 2.2, ry: working ? 2.6 : 2.3, fill: eyeFill }),
+          jsx('ellipse', { 'data-hb-er': '1', cx: 24.6, cy: eyeY0, rx: 2.2, ry: working ? 2.6 : 2.3, fill: eyeFill }),
+          jsx('circle', { 'data-hb-hl-l': '1', cx: 14.8, cy: eyeY0 - 0.7, r: 0.65, fill: 'rgba(255,255,255,0.85)' }),
+          jsx('circle', { 'data-hb-hl-r': '1', cx: 24, cy: eyeY0 - 0.7, r: 0.65, fill: 'rgba(255,255,255,0.85)' })
         ]
       }),
       jsx('path', {
         'data-hb-shut': '1',
-        d: 'M12.8 17.2 L18 17.2 M22 17.2 L27.2 17.2',
+        d: `M12.8 ${eyeY0} L18 ${eyeY0} M22 ${eyeY0} L27.2 ${eyeY0}`,
         stroke: eyeFill,
         strokeWidth: 2,
         strokeLinecap: 'round',

@@ -23,7 +23,7 @@ import re
 import threading
 from typing import Any, Callable, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
 
@@ -143,6 +143,88 @@ _MACHINE_PREFIXES = (
     # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX.
     "[System: The active model for this chat has changed to ",
 )
+
+
+_META_TITLE_PREFIXES = (
+    "the user is asking",
+    "the user wants",
+    "the assistant is",
+    "the conversation is about",
+)
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    stripped = (text or "").strip()
+    pairs = {
+        ('"', '"'),
+        ("'", "'"),
+        ("“", "”"),
+        ("‘", "’"),
+    }
+    while len(stripped) >= 2 and (stripped[0], stripped[-1]) in pairs:
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def _clean_generated_title(raw_title: str) -> Optional[str]:
+    if not raw_title:
+        return None
+
+    # main routes title generation through a JSON-schema response_format, so
+    # the raw response is normally '{"title": "..."}'. Pull the value out
+    # first so the cleaning below runs on the title proper, not the JSON
+    # envelope — a model can still wrap a meta phrase ("The user is asking…")
+    # inside the value, which the prefix logic below is what removes.
+    raw = raw_title.strip()
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
+    if fenced:
+        raw = fenced.group(1).strip()
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and isinstance(parsed.get("title"), str):
+            raw_title = parsed["title"]
+    except (ValueError, TypeError):
+        pass
+
+    # Strip unterminated think blocks (e.g. "<think>Let me reason..." without close tag)
+    title = re.sub(
+        r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>.*",
+        "", raw_title, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Strip any remaining HTML-like tags (preserve newlines for first-line pick)
+    title = re.sub(r"<[^>]+>", " ", title)
+    # A title is one line. A model that ignores "return ONLY the title" and
+    # answers the prompt instead (a shell transcript, a bulleted plan) would
+    # otherwise be stored verbatim — keep the first non-empty line.
+    title = next((line.strip() for line in title.splitlines() if line.strip()), "")
+    title = re.sub(r"\s+", " ", title).strip()
+    title = _strip_wrapping_quotes(title)
+
+    if title.lower().startswith("title:"):
+        title = _strip_wrapping_quotes(title[6:].strip())
+
+    lowered = title.lower()
+    if lowered.startswith(_META_TITLE_PREFIXES):
+        quoted = re.search(r'["“‘](.+?)["”’]', title)
+        if quoted:
+            title = quoted.group(1).strip()
+        else:
+            for prefix in _META_TITLE_PREFIXES:
+                if lowered.startswith(prefix):
+                    title = title[len(prefix):].strip(" :.-")
+                    break
+
+    title = _strip_wrapping_quotes(title)
+    if not title:
+        return None
+
+    if len(title.split()) > 12:
+        return None
+
+    if len(title) > 80:
+        title = title[:77] + "..."
+
+    return title or None
 
 
 def _title_language() -> str:
@@ -403,8 +485,13 @@ def generate_title(
             main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
-        content = response.choices[0].message.content or ""
-        return _clean_title(_extract_title_text(content))
+        content = extract_content_or_reasoning(response).strip()
+        # extract_content_or_reasoning only strips closed reasoning tags.
+        # Run the canonical scrubber next so standalone tool-call XML (and
+        # its payload) is removed before title cleanup — same path CLI uses.
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, content).strip()
+        return _clean_generated_title(content)
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.

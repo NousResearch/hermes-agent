@@ -16,8 +16,35 @@ from hermes_state import SessionDB
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
 
+    def test_salvages_unquoted_meta_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "The conversation is about Kubernetes pod debugging"
 
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes pod debugging"
 
+    def test_extracts_quoted_meta_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = 'The conversation is about "Kubernetes pod debugging"'
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes pod debugging"
+
+    def test_uses_reasoning_when_content_is_empty(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+        mock_response.choices[0].message.reasoning = "Redis deployment troubleshooting"
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.choices[0].message.reasoning_details = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("redis won't start", "Let's debug it")
+            assert title == "Redis deployment troubleshooting"
 
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
@@ -79,6 +106,21 @@ class TestGenerateTitle:
             # leaving nothing → None.
             assert title is None
 
+    def test_strips_standalone_tool_call_xml(self):
+        """Canonical strip_think_blocks must remove tool-call XML and payload,
+        not just the tags (tag-only cleanup would leave JSON in the title)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            '<tool_call>{"name":"search","arguments":{"q":"pods"}}</tool_call>'
+            "Kubernetes Pod Debugging"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes Pod Debugging"
+            assert "tool_call" not in title
+            assert "search" not in title
 
     def test_truncates_long_titles(self):
         mock_response = MagicMock()

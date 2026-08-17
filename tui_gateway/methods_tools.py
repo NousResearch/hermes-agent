@@ -2388,8 +2388,15 @@ def _(rid, params: dict) -> dict:
                        status, portable}], "user_count": N, "bundled_count": M}
       - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
                        Returns the refreshed row plus {"ok", "unchanged"}.
+
+    Accepts an optional ``profile`` param (same contract as mcp.servers.*):
+    plugins live under each profile's HERMES_HOME, so a client can list or
+    toggle another profile's plugins without switching the whole app.
     """
     action = params.get("action", "list")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
     try:
         from hermes_cli.plugins_cmd import (
             _bundled_default_on,
@@ -2476,6 +2483,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4017, f"unknown plugins action: {action}")
     except Exception as e:
         return _err(rid, 5026, str(e))
+    finally:
+        _mcp_reset_profile(token)
 
 
 @method("shell.exec")

@@ -152,13 +152,14 @@ function trackInboundActivity(roster) {
 /** Last good cron list, same idea as the roster snapshot. */
 const $lastJobs = atom([])
 
-/** User pref: hide canonical "Bot Chat" sessions from the global Sessions
- *  sidebar (they always remain in the Bots roster). Persisted via ctx.storage.
- *  Default ON — Bot Chats are plugin-owned forever-chats, not scratch sessions,
- *  so keeping them out of the shared recents list is the expected behavior.
- *  Backed by the core generic `hidden` session flag (session.create hidden:true
- *  / session.set_hidden); older gateways ignore it and Bot Chats stay visible. */
-const $hideBotChats = atom(true)
+// Bot Mode sessions are ALWAYS hidden from the global Sessions sidebar:
+// canonical Bot Chats are plugin-owned forever-chats and group-chat member
+// sessions are room plumbing — neither is a scratch conversation, and a
+// 6-member room would otherwise dump six identical "Group: ..." rows into
+// recents. Backed by the core generic `hidden` session flag (session.create
+// hidden:true / session.set_hidden); the Bots pane browses them via
+// session.list include_hidden. Older gateways ignore the flag and the
+// sessions simply stay visible there.
 
 /** Bot the Routines tile is scoped to. Follows the live gateway profile
  *  (the bot you're actually chatting with) and roster clicks. */
@@ -268,27 +269,25 @@ async function saveBotMeta(name, patch) {
   return { serverPersisted: serverOutcome === 'persisted', serverOutcome }
 }
 
-/** Flip the "hide Bot Chats from the sidebar" pref, persist it, and reconcile
- *  every known canonical chat via the core session.set_hidden RPC so the change
- *  applies to already-created Bot Chats (not just future ones). Feature-detected:
- *  older gateways lack session.set_hidden and simply keep the chats visible. */
-async function setHideBotChats(hidden) {
-  $hideBotChats.set(hidden)
-
-  try {
-    Promise.resolve(pluginCtx?.storage?.set?.('hide-bot-chats', hidden)).catch(() => undefined)
-  } catch {
-    /* storage unavailable — pref holds for this window only */
-  }
-
-  const meta = $botMeta.get()
-  const ids = Object.values(meta)
+/** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
+ *  and Bot Chats created before this policy (or while the old pref was off)
+ *  left visible rows behind. On every plugin load, sweep every session id we
+ *  own — canonical chats from bot meta plus each group room's member
+ *  sessions — through the core session.set_hidden RPC. Idempotent (the DB
+ *  setter is a no-op on already-hidden rows) and feature-detected: older
+ *  gateways lack session.set_hidden and simply keep the rows visible. */
+function hideOwnedBotSessions() {
+  const canonical = Object.values($botMeta.get())
     .map(m => m && m.chat)
     .filter(Boolean)
+  const rooms = Object.values($groupChats.get())
+    .flatMap(room => Object.values(room?.sessions || {}))
+    .filter(sid => Boolean(sid) && sid !== true)
+  const ids = [...new Set([...canonical, ...rooms])]
 
-  await Promise.all(
+  return Promise.all(
     ids.map(sid =>
-      Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden })).catch(() => undefined)
+      Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
     )
   )
 }
@@ -2526,7 +2525,8 @@ async function ensureRemoteCanonicalChat(route, profile) {
   const created = await host.requestProfile(route, 'session.create', {
     profile,
     title: 'Bot Chat',
-    ...($hideBotChats.get() ? { hidden: true } : {})
+    // Bot Mode sessions are always hidden from the global sidebar.
+    hidden: true
   })
 
   return { runtime: created?.session_id || null, stored: created?.stored_session_id || null }
@@ -2744,10 +2744,11 @@ function createCanonicalChat(name) {
     const res = await host.request('session.create', {
       profile: name,
       title: 'Bot Chat',
-      // Born hidden from the global sidebar when the pref is on. Core applies
-      // this via the generic `hidden` flag (deferred as pending_hidden until the
-      // row exists); older gateways ignore the unknown param and it stays visible.
-      ...($hideBotChats.get() ? { hidden: true } : {})
+      // Always born hidden from the global sidebar — Bot Mode sessions are
+      // plugin-owned. Core applies this via the generic `hidden` flag
+      // (deferred as pending_hidden until the row exists); older gateways
+      // ignore the unknown param and it stays visible.
+      hidden: true
     })
     const sid = res?.stored_session_id
     const runtime = res?.session_id
@@ -3353,7 +3354,8 @@ async function ensureGroupChatSession(group, member) {
   const created = await requestForBot(member, 'session.create', {
     profile: member.name,
     title,
-    ...($hideBotChats.get() ? { hidden: true } : {})
+    // Room member sessions are plumbing — always hidden from the sidebar.
+    hidden: true
   })
   const stored = created?.stored_session_id || null
 
@@ -6673,7 +6675,9 @@ function useProfileSessions(botName, gatewayGeneration) {
   return useQuery({
     queryKey: [ID, 'profile-sessions', botName, gatewayGeneration],
     enabled: Boolean(botName),
-    queryFn: () => host.request('session.list', { profile: botName, limit: PROFILE_SESSION_LIST_LIMIT }),
+    // include_hidden: this browser exists precisely to see the profile's own
+    // (always-hidden) Bot Mode sessions alongside its regular ones.
+    queryFn: () => host.request('session.list', { profile: botName, limit: PROFILE_SESSION_LIST_LIMIT, include_hidden: true }),
     refetchInterval: 8000,
     staleTime: 4000,
     retry: false
@@ -7306,7 +7310,6 @@ function BotsPane() {
   const [deleting, setDeleting] = useState(null)
   const [grouping, setGrouping] = useState(null)
   const [query, setQuery] = useState('')
-  const hideBotChats = useValue($hideBotChats)
   const activityToasts = useValue($activityToasts)
   const sessionsWorkspaceName = useValue($botSessionsWorkspace)
   const groupChatName = useValue($groupChatWorkspace)
@@ -7422,16 +7425,6 @@ function BotsPane() {
                     'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
                   onClick: () => setActivityToasts(!activityToasts),
                   children: jsx(Codicon, { name: activityToasts ? 'bell' : 'bell-slash' })
-                })
-              }),
-              jsx(Tip, {
-                label: hideBotChats ? 'Bot Chats hidden from Sessions — click to show' : 'Bot Chats shown in Sessions — click to hide',
-                children: jsx('button', {
-                  type: 'button',
-                  className:
-                    'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-                  onClick: () => void setHideBotChats(!hideBotChats),
-                  children: jsx(Codicon, { name: hideBotChats ? 'eye-closed' : 'eye' })
                 })
               }),
               jsxs(DropdownMenu, {
@@ -7792,18 +7785,9 @@ export default {
       /* no storage on this shell — defaults stay */
     }
 
-    // Hydrate the "hide Bot Chats from the sidebar" pref (default ON).
-    try {
-      Promise.resolve(ctx.storage?.get?.('hide-bot-chats'))
-        .then(value => {
-          if (typeof value === 'boolean') {
-            $hideBotChats.set(value)
-          }
-        })
-        .catch(() => undefined)
-    } catch {
-      /* no storage — default (hide) stays */
-    }
+    // Bot Mode sessions are always hidden now — the old "hide Bot Chats"
+    // pref is gone (its stored key is simply ignored). The reconciliation
+    // sweep below hides any rows born visible under the old pref.
 
     // Hydrate the activity-toast pref (default OFF).
     try {
@@ -7854,6 +7838,25 @@ export default {
       }
     })
     host.state.gateway.listen(handleSessionsGatewayTransition)
+
+    // Reconciliation sweep: hide every Bot Mode session we know about, on
+    // load and again on each reconnect (a swap can land on a gateway whose
+    // rows were created before the always-hidden policy). Deferred a tick so
+    // the meta/room storage hydrates above have landed; idempotent after that.
+    // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
+    const scheduleHideSweep = () => {
+      try {
+        setTimeout(() => void hideOwnedBotSessions(), 0)
+      } catch {
+        void hideOwnedBotSessions()
+      }
+    }
+    host.state.gateway.listen(state => {
+      if (state === 'open') {
+        scheduleHideSweep()
+      }
+    })
+    scheduleHideSweep()
 
     ctx.register({
       id: 'pane',

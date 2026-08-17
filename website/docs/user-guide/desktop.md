@@ -182,6 +182,11 @@ when a teammate bot opens it headlessly from the CLI — so bot-to-bot
 replies and handoffs work without touching your SOUL.md, and your regular
 sessions stay untouched.
 
+Bot Mode's sessions — each bot's canonical Bot Chat and every group-chat
+member session — are always hidden from the global Sessions sidebar. They
+live in the Bots pane (roster rows, room views, and each bot's session
+browser) instead of interleaving with your own conversations.
+
 Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.
 

@@ -178,6 +178,11 @@ def _(rid, params: dict) -> dict:
             deny = frozenset({"kanban", "tool"})
 
             limit = int(params.get("limit", 200) or 200)
+            # ``include_hidden``: surfaces that OWN hidden sessions (the Bots
+            # pane's per-profile browser, plugin session pickers) need to list
+            # them; the flag stays off for the resume picker and every other
+            # global caller so `hidden` keeps meaning "not in shared lists".
+            include_hidden = is_truthy_value(params.get("include_hidden", False))
             # Over-fetch modestly so per-source filtering doesn't leave us
             # short; the compression-tip projection in ``list_sessions_rich``
             # can also merge rows.
@@ -189,6 +194,7 @@ def _(rid, params: dict) -> dict:
                     limit=fetch_limit,
                     order_by_last_active=True,
                     compact_rows=True,
+                    include_hidden=include_hidden,
                 )
                 if (s.get("source") or "").strip().lower() not in deny
             ][:limit]
@@ -1190,23 +1196,44 @@ def _(rid, params: dict) -> dict:
     owns it — for plugins that manage their own sessions and don't want them
     cluttering the shared recents list. Flips the whole compression chain as a
     unit in the DB layer.
+
+    Resolution is two-tier: a LIVE runtime session id first (which also
+    covers the not-yet-persisted draft via the ``pending_hidden`` deferral),
+    then a durable stored id/key against the target profile's state.db —
+    plugins reconciling sessions they own (e.g. Bot Mode's hide sweep) hold
+    stored ids for chats that aren't live right now, and the live-only
+    lookup silently failed those with 4001.
     """
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
     hidden = is_truthy_value(params.get("hidden", True))
-    with _session_db(session) as db:
+    session, err = _sess_nowait(params, rid)
+    if session is not None:
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            key = session["session_key"]
+            try:
+                changed = db.set_session_hidden(key, hidden)
+                if not changed:
+                    # No row yet (write deferred to the first prompt): remember the
+                    # intent so _ensure_session_db_row is born hidden, mirroring the
+                    # pending_title deferral.
+                    session["pending_hidden"] = hidden
+                return _ok(rid, {"hidden": hidden, "session_key": key})
+            except Exception as e:
+                return _err(rid, 5007, str(e))
+    # Durable fallback: a stored session id (or key) in the requested
+    # profile's db. ``resolve_session_id`` follows key/title aliases the
+    # same way the REST pin/archive path does.
+    target = str(params.get("session_id") or "").strip()
+    with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
-        key = session["session_key"]
         try:
-            changed = db.set_session_hidden(key, hidden)
-            if not changed:
-                # No row yet (write deferred to the first prompt): remember the
-                # intent so _ensure_session_db_row is born hidden, mirroring the
-                # pending_title deferral.
-                session["pending_hidden"] = hidden
-            return _ok(rid, {"hidden": hidden, "session_key": key})
+            resolved = db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target
+            if not resolved:
+                return err
+            db.set_session_hidden(resolved, hidden)
+            return _ok(rid, {"hidden": hidden, "session_key": resolved})
         except Exception as e:
             return _err(rid, 5007, str(e))
 

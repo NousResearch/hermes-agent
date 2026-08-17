@@ -129,7 +129,7 @@ def _build_section(home: Path) -> str:
         "terminal tool (background=true, notify_on_complete=true), then finish your "
         "turn — the reply arrives later as a new message:\n"
         "```\n"
-        f'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from 🤖 {handle} (@{handle}): your message"\n'
+        f'hermes -p <agent-name> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 {handle} (@{handle}): your message"\n'
         "```\n"
         f'Always open with the "Message from 🤖 {handle} (@{handle}):" prefix so they '
         "know who is talking. When YOU receive a message with that prefix, you are "

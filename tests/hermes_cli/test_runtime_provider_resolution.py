@@ -1622,3 +1622,25 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+def test_target_model_overrides_configured_default_for_api_mode(monkeypatch):
+    """target_model must produce a divergent api_mode from the configured
+    default — the core regression for the rehydration and channel-override
+    paths.  Config default is glm-5 (chat_completions), but target_model
+    minimax-m2.5 must resolve to anthropic_messages.  Refs #70153."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "glm-5"})
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    # Without target_model: configured default glm-5 → chat_completions
+    resolved_default = rp.resolve_runtime_provider(requested="opencode-go")
+    assert resolved_default["api_mode"] == "chat_completions"
+
+    # With target_model=minimax-m2.5: diverges to anthropic_messages
+    resolved_target = rp.resolve_runtime_provider(
+        requested="opencode-go", target_model="minimax-m2.5"
+    )
+    assert resolved_target["api_mode"] == "anthropic_messages"
+    assert resolved_target["base_url"] == "https://opencode.ai/zen/go"

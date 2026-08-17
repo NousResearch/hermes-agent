@@ -495,7 +495,12 @@ preserves backend identity without exposing connection secrets.
 Profile-shaped plugins get first-class methods too:
 `profiles.list` (each profile + its most recent conversation as
 `last_session`; pass `include_sessions: false` to skip the per-profile DB
-probe) and `profiles.create` (`name`, `description`, `clone_from`,
+probe; pass `preferred_session_ids: { profileName: sessionId }` for an
+exact, existence-checked lookup of one pinned session per profile — each
+named row gains a `preferred_session` summary that resolves hidden rows
+and compression lineages to their live tip, or `null` when the id is
+definitively gone; older gateways ignore the param and omit the field)
+and `profiles.create` (`name`, `description`, `clone_from`,
 `clone_all`, `no_skills`, `soul`, optional `model` + `provider` pin) — the
 ws twins of the dashboard's `/api/profiles` REST routes.
 `host.state.busy` is the focused chat's live turn (thinking and streaming).

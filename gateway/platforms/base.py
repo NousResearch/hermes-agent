@@ -1939,11 +1939,17 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # guard keeps multi-part extensions intact — for ``archive.tar.gz`` the
 # ``.`` after ``tar`` is followed by ``g``, so the match must extend to
 # ``.gz`` instead of stopping early at ``.tar``.
+# CJK full-width punctuation accepted as MEDIA path terminators, mirroring the
+# ASCII set in the looka below. Chinese-language agent output naturally writes
+# ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without
+# these, the lookahead fails and the attachment is silently dropped (#88038).
+_MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
+
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"'*_,;:)\]}\[]|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
+    r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
     re.IGNORECASE,
 )
 
@@ -1979,7 +1985,7 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
-    r'''(?=[`"'\s,;:)\]}]|MEDIA:|$)'''
+    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE,
 )

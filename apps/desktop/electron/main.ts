@@ -248,6 +248,7 @@ import {
   profileNameFromDeleteRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
+import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
@@ -265,7 +266,6 @@ import {
 } from './remote-liveness'
 import { missingRendererAssets } from './renderer-bundle'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
-import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -13260,6 +13260,7 @@ async function handleHermesApiRequest(request) {
   // primary rename the lifecycle has already made `default` the temporary
   // primary until the PATCH settles, so the request routes there.
   const apiRoute = resolveProfileApiRequest(profile, request.path, profileRouteOptions(profile, request))
+
   const routeProfile = profileRename
     ? profileRename.routeProfile
     : resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)

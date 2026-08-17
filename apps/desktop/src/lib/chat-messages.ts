@@ -251,6 +251,41 @@ export function collectUnspokenTurnSpeech(
 const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 /**
+ * Drop earlier text parts that a later text part repeats verbatim (after
+ * whitespace normalization). Providers that continue a turn after a tool
+ * call sometimes re-send the previous assistant text as the next message's
+ * prefix (tool_calls row, then a stop row with identical prose) — the turn
+ * merge then holds the same paragraph twice and everything in it renders
+ * twice, most visibly ::preview frames. The LAST occurrence is the
+ * authoritative one; keep it.
+ */
+export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const lastByText = new Map<string, number>()
+
+  parts.forEach((part, index) => {
+    if (part.type === 'text') {
+      const key = normalizeWs(part.text)
+
+      if (key) {
+        lastByText.set(key, index)
+      }
+    }
+  })
+
+  const dropped = parts.filter((part, index) => {
+    if (part.type !== 'text') {
+      return true
+    }
+
+    const key = normalizeWs(part.text)
+
+    return !key || lastByText.get(key) === index
+  })
+
+  return dropped.length === parts.length ? parts : dropped
+}
+
+/**
  * Merge the final assistant text into a message's parts.
  *
  * - Removes all existing `text` parts (they were streamed deltas, now superseded
@@ -1242,7 +1277,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   flushPendingTools(messages.length)
 
   const withoutGeneratedImageEchoes = result.map(message =>
-    message.role === 'assistant' ? { ...message, parts: dedupeGeneratedImageEchoesInParts(message.parts) } : message
+    message.role === 'assistant'
+      ? { ...message, parts: dedupeRepeatedTextInParts(dedupeGeneratedImageEchoesInParts(message.parts)) }
+      : message
   )
 
   return withUniqueToolCallIds(

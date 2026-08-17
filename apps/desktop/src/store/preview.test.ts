@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
   $browserPages,
@@ -524,6 +527,79 @@ describe('preview session scoping', () => {
     expect($previewTabs.get()[0]).toMatchObject({ pinned: true, sessionId: 'sess-1' })
     expect($previewTabs.get()[0]?.id).toBe('file:sess-1:/work/a.html')
     expect($visiblePreviewTabs.get()).toHaveLength(1)
+  })
+
+  it('reusing an owned pinned row from another session keeps the owner id', () => {
+    $selectedStoredSessionId.set('sess-1')
+    openPreview(fileTarget('/work/a.html'))
+    setPreviewTabPinned($previewTabs.get()[0]!.id, true)
+
+    $selectedStoredSessionId.set('sess-2')
+    openPreview({ ...fileTarget('/work/a.html'), label: 'refreshed' })
+
+    expect($previewTabs.get()).toHaveLength(1)
+    // The row keeps its OWNER's id — never an id/sessionId split (the id
+    // would say sess-2 while the owner says sess-1 until the next unpin).
+    expect($previewTabs.get()[0]).toMatchObject({
+      id: 'file:sess-1:/work/a.html',
+      sessionId: 'sess-1',
+      pinned: true
+    })
+    expect($previewTabs.get()[0]?.target.label).toBe('refreshed')
+    expect($rightRailActiveTabId.get()).toBe('file:sess-1:/work/a.html')
+  })
+
+  it('follows the focused session tile over the sidebar selection', () => {
+    $selectedStoredSessionId.set('sess-1')
+    openPreview(fileTarget('/work/a.html'))
+    $selectedStoredSessionId.set('sess-2')
+    openPreview(fileTarget('/work/b.html'))
+
+    expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/b.html'])
+
+    // A sess-1 session TILE is active in the interacted zone while sess-2 is
+    // selected in the sidebar: the drawer belongs to the conversation being
+    // typed in, so the visible set follows the FOCUSED session.
+    const previousTree = $layoutTree.get()
+
+    try {
+      $layoutTree.set(group(['session-tile:sess-1'], { active: 'session-tile:sess-1', id: 'grp-main' }))
+      noteActiveTreeGroup('grp-main')
+
+      expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/a.html'])
+
+      // Leaving the tile (workspace/route active) falls back to the selection.
+      noteActiveTreeGroup(null)
+      expect($visiblePreviewTabs.get().map(tab => tab.target.path)).toEqual(['/work/b.html'])
+    } finally {
+      // A failed assertion must not leak the tree/group state into the next
+      // test — the focused derivation reads both.
+      noteActiveTreeGroup(null)
+      $layoutTree.set(previousTree)
+    }
+  })
+
+  it('re-owns the singleton Browser to the session that navigates it', () => {
+    $selectedStoredSessionId.set('sess-1')
+    openPreview(urlTarget('http://localhost:5174'))
+
+    // A second session navigating the Browser takes the surface with it:
+    // keeping the original owner would leave the new URL invisible in the
+    // session that just opened it.
+    $selectedStoredSessionId.set('sess-2')
+    openPreview(urlTarget('http://localhost:9999'))
+
+    expect($previewTabs.get()).toHaveLength(1)
+    // The Browser id is minted (never reused), so assert the stable parts:
+    // one surface, re-owned to the navigating session.
+    expect($previewTabs.get()[0]?.id).toMatch(/^url:browser-/)
+    expect($previewTabs.get()[0]).toMatchObject({ sessionId: 'sess-2' })
+    expect($previewTabs.get()[0]?.target.url).toBe('http://localhost:9999')
+    expect($visiblePreviewTabs.get()).toHaveLength(1)
+
+    // And sess-1 no longer sees the navigated surface — no context leak.
+    $selectedStoredSessionId.set('sess-1')
+    expect($visiblePreviewTabs.get()).toHaveLength(0)
   })
 
   it('adoption dedupes against an already session-scoped row', () => {

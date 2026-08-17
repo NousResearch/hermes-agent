@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { directiveFrameHeight, frameHeightFromMessage, withMeasurement } from './inline-preview-directive'
+import { directiveFrameHeight, frameSizeFromMessage, themePrelude, withInlineChrome } from './inline-preview-directive'
 
 describe('directiveFrameHeight', () => {
   it('returns null (auto-size) when absent or garbage', () => {
@@ -17,46 +17,79 @@ describe('directiveFrameHeight', () => {
   })
 })
 
-describe('withMeasurement', () => {
+describe('withInlineChrome', () => {
+  const prelude = themePrelude({ '--foreground': '#eee' }, 'Inter')
+
+  it('puts the theme prelude FIRST so page styles override it', () => {
+    const doc = '<html><head><style>body{color:red}</style></head><body><h1>hi</h1></body></html>'
+    const framed = withInlineChrome(doc, 'tok', prelude)
+
+    expect(framed.startsWith(prelude)).toBe(true)
+    expect(framed.indexOf(prelude)).toBeLessThan(framed.indexOf('color:red'))
+  })
+
   it('injects the measuring script before </body>', () => {
     const doc = '<html><body><h1>hi</h1></body></html>'
-    const framed = withMeasurement(doc, 'tok')
+    const framed = withInlineChrome(doc, 'tok', prelude)
 
-    expect(framed.indexOf('<script>')).toBeGreaterThan(framed.indexOf('<h1>'))
-    expect(framed.indexOf('</script>')).toBeLessThan(framed.indexOf('</body>'))
+    expect(framed.indexOf('postMessage')).toBeGreaterThan(framed.indexOf('<h1>'))
+    expect(framed.indexOf('postMessage')).toBeLessThan(framed.indexOf('</body>'))
     expect(framed).toContain('"tok"')
   })
 
-  it('appends when there is no body close tag', () => {
-    const framed = withMeasurement('<h1>fragment</h1>', 'tok')
+  it('appends the script when there is no body close tag', () => {
+    const framed = withInlineChrome('<h1>fragment</h1>', 'tok', prelude)
 
-    expect(framed.startsWith('<h1>fragment</h1>')).toBe(true)
+    expect(framed).toContain('<h1>fragment</h1>')
     expect(framed).toContain('postMessage')
   })
 })
 
-describe('frameHeightFromMessage', () => {
+describe('themePrelude', () => {
+  it('carries resolved tokens, transparent background, and the app font', () => {
+    const prelude = themePrelude({ '--foreground': 'oklch(0.9 0 0)', '--accent': '#7aa2f7' }, 'Inter, sans-serif')
+
+    expect(prelude).toContain('--foreground:oklch(0.9 0 0)')
+    expect(prelude).toContain('--accent:#7aa2f7')
+    expect(prelude).toContain('background:transparent')
+    expect(prelude).toContain('font-family:Inter, sans-serif')
+  })
+
+  it('omits the font rule when no font resolved', () => {
+    expect(themePrelude({}, '')).not.toContain('font-family')
+  })
+})
+
+describe('frameSizeFromMessage', () => {
   const msg = (over: Record<string, unknown> = {}) => ({
     type: 'hermes-inline-preview-size',
     token: 'tok',
     height: 500,
+    width: 300,
     ...over
   })
 
-  it('accepts our message with our token, clamped', () => {
-    expect(frameHeightFromMessage(msg(), 'tok')).toBe(500)
-    expect(frameHeightFromMessage(msg({ height: 12 }), 'tok')).toBe(120)
-    expect(frameHeightFromMessage(msg({ height: 5000 }), 'tok')).toBe(1200)
-    expect(frameHeightFromMessage(msg({ height: 500.7 }), 'tok')).toBe(501)
+  it('accepts our message with our token, height clamped', () => {
+    expect(frameSizeFromMessage(msg(), 'tok')).toEqual({ height: 500, width: 300 })
+    expect(frameSizeFromMessage(msg({ height: 12 }), 'tok')?.height).toBe(120)
+    expect(frameSizeFromMessage(msg({ height: 5000 }), 'tok')?.height).toBe(1200)
+    expect(frameSizeFromMessage(msg({ height: 500.7 }), 'tok')?.height).toBe(501)
+  })
+
+  it('sanitizes width to 0 when missing or hostile', () => {
+    expect(frameSizeFromMessage(msg({ width: undefined }), 'tok')?.width).toBe(0)
+    expect(frameSizeFromMessage(msg({ width: 'wide' }), 'tok')?.width).toBe(0)
+    expect(frameSizeFromMessage(msg({ width: Infinity }), 'tok')?.width).toBe(0)
+    expect(frameSizeFromMessage(msg({ width: -10 }), 'tok')?.width).toBe(0)
   })
 
   it('rejects wrong type, wrong token, and hostile shapes', () => {
-    expect(frameHeightFromMessage(msg({ type: 'other' }), 'tok')).toBeNull()
-    expect(frameHeightFromMessage(msg({ token: 'stolen' }), 'tok')).toBeNull()
-    expect(frameHeightFromMessage(msg({ height: 'tall' }), 'tok')).toBeNull()
-    expect(frameHeightFromMessage(msg({ height: Infinity }), 'tok')).toBeNull()
-    expect(frameHeightFromMessage(msg({ height: -5 }), 'tok')).toBeNull()
-    expect(frameHeightFromMessage(null, 'tok')).toBeNull()
-    expect(frameHeightFromMessage('str', 'tok')).toBeNull()
+    expect(frameSizeFromMessage(msg({ type: 'other' }), 'tok')).toBeNull()
+    expect(frameSizeFromMessage(msg({ token: 'stolen' }), 'tok')).toBeNull()
+    expect(frameSizeFromMessage(msg({ height: 'tall' }), 'tok')).toBeNull()
+    expect(frameSizeFromMessage(msg({ height: Infinity }), 'tok')).toBeNull()
+    expect(frameSizeFromMessage(msg({ height: -5 }), 'tok')).toBeNull()
+    expect(frameSizeFromMessage(null, 'tok')).toBeNull()
+    expect(frameSizeFromMessage('str', 'tok')).toBeNull()
   })
 })

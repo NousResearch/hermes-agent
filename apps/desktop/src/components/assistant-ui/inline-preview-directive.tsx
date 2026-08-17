@@ -3,29 +3,34 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
-import { ScrollGate } from '@/components/assistant-ui/embeds/scroll-gate'
 import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
-import { useI18n } from '@/i18n'
 import { isRemoteGateway } from '@/lib/media'
 import { localPreviewTarget } from '@/lib/local-preview'
 
 /**
  * `::preview{file="…"}` — a workspace HTML file rendered LIVE inside the
- * assistant message, bb-inline-vis style. A sandboxed iframe with an opaque
- * origin (`sandbox="allow-scripts"`, deliberately no `allow-same-origin`):
- * scripts run, but the document cannot reach the app, its cookies, storage,
- * or the bridge. The doc arrives via `srcdoc` from a bridge file read, so
- * single-file HTML (what agents generate) is fully live; relative sibling
- * assets don't resolve in an opaque origin — the header's rail affordance
- * covers multi-file apps with the full webview preview.
+ * assistant message. A sandboxed iframe with an opaque origin
+ * (`sandbox="allow-scripts"`, deliberately no `allow-same-origin`): scripts
+ * run and the widget is fully interactive, but the document cannot reach the
+ * app, its cookies, storage, or the bridge. The doc arrives via `srcdoc`
+ * from a bridge file read, so single-file HTML (what agents generate) is
+ * fully live; relative sibling assets don't resolve in an opaque origin.
  *
- * HEIGHT IS CONTENT-DRIVEN. The opaque origin means the parent can't measure
- * the document, but we own the srcdoc string — so a measuring script is
- * injected that posts the document's scrollHeight up via postMessage (tagged
- * with a per-mount token) on load and on every resize, and the frame tracks
- * it within the clamp band. Full-viewport pages (100vh) measure exactly the
- * height they're given, so they settle at the default instead of looping. An
- * explicit `height="480"` attribute opts out of auto-sizing entirely.
+ * SIZE IS CONTENT-DRIVEN. The opaque origin means the parent can't measure
+ * the document, but we own the srcdoc string — an injected script posts the
+ * content's size up via postMessage (tagged with a per-mount token). Height
+ * tracks live within the clamp band; width adopts ONCE from the first
+ * report, so a fixed-size widget shrink-wraps and sits left in the message
+ * flow like an image, while a fluid page measures the full viewport and
+ * stays column-wide. A `height="480"` attribute only sets the starting
+ * height — measurement always wins.
+ *
+ * NATIVE BY DEFAULT. A theme prelude injects first: the app's resolved
+ * theme tokens under friendly names (--foreground, --muted-foreground,
+ * --accent, --border, --card), the app font, zero body margin/padding, and
+ * a transparent background — so widget-shaped content reads as part of the
+ * app. The page's own styles override all of it, so a full page keeps its
+ * own design.
  *
  * Non-HTML targets and remote gateways (no local file access) fall back to
  * the standard preview-attachment card rather than a broken frame.
@@ -34,6 +39,8 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
+/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
+const MAX_COLUMN_WIDTH = 640
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
 
@@ -53,47 +60,112 @@ export function directiveFrameHeight(raw: string | undefined): number | null {
 
 const SIZE_MESSAGE_TYPE = 'hermes-inline-preview-size'
 
-/** The script injected into the srcdoc that reports content height to the
+/** Semantic tokens handed into the frame, resolved to concrete values from
+ *  the LIVE theme. Friendly names, not internal ones — this is the contract
+ *  reference HTML / skills write against (`var(--foreground)` etc.). */
+const THEME_BRIDGE_TOKENS: Record<string, string> = {
+  '--foreground': '--ui-text-primary',
+  '--muted-foreground': '--ui-text-tertiary',
+  '--accent': '--ui-accent',
+  '--border': '--ui-stroke-tertiary',
+  '--card': '--ui-bg-editor'
+}
+
+/** Resolve the bridge tokens + app font against the current document. */
+export function collectThemeBridge(): { vars: Record<string, string>; font: string } {
+  const vars: Record<string, string> = {}
+
+  if (typeof document !== 'undefined') {
+    const root = getComputedStyle(document.documentElement)
+
+    for (const [alias, source] of Object.entries(THEME_BRIDGE_TOKENS)) {
+      const value = root.getPropertyValue(source).trim()
+
+      if (value) {
+        vars[alias] = value
+      }
+    }
+  }
+
+  const font = typeof document === 'undefined' ? '' : getComputedStyle(document.body).fontFamily
+
+  return { vars, font }
+}
+
+/**
+ * The style prelude that makes an inline widget read as NATIVE: the app's
+ * resolved theme tokens as CSS vars, the app font, no margin, and a
+ * transparent background so the widget sits directly on the chat surface.
+ * Injected FIRST, so the page's own styles override every default here — a
+ * full page that wants its own look keeps it.
+ */
+export function themePrelude(vars: Record<string, string>, font: string): string {
+  const tokens = Object.entries(vars)
+    .map(([name, value]) => `${name}:${value}`)
+    .join(';')
+
+  const fontRule = font ? `font-family:${font};` : ''
+
+  return (
+    `<style>:root{${tokens}}` +
+    `html,body{margin:0;padding:0;background:transparent;color:var(--foreground,inherit);${fontRule}}</style>`
+  )
+}
+
+/** The script injected into the srcdoc that reports content size to the
  *  parent. Runs inside the opaque origin, so postMessage is its only door —
- *  it can say "I am N pixels tall" and nothing else. */
+ *  it can say "I am N pixels" and nothing else. Height is the document
+ *  scrollHeight; width is the union of the body children's boxes (intrinsic
+ *  content width — the document itself always fills the viewport, so
+ *  scrollWidth would just echo the frame back). */
 export function measurementScript(token: string): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +
-    ';var last=0;function post(){var d=document.documentElement;var b=document.body;' +
+    ';var lastH=0,lastW=0;function post(){var d=document.documentElement;var b=document.body;' +
     'var h=Math.max(d?d.scrollHeight:0,b?b.scrollHeight:0);' +
-    'if(Math.abs(h-last)>1){last=h;parent.postMessage({type:' +
+    'var w=0;if(b){var kids=b.children;var L=Infinity,R=0;for(var i=0;i<kids.length;i++){' +
+    'var r=kids[i].getBoundingClientRect();if(r.width===0&&r.height===0)continue;' +
+    'if(r.left<L)L=r.left;if(r.right>R)R=r.right}' +
+    'if(R>L)w=R-L}' +
+    'w=Math.ceil(w);' +
+    'if(Math.abs(h-lastH)>1||Math.abs(w-lastW)>1){lastH=h;lastW=w;parent.postMessage({type:' +
     JSON.stringify(SIZE_MESSAGE_TYPE) +
-    ',token:t,height:h},"*")}}' +
+    ',token:t,height:h,width:w},"*")}}' +
     'if(typeof ResizeObserver==="function"){var ro=new ResizeObserver(post);' +
     'ro.observe(document.documentElement);if(document.body)ro.observe(document.body)}' +
     'addEventListener("load",post);post()})()</script>'
   )
 }
 
-/** Inject the measuring script into a document string — before `</body>`
- *  when present so it runs after the page's own markup, appended otherwise. */
-export function withMeasurement(doc: string, token: string): string {
+/** Assemble the srcdoc: theme prelude first (so the page's own styles win),
+ *  measuring script before `</body>` when present so it runs after the
+ *  page's own markup, appended otherwise. */
+export function withInlineChrome(doc: string, token: string, prelude: string): string {
   const script = measurementScript(token)
   const bodyClose = /<\/body\s*>/i.exec(doc)
+  const framed = bodyClose ? doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index) : doc + script
 
-  if (bodyClose) {
-    return doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index)
-  }
+  return prelude + framed
+}
 
-  return doc + script
+export interface FrameSizeReport {
+  height: number
+  /** Intrinsic content width, 0 when unmeasurable. */
+  width: number
 }
 
 /** Parse a size report from the frame. Null unless it is OUR message type,
  *  carries OUR token, and holds a sane finite height — anything inside the
  *  sandbox can postMessage, so everything is validated before it moves the
- *  layout. Clamped to the band. */
-export function frameHeightFromMessage(data: unknown, token: string): number | null {
+ *  layout. Height clamped to the band; width sanitized but uncapped (the
+ *  frame caps it against the column at render). */
+export function frameSizeFromMessage(data: unknown, token: string): FrameSizeReport | null {
   if (typeof data !== 'object' || data === null) {
     return null
   }
 
-  const message = data as { type?: unknown; token?: unknown; height?: unknown }
+  const message = data as { type?: unknown; token?: unknown; height?: unknown; width?: unknown }
 
   if (message.type !== SIZE_MESSAGE_TYPE || message.token !== token || typeof message.height !== 'number') {
     return null
@@ -103,7 +175,15 @@ export function frameHeightFromMessage(data: unknown, token: string): number | n
     return null
   }
 
-  return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(message.height)))
+  const width =
+    typeof message.width === 'number' && Number.isFinite(message.width) && message.width > 0
+      ? Math.round(message.width)
+      : 0
+
+  return {
+    height: Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(message.height))),
+    width
+  }
 }
 
 const HTML_FILE_RE = /\.(?:html?|xhtml)$/i
@@ -123,26 +203,27 @@ export function InlinePreviewDirective({
     return file ? <PreviewAttachment source="explicit-link" target={file} /> : null
   }
 
-  return <InlineHtmlFrame file={file} fixedHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
+  return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
 }
 
 function InlineHtmlFrame({
   file,
-  fixedHeight,
+  initialHeight,
   streaming
 }: {
   file: string
-  /** Explicit `height` attribute — opts out of content-driven sizing. */
-  fixedHeight: number | null
+  /** `height` attribute — the starting height only; measurement overrides. */
+  initialHeight: number | null
   streaming: boolean
 }) {
-  const { t } = useI18n()
   const cwd = useStore(useSessionView().$cwd)
   const isDark = useIsDark()
   const [doc, setDoc] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
-  const heightRef = useRef<number>(fixedHeight ?? DEFAULT_HEIGHT)
+  const heightRef = useRef<number>(initialHeight ?? DEFAULT_HEIGHT)
+  const [contentWidth, setContentWidth] = useState<number | null>(null)
+  const adoptedWidthRef = useRef<number | null>(null)
 
   // One token per mount: the message listener only trusts reports from the
   // document THIS mount injected, so two previews in one transcript (or a
@@ -182,45 +263,65 @@ function InlineHtmlFrame({
   }, [path, streaming])
 
   useEffect(() => {
-    if (fixedHeight !== null) {
-      return
-    }
-
     const onMessage = (event: MessageEvent) => {
-      const next = frameHeightFromMessage(event.data, token)
+      const next = frameSizeFromMessage(event.data, token)
 
-      if (next !== null && Math.abs(next - heightRef.current) > RESIZE_TOLERANCE) {
-        heightRef.current = next
-        setMeasured(next)
+      if (next === null) {
+        return
+      }
+
+      if (Math.abs(next.height - heightRef.current) > RESIZE_TOLERANCE) {
+        heightRef.current = next.height
+        setMeasured(next.height)
+      }
+
+      // Width adopts ONCE, from the first report — measured at full column
+      // width, so it is the content's intrinsic span. Tracking width live
+      // would feedback-loop: %-width children reflow narrower every time
+      // the frame shrinks, spiraling toward zero.
+      if (adoptedWidthRef.current === null && next.width > 0) {
+        adoptedWidthRef.current = next.width
+        setContentWidth(next.width)
       }
     }
 
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [fixedHeight, token])
+  }, [token])
 
-  const framedDoc = useMemo(() => (doc === null ? null : withMeasurement(doc, token)), [doc, token])
+  // Resolved once per mount; theme switches remount the transcript anyway.
+  const framedDoc = useMemo(() => {
+    if (doc === null) {
+      return null
+    }
+
+    const { vars, font } = collectThemeBridge()
+
+    return withInlineChrome(doc, token, themePrelude(vars, font))
+  }, [doc, token])
 
   if (!path || failed) {
     return <PreviewAttachment source="explicit-link" target={file} />
   }
 
-  const height = fixedHeight ?? measured ?? DEFAULT_HEIGHT
+  const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
+  // Left-aligned in the message flow, like an image: the frame is only as
+  // wide as its content (capped at the column). Fluid pages measure the
+  // full viewport and stay full-bleed.
+  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
 
   return (
-    <span className="my-2 grid w-full max-w-160 gap-2">
+    <span className="my-2 block w-full max-w-160">
       {framedDoc === null ? (
         <span
-          className="grid w-full animate-pulse place-items-center rounded-lg border border-(--ui-stroke-tertiary) text-[0.75rem] text-muted-foreground"
+          className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"
           style={{ height }}
-        >
-          {t.preview.opening}
-        </span>
+        />
       ) : (
         <span
-          className="relative block w-full overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) transition-[height] duration-200"
-          style={{ height }}
+          className="relative block max-w-full transition-[height] duration-200"
+          style={{ height, width: width ?? '100%' }}
         >
           <iframe
             className="absolute inset-0 size-full border-0 bg-transparent"
@@ -230,10 +331,8 @@ function InlineHtmlFrame({
             style={{ colorScheme: isDark ? 'dark' : 'light' }}
             title={file}
           />
-          <ScrollGate />
         </span>
       )}
-      <PreviewAttachment source="explicit-link" target={file} />
     </span>
   )
 }

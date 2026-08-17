@@ -23,7 +23,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -35,6 +35,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    body_limit_middleware,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -315,6 +316,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/audio/transcriptions", adapter._handle_audio_transcriptions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
@@ -868,9 +870,14 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
+            assert data["features"]["audio_api"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["model_options"] is True
+            assert data["endpoints"]["audio_transcriptions"] == {
+                "method": "POST",
+                "path": "/v1/audio/transcriptions",
+            }
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
@@ -953,6 +960,198 @@ class TestToolsetsEndpoint:
             call.kwargs["features"] is feature_snapshot
             for call in has_keys.call_args_list
         )
+
+
+# ---------------------------------------------------------------------------
+# /v1/audio/transcriptions endpoint
+# ---------------------------------------------------------------------------
+
+
+def _transcription_form(**fields):
+    form = FormData()
+    form.add_field(
+        "file",
+        fields.pop("file", b"ID3 test audio"),
+        filename=fields.pop("filename", "sample.mp3"),
+        content_type="audio/mpeg",
+    )
+    for name, value in fields.items():
+        form.add_field(name, value)
+    return form
+
+
+class TestAudioTranscriptionsEndpoint:
+    def test_route_is_registered_for_native_and_profile_surfaces(self, adapter):
+        routes = {(method, path) for method, path, _handler in adapter._http_route_table()}
+        assert ("POST", "/v1/audio/transcriptions") in routes
+
+    @pytest.mark.asyncio
+    async def test_json_transcription_forwards_openai_fields_and_cleans_upload(self, adapter):
+        app = _create_app(adapter)
+        uploaded_path = None
+
+        def fake_transcribe(path, **kwargs):
+            nonlocal uploaded_path
+            uploaded_path = path
+            assert os.path.exists(path)
+            with open(path, "rb") as uploaded:
+                assert uploaded.read() == b"ID3 test audio"
+            assert kwargs == {
+                "model": "whisper-large-v3",
+                "language": "zh",
+                "prompt": "FunASR SenseVoice",
+                "source": "api_server",
+            }
+            return {"success": True, "transcript": "hello world", "provider": "local"}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+                resp = await cli.post(
+                    "/v1/audio/transcriptions",
+                    data=_transcription_form(
+                        model="whisper-large-v3",
+                        language="zh",
+                        prompt="FunASR SenseVoice",
+                    ),
+                )
+                body = await resp.json()
+
+        assert resp.status == 200
+        assert body == {"text": "hello world"}
+        assert uploaded_path is not None
+        assert not os.path.exists(uploaded_path)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response_format", ["text", "verbose_json"])
+    async def test_supported_response_formats(self, adapter, response_format):
+        app = _create_app(adapter)
+        result = {"success": True, "transcript": "hello", "provider": "groq"}
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch("tools.transcription_tools.transcribe_audio", return_value=result),
+                patch("tools.transcription_tools._probe_audio_duration", return_value=1.25),
+            ):
+                resp = await cli.post(
+                    "/v1/audio/transcriptions",
+                    data=_transcription_form(
+                        model="whisper-large-v3",
+                        language="en",
+                        response_format=response_format,
+                    ),
+                )
+                body = await resp.text() if response_format == "text" else await resp.json()
+
+        assert resp.status == 200
+        if response_format == "text":
+            assert resp.content_type == "text/plain"
+            assert body == "hello"
+        else:
+            assert body == {
+                "task": "transcribe",
+                "language": "en",
+                "duration": 1.25,
+                "text": "hello",
+                "segments": [],
+            }
+
+    @pytest.mark.asyncio
+    async def test_auth_is_checked_before_multipart_body(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.transcription_tools.transcribe_audio") as transcribe:
+                resp = await cli.post("/v1/audio/transcriptions", data=b"not multipart")
+
+        assert resp.status == 401
+        transcribe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chunked_upload_over_server_limit_returns_413(self, adapter):
+        seen_content_length = None
+
+        @web.middleware
+        async def capture_headers(request, handler):
+            nonlocal seen_content_length
+            seen_content_length = request.headers.get("Content-Length")
+            return await handler(request)
+
+        app = web.Application(middlewares=[capture_headers, body_limit_middleware])
+        app.router.add_post("/v1/audio/transcriptions", adapter._handle_audio_transcriptions)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server.MAX_REQUEST_BYTES", 64):
+                resp = await cli.post(
+                    "/v1/audio/transcriptions",
+                    data=_transcription_form(file=b"x" * 1024, model="whisper-1"),
+                    chunked=True,
+                )
+            body = await resp.json()
+
+        assert resp.status == 413
+        assert body["error"]["code"] == "body_too_large"
+        assert seen_content_length is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("form", "code"),
+        [
+            (_transcription_form(), "missing_model"),
+            (_transcription_form(model="whisper-1", response_format="srt"), "unsupported_response_format"),
+        ],
+    )
+    async def test_invalid_request_fields_return_openai_errors(self, adapter, form, code):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/transcriptions", data=form)
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert body["error"]["code"] == code
+
+    @pytest.mark.asyncio
+    async def test_unsupported_audio_extension_returns_400_without_dispatch(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.transcription_tools.transcribe_audio") as transcribe:
+                resp = await cli.post(
+                    "/v1/audio/transcriptions",
+                    data=_transcription_form(
+                        file=b"not audio",
+                        filename="notes.txt",
+                        model="whisper-1",
+                    ),
+                )
+                body = await resp.json()
+
+        assert resp.status == 400
+        assert body["error"]["code"] == "unsupported_audio_format"
+        transcribe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_is_redacted_and_cleans_upload(self, adapter):
+        app = _create_app(adapter)
+        uploaded_path = None
+
+        def fail(path, **_kwargs):
+            nonlocal uploaded_path
+            uploaded_path = path
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "OPENAI_API_KEY=sk-secret-provider-value failed",
+            }
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.transcription_tools.transcribe_audio", side_effect=fail):
+                resp = await cli.post(
+                    "/v1/audio/transcriptions",
+                    data=_transcription_form(model="whisper-1"),
+                )
+                body = await resp.json()
+
+        assert resp.status == 502
+        assert body["error"]["code"] == "transcription_failed"
+        assert "sk-secret-provider-value" not in body["error"]["message"]
+        assert uploaded_path is not None
+        assert not os.path.exists(uploaded_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2865,4 +3064,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

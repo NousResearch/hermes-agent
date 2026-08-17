@@ -2023,27 +2023,35 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
 def _convert_caf_to_wav(file_path: str) -> Optional[str]:
     """Convert CAF to WAV using ffmpeg or afconvert (macOS)."""
     audio_path = Path(file_path)
-    wav_path = os.path.join(audio_path.parent, f"{audio_path.stem}.wav")
-    ffmpeg = _find_ffmpeg_binary()
-    if ffmpeg:
-        try:
-            subprocess.run([ffmpeg, "-y", "-i", file_path, wav_path],
-                check=True, capture_output=True, text=True,
-                timeout=300, stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags())
-            return wav_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("ffmpeg CAF to WAV failed for %s: %s", file_path, e)
-    afconvert = shutil.which("afconvert")
-    if afconvert:
-        try:
-            subprocess.run([afconvert, file_path, wav_path, "-d", "LEI16", "-f", "WAVE"],
-                check=True, capture_output=True, text=True,
-                timeout=300, stdin=subprocess.DEVNULL)
-            return wav_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("afconvert CAF to WAV failed for %s: %s", file_path, e)
-    return None
+    work_dir = tempfile.mkdtemp(prefix="hermes-caf-")
+    wav_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
+    keep_result = False
+    try:
+        ffmpeg = _find_ffmpeg_binary()
+        if ffmpeg:
+            try:
+                subprocess.run([ffmpeg, "-y", "-i", file_path, wav_path],
+                    check=True, capture_output=True, text=True,
+                    timeout=300, stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags())
+                keep_result = True
+                return wav_path
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                logger.warning("ffmpeg CAF to WAV failed for %s: %s", file_path, e)
+        afconvert = shutil.which("afconvert")
+        if afconvert:
+            try:
+                subprocess.run([afconvert, file_path, wav_path, "-d", "LEI16", "-f", "WAVE"],
+                    check=True, capture_output=True, text=True,
+                    timeout=300, stdin=subprocess.DEVNULL)
+                keep_result = True
+                return wav_path
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                logger.warning("afconvert CAF to WAV failed for %s: %s", file_path, e)
+        return None
+    finally:
+        if not keep_result:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _transcribe_local_command(
@@ -2904,6 +2912,8 @@ def _transcribe_prepared_audio(
     file_path: str,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
@@ -2918,6 +2928,8 @@ def _transcribe_prepared_audio(
         source:    Optional caller-surface label (e.g. ``"gateway"``,
                    ``"voice_mode"``) forwarded to the ``pre_transcription``
                    plugin hook for observability. Not used for dispatch.
+        language:  Optional request-scoped language override.
+        prompt:    Optional request-scoped vocabulary/context hint.
 
     Returns:
         dict with keys:
@@ -2958,10 +2970,12 @@ def _transcribe_prepared_audio(
             return error
 
     # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
+    caf_cleanup_dir: Optional[str] = None
     if Path(file_path).suffix.lower() == ".caf" and provider not in ("local", "local_command"):
         converted = _convert_caf_to_wav(file_path)
         if converted:
             file_path = converted
+            caf_cleanup_dir = os.path.dirname(converted)
         else:
             return {"success": False, "transcript": "",
                     "error": "CAF audio could not be converted to WAV."}
@@ -2978,10 +2992,20 @@ def _transcribe_prepared_audio(
             trim_cleanup_dir = os.path.dirname(trimmed)
 
     try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        return _dispatch_stt_provider(
+            file_path,
+            provider,
+            stt_config,
+            model,
+            source,
+            language=language,
+            prompt=prompt,
+        )
     finally:
         if trim_cleanup_dir:
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
+        if caf_cleanup_dir:
+            shutil.rmtree(caf_cleanup_dir, ignore_errors=True)
 
 
 def _dispatch_stt_provider(
@@ -2990,13 +3014,15 @@ def _dispatch_stt_provider(
     stt_config: Dict[str, Any],
     model: Optional[str] = None,
     source: Optional[str] = None,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
     # Optional static transcription prompt (``stt.prompt`` in config.yaml):
     # vocabulary/context hints threaded to prompt-capable backends.
     # Ordering: config is the base; pre_transcription hook results mutate on
     # top, in registration order, so the last hook to set a field wins.
-    prompt = stt_config.get("prompt")
+    prompt = prompt or stt_config.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         prompt = None
 
@@ -3006,14 +3032,16 @@ def _dispatch_stt_provider(
     # read-only. The helper short-circuits on has_hook() so the no-hook
     # dispatch path stays byte-identical. ``language`` stays None unless a
     # hook overrides it — backends keep their own config/env resolution.
-    model, language, prompt = _apply_pre_transcription_hook(
+    base_language = language or _get_stt_section(stt_config, provider).get("language")
+    model, hook_language, prompt = _apply_pre_transcription_hook(
         file_path=file_path,
         provider=provider,
         model=model,
-        language=_get_stt_section(stt_config, provider).get("language"),
+        language=base_language,
         prompt=prompt,
         source=source,
     )
+    language = hook_language or base_language
 
     # Whisper-family prompt windows top out around 224 tokens — truncate
     # (keeping the tail) with a warning rather than erroring or letting a
@@ -3154,12 +3182,17 @@ def transcribe_audio(
     file_path: str,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Safely validate, preprocess supported inputs, and dispatch transcription.
 
     ``source`` is an optional caller-surface label (e.g. ``"gateway"``,
     ``"voice_mode"``) forwarded to the ``pre_transcription`` plugin hook for
     observability. Not used for dispatch.
+
+    ``language`` and ``prompt`` are optional request-scoped overrides used by
+    API surfaces. Existing callers continue to use provider configuration.
     """
     # Refuse to feed a credential / secret store (auth.json, .env, OAuth
     # tokens, mcp-tokens/, ...) to an STT provider — before ANY validation or
@@ -3192,7 +3225,13 @@ def transcribe_audio(
         prepared_error = _validate_audio_file(prepared_path, enforce_size_limit=False)
         if prepared_error:
             return prepared_error
-        return _transcribe_prepared_audio(prepared_path, model, source)
+        return _transcribe_prepared_audio(
+            prepared_path,
+            model,
+            source,
+            language=language,
+            prompt=prompt,
+        )
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

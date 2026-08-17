@@ -55,6 +55,30 @@ Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI i
 
 ## Endpoints
 
+### POST /v1/audio/transcriptions
+
+OpenAI-compatible speech-to-text. Send `multipart/form-data` with an audio
+`file` and a `model`. Hermes routes the upload through the STT provider in
+`config.yaml`, including local faster-whisper and OpenAI-compatible servers.
+The request's `model`, `language`, and `prompt` fields apply only to this
+transcription.
+
+```bash
+curl http://localhost:8642/v1/audio/transcriptions \
+  -H "Authorization: Bearer change-me-local-dev" \
+  -F "file=@meeting.webm" \
+  -F "model=whisper-large-v3" \
+  -F "language=en" \
+  -F "response_format=json"
+```
+
+`response_format` accepts `json` (default), `text`, or `verbose_json`. JSON
+responses contain `{"text": "..."}`; verbose JSON also includes the task,
+language, measured duration, and segments fields expected by OpenAI clients.
+Providers that do not return timestamp segments expose an empty `segments`
+array. Uploads share the API server's 10 MB request limit and are deleted after
+each request.
+
 ### POST /v1/chat/completions
 
 Standard OpenAI Chat Completions format. Stateless — the full conversation is included in each request via the `messages` array.
@@ -248,6 +272,7 @@ Returns a machine-readable description of the API server's stable surface for ex
   "auth": {"type": "bearer", "required": true},
   "features": {
     "chat_completions": true,
+    "audio_api": true,
     "responses_api": true,
     "run_submission": true,
     "run_status": true,
@@ -658,7 +683,7 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 ## Limitations
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
-- **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
+- **Chat file uploads are not supported** — inline images work on both `/v1/chat/completions` and `/v1/responses`, but uploaded chat files (`file`, `input_file`, `file_id`) and non-image document inputs do not. Audio upload is supported separately by `/v1/audio/transcriptions`.
 - **Simple OpenAI clients still see an alias** — `/v1/models` advertises the
   stable Hermes alias (`hermes-agent` or the active profile name). Richer
   clients can send explicit `provider` / `model_options` overrides on requests.

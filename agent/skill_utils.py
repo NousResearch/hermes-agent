@@ -607,8 +607,188 @@ def get_all_skills_dirs() -> List[Path]:
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
+
+    NOTE: trusted project-local dirs (``./.hermes/skills`` at the git root) are
+    NOT part of this list — they have *higher* precedence than the local dir,
+    so callers that need them use :func:`get_project_skills_dirs` and scan
+    those roots first. See ``get_scan_ordered_skills_dirs`` for the full
+    precedence-ordered list.
     """
     dirs = [get_skills_dir()]
+    dirs.extend(get_external_skills_dirs())
+    return dirs
+
+
+# ── Project-local skills directories ──────────────────────────────────────
+#
+# Repo-local skills, mirroring what OpenCode (.opencode/skill/, .agents/skills/)
+# and Codex (.codex/skills/, .agents/skills/) do: a project checkout can carry
+# its own skills, active only for sessions started inside that project.
+#
+# Two candidate roots at the project root (found by walking up from cwd to the
+# first directory containing ``.git``):
+#   <root>/.hermes/skills/   — Hermes-native location
+#   <root>/.agents/skills/   — cross-tool convention shared with other harnesses
+#
+# TRUST GATE: unlike AGENTS.md (plain instruction text), skills are load-on-
+# demand procedure documents an agent will follow — auto-sourcing them from any
+# cloned repo is a prompt-injection vector. Project skills therefore only load
+# when the project root is listed in ``skills.trusted_project_dirs`` in
+# config.yaml (Codex-style per-path trust). Untrusted dirs are still
+# *discoverable* via get_untrusted_project_skills_root() so the CLI can print
+# a one-line "run `hermes skills trust`" notice.
+#
+# PRECEDENCE: trusted project skills override same-named profile/bundled
+# skills (index scans project dirs first; skill_view resolves cross-tier
+# collisions in favor of the project tier). This matches both competitor
+# harnesses and is the point of the feature: vendored repo skills win inside
+# their repo.
+#
+# CACHE SAFETY: cwd is fixed for the life of a session, and the trust list is
+# read from config at agent build time — the resolved dirs are stable for the
+# conversation, so the skills index (and with it the system prompt) stays
+# byte-stable. Same contract as AGENTS.md injection and project plugins.
+
+PROJECT_SKILLS_SUBDIRS = (
+    os.path.join(".hermes", "skills"),
+    os.path.join(".agents", "skills"),
+)
+
+# Walk-up bound: don't scan the whole filesystem on pathological cwds.
+_PROJECT_ROOT_MAX_DEPTH = 64
+
+
+def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
+    """Locate the enclosing project root: nearest ancestor containing ``.git``.
+
+    Returns None when cwd is not inside a git checkout. ``.git`` may be a dir
+    (normal clone) or a file (worktree/submodule) — both count.
+    """
+    try:
+        cur = (start or Path.cwd()).resolve()
+    except OSError:
+        return None
+    home = Path.home().resolve()
+    for _ in range(_PROJECT_ROOT_MAX_DEPTH):
+        try:
+            if (cur / ".git").exists():
+                # A git checkout AT the home dir (dotfiles-style) would make
+                # every session project-scoped; treat home itself as non-project.
+                if cur == home:
+                    return None
+                return cur
+        except OSError:
+            return None
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+    return None
+
+
+def _project_trusted_dirs_from_config() -> Set[Path]:
+    """Resolved set of trusted project roots from ``skills.trusted_project_dirs``."""
+    parsed = _load_raw_config()
+    if not parsed:
+        return set()
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return set()
+    raw = skills_cfg.get("trusted_project_dirs")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return set()
+    result: Set[Path] = set()
+    for entry in raw:
+        entry = str(entry).strip()
+        if not entry:
+            continue
+        try:
+            result.add(Path(os.path.expanduser(os.path.expandvars(entry))).resolve())
+        except OSError:
+            continue
+    return result
+
+
+def is_project_root_trusted(root: Path) -> bool:
+    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+    try:
+        return Path(root).resolve() in _project_trusted_dirs_from_config()
+    except OSError:
+        return False
+
+
+def _candidate_project_skills_dirs(root: Path) -> List[Path]:
+    """Existing skill dirs under *root*, excluding the profile's own skills dir.
+
+    The exclusion matters when HERMES_HOME itself lives inside a git checkout:
+    ``<root>/.hermes/skills`` would otherwise double as both the profile-local
+    and the project tier.
+    """
+    local_skills = get_skills_dir().resolve()
+    dirs: List[Path] = []
+    for sub in PROJECT_SKILLS_SUBDIRS:
+        cand = root / sub
+        try:
+            if cand.is_dir() and cand.resolve() != local_skills:
+                dirs.append(cand.resolve())
+        except OSError:
+            continue
+    return dirs
+
+
+def get_project_skills_dirs() -> List[Path]:
+    """Trusted project-local skill dirs for the current cwd (may be empty).
+
+    Empty when: not in a git checkout, no project skills dirs exist, project
+    discovery is disabled (``skills.project_discovery: false``), or the
+    project root is not trusted.
+    """
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
+        return []
+    root = find_project_root()
+    if root is None:
+        return []
+    if not is_project_root_trusted(root):
+        return []
+    return _candidate_project_skills_dirs(root)
+
+
+def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
+    """When cwd's project has skills but is NOT trusted: (root, skill_count).
+
+    Used by the CLI to print a one-line notice pointing at
+    ``hermes skills trust``. Returns None when there is nothing to notify
+    about (no project, no skills, already trusted, or discovery disabled).
+    """
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
+        return None
+    root = find_project_root()
+    if root is None or is_project_root_trusted(root):
+        return None
+    count = 0
+    for d in _candidate_project_skills_dirs(root):
+        try:
+            count += sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
+        except OSError:
+            continue
+    if count == 0:
+        return None
+    return root, count
+
+
+def get_scan_ordered_skills_dirs() -> List[Path]:
+    """All skill dirs in precedence order: project → local → external.
+
+    First-wins name deduplication over this order gives project skills
+    priority over profile-local and external ones.
+    """
+    dirs = list(get_project_skills_dirs())
+    dirs.append(get_skills_dir())
     dirs.extend(get_external_skills_dirs())
     return dirs
 
@@ -643,6 +823,10 @@ def normalize_skill_lookup_name(identifier: str) -> str:
         primary_root = get_skills_dir()
 
     trusted_roots = [primary_root]
+    try:
+        trusted_roots.extend(get_project_skills_dirs())
+    except Exception:
+        pass
     try:
         trusted_roots.extend(get_external_skills_dirs())
     except Exception:
@@ -688,7 +872,14 @@ def is_external_skill_path(path) -> bool:
     not each need to re-interpret the config.
     """
     candidate = _resolve_for_skill_ownership(path)
-    for root in get_external_skills_dirs():
+    roots: List[Path] = list(get_external_skills_dirs())
+    # Trusted project-local dirs are repo-owned — same read-only boundary
+    # for autonomous lifecycle maintenance as configured external dirs.
+    try:
+        roots.extend(get_project_skills_dirs())
+    except Exception:
+        pass
+    for root in roots:
         resolved_root = _resolve_for_skill_ownership(root)
         try:
             candidate.relative_to(resolved_root)

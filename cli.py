@@ -8328,6 +8328,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "[dim]   Switch with: /model sonnet  or  /model gpt5[/]"
             )
 
+        # Project-local skills: one-line status. Trusted → show count;
+        # untrusted-with-skills → point at `hermes skills trust`. Never raises.
+        try:
+            from agent.skill_utils import (
+                get_project_skills_dirs,
+                get_untrusted_project_skills_root,
+                iter_skill_index_files,
+            )
+            _proj_dirs = get_project_skills_dirs()
+            if _proj_dirs:
+                _n = sum(
+                    sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
+                    for d in _proj_dirs
+                )
+                if _n:
+                    self._console_print(
+                        f"[dim]◆ {_n} project skill(s) loaded from this repo[/]"
+                    )
+            else:
+                _untrusted = get_untrusted_project_skills_root()
+                if _untrusted is not None:
+                    _root, _n = _untrusted
+                    self._console_print(
+                        f"[yellow]◆ {_n} project skill(s) found in {_root} but not "
+                        f"loaded — run `hermes skills trust` to enable them.[/]"
+                    )
+        except Exception:
+            logger.debug("project skills banner notice failed", exc_info=True)
+
         self._console_print()
 
     def _restore_session_cwd(self, session_meta: dict, *, quiet: bool = False) -> None:

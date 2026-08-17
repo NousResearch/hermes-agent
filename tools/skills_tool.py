@@ -685,7 +685,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature changes (dir/category mtimes or the disabled-set) and expires
     after a short TTL to bound staleness from in-place SKILL.md edits.
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        get_project_skills_dirs,
+        iter_skill_index_files,
+    )
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
 
@@ -695,8 +699,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Collect directories to scan — same resolution as the scan loop below
     # (_skills_dir() resolves the LIVE profile HERMES_HOME; the module-level
-    # SKILLS_DIR can be stale in long-lived runtimes).
-    dirs_to_scan: list = []
+    # SKILLS_DIR can be stale in long-lived runtimes). Trusted project-local
+    # dirs come FIRST: first-wins dedup below gives them precedence over
+    # same-named local/external skills.
+    dirs_to_scan: list = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
     if active_skills_dir.exists():
         dirs_to_scan.append(active_skills_dir)
@@ -1194,7 +1200,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -1210,8 +1216,11 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
-        all_dirs = []
+        # Build list of all skill directories to search. Project dirs first —
+        # they're the highest-precedence tier and the collision resolver
+        # below uses this ordering.
+        project_dirs = get_project_skills_dirs()
+        all_dirs = list(project_dirs)
         active_skills_dir = _skills_dir()
         if active_skills_dir.exists():
             all_dirs.append(active_skills_dir)
@@ -1310,6 +1319,30 @@ def skill_view(
                 ):
                     _record(None, found_md)
 
+        if len(candidates) > 1 and project_dirs:
+            # Cross-tier collision resolution: a project skill intentionally
+            # overrides a same-named local/external skill, so when at least
+            # one candidate lives under a trusted project dir, narrow to
+            # those. Ambiguity WITHIN the project tier still refuses below.
+            def _in_project(smd: Path) -> bool:
+                try:
+                    resolved = smd.resolve()
+                except Exception:
+                    resolved = smd
+                for pd in project_dirs:
+                    try:
+                        resolved.relative_to(pd)
+                        return True
+                    except ValueError:
+                        continue
+                return False
+
+            project_candidates = [
+                (sd, smd) for sd, smd in candidates if _in_project(smd)
+            ]
+            if project_candidates:
+                candidates = project_candidates
+
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
             logging.getLogger(__name__).warning(
@@ -1362,11 +1395,12 @@ def skill_view(
             )
 
         # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # (project dirs + local skills dir + configured external_dirs — i.e.
+        # everything in all_dirs — are trusted)
         _outside_skills_dir = True
         _trusted_dirs = [active_skills_dir.resolve()]
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            _trusted_dirs.extend(d.resolve() for d in all_dirs)
         except Exception:
             pass
         for _td in _trusted_dirs:

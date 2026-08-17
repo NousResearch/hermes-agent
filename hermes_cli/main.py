@@ -12048,10 +12048,87 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
+    elif getattr(args, "skills_action", None) in ("trust", "untrust"):
+        _cmd_skills_trust(args)
     else:
         from hermes_cli.skills_hub import skills_command
 
         skills_command(args)
+
+
+def _cmd_skills_trust(args):
+    """``hermes skills trust [path]`` / ``hermes skills untrust [path]``.
+
+    Manages ``skills.trusted_project_dirs`` in config.yaml. With no path,
+    operates on the project root enclosing the current directory (nearest
+    ancestor with ``.git``).
+    """
+    from pathlib import Path
+
+    from agent.skill_utils import (
+        PROJECT_SKILLS_SUBDIRS,
+        _candidate_project_skills_dirs,
+        find_project_root,
+        iter_skill_index_files,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    action = args.skills_action
+    raw_path = getattr(args, "path", None)
+    if raw_path:
+        root = Path(raw_path).expanduser().resolve()
+        if not root.is_dir():
+            print(f"Not a directory: {root}")
+            return
+    else:
+        root = find_project_root()
+        if root is None:
+            print(
+                "Not inside a git checkout. Run from a project directory or "
+                "pass the project root path explicitly."
+            )
+            return
+
+    config = load_config()
+    skills_cfg = config.setdefault("skills", {})
+    trusted = skills_cfg.get("trusted_project_dirs") or []
+    if not isinstance(trusted, list):
+        trusted = [trusted]
+    trusted = [str(t) for t in trusted]
+    root_str = str(root)
+
+    if action == "untrust":
+        kept = [t for t in trusted if str(Path(t).expanduser().resolve()) != root_str]
+        if len(kept) == len(trusted):
+            print(f"{root} was not trusted.")
+            return
+        skills_cfg["trusted_project_dirs"] = kept
+        save_config(config)
+        print(f"Untrusted: {root}")
+        print("Project skills from this repo will no longer load.")
+        return
+
+    # trust
+    if any(str(Path(t).expanduser().resolve()) == root_str for t in trusted):
+        print(f"Already trusted: {root}")
+    else:
+        trusted.append(root_str)
+        skills_cfg["trusted_project_dirs"] = trusted
+        save_config(config)
+        print(f"Trusted: {root}")
+
+    # Show what this unlocks
+    count = 0
+    for d in _candidate_project_skills_dirs(root):
+        count += sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
+    if count:
+        print(
+            f"{count} project skill(s) will load in sessions started inside "
+            "this repo (they take precedence over same-named profile skills)."
+        )
+    else:
+        subdirs = " or ".join(PROJECT_SKILLS_SUBDIRS)
+        print(f"No project skills found yet — add them under {subdirs}.")
 
 
 def cmd_pairing(args):

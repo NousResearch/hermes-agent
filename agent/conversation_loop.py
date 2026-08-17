@@ -1038,6 +1038,16 @@ _CODEX_INCOMPLETE_NUDGE = (
     "you were planning).]"
 )
 
+# Providers that expose a reasoning-only chat-completions response (not a
+# replayable Responses reasoning item) need a changed next request. The
+# thinking-only assistant stub is deliberately dropped from the API copy for
+# strict OpenAI-compatible servers, so merely appending it reissues the same
+# user prompt and can deterministically exhaust retries before fallback.
+_THINKING_ONLY_VISIBLE_ANSWER_NUDGE = (
+    "[System: You have completed reasoning for the request above. Now produce "
+    "the visible answer or required tool call. Do not continue reasoning.]"
+)
+
 
 # Re-prompt sent after a Codex/Responses turn ends with an acknowledgment-only
 # reply (no tool calls, no final answer) — named so
@@ -7584,6 +7594,20 @@ def run_conversation(
                         )
                         interim_msg["_thinking_prefill"] = True
                         append_message(messages, interim_msg)
+                        # The API-copy sanitiser correctly removes the empty
+                        # reasoning-only assistant stub for strict providers.
+                        # Without this one user continuation, that removal
+                        # makes the next local request identical to the one
+                        # that just consumed its output budget on reasoning.
+                        if agent._thinking_prefill_retries == 1:
+                            append_message(messages, {
+                                "role": "user",
+                                "content": _THINKING_ONLY_VISIBLE_ANSWER_NUDGE,
+                                # Reuse the established persistence marker:
+                                # this is transport-only retry scaffolding,
+                                # never user-authored durable context.
+                                "_empty_recovery_synthetic": True,
+                            })
                         agent._session_messages = messages
                         continue
 

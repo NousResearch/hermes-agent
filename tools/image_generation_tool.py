@@ -184,20 +184,23 @@ def _plugin_provider_name() -> Optional[str]:
         return None
     return configured
 
-
 def _resolve_fal_model(override: Optional[str] = None) -> tuple:
     """``(model_id, meta)`` for the effective FAL model — a non-empty per-call ``override``
     (the ``model`` argument surfaced in the ``image_generate`` schema) wins over the
     configured ``image_gen.model`` — falling back to DEFAULT_MODEL (warned) when the
-    resolved id is unknown."""
-    model_id = override.strip() if isinstance(override, str) else ""
+    resolved id is unknown. When an override was requested but dropped, the returned
+    meta carries ``"override_dropped": True`` so the response can signal the fallback."""
+    requested = override.strip() if isinstance(override, str) else ""
     # FAL_IMAGE_MODEL is an undocumented escape hatch (backward-compat for tests/scripts).
-    model_id = model_id or _read_configured_image_model() or os.getenv("FAL_IMAGE_MODEL", "").strip()
+    model_id = requested or _read_configured_image_model() or os.getenv("FAL_IMAGE_MODEL", "").strip()
     if model_id and model_id not in FAL_MODELS:
         logger.warning("Unknown FAL model '%s' in config; falling back to %s", model_id, DEFAULT_MODEL)
         model_id = None
     model_id = model_id or DEFAULT_MODEL
-    return model_id, FAL_MODELS[model_id]
+    meta = FAL_MODELS[model_id]
+    if requested and requested != model_id:
+        meta = dict(meta, override_dropped=True)
+    return model_id, meta
 
 
 _SIZE_KEY_BY_STYLE = {"image_size_preset": "image_size", "gpt_literal": "image_size",
@@ -420,7 +423,9 @@ def image_generate_tool(
     silently so callers survive model switches). ``model`` is the per-call override surfaced in
     the ``image_generate`` schema; it wins over ``image_gen.model`` from config for this call
     only, and empty / whitespace / non-string values fall back to the configured default.
-    Returns JSON ``{"success", "image", "modality", "error", "error_type"}``.
+    Returns JSON ``{"success", "image", "modality", "model", "error", "error_type"}`` — plus
+    ``"model_override_dropped": true`` when a per-call override was requested but the id was
+    unrecognized (``"model"`` then names the fallback actually used).
     """
     model_id, meta = _resolve_fal_model(model)
     refs = reference_image_urls if isinstance(reference_image_urls, (list, tuple)) else []
@@ -467,11 +472,15 @@ def image_generate_tool(
                     len(formatted_images), generation_time, upscaled_count, endpoint, modality)
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
-        return finish(generation_time, {
+        response_data = {
             "success": True,
             "image": formatted_images[0]["url"],
             "modality": modality,
-            "upscaled": bool(formatted_images[0].get("upscaled"))})
+            "upscaled": bool(formatted_images[0].get("upscaled")),
+            "model": model_id}
+        if meta.get("override_dropped"):
+            response_data["model_override_dropped"] = True
+        return finish(generation_time, response_data)
     except Exception as e:
         error_msg = f"Error generating image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
@@ -619,7 +628,9 @@ def _dispatch_to_plugin_provider(
     model: Optional[str] = None):
     """JSON result from the selected plugin provider, or ``None`` to fall through to in-tree FAL
     (provider unset / ``"fal"`` / ``"nous"``). Providers without ``upscale`` ignore it via
-    ``**kwargs``; a per-call ``model`` override wins over the configured ``image_gen.model``."""
+    ``**kwargs``; a per-call ``model`` override wins over the configured ``image_gen.model``.
+    Backends without a per-call model concept receive the value via ``**kwargs`` and ignore
+    it — the provider ABC contract requires implementations to accept unknown kwargs."""
     configured = _plugin_provider_name()
     if configured is None:
         return None
@@ -837,13 +848,10 @@ _UPSCALE_PARAM = {
 _MODEL_PARAM = {
     "type": "string",
     "description": (
-        "Optional backend-specific model identifier that overrides the "
-        "configured default for this call only (e.g. a FAL model id, an "
-        "OpenAI or xAI image model, or — when the active backend exposes a "
-        "bot-name catalog — a specific bot name). The set of valid values "
-        "depends on the active backend; leave unset to use the configured "
-        "default. Ignored by backends that don't accept a per-call model "
-        "override."
+        "Optional backend-specific model id that overrides the configured "
+        "default for this call only. Valid values depend on the active "
+        "backend; leave unset to use the configured default. Ignored by "
+        "backends that don't accept a per-call model override."
     ),
 }
 

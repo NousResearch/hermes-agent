@@ -9,7 +9,6 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -770,6 +769,22 @@ class TestUpscaleDispatchForwarding:
     def test_resolve_fal_model_falls_back_to_configured(self, image_tool, monkeypatch):
         """Empty / whitespace override falls back to the configured value."""
         monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
-        monkeypatch.setattr(os, "getenv", lambda key, default=None: "fal-ai/gpt-image-1.5" if key == "FAL_IMAGE_MODEL" else (default or ""))
+        monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/gpt-image-1.5")
         model_id, _meta = image_tool._resolve_fal_model("   ")
         assert model_id == "fal-ai/gpt-image-1.5"
+
+    def test_resolve_fal_model_override_dropped_signal(self, image_tool, monkeypatch):
+        """An unrecognized override id signals fallback via metadata."""
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.delenv("FAL_IMAGE_MODEL", raising=False)
+        model_id, meta = image_tool._resolve_fal_model("fal-ai/nonexistent-model")
+        assert model_id == image_tool.DEFAULT_MODEL
+        assert meta.get("override_dropped") is True
+
+    def test_resolve_fal_model_no_override_dropped_when_unset(self, image_tool, monkeypatch):
+        """No override means no override_dropped flag in metadata."""
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.delenv("FAL_IMAGE_MODEL", raising=False)
+        model_id, meta = image_tool._resolve_fal_model(None)
+        assert model_id == image_tool.DEFAULT_MODEL
+        assert "override_dropped" not in meta

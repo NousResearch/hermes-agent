@@ -1854,6 +1854,14 @@ def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
 _MAX_PERSISTENT_REPAIR_ATTEMPTS = 3
 _MAX_MALFORMED_BACKUPS = 3
 
+# Sidecars copied alongside a damaged DB and pruned with it. ``-journal`` is
+# included because rollback-journal (DELETE) mode — Hermes's fallback on
+# NFS/SMB/FUSE/ZFS and on WAL-reset-vulnerable SQLite builds — leaves a hot
+# journal on disk whenever a transaction was open, and that file is what
+# interprets the damaged bytes. Omitting it from the forensic copy means the
+# backup cannot be rolled back to a consistent state by hand.
+_DB_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
 # Head/tail bytes sampled by ``_db_fingerprint``. Enough to change whenever
 # the DB is genuinely repaired, truncated or restored (SQLite rewrites the
 # header on any real recovery), while staying O(1) on a multi-GB file.
@@ -2080,7 +2088,7 @@ def _existing_malformed_backups(db_path: Path) -> "List[Path]":
             p
             for p in db_path.parent.iterdir()
             if p.name.startswith(prefix)
-            and not p.name.endswith(("-wal", "-shm"))
+            and not p.name.endswith(_DB_SIDECAR_SUFFIXES)
         ]
     except OSError:
         return []
@@ -2092,8 +2100,7 @@ def _prune_malformed_backups(db_path: Path, keep: int = _MAX_MALFORMED_BACKUPS) 
     for stale in _existing_malformed_backups(db_path)[keep:]:
         for victim in (
             stale,
-            stale.with_name(stale.name + "-wal"),
-            stale.with_name(stale.name + "-shm"),
+            *(stale.with_name(stale.name + suffix) for suffix in _DB_SIDECAR_SUFFIXES),
         ):
             try:
                 victim.unlink(missing_ok=True)
@@ -2191,7 +2198,7 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
         # Refuse while there is still room to refuse in.
         try:
             need = db_path.stat().st_size
-            for suffix in ("-wal", "-shm"):
+            for suffix in _DB_SIDECAR_SUFFIXES:
                 sidecar = db_path.with_name(db_path.name + suffix)
                 if sidecar.exists():
                     need += sidecar.stat().st_size
@@ -2236,7 +2243,7 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
         try:
             shutil.copy2(db_path, staging)
             staged.append((staging, backup_path))
-            for suffix in ("-wal", "-shm"):
+            for suffix in _DB_SIDECAR_SUFFIXES:
                 sidecar = db_path.with_name(db_path.name + suffix)
                 if sidecar.exists():
                     side_staging = staging.with_name(staging.name + suffix)

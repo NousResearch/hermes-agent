@@ -618,3 +618,62 @@ def test_genuine_recovery_still_resets_the_budget(tmp_path):
     with open(db, "r+b") as handle:
         handle.truncate(4096)
     assert _db_fingerprint(db) != before, "truncation left the fingerprint unchanged"
+
+
+def test_forensic_backup_includes_the_rollback_journal(tmp_path):
+    """DELETE mode leaves a hot -journal, and that file interprets the damage.
+
+    Rollback-journal mode is Hermes's fallback on NFS/SMB/FUSE/ZFS and on
+    WAL-reset-vulnerable SQLite builds. A forensic copy without the journal
+    cannot be rolled back to a consistent state by hand.
+    """
+    db = _damaged_db(tmp_path, size=20_000)
+    for suffix, payload in (("-wal", b"WALDATA"), ("-journal", b"JOURNALDATA")):
+        db.with_name(db.name + suffix).write_bytes(payload)
+
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+    with patch("shutil.disk_usage", return_value=roomy):
+        path, reason = _backup_db_file(db)
+    assert reason is None and path is not None
+
+    journal_copy = path.with_name(path.name + "-journal")
+    assert journal_copy.exists(), "the rollback journal was left out of the backup"
+    assert journal_copy.read_bytes() == b"JOURNALDATA"
+    assert path.with_name(path.name + "-wal").read_bytes() == b"WALDATA"
+
+    # Sidecar copies must not inflate the retention count.
+    assert len(_existing_malformed_backups(db)) == 1
+
+
+def test_prune_removes_journal_sidecars_too(tmp_path):
+    """Otherwise the retention cap leaks one -journal per pruned backup."""
+    db = _damaged_db(tmp_path, size=20_000)
+    db.with_name(db.name + "-journal").write_bytes(b"J")
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+    for _ in range(_MAX_MALFORMED_BACKUPS + 2):
+        db.write_bytes(b"SQLite format 3\x00" + os.urandom(20_000))
+        with patch("shutil.disk_usage", return_value=roomy):
+            _backup_db_file(db)
+
+    kept = _existing_malformed_backups(db)
+    assert len(kept) <= _MAX_MALFORMED_BACKUPS
+
+    # Assert on what is ON DISK rather than on the paths returned earlier: a
+    # same-second stamp collision means an earlier return value can name a file
+    # a later pass legitimately recreated.
+    kept_names = {p.name for p in kept}
+    orphans = [
+        p.name
+        for p in tmp_path.iterdir()
+        if p.name.endswith("-journal")
+        and ".malformed-backup-" in p.name
+        and p.name[: -len("-journal")] not in kept_names
+    ]
+    assert not orphans, f"pruned backups left journals behind: {orphans}"
+    # And every surviving backup keeps its journal.
+    for survivor in kept:
+        assert survivor.with_name(survivor.name + "-journal").exists()

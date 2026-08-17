@@ -141,6 +141,12 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+try:  # mautrix is an optional extra; keep import-time safe without it
+    from mautrix.util.logging import SILLY as _MAUTRIX_SILLY, TRACE as _MAUTRIX_TRACE
+except ImportError:  # pragma: no cover — matches mautrix 0.21.x values
+    _MAUTRIX_TRACE = 5
+    _MAUTRIX_SILLY = 1
+
 
 class _MautrixCryptoLogger(logging.LoggerAdapter):
     """Provide mautrix's non-standard trace levels on a stdlib logger.
@@ -156,10 +162,10 @@ class _MautrixCryptoLogger(logging.LoggerAdapter):
     """
 
     def trace(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self.log(5, msg, *args, **kwargs)
+        self.log(_MAUTRIX_TRACE, msg, *args, **kwargs)
 
     def silly(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self.log(1, msg, *args, **kwargs)
+        self.log(_MAUTRIX_SILLY, msg, *args, **kwargs)
 
 
 def _mautrix_crypto_logger() -> _MautrixCryptoLogger:

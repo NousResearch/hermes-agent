@@ -9,7 +9,7 @@
  * desktop's selection never flips the server-wide current-board pointer.
  */
 
-import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
+import { atom, type PluginOs, type PluginRestOptions, type PluginStorage, type PluginTranslate, queryClient } from '@hermes/plugin-sdk'
 
 // Native completion notification.
 import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
@@ -85,9 +85,9 @@ interface Persisted<T> {
  *  runs on unload/disable — so nothing (store sync, socket) survives a toggle
  *  or duplicates on re-enable. The events socket is pinned to a board at
  *  handshake, so a board switch closes + reopens it. */
-export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => void {
+export function bindApi(r: Rest, storage: PluginStorage, socket: Socket, notifyDoors?: { os?: PluginOs; t?: PluginTranslate }): () => void {
   rest = r
-  bindCompletionNotify(r)
+  bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
   // Hydrate an atom from storage and keep storage in sync with it.

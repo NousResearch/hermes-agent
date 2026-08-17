@@ -1,11 +1,9 @@
 """Meta Model API (Muse Spark) provider plugin for Hermes Agent.
 
-Self-contained, out-of-tree provider profile for Meta Superintelligence Labs'
-Muse Spark family, served via the OpenAI-compatible Meta Model API at
-``https://api.meta.ai/v1``.
+Provider profile for Meta Superintelligence Labs' Muse Spark family, served
+via the OpenAI-compatible Meta Model API at ``https://api.meta.ai/v1``.
 
-Install by copying this directory to
-``$HERMES_HOME/plugins/model-providers/meta-ai/`` (see ``install.sh``). Hermes'
+Bundled from https://github.com/albertodepaola/hermes-meta-provider. Hermes'
 provider discovery (``providers/__init__.py``) imports it on first
 ``get_provider_profile()`` / ``list_providers()`` call, and the module-level
 ``register_provider()`` below wires it into the registry.

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -547,6 +548,74 @@ class TestCheckRequirements:
             assert check_requirements() is False
         warnings = [r for r in caplog.records if "CLI binary was not" in r.getMessage()]
         assert len(warnings) == 1
+
+    def test_yaml_extras_only_config_passes(self, monkeypatch, tmp_path):
+        """A documented config.yaml-only setup (extra.cli_path +
+        extra.credentials_file, zero BUZZ_* env vars) must pass the gate —
+        the adapter itself resolves these extras, so rejecting them parks a
+        perfectly runnable platform as adapter_unavailable (PR #88310
+        review finding 1)."""
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n")
+        fake_cli.chmod(0o755)
+        creds = tmp_path / "creds.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromyaml"}), encoding="utf-8")
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_config_yaml_extra",
+            lambda: {
+                "relay_url": "https://yaml.relay",
+                "cli_path": str(fake_cli),
+                "credentials_file": str(creds),
+            },
+        )
+        assert check_requirements() is True
+
+    def test_env_wins_over_yaml_extras(self, monkeypatch, tmp_path):
+        """Env precedence must match the adapter constructor: an explicit
+        BUZZ_CLI_PATH pointing at a missing file fails even when YAML names
+        a valid binary."""
+        creds = tmp_path / "creds.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromyaml"}), encoding="utf-8")
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n")
+        fake_cli.chmod(0o755)
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_config_yaml_extra",
+            lambda: {
+                "relay_url": "https://yaml.relay",
+                "cli_path": str(fake_cli),
+                "credentials_file": str(creds),
+            },
+        )
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(tmp_path / "definitely-missing"))
+        assert check_requirements() is False
+
+    def test_yaml_extra_read_failure_falls_back_to_env_only(self, monkeypatch):
+        """_config_yaml_extra is best-effort: a config read blowing up must
+        degrade to the env-only behavior, not take down the check."""
+        self._configure_creds(monkeypatch)
+        monkeypatch.setattr(_buzz_mod, "_resolve_cli_path", lambda configured="": "")
+        # _config_yaml_extra itself already swallows exceptions; simulate a
+        # clean empty read here.
+        monkeypatch.setattr(_buzz_mod, "_config_yaml_extra", lambda: {})
+        assert check_requirements() is False
+
+    def test_apply_yaml_config_bridges_credentials_file(self, monkeypatch, tmp_path):
+        """extra.credentials_file must bridge to BUZZ_CREDENTIALS_FILE like
+        the other extras — it was the one documented key the YAML→env hook
+        skipped."""
+        monkeypatch.delenv("BUZZ_CREDENTIALS_FILE", raising=False)
+        try:
+            _buzz_mod._apply_yaml_config(
+                {}, {"extra": {"credentials_file": str(tmp_path / "c.json")}}
+            )
+            assert os.environ.get("BUZZ_CREDENTIALS_FILE") == str(tmp_path / "c.json")
+        finally:
+            # _apply_yaml_config mutates os.environ directly (that's its
+            # job); scrub so the leak can't bleed into other tests.
+            os.environ.pop("BUZZ_CREDENTIALS_FILE", None)
 
 
 class TestConnectMissingBinary:

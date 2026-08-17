@@ -1281,12 +1281,22 @@ def check_requirements() -> bool:
     and hard-exits the whole gateway (exit 78).  Returning False here means
     the registry logs the install_hint and the gateway degrades gracefully
     (#5196), exactly like Photon when node/npm are absent.
+
+    ``check_fn`` receives no PlatformConfig, but the adapter itself resolves
+    ``extra.cli_path`` / ``extra.credentials_file`` from config.yaml — so this
+    gate must consult the same sources or a documented YAML-only setup gets
+    parked as ``adapter_unavailable`` even though ``BuzzAdapter(config)``
+    would run fine (review finding on PR #88310).  Env vars win over YAML,
+    matching the adapter constructor's precedence.
     """
-    if not os.getenv("BUZZ_RELAY_URL", "").strip():
+    extra = _config_yaml_extra()
+    relay = os.getenv("BUZZ_RELAY_URL", "").strip() or str(extra.get("relay_url", "") or "").strip()
+    if not relay:
         return False
-    if not _resolve_private_key():
+    if not _resolve_private_key(extra):
         return False
-    if not _resolve_cli_path(os.getenv("BUZZ_CLI_PATH", "").strip()):
+    configured_cli = os.getenv("BUZZ_CLI_PATH", "").strip() or str(extra.get("cli_path", "") or "").strip()
+    if not _resolve_cli_path(configured_cli):
         # WARNING (not DEBUG): unlike the normal "not configured yet" state,
         # relay+key present but no binary means the user finished setup and
         # the install itself is broken — say so.  Logged once per process:
@@ -1302,6 +1312,45 @@ def check_requirements() -> bool:
             )
         return False
     return True
+
+
+def _config_yaml_extra() -> dict:
+    """Best-effort read of the buzz ``extra`` block from config.yaml.
+
+    ``check_requirements()`` runs both after the YAML→env bridge (gateway
+    startup) and from paths where no bridge has run (status polling, CLI
+    entrypoints), so it cannot rely on ``BUZZ_*`` env vars being populated
+    from YAML.  Mirrors the lookup order gateway/config.py uses to find a
+    platform block: top-level ``buzz:`` → ``platforms.buzz`` →
+    ``gateway.platforms.buzz``.  Fail-quiet: any read/parse problem returns
+    ``{}`` so the env-only path behaves exactly as before.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        if not isinstance(cfg, dict):
+            return {}
+        block = None
+        for candidate in (
+            cfg.get("buzz"),
+            (cfg.get("platforms") or {}).get("buzz") if isinstance(cfg.get("platforms"), dict) else None,
+            (
+                ((cfg.get("gateway") or {}).get("platforms") or {}).get("buzz")
+                if isinstance(cfg.get("gateway"), dict)
+                and isinstance((cfg.get("gateway") or {}).get("platforms"), dict)
+                else None
+            ),
+        ):
+            if isinstance(candidate, dict):
+                block = candidate
+                break
+        if block is None:
+            return {}
+        extra = block.get("extra", block)
+        return extra if isinstance(extra, dict) else {}
+    except Exception:
+        return {}
 
 
 def validate_config(config) -> bool:
@@ -1335,6 +1384,7 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
     _str_keys = {
         "relay_url": "BUZZ_RELAY_URL",
         "cli_path": "BUZZ_CLI_PATH",
+        "credentials_file": "BUZZ_CREDENTIALS_FILE",
         "home_channel": "BUZZ_HOME_CHANNEL",
         "transport": "BUZZ_TRANSPORT",
     }

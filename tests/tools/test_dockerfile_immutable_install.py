@@ -145,6 +145,25 @@ def test_dockerfile_bakes_buzz_cli_binary() -> None:
     # Deterministic build from the committed lockfile.
     assert "cargo build --release -p buzz-cli --locked" in text
 
+    # Effective-compiler policy (review finding on PR #88310): the official
+    # rust images are rustup-managed, and the pinned Buzz checkout ships a
+    # rust-toolchain.toml — without an explicit RUSTUP_TOOLCHAIN pin, rustup
+    # downloads whatever toolchain the checkout requests, so the compiler is
+    # NOT determined by the digest-pinned image and the build gains a hidden
+    # network dependency. The builder image version and the RUSTUP_TOOLCHAIN
+    # pin must agree so the baked toolchain is the one actually used.
+    builder = re.search(r"FROM rust:(\d+\.\d+)[^\n]*@sha256:[0-9a-f]{64} AS buzz_build", text)
+    assert builder, "buzz builder image must be digest-pinned"
+    toolchain = re.search(r"AS buzz_build\nENV RUSTUP_TOOLCHAIN=(\d+\.\d+(\.\d+)?)\n", text)
+    assert toolchain, (
+        "buzz_build must pin RUSTUP_TOOLCHAIN explicitly — otherwise the "
+        "checkout's rust-toolchain.toml selects the compiler at build time"
+    )
+    assert toolchain.group(1).startswith(builder.group(1)), (
+        f"RUSTUP_TOOLCHAIN ({toolchain.group(1)}) must match the baked rust "
+        f"image version ({builder.group(1)}) so no download is needed"
+    )
+
     # The binary must land on PATH in the runtime image, where the buzz
     # adapter's _resolve_cli_path() finds it via shutil.which("buzz").
     assert re.search(

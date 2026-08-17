@@ -55,12 +55,25 @@ FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f
 # prebuilt CLI artifacts (releases only contain the desktop app bundles), so
 # hosted images shipped the adapter without its binary — Buzz-enabled
 # instances then died at startup. Build the CLI from a pinned source tag.
-# The workspace is pure-rustls (ring provider, no OpenSSL linkage), so the
-# resulting binary carries no shared-lib deps beyond glibc; bookworm's
-# glibc 2.36 runs cleanly on the trixie (2.41) runtime, mirroring the
-# node_source rationale above. Layer-cached: only re-runs when the pinned
-# ref changes. Bumping Buzz is a one-line ARG change.
-FROM rust:1.90-slim-bookworm@sha256:64232e656c058f4468e8d024e990acff04f0fd5a5c0a88a574dc37773d7325c9 AS buzz_build
+# The buzz-cli dependency tree uses rustls (ring/aws-lc-rs providers) with
+# no OpenSSL/native-tls linkage, so the resulting binary carries no
+# shared-lib deps beyond glibc/libm/libgcc; bookworm's glibc 2.36 runs
+# cleanly on the trixie (2.41) runtime, mirroring the node_source rationale
+# above. Layer-cached: only re-runs when the pinned ref changes. Bumping
+# Buzz is a one-line ARG change.
+#
+# Toolchain pinning: the pinned Buzz checkout ships rust-toolchain.toml
+# (channel = "1.95.0"), and the official rust images are rustup-managed —
+# without an override, rustup would silently download whatever toolchain
+# the checkout requests at build time, making the compiler undetermined by
+# the digest-pinned image and adding a hidden network dependency on
+# static.rust-lang.org. The base image ships 1.95 AND RUSTUP_TOOLCHAIN
+# forces it explicitly, so the effective compiler is exactly the baked one
+# regardless of what a future BUZZ_GIT_REF's rust-toolchain.toml says.
+# When bumping BUZZ_GIT_REF, check the new checkout's rust-toolchain.toml
+# and bump the image + RUSTUP_TOOLCHAIN together if it moved.
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS buzz_build
+ENV RUSTUP_TOOLCHAIN=1.95.0
 # v0.5.2 — pin the commit SHA, not the tag: tags are mutable, SHAs are not.
 ARG BUZZ_GIT_REF=3e48f1b2365d326ee1c9582448d86a99b44ecd5d
 RUN apt-get -o Acquire::Retries=3 update && \

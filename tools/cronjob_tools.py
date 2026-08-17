@@ -658,6 +658,17 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    stored_refs = job.get("context_from") or []
+    if isinstance(stored_refs, str):
+        stored_refs = [stored_refs]
+    if any(str(r).strip().lower() == "self" or r == job.get("id") for r in stored_refs):
+        result["continuity"] = True
+    external_refs = [
+        r for r in stored_refs
+        if str(r).strip().lower() != "self" and r != job.get("id")
+    ]
+    if external_refs:
+        result["context_from"] = external_refs
     return result
 
 

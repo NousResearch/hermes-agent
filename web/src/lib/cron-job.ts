@@ -76,7 +76,11 @@ export function cronJobHasExecutionContent(
 
 export function cronJobFormFromJob(job: CronJob): CronJobFormState {
   const storedRefs = splitCronList(job.context_from);
-  const continuity = storedRefs.some((item) => item.toLowerCase() === "self");
+  // Raw store records carry the reserved "self" entry inside context_from;
+  // tool/RPC-formatted records strip it and set an explicit continuity flag.
+  const continuity =
+    Boolean((job as { continuity?: boolean }).continuity) ||
+    storedRefs.some((item) => item.toLowerCase() === "self");
   const externalRefs = storedRefs.filter((item) => item.toLowerCase() !== "self");
   return {
     name: asString(job.name),

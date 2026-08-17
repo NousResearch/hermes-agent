@@ -648,6 +648,8 @@ cronjob(
 
 The first run has no previous output, so the prompt runs as-is. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). It combines freely with upstream jobs (`context_from=["<other_job_id>"]` plus `continuity=true`), and `continuity=false` on update turns it off while preserving other `context_from` entries. Internally the flag is stored as the reserved `self` entry in `context_from`.
 
+From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and `hermes cron edit <job_id> --continuity` / `--no-continuity` to toggle it on an existing job. The same toggle appears in the dashboard's cron editor and the desktop Bot Mode routine dialog.
+
 **When to use it:**
 
 - Multi-stage pipelines (collect → filter → format → deliver)

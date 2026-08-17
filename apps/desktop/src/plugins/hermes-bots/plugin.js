@@ -2241,10 +2241,11 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
   const localProfiles = Array.isArray(local?.profiles) ? local.profiles : []
   const agents = Array.isArray(union?.agents) ? union.agents : []
   // A live id of null/'' means the window is on the unscoped local backend
-  // (host.state.connectionId is null for mode:'local'). Do NOT fall back to
-  // registry primary in that case — primary can still say "spark" after the
-  // user clicked a local bot, which skipped every Spark row as "active" and
-  // invented a This-device shadow of default.
+  // (legacy hosts reported null for mode:'local'; the SDK now reports
+  // 'local'). Do NOT fall back to registry primary when the third argument
+  // was passed — primary can still say "spark" after the user clicked a
+  // local bot, which skipped every Spark row as "active" and invented a
+  // This-device shadow of default.
   const liveProvided = arguments.length >= 3
   const liveId = String(activeConnectionId || '').trim()
   const activeId = liveId || (liveProvided ? '' : String(union?.primaryConnectionId || '').trim())
@@ -2338,12 +2339,22 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
         .filter(Boolean)
     )
 
+    const registered = new Set(
+      (Array.isArray(union?.sources) ? union.sources : [])
+        .map(source => String(source?.connectionId || '').trim())
+        .filter(Boolean)
+    )
+
     for (const row of previous) {
       const connectionId = String(row?.connectionId || '').trim()
       const name = String(row?.name || '').trim()
       const key = `${connectionId}::${name || 'default'}`
 
       if (!row?.remoteSource || !connectionId || !name || present.has(key)) {
+        continue
+      }
+
+      if (registered.size > 0 && !registered.has(connectionId)) {
         continue
       }
 

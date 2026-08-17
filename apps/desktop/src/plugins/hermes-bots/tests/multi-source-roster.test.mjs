@@ -417,6 +417,39 @@ test('merge: previously seen remotes survive a connect-on-demand empty union', (
   assert.equal(out.profiles.filter(p => p.name === 'default').length, 1)
 })
 
+test('merge: previous remotes from a removed connection do not resurrect', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const previous = [
+    { name: 'default', last_session: { id: 'this-chat' } },
+    {
+      name: 'bob',
+      remoteSource: true,
+      sourceScoped: true,
+      connectionId: 'gone',
+      connectionKind: 'ssh',
+      connectionLabel: 'Gone',
+      handle: 'bob'
+    }
+  ]
+  const local = { profiles: [{ name: 'default', last_session: { id: 'this-chat' } }] }
+  const union = {
+    primaryConnectionId: 'local',
+    agents: [
+      {
+        connectionId: 'local',
+        connectionKind: 'local',
+        connectionLabel: 'This device',
+        profile: 'default',
+        handle: 'default'
+      }
+    ],
+    sources: [{ connectionId: 'local', kind: 'local' }]
+  }
+
+  const out = merge(local, union, 'local', previous)
+  assert.equal(out.profiles.find(p => p.connectionId === 'gone'), undefined)
+})
+
 test('displayName: local default stays Hermes; remote default uses the device label', () => {
   const { __displayName: name } = runtime()
 

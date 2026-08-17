@@ -43,6 +43,7 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
+from agent.i18n import t
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
@@ -247,10 +248,11 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             reason = "weekly usage limit"
         elif "quota" in lower:
             reason = "quota limit"
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider {reason}. "
-            f"{_fallback_chain_phrase()} "
-            "Full details saved in cron output."
+        return t(
+            "gateway.cron_failure_rate_limit",
+            job_name=job_name,
+            reason=reason,
+            fallback_chain=_fallback_chain_phrase(),
         )
 
     # Scheduler inactivity watchdog shape ("idle for {n}s (limit {m}s)"). Must precede the generic
@@ -277,10 +279,10 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     if provider_reachable and (
         "readtimeout" in lower or "timed out" in lower or "timeout" in lower
     ):
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            f"{_fallback_chain_phrase()} "
-            "Full details saved in cron output."
+        return t(
+            "gateway.cron_failure_timeout",
+            job_name=job_name,
+            fallback_chain=_fallback_chain_phrase(),
         )
 
     # Whole-token 401/403 and auth wording so "oauth", "4015" etc. don't trip a false auth message.

@@ -2574,6 +2574,7 @@ export const ar = defineLocale({
     secretSendFailed: 'فشل إرسال السر',
     sudoTitle: 'مطلوب sudo',
     sudoDesc: 'أدخل كلمة المرور لمتابعة الأمر.',
+    sudoDescCommand: 'يحتاج Hermes إلى كلمة مرور sudo لتشغيل:',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',

@@ -77,6 +77,47 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
     assert sudo_stdin == "\n"
 
 
+def test_sudo_prompt_callback_receives_command(monkeypatch):
+    """A command-aware sudo callback gets the command to show in the UI (#79874)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    seen = {}
+
+    def _cb(command=None):
+        seen["command"] = command
+        return "pw"
+
+    monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: _cb)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo pacman -S task")
+
+    assert seen.get("command") == "sudo pacman -S task"
+    assert transformed == "sudo -S -p '' pacman -S task"
+    assert sudo_stdin == "pw\n"
+
+
+def test_sudo_prompt_zero_arg_callback_still_works(monkeypatch):
+    """Legacy zero-arg callbacks (CLI prompt_toolkit) keep working (#79874)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    calls = []
+
+    def _cb():
+        calls.append(1)
+        return "pw"
+
+    monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: _cb)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo apt update")
+
+    assert calls == [1]
+    assert sudo_stdin == "pw\n"
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")

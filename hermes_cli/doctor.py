@@ -1072,6 +1072,11 @@ def check_macos_tcc_grants() -> None:
             "(could not read code-signing requirement of the desktop bundle)",
         )
         return
+    # The DR string is the only readable signal — TCC.db itself needs Full
+    # Disk Access. A cdhash anchor marks the pre-#73681 ad-hoc identity
+    # (rebuild ⇒ new cdhash ⇒ stale grants); its absence marks identifier-
+    # pinned. Treat the match as a proxy for the signing class, not a
+    # contract on DR wording.
     if "cdhash" in dr.lower():
         check_warn(
             "macOS TCC grants will reset after every update",
@@ -1087,8 +1092,9 @@ def check_macos_tcc_grants() -> None:
     )
     check_info(
         "If macOS still re-prompts for permissions (toggle shows ON): the stored "
-        "grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes`, "
-        "toggle it ON in System Settings, then fully quit & relaunch Hermes once."
+        "grant is stale — run `tccutil reset ScreenCapture com.nousresearch.hermes` "
+        "(repeat per affected service), toggle it ON in System Settings, then "
+        "fully quit & relaunch Hermes once."
     )
 
 
@@ -1096,15 +1102,20 @@ def _desktop_app_bundle() -> Path | None:
     """Locate the locally-built desktop app bundle, if any.
 
     Mirrors the install layout the self-updater produces
-    (``apps/desktop/release/mac-<arch>/Hermes.app``).
+    (``apps/desktop/release/mac-<arch>/Hermes.app``) — the only layout whose
+    ad-hoc re-signed bundle can invalidate TCC grants. When multiple arch
+    trees coexist (stale cross-build), the newest wins, matching
+    ``_desktop_packaged_executable``'s selection. ``/Applications/Hermes.app``
+    is deliberately not probed: it is the separately-signed Hermes-Setup
+    launcher (``com.nousresearch.hermes.setup``, certificate-anchored), whose
+    grants are stable by construction and unaffected by rebuilds.
     """
     root = Path(__file__).resolve().parents[1]
     release_dir = root / "apps" / "desktop" / "release"
-    for arch in ("mac-arm64", "mac-x64"):
-        app = release_dir / arch / "Hermes.app"
-        if app.is_dir():
-            return app
-    return None
+    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _macos_desktop_dr(app: Path) -> str | None:
@@ -1112,12 +1123,17 @@ def _macos_desktop_dr(app: Path) -> str | None:
     codesign = shutil.which("codesign")
     if not codesign:
         return None
-    proc = subprocess.run(
-        [codesign, "-d", "--requirements", "-", str(app)],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    try:
+        proc = subprocess.run(
+            [codesign, "-d", "--requirements", "-", str(app)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # Never let a hanging codesign abort the whole doctor run — the
+        # caller falls through to its "could not read" warning.
+        return None
     if proc.returncode != 0:
         return None
     return (proc.stdout or "") + (proc.stderr or "")

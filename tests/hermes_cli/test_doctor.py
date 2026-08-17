@@ -1,6 +1,7 @@
 """Tests for hermes_cli.doctor."""
 
 import os
+import subprocess
 import sys
 import types
 import io
@@ -1601,6 +1602,38 @@ class TestMacOSTCCGrants:
             lambda: tmp_path / "Hermes.app",
         )
         monkeypatch.setattr(doctor_mod, "_macos_desktop_dr", lambda app: "")
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+    def test_warns_when_codesign_times_out(self, monkeypatch, capsys, tmp_path):
+        """A hanging codesign must degrade to the unreadable-DR warning, never crash."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+
+        def _timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=["codesign"], timeout=15)
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", _timeout)
+        doctor_mod.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+    def test_warns_when_codesign_missing(self, monkeypatch, capsys, tmp_path):
+        """No codesign binary → same graceful unreadable-DR warning."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_mod,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda _name: None)
         doctor_mod.check_macos_tcc_grants()
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out

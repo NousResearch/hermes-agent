@@ -7023,8 +7023,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(
                 "  ℹ macOS: if Hermes re-prompts for permissions you already "
                 "granted (toggle shows ON), the stored grant is stale — run "
-                "`tccutil reset ScreenCapture com.nousresearch.hermes`, toggle "
-                "it ON in System Settings, then fully quit & relaunch once."
+                "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat "
+                "per affected service), toggle it ON in System Settings, then "
+                "fully quit & relaunch once."
             )
 
         # ── Post-update state.db integrity guard (#68474) ─────────────────

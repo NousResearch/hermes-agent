@@ -2004,7 +2004,7 @@ DEFAULT_CONFIG = {
         # guard (which stays the enforcement layer) and only when the
         # optional `skillevaluator` binary is on PATH:
         #   uv tool install --python 3.13 \
-        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"
+        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
         # Findings are informational — shown with file/line before the
         # install confirmation, never blocking. Secrets-class findings
         # (private keys, tokens, credentialed connection strings) are

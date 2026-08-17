@@ -102,7 +102,9 @@ class TestParseReport:
         assert report.findings == []
         assert report.incomplete_checks == ["Security Scan"]
 
-    def test_incomplete_check_findings_not_collected(self):
+    def test_incomplete_check_findings_preserved(self):
+        """Partial evidence from an incomplete validator is kept as findings
+        (Nir Paz review) — only the validator's pass/fail verdict is excluded."""
         raw = _report_json([])
         raw["results"].append({
             "validator": "Security Scan",
@@ -111,7 +113,23 @@ class TestParseReport:
             "findings": [_finding("hardcoded_secrets", severity="critical")],
         })
         report = _parse_report(raw)
-        assert report.findings == []
+        assert len(report.findings) == 1
+        assert report.findings[0].is_secrets_class
+        assert report.incomplete_checks == ["Security Scan"]
+        # findings present -> report is not clean, even though the only
+        # failing validator was incomplete
+        assert not report.passed
+
+    def test_incomplete_check_without_findings_stays_passed(self):
+        raw = _report_json([])
+        raw["results"].append({
+            "validator": "Security Scan",
+            "passed": False,
+            "status": "incomplete",
+            "findings": [],
+        })
+        report = _parse_report(raw)
+        assert report.passed
 
     def test_complete_failed_check_still_fails(self):
         report = _parse_report(_report_json([_finding("emails")]))

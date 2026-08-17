@@ -355,8 +355,8 @@ the `security` check; without it that check simply reports "not run"):
 
 ```bash
 uv tool install --python 3.13 \
-  "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"
-uv tool install "git+https://github.com/NVIDIA/SkillSpector.git"
+  "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
+uv tool install "git+https://github.com/NVIDIA/SkillSpector.git@v2.9.5"
 ```
 
 Without the binary on PATH the scan is silently skipped. To turn it off

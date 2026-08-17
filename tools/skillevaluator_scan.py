@@ -28,7 +28,7 @@ Design contract (deliberate):
 The scanner binary is optional::
 
     uv tool install --python 3.13 \
-        "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"
+        "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
 
 Enable/disable via ``skills.tier1_advisory`` in config.yaml (default: on;
 a no-op unless the binary is installed).
@@ -57,7 +57,7 @@ SCANNER_NAME = "skillevaluator-tier1"
 #
 # `security` invokes NVIDIA SkillSpector (a second optional binary,
 # pinned separately: uv tool install
-# "git+https://github.com/NVIDIA/SkillSpector.git") in its static-rules
+# "git+https://github.com/NVIDIA/SkillSpector.git@v2.9.5") in its static-rules
 # mode — still keyless, no LLM calls. When SkillSpector is absent or its
 # report fails SkillEvaluator's internal consistency checks, the check
 # reports status="incomplete" and is treated as "no opinion" here.
@@ -143,22 +143,22 @@ def tier1_advisory_enabled() -> bool:
 def _parse_report(report: dict) -> Tier1Report:
     """Reduce a SkillEvaluator JSON report to install-relevant findings.
 
-    A validator whose ``status`` is ``"incomplete"`` produced no usable
-    evidence (e.g. SkillSpector missing, or its report failed
-    SkillEvaluator's internal consistency checks) — its fail verdict
-    carries no findings, so it is recorded as an incomplete check and
-    excluded from the pass/fail signal rather than rendered as an
-    unexplained failure.
+    A validator whose ``status`` is ``"incomplete"`` produced partial
+    evidence at best (e.g. SkillSpector missing, or its report failed
+    SkillEvaluator's internal consistency checks). Its findings ARE
+    kept — partial evidence is still evidence — but the validator is
+    excluded from the pass/fail signal, so an evidence-free fail
+    verdict can't render as an unexplained failure.
     """
     findings: List[Tier1Finding] = []
     incomplete: List[str] = []
     any_complete_failed = False
     for res in report.get("results", []) or []:
         validator = str(res.get("validator", "unknown"))
-        if str(res.get("status", "")).lower() == "incomplete":
+        is_incomplete = str(res.get("status", "")).lower() == "incomplete"
+        if is_incomplete:
             incomplete.append(validator)
-            continue
-        if not res.get("passed", True):
+        elif not res.get("passed", True):
             any_complete_failed = True
         for f in res.get("findings", []) or []:
             if not isinstance(f, dict):
@@ -219,7 +219,10 @@ def format_tier1_report(report: Tier1Report, limit: int = 10) -> str:
         return ""
     lines: List[str] = []
     if not report.findings:
-        lines.append("SkillEvaluator Tier 1: no findings.")
+        if report.incomplete_checks:
+            lines.append("SkillEvaluator Tier 1: no findings from completed checks.")
+        else:
+            lines.append("SkillEvaluator Tier 1: no findings.")
     else:
         lines.append(
             f"SkillEvaluator Tier 1 (advisory): "

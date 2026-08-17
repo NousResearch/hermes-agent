@@ -16,7 +16,6 @@
  */
 
 import * as sdk from '@hermes/plugin-sdk'
-import { Streamdown } from 'streamdown'
 import {
   atom,
   Button,
@@ -68,6 +67,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const { McpTab, ToolsetConfigPanel } = sdk
 // Keep optional exports feature-detected; test harnesses may strip the SDK namespace.
 const SkillsView = typeof sdk === 'undefined' ? undefined : sdk.SkillsView
+const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 
 const ID = 'hermes-bots'
 const ROSTER_KEY = [ID, 'roster']
@@ -6492,8 +6492,8 @@ function GroupChatWorkspace({ group, members }) {
                         ]
                       }),
                       jsx('div', {
-    className: 'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0',
-    children: jsx(Streamdown, { children: entry.text })
+                        className: 'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0',
+                        children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                       })
                     ]
                   }, `${entry.at}:${index}`)

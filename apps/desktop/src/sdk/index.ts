@@ -633,3 +633,6 @@ export { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 /** Plugin-local reactive state (share between a trigger and its panel, poll
  *  loops, cross-component signals) — the same primitive `host.state` uses. */
 export { atom, computed } from 'nanostores'
+/** Markdown renderer (same pipeline core chat surfaces use) so plugins render
+ *  message text as a preview instead of raw Markdown source. */
+export { Streamdown } from 'streamdown'

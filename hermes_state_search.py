@@ -836,6 +836,21 @@ class SessionSearchMixin:
         return run == 1
 
     @staticmethod
+    def _or_relaxed_query(query: str) -> Optional[str]:
+        """The sanitized implicit-AND query rewritten as an any-term OR query, or ``None`` when
+        relaxation does not apply: fewer than two searchable units (a single term cannot relax)
+        or explicit ``OR``/``NOT`` (the caller expressed exact semantics). Quoted phrases stay
+        whole units: ``"docker networking" tls`` -> ``"docker networking" OR tls``."""
+        units: List[str] = []
+        for raw_token in _LIKE_TOKEN_RE.findall(query):
+            upper = raw_token.upper()
+            if upper in {"OR", "NOT"}:
+                return None
+            if upper != "AND":
+                units.append(raw_token)
+        return " OR ".join(units) if len(units) >= 2 else None
+
+    @staticmethod
     def _trigram_eligible_tokens(query: str) -> bool:
         """True when every non-operator token is >=3 chars: a shorter token produces no
         trigrams, and with FTS5's implicit AND one such token empties the whole MATCH."""
@@ -1113,6 +1128,20 @@ class SessionSearchMixin:
                 matches = self._match_rows("messages_fts_cjk", fb_query, **route) or matches
             if not matches and self._trigram_available and self._trigram_eligible_tokens(query):
                 matches = self._match_rows("messages_fts_trigram", fb_query, **route) or matches
+
+        # OR-relaxed retry (port of nearai/ironclaw#7553 ``Filter::FtsRanked``): the implicit AND
+        # between terms means a paraphrased multi-word query misses a stored sentence that lacks
+        # even ONE word ("when does Sarah like her standup scheduled" vs "Sarah prefers the standup
+        # meeting scheduled ... Thursday mornings"). Once the exact query and the substring
+        # fallbacks all miss, retry the unicode61 index matching ANY term; bm25 ranks rows covering
+        # more terms first. Gated on a zero-result miss so hits keep exact-match semantics and
+        # ordering; explicit OR/NOT, single-term and CJK-routed queries are left alone.
+        if not matches and not is_cjk and not self._fts_stale:
+            relaxed = self._or_relaxed_query(query)
+            if relaxed is not None:
+                matches = self._match_rows("messages_fts", relaxed, fail_open="OR-relaxed",
+                                           operational_debug="OR-relaxed FTS retry failed; keeping empty result",
+                                           **route) or matches
         return self._finalize_search_matches(matches, result_fields=result_fields)
 
     def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any]) -> List[Dict[str, Any]]:

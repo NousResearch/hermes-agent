@@ -1,0 +1,115 @@
+---
+title: "Bot Mode"
+description: "Turn your Hermes profiles into a roster of named Bots — each with its own chat, role, model, memory, skills, and avatar. Bots run routines, share group chats, and message each other."
+---
+
+# Bot Mode
+
+**Bot Mode** turns your [Hermes profiles](./profiles.md) into a roster of named **Bots**. Each Bot has its own role, model, memory, skills, and avatar; Bots run recurring routines, deliberate together in group chats, and message each other directly. Build a specialist Bot once and it is there forever, one click away.
+
+Bot Mode ships **built into the [desktop app](./desktop.md)** and is **on by default** — no install needed. It appears as a **Bots** tab next to Sessions, with a **Routines** tile docked beside the conversation.
+
+:::tip A Bot is a profile
+There is no new primitive to learn: a Bot **is** a Hermes profile — isolated config, memory, skills, credentials, and chat history under `~/.hermes/profiles/<name>/`. Bot Mode is a UI over that primitive, so everything you do in it is visible from the CLI too: `hermes -p <bot> chat` opens the same agent, and Bot routines appear in `hermes cron list`. No core patches, no background daemons, no extra storage.
+:::
+
+## The Bots pane
+
+The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.
+
+- **Click a Bot** to land in its chat — every Bot has a canonical, persistent **Bot Chat** conversation that is created (and pinned) the moment the Bot is born.
+- **Sessions** (from a Bot's context menu) browses and filters that profile's 200 most recent stored conversations, without changing the primary click-to-chat flow.
+- **Active now** — a presence strip above the roster shows every Bot currently working: the gateway-busy profile plus any Bot that wrote within the last 90 seconds. Each chip opens that Bot's chat. The strip never reorders the roster and disappears when the fleet is idle.
+- **Search** filters the roster as you type.
+
+:::note The canonical Bot Chat is a forever-chat
+Typing `/new` (or `/reset`) inside a Bot's canonical chat would fork the relationship into a scratch session — the one thing Bot Mode promises never happens. The composer reroutes it to `/compact` instead: fresh working context, same conversation. Regular sessions on the same profile keep full `/new` freedom.
+:::
+
+## Creating a Bot
+
+Hit **New Agent** in the roster. The quick path is three fields — **Name**, **Title**, **Description** — and the Bot exists in seconds, introducing itself as the first message of its new Bot Chat.
+
+An **Advanced** disclosure opens the full capabilities surface:
+
+- **Clone from an existing profile** — start from another Bot's config, skills, SOUL, and memory, or pick **Fresh profile** for a clean start.
+- **Create empty** — skip the bundled skills entirely for a minimal profile.
+- **Model & provider pin** — give the Bot its own model. Any provider/model pair Hermes knows about works, and different Bots can run on different models side by side. Leave it unset to inherit from the launch profile.
+- **Custom SOUL.md** — the Bot's persona and standing instructions.
+- **Per-skill, per-toolset, and per-MCP-server enablement** — tick exactly the capabilities this specialist needs.
+- **Shared keys** — by default the new Bot shares one OAuth/token pool with the main profile, so credential refreshes cannot invalidate each other. (Older gateways copy credentials instead — still functional, just forked.)
+
+**Edit Profile** (right-click a Bot) reopens the same surface on the live profile any time: avatar, title, description, model pin, skills, toolsets, MCP servers, and the full SOUL.md.
+
+**Duplicate** (right-click) makes a full clone of a Bot — config, skills, SOUL.md, memory, and its look. **Delete Profile** permanently removes one, behind the same destructive confirmation the desktop's profile menu uses; the default profile cannot be deleted.
+
+## Avatars
+
+Every Bot gets a face:
+
+- **Geometric faces** — 7 shapes × 10 colors, with blinking eyes that scan while the Bot works.
+- **An uploaded image** — any picture you like.
+- **An AI-generated portrait** — when an image backend is configured, generated in place (this rides the standard `image.generate` RPC and works over both local and remote gateways).
+- **A pixel pet** — a companion from the [petdex gallery](./features/pets.md) that bounces beside the avatar while the Bot is busy. Run `hermes pets` in a terminal to explore the gallery.
+
+A Bot's look, title, and description are stored in the profile's metadata on the backend, so the same Bot appears the same way on every desktop connected to that backend.
+
+## Routines
+
+The **Routines** pane attaches recurring tasks to the Bot that does them — "summarize my inbox every morning" lives next to the Bot responsible for it. A structured schedule picker builds the schedule (frequency first, then only the detail that matters), with an Advanced field exposing the raw Hermes schedule string.
+
+Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name>] <routine>` — they also show up in `hermes cron list` and the core Cron page. Runs land in the Bot's own chat history, so the result is right where you would talk to that Bot anyway.
+
+## Groups and group chats
+
+Right-click a Bot → **Move to group** to organize the roster into labeled sections — pick an existing group or create one inline. Ungrouped Bots stay on top; groups follow alphabetically, and a group disappears when its last member leaves.
+
+**Open chat** on any group header (2–6 Bots) opens a shared room where the whole group coordinates:
+
+- Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
+- Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group header shows a **needs you** badge when that happens.
+- Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
+- Each member keeps its own persistent `Group: <name>` session, so room context survives like any other conversation.
+
+## Bot-to-bot messaging
+
+Bots message each other with attribution, and you can hand work off from any chat:
+
+- **@mentions** — type `@researcher have a look at this` in any chat and the active Bot hands the message off, waits for the reply, and reports back. Mention names are validated against the live roster, so an email address or an unknown `@` passes through untouched.
+- **Direct messages** — a Bot reaches a teammate's Bot Chat through the standard CLI: `hermes -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing -Q -q "Message from 🤖 <sender> (@<sender>): ..."`. The receiving Bot sees the message the next time it runs and knows how to reply, because the messaging protocol is part of its Bot Chat system prompt.
+
+The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
+
+```yaml
+agent:
+  bot_mode_protocol: true   # inject the bot-to-bot messaging protocol into canonical Bot Chats
+```
+
+:::note
+Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.
+:::
+
+## Bots across machines
+
+When you register several backends in **Settings → Connections** — the local runtime, remote gateways, SSH hosts, Hermes Cloud instances — the roster shows the Bots from **every** connected source. When the same profile name exists on several sources, handles disambiguate as `@name-device` (for example `@research-homelab`). Opening a Bot dials its own source: its chats, sessions, memory, and routines live on the machine that owns the profile.
+
+See [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md) for the full multi-connection guide.
+
+## Turning it off
+
+Bot Mode is a bundled desktop plugin. Flip it off in **Settings → Plugins → Bots** — the roster, the Routines pane, and the composer middleware unregister live, no restart needed. Your profiles, sessions, and cron jobs are untouched either way; Bot Mode never owns your data, it only renders it.
+
+There is also a preference to hide the canonical Bot Chats from the regular sidebar session list, so they only appear inside the Bots pane. (This uses the core hidden-session flag; on older gateways the chats simply stay visible.)
+
+## CLI parity
+
+Because Bots are profiles, everything has a terminal equivalent:
+
+| In Bot Mode | From a shell |
+| --- | --- |
+| Chat with a Bot | `hermes -p <bot> chat` |
+| A Bot's files, skills, memory | `~/.hermes/profiles/<bot>/` |
+| Routines | `hermes cron list` (jobs named `[bot:<name>] …`) |
+| Create / inspect profiles | `hermes profile create`, `hermes profile list` |
+
+See [Profiles](./profiles.md) for the underlying primitive and [Profile Commands](../reference/profile-commands.md) for the full CLI reference.

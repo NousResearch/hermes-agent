@@ -2094,6 +2094,23 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
         )
         seq += 1
     try:
+        # Sweep staging debris from an earlier interrupted pass (kill mid-copy)
+        # BEFORE the dedupe below. A leftover staging file is a byte-identical
+        # copy of the damaged DB, so its fingerprint MATCHES and the dedupe
+        # would otherwise hand it back as a legitimate forensic backup.
+        # Matches sidecar staging names (``.backup-staging-<stamp>-wal``) too.
+        # The second pattern is the pre-merge ``.incomplete`` spelling, swept so
+        # a host that ran that build does not keep prefix-matching debris that
+        # sorts NEWEST and survives prune forever.
+        for pattern in (
+            f"{db_path.name}.backup-staging-*",
+            f"{db_path.name}.malformed-backup-*.incomplete*",
+        ):
+            for old in db_path.parent.glob(pattern):
+                try:
+                    old.unlink(missing_ok=True)
+                except OSError:  # pragma: no cover - best effort
+                    pass
         # Dedupe (#86747): a repair loop used to copy the SAME damaged bytes
         # on every restart — ~900MB a pass, 89GB over 11 days in the
         # reporting install. If the newest existing backup already matches
@@ -2153,22 +2170,19 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
             )
             logger.error("Refusing forensic backup of %s: %s", db_path, reason)
             return None, reason
-        # Copy to a staging name that does NOT match the backup prefix, then
-        # rename into place only once every copy has succeeded. A copy that
-        # fails partway (ENOSPC, kill) would otherwise leave a prefix-matching
-        # partial that `_prune_malformed_backups` never reaches — prune runs
-        # only on the success path — so debris accumulated unbounded and, on a
-        # later successful pass, the newest-by-name partials were KEPT while
-        # intact forensic copies were pruned away.
-        staging = db_path.with_name(f"{backup_path.name}.incomplete")
+        # Copy to a staging name OUTSIDE the ``.malformed-backup-`` prefix, then
+        # rename into place only once every copy has succeeded. The prefix
+        # matters: ``_existing_malformed_backups`` matches on
+        # ``startswith(f"{db}.malformed-backup-")`` and excludes only ``-wal``/
+        # ``-shm`` suffixes, so a staging name derived from the backup name (e.g.
+        # ``…malformed-backup-<stamp>.incomplete``) still counts as a backup —
+        # it sorts NEWEST (``.incomplete`` > the bare stamp), so prune's
+        # keep-3-newest slice retained partials and deleted intact copies, and
+        # the dedupe could hand a partial back as the official ``backup_path``,
+        # passing the #69603 hard-stop gate with no real forensic copy on disk.
+        staging = db_path.with_name(f"{db_path.name}.backup-staging-{stamp}")
         staged: "List[Tuple[Path, Path]]" = []
         try:
-            # Clear debris from an earlier interrupted pass (kill mid-copy).
-            # Matches sidecar staging names (``.incomplete-wal``) too.
-            for old in db_path.parent.glob(
-                f"{db_path.name}.malformed-backup-*.incomplete*"
-            ):
-                old.unlink(missing_ok=True)
             shutil.copy2(db_path, staging)
             staged.append((staging, backup_path))
             for suffix in ("-wal", "-shm"):

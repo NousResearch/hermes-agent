@@ -220,7 +220,9 @@ def test_failed_copy_leaves_no_countable_debris(tmp_path):
     with patch("shutil.disk_usage", return_value=roomy):
         path, reason = _backup_db_file(db)
     assert reason is None and path is not None
-    strays = list(tmp_path.glob("*.incomplete*"))
+    strays = list(tmp_path.glob("*.backup-staging-*")) + list(
+        tmp_path.glob("*.incomplete*")
+    )
     assert not strays, f"staging debris survived: {strays}"
 
 
@@ -359,6 +361,89 @@ def test_live_connection_keeps_its_write_lock_across_a_repair_pass(tmp_path):
         live.execute("COMMIT")
     finally:
         live.close()
+
+
+# ---------------------------------------------------------------------------
+# Staging must never be mistaken for a forensic backup
+# ---------------------------------------------------------------------------
+
+
+def test_staging_name_is_outside_the_backup_prefix(tmp_path):
+    """Whatever staging name the code picks must not be counted as a backup.
+
+    Observes the REAL staging path (captured from the copy call) rather than
+    hardcoding it, so the assertion binds to the invariant instead of to
+    today's spelling. ``_existing_malformed_backups`` matches
+    ``startswith(f"{db}.malformed-backup-")`` and excludes only ``-wal``/
+    ``-shm``, so a staging name derived from the backup name sorts NEWEST and
+    prune keeps partials while deleting intact copies.
+    """
+    db = _damaged_db(tmp_path, size=20_000)
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+    real_copy2 = shutil.copy2
+    staging_names: list[str] = []
+
+    def capture(src, dst, *a, **kw):
+        staging_names.append(Path(dst).name)
+        return real_copy2(src, dst, *a, **kw)
+
+    with patch("shutil.disk_usage", return_value=roomy), \
+            patch("shutil.copy2", capture):
+        path, reason = _backup_db_file(db)
+
+    assert reason is None and path is not None
+    assert staging_names, "no copy was made (fixture problem)"
+    prefix = f"{db.name}.malformed-backup-"
+    for name in staging_names:
+        assert not name.startswith(prefix), (
+            f"staging name {name!r} matches the backup prefix — it would be "
+            "counted by _existing_malformed_backups, sort NEWEST, and let "
+            "prune keep partials while deleting intact forensic copies"
+        )
+
+
+def test_orphaned_staging_is_never_returned_as_the_backup_path(tmp_path):
+    """A kill mid-copy leaves a byte-identical staging file; the dedupe must
+    not hand it back as the official ``backup_path``.
+
+    It would pass the #69603 hard-stop gate — repair then runs destructive
+    surgery believing a forensic copy exists — and the next pass's sweep
+    deletes that very file.
+    """
+    db = _damaged_db(tmp_path, size=20_000)
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+
+    # Discover the staging name the implementation actually uses, then plant an
+    # orphan under it — so this binds to the code's scheme, not to a literal.
+    real_copy2 = shutil.copy2
+    seen: list[Path] = []
+
+    def capture(src, dst, *a, **kw):
+        seen.append(Path(dst))
+        return real_copy2(src, dst, *a, **kw)
+
+    with patch("shutil.disk_usage", return_value=roomy), \
+            patch("shutil.copy2", capture):
+        first, _ = _backup_db_file(db)
+    assert first is not None
+    Path(first).unlink(missing_ok=True)
+    orphan = seen[0]
+    shutil.copy2(db, orphan)  # identical bytes => fingerprint matches
+    assert orphan.exists()
+
+    with patch("shutil.disk_usage", return_value=roomy):
+        path, reason = _backup_db_file(db)
+
+    assert reason is None and path is not None
+    assert Path(path) != orphan, f"staging returned as the backup: {path}"
+    assert not str(path).endswith(".incomplete")
+    assert "staging" not in Path(path).name
+    assert Path(path).exists()
+    assert not orphan.exists(), "stale staging debris was not swept"
 
 
 def test_backup_refused_when_free_space_cannot_be_determined(tmp_path):

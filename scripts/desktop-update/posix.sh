@@ -188,7 +188,7 @@ prepare_node_for_build() {
               /usr/local/opt/node@24/bin /usr/local/opt/node@26/bin}; do
     [ -x "$cand/node" ] && [ -x "$cand/npm" ] || continue
     v="$("$cand/node" --version 2>/dev/null)"
-    if node_satisfies_build "$v"; then
+    if node_satisfies_build "$v" "$cand/node"; then
       log "build Node: system $(command -v node >/dev/null 2>&1 && node --version || echo none) is not compatible; using $cand ($v)"
       export PATH="$cand:$PATH"
       return 0

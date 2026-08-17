@@ -1334,7 +1334,6 @@ class TestProfileArg:
             "mybot",
             "gateway",
             "run",
-            "--replace",
             "--external-supervisor",
         ]
 

@@ -1749,6 +1749,7 @@ dependencies = [
     { name = "pathspec" },
     { name = "pillow" },
     { name = "pillow-heif" },
+    { name = "portalocker", marker = "sys_platform == 'win32'" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
@@ -1767,6 +1768,7 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "urllib3" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "wcwidth" },
     { name = "websockets" },
 ]
 
@@ -2079,6 +2081,7 @@ requires-dist = [
     { name = "pathspec", specifier = "==1.1.1" },
     { name = "pillow", specifier = "==12.3.0" },
     { name = "pillow-heif", specifier = ">=1.4.0,<2" },
+    { name = "portalocker", marker = "sys_platform == 'win32'", specifier = "==3.2.0" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
@@ -2126,6 +2129,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.31.0,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.7.2" },
+    { name = "wcwidth", specifier = "==0.6.0" },
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]

@@ -1571,6 +1571,48 @@ class TestTransparentWrapperPrefixes:
             f"{prefix} launchctl submit -l com.example.helper -- /usr/bin/true"
         ) is True
 
+    @pytest.mark.parametrize("prefix", [
+        # Privilege and namespace wrappers, including the option forms whose
+        # operand is a VALUE rather than the command.
+        "pkexec", "pkexec --user root",
+        "runuser -u root --", "setpriv --reuid=0 --",
+        "systemd-run --scope", "systemd-run -p X=1",
+        "nsenter --target 1 --mount", "nsenter -t 1 -m",
+        "unshare -r", "sudo pkexec",
+    ])
+    def test_privilege_and_namespace_wrappers_are_scanned(
+        self, tmp_path, helper, prefix
+    ):
+        assert self._scan(f"{prefix} bash {helper}", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("command", [
+        # An option carrying a COMMAND STRING is shell source, not an opaque
+        # value: skipping it would hide whatever it runs.
+        "env -S 'bash {path}'",
+        "env --split-string='bash {path}'",
+        "su -c 'bash {path}'",
+        "su root -c 'bash {path}'",
+        "runuser -u root -c 'bash {path}'",
+    ])
+    def test_command_string_options_are_rescanned(self, tmp_path, helper, command):
+        assert self._scan(command.format(path=helper), cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("command", [
+        # The same wrappers around ordinary work must not start blocking.
+        "pkexec systemctl status nginx",
+        "su -c 'ls -la'",
+        "unshare -r whoami",
+        "systemd-run --scope make -j4",
+        "nsenter -t 1 -m ps aux",
+        "setpriv --reuid=0 -- id",
+        "runuser -u nobody -- whoami",
+        "env -S 'echo hi'",
+    ])
+    def test_privilege_wrappers_around_benign_work_are_allowed(
+        self, tmp_path, command
+    ):
+        assert self._scan(command, cwd=str(tmp_path)) is False
+
     @pytest.mark.parametrize("command", [
         # Wrappers around ordinary work must stay allowed — peeling must not
         # invent a script reference where there is none.

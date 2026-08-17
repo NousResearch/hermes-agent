@@ -499,6 +499,9 @@ def _executable_name(token: str) -> str:
 _TRANSPARENT_COMMAND_PREFIXES = frozenset({
     "sudo", "doas", "env", "nohup", "setsid", "nice", "ionice", "stdbuf",
     "timeout", "exec", "command", "builtin", "eatmydata",
+    # Privilege and namespace wrappers. Same shape — options, then the
+    # command they hand execution to.
+    "pkexec", "su", "runuser", "setpriv", "systemd-run", "nsenter", "unshare",
 })
 
 # Options of those wrappers that consume the NEXT token as their value, so a
@@ -512,6 +515,30 @@ _TRANSPARENT_PREFIX_VALUE_OPTIONS = {
     "ionice": {"-c", "-n", "-p", "--class", "--classdata"},
     "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
     "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "pkexec": {"--user"},
+    "su": {"-s", "--shell", "-g", "--group", "-G", "--supp-group"},
+    "runuser": {"-u", "--user", "-s", "--shell", "-g", "--group",
+                "-G", "--supp-group"},
+    "setpriv": {"--reuid", "--regid", "--groups", "--inh-caps",
+                "--ambient-caps", "--bounding-set", "--selinux-label",
+                "--apparmor-profile"},
+    "systemd-run": {"-u", "--unit", "-p", "--property", "-E", "--setenv",
+                    "--slice", "--description", "--uid", "--gid",
+                    "--on-calendar", "--service-type"},
+    "nsenter": {"-t", "--target", "-S", "--setuid", "-G", "--setgid",
+                "-r", "--root", "-w", "--wd"},
+    "unshare": {"--map-user", "--map-group", "--setgroups", "-R", "--root",
+                "-w", "--wd"},
+}
+
+# Wrappers whose option carries a COMMAND STRING rather than an argv tail.
+# The string is shell source and must be re-scanned like `sh -c` — skipping
+# it as an opaque option value would hide whatever it runs
+# (`env -S 'bash ~/restart.sh'`).
+_STRING_COMMAND_OPTIONS = {
+    "env": ("-S", "--split-string"),
+    "su": ("-c", "--command"),
+    "runuser": ("-c", "--command"),
 }
 
 # Wrappers whose first non-option operand is a VALUE, not the command
@@ -725,6 +752,19 @@ def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Optiona
     return path
 
 
+def _iter_option_values(
+    segment: list[str], start: int, option: str
+) -> Iterator[str]:
+    """Yield values given to *option*, in both ``--opt v`` and ``--opt=v`` form."""
+    prefix = option + "="
+    for position in range(start + 1, len(segment)):
+        token = segment[position]
+        if token == option and position + 1 < len(segment):
+            yield segment[position + 1]
+        elif token.startswith(prefix):
+            yield token[len(prefix):]
+
+
 def _references_at(
     segment: list[str], index: int, cwd: Optional[str]
 ) -> Iterator[Path]:
@@ -808,6 +848,12 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
         index = _command_token_index(segment)
         if index is None:
             continue
+        # Command-string options are read at the ORIGINAL token: peeling past
+        # `su`/`env` would discard the very option carrying the command.
+        for option in _STRING_COMMAND_OPTIONS.get(
+            _executable_name(segment[index]), ()
+        ):
+            yield from _iter_option_values(segment, index, option)
         index = _peel_transparent_prefixes(segment, index)
         if index >= len(segment):
             continue

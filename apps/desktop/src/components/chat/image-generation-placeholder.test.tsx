@@ -136,6 +136,7 @@ function installDrawableContext() {
   const clearRect = vi.fn()
   const gradient = { addColorStop: vi.fn() }
   const fns = new Map<PropertyKey, ReturnType<typeof vi.fn>>()
+
   const ctx = new Proxy(
     {},
     {
@@ -230,6 +231,7 @@ describe('DiffusionCanvas frame budget', () => {
         r.unmount()
       }
     })
+
     for (const el of containers) {
       el.remove()
     }

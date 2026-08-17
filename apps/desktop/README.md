@@ -182,7 +182,9 @@ Changing profiles or connection modes is a soft workspace switch, not another
 cold boot. The shell and current management overlay remain mounted while
 gateway-bound nanostores are wiped, query-backed data is invalidated, and the
 new connection repopulates skeletons. This prevents rows or transcripts from
-the previous gateway bleeding into the next one.
+the previous gateway bleeding into the next one. Switching changes only the
+foreground view and request route: it does not cancel turns or stop a backend,
+and retained background sockets continue receiving events from running jobs.
 
 ### Verification
 

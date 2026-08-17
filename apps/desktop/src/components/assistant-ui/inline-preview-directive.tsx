@@ -1,11 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
-import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { useIsDark } from '@/components/assistant-ui/embeds/use-is-dark'
-import { isRemoteGateway } from '@/lib/media'
+import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { localPreviewTarget } from '@/lib/local-preview'
+import { isRemoteGateway } from '@/lib/media'
 
 /**
  * `::preview{file="…"}` — a workspace HTML file rendered LIVE inside the
@@ -221,9 +221,7 @@ function InlineHtmlFrame({
   const [doc, setDoc] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
-  const heightRef = useRef<number>(initialHeight ?? DEFAULT_HEIGHT)
   const [contentWidth, setContentWidth] = useState<number | null>(null)
-  const adoptedWidthRef = useRef<number | null>(null)
 
   // One token per mount: the message listener only trusts reports from the
   // document THIS mount injected, so two previews in one transcript (or a
@@ -270,25 +268,27 @@ function InlineHtmlFrame({
         return
       }
 
-      if (Math.abs(next.height - heightRef.current) > RESIZE_TOLERANCE) {
-        heightRef.current = next.height
-        setMeasured(next.height)
-      }
+      // Functional updates so the comparisons read current state without a
+      // shadow ref: same-value sets bail out in React, and the tolerance
+      // keeps a vh-sized page (which measures what it's given) from
+      // oscillating.
+      setMeasured(prev =>
+        Math.abs(next.height - (prev ?? initialHeight ?? DEFAULT_HEIGHT)) > RESIZE_TOLERANCE ? next.height : prev
+      )
 
       // Width adopts ONCE, from the first report — measured at full column
       // width, so it is the content's intrinsic span. Tracking width live
       // would feedback-loop: %-width children reflow narrower every time
       // the frame shrinks, spiraling toward zero.
-      if (adoptedWidthRef.current === null && next.width > 0) {
-        adoptedWidthRef.current = next.width
-        setContentWidth(next.width)
+      if (next.width > 0) {
+        setContentWidth(prev => prev ?? next.width)
       }
     }
 
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [token])
+  }, [initialHeight, token])
 
   // Resolved once per mount; theme switches remount the transcript anyway.
   const framedDoc = useMemo(() => {

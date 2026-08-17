@@ -1,4 +1,5 @@
 import type { FC, ReactNode } from 'react'
+import { useMemo } from 'react'
 
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
@@ -40,21 +41,29 @@ function claimFor(contributions: readonly Contribution[], name: string) {
 
 export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> = ({ text, streaming }) => {
   const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
-  const parsed = parseTranscriptDirective(text)
+  const parsed = useMemo(() => parseTranscriptDirective(text), [text])
   const match = parsed ? claimFor(contributions, parsed.name) : undefined
   const contribution = match?.data as TranscriptDirectiveContribution | undefined
+  const render = contribution?.render
 
-  if (!parsed || !match || !contribution?.render) {
+  // Stable component identity for ContribRender (which mounts this AS a
+  // component): a fresh closure per render would remount the widget on
+  // every parent render.
+  const renderLeaf = useMemo(
+    () =>
+      render && parsed
+        ? () => render({ attrs: parsed.attrs, source: parsed.source, streaming: streaming ?? false })
+        : null,
+    [render, parsed, streaming]
+  )
+
+  if (!match || !renderLeaf) {
     return null
   }
 
   return (
     <ContribBoundary id={match.id} variant="chip">
-      <ContribRender
-        render={() =>
-          contribution.render({ attrs: parsed.attrs, source: parsed.source, streaming: streaming ?? false })
-        }
-      />
+      <ContribRender render={renderLeaf} />
     </ContribBoundary>
   )
 }

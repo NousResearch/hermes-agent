@@ -6853,6 +6853,26 @@ def tick(
             membership is released in the worker's finally block.
             """
             job_id = job["id"]
+
+            def _clear_run_claim_best_effort() -> None:
+                """Best-effort claim cleanup on the dispatch-failure paths.
+
+                clear_run_claim does load_jobs/save_jobs file I/O; on the
+                interpreter-shutdown path (or with a corrupt store) it can
+                itself raise, and these early-exit paths exist precisely to
+                skip cleanly — a stale claim expiring at the TTL is a better
+                outcome than crashing the tick (#86522).
+                """
+                try:
+                    clear_run_claim(job_id)
+                except Exception as claim_err:
+                    logger.warning(
+                        "Could not clear run_claim for job '%s' after dispatch "
+                        "failure: %s (claim will expire at TTL)",
+                        job.get("name", job_id),
+                        claim_err,
+                    )
+
             # A tick can race gateway teardown: once the interpreter is
             # finalizing, ``pool.submit`` raises "cannot schedule new futures
             # after interpreter shutdown" and crashes the tick. Skip cleanly —
@@ -6863,7 +6883,7 @@ def tick(
                     "Job '%s' not dispatched — interpreter is shutting down",
                     job.get("name", job_id),
                 )
-                clear_run_claim(job_id)
+                _clear_run_claim_best_effort()
                 return None
             if not try_register_running_job(job_id):
                 logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -6881,7 +6901,7 @@ def tick(
                 # audit requirement: every add is paired with guaranteed
                 # cleanup).
                 release_running_job(job_id)
-                clear_run_claim(job_id)
+                _clear_run_claim_best_effort()
                 logger.exception(
                     "Job '%s' not dispatched: execution creation failed: %s",
                     job.get("name", job_id),
@@ -6899,7 +6919,7 @@ def tick(
                 fut = pool.submit(_run_and_release)
             except Exception as submit_err:
                 release_running_job(job_id)
-                clear_run_claim(job_id)
+                _clear_run_claim_best_effort()
                 finish_execution(
                     execution["id"],
                     success=False,

@@ -688,6 +688,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     from agent.skill_utils import (
         get_external_skills_dirs,
         get_project_skills_dirs,
+        iter_project_skill_files,
         iter_skill_index_files,
     )
 
@@ -702,7 +703,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # SKILLS_DIR can be stale in long-lived runtimes). Trusted project-local
     # dirs come FIRST: first-wins dedup below gives them precedence over
     # same-named local/external skills.
-    dirs_to_scan: list = list(get_project_skills_dirs())
+    project_dirs = list(get_project_skills_dirs())
+    dirs_to_scan: list = list(project_dirs)
     active_skills_dir = _skills_dir()
     if active_skills_dir.exists():
         dirs_to_scan.append(active_skills_dir)
@@ -725,10 +727,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     skills = []
     seen_names: set = set()
 
-    # Scan local dir first, then external dirs (local takes precedence) —
-    # dirs_to_scan already resolved above for the signature.
+    # Scan project dirs first, then local, then external (first-wins) —
+    # dirs_to_scan already resolved above for the signature. Project dirs
+    # iterate through the quarantine chokepoint (scan-time injection gate).
     for scan_dir in dirs_to_scan:
-        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+        _is_project = scan_dir in project_dirs
+        _iter = (
+            iter_project_skill_files(scan_dir)
+            if _is_project
+            else iter_skill_index_files(scan_dir, "SKILL.md")
+        )
+        for skill_md in _iter:
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -1369,6 +1378,43 @@ def skill_view(
 
         if candidates:
             skill_dir, skill_md = candidates[0]
+
+        # Quarantine gate: a project-tier skill with a dangerous scan verdict
+        # must not load even by explicit name (same chokepoint the index and
+        # skills_list use — see agent.skill_utils.iter_project_skill_files).
+        if skill_md is not None and project_dirs:
+            from agent.skill_utils import is_quarantined_project_skill
+
+            def _under_project(p: Path) -> bool:
+                try:
+                    rp = p.resolve()
+                except Exception:
+                    rp = p
+                for pd in project_dirs:
+                    try:
+                        rp.relative_to(pd)
+                        return True
+                    except ValueError:
+                        continue
+                return False
+
+            if _under_project(skill_md) and is_quarantined_project_skill(skill_md):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Project skill '{name}' is quarantined: the security "
+                            "scan flagged its content as dangerous. It will not "
+                            "load until the repo's skill content changes and "
+                            "passes a re-scan."
+                        ),
+                        "hint": (
+                            "Inspect the skill in the repo checkout, or untrust "
+                            "the repo with `hermes skills untrust`."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
 
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]

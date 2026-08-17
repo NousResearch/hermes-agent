@@ -85,6 +85,7 @@ function renderBotRow(input = 'alpha') {
     relativeTime: () => 'now',
     saveBotMeta: () => undefined,
     showsHandle: () => false,
+    stripPreviewMarkdown: text => String(text || ''),
     useValue: store => store.get()
   }
 
@@ -202,6 +203,7 @@ test('behavior: remote default does not open this-device chat when the source di
     relativeTime: () => 'now',
     saveBotMeta: () => undefined,
     showsHandle: () => false,
+    stripPreviewMarkdown: text => String(text || ''),
     useValue: store => store.get()
   }
 

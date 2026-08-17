@@ -2988,38 +2988,70 @@ function slugify(value) {
     .slice(0, 64)
 }
 
-/** Partition an already-sorted roster into user-defined groups. Returns
- *  [{ group: null | name, bots }] — ungrouped bots first (no separator),
- *  then each group alphabetically (case-insensitive), preserving the
- *  roster's own ordering (pin + recency) within every section. Groups are
- *  a per-bot `group` string in bot meta, so they ride the existing
- *  ui_meta sync to every machine. Empty sections are dropped, so a group
- *  disappears when its last member leaves — no group registry to manage. */
-function groupRoster(roster, metaByName) {
-  const ungrouped = []
-  const byGroup = new Map()
+/** Flatten markdown syntax out of a one-line roster preview so rows read
+ *  like Discord's — no raw **bold**, `code`, > quotes, or [link](url)
+ *  characters in the preview line. */
+function stripPreviewMarkdown(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`\n]*)`/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(^|\s)[*_](\S(?:.*?\S)?)[*_](?=\s|$|[.,;:!?])/g, '$1$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
-  for (const bot of roster) {
-    const group = (botRosterMeta(bot, metaByName)?.group || '').trim()
+/** Group chats that should hold a roster row: every group named in bot meta
+ *  (local members) plus every room record that still has stored members or
+ *  log — cross-connection rooms whose members can't ride bot-meta. */
+function groupChatNames(metaByName, rooms) {
+  const names = new Set(knownGroups(metaByName))
 
-    if (!group) {
-      ungrouped.push(bot)
+  for (const [name, room] of Object.entries(rooms || {})) {
+    if ((Array.isArray(room?.members) && room.members.length) || (Array.isArray(room?.log) && room.log.length)) {
+      names.add(name)
+    }
+  }
+
+  return [...names]
+}
+
+/** Millisecond timestamp of a room's newest log entry (0 for a silent room) —
+ *  the group's recency key, competing in the same ordering as bot rows. */
+function groupLastActivity(room) {
+  const log = Array.isArray(room?.log) ? room.log : []
+
+  return log.length ? log[log.length - 1].at || 0 : 0
+}
+
+/** Seat a group's member roster: local bots whose meta names the group, plus
+ *  the room record's stored descriptors (remote members can't ride bot-meta).
+ *  Prefers the LIVE roster row for a stored descriptor when present. */
+function groupChatMemberBots(group, roster, metaByName) {
+  const local = (roster || []).filter(
+    bot => !bot.remoteSource && (botRosterMeta(bot, metaByName)?.group || '').trim() === group
+  )
+  const stored = ($groupChats.get()[group] || {}).members || []
+  const seated = new Set(local.map(botRosterKey))
+  const remote = []
+
+  for (const descriptor of stored) {
+    const key = botRosterKey(descriptor)
+
+    if (seated.has(key)) {
       continue
     }
 
-    if (!byGroup.has(group)) {
-      byGroup.set(group, [])
-    }
-    byGroup.get(group).push(bot)
+    seated.add(key)
+    remote.push((roster || []).find(bot => botRosterKey(bot) === key) || descriptor)
   }
 
-  const sections = ungrouped.length ? [{ group: null, bots: ungrouped }] : []
-
-  for (const group of [...byGroup.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))) {
-    sections.push({ group, bots: byGroup.get(group) })
-  }
-
-  return sections
+  return [...local, ...remote]
 }
 
 /** Existing group names, alphabetical — feeds the Move-to-group dialog. */
@@ -3291,6 +3323,9 @@ async function disbandGroupChat(group, memberNames) {
   if ($groupChatWorkspace.get() === group) {
     $groupChatWorkspace.set(null)
   }
+
+  // Retire the room's MAIN-window tab too (host.openWorkspace path).
+  closeGroupChatMainTab(group)
 
   const needs = { ...$groupNeedsYou.get() }
 
@@ -3832,9 +3867,11 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const previewSession = bot.preferred_session || last
   const { fromBot } = previewKind(previewSession?.preview)
   // DM previews read like DMs: strip the delivery prefix, keep the message.
-  const displayPreview = fromBot
-    ? (previewSession?.preview || '').replace(A2A_PREFIX_RE, '').trim() || '…'
-    : previewSession?.preview || bot.description || 'No conversations yet — say hi'
+  const displayPreview = stripPreviewMarkdown(
+    fromBot
+      ? (previewSession?.preview || '').replace(A2A_PREFIX_RE, '').trim() || '…'
+      : previewSession?.preview || bot.description || 'No conversations yet — say hi'
+  )
 
   const warm = () => {
     // Multi-source row: pre-dial the agent's OWN source (feature-detected).
@@ -7178,8 +7215,11 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
 
 /** Merged room view for one group: shared timeline with per-member
  *  attribution, a composer that drives the round-robin, and a working
- *  indicator while member turns run. */
-function GroupChatWorkspace({ group, members }) {
+ *  indicator while member turns run. Renders identically in the MAIN chat
+ *  window (host.openWorkspace tile) and in the bots panel (older-desktop
+ *  fallback); `onBack` is where the Back button routes — the main tile's
+ *  closer, or clearing the in-panel workspace atom. */
+function GroupChatWorkspace({ group, members, onBack }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [], running: false }
@@ -7196,7 +7236,7 @@ function GroupChatWorkspace({ group, members }) {
       jsx(Button, {
         variant: 'ghost',
         size: 'sm',
-        onClick: () => $groupChatWorkspace.set(null),
+        onClick: () => (onBack ? onBack() : $groupChatWorkspace.set(null)),
         children: 'Back'
       }),
       jsx('div', {
@@ -7412,6 +7452,163 @@ function GroupChatWorkspace({ group, members }) {
   })
 }
 
+/** Live closers for group-chat MAIN-window tabs, by group name — so a
+ *  disband (or the room view's own Back) can retire the tab it opened. */
+const groupChatMainTabs = new Map()
+
+function closeGroupChatMainTab(group) {
+  const close = groupChatMainTabs.get(group)
+
+  groupChatMainTabs.delete(group)
+
+  if (typeof close === 'function') {
+    try {
+      close()
+    } catch {
+      /* tab already gone */
+    }
+  }
+}
+
+/** Main-window wrapper: seats the member roster reactively (live roster +
+ *  bot meta + the room's stored cross-connection descriptors) so the room
+ *  keeps working as members change while the tab is open. */
+function GroupChatMainView({ group }) {
+  const allMeta = useValue($botMeta)
+  // Subscribe: membership changes ride bot meta AND the room record.
+  useValue($groupChats)
+  const roster = useValue($lastRoster)
+  const members = groupChatMemberBots(group, roster, allMeta)
+
+  return jsx(GroupChatWorkspace, { group, members, onBack: () => closeGroupChatMainTab(group) })
+}
+
+/** Open a group chat the Discord way: a tab taking over the MAIN chat window
+ *  (host.openWorkspace, newer desktops), falling back to the in-panel room
+ *  view on desktops whose SDK predates the main-area door. */
+function openGroupChat(group) {
+  $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
+
+  if (typeof host.openWorkspace === 'function') {
+    try {
+      const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
+        title: group,
+        minWidth: '24rem',
+        render: () => jsx(GroupChatMainView, { group }),
+        onClose: () => groupChatMainTabs.delete(group)
+      })
+
+      groupChatMainTabs.set(group, close)
+
+      return
+    } catch {
+      // Fall through to the in-panel room below.
+    }
+  }
+
+  $groupChatWorkspace.set(group)
+}
+
+/** One group chat as ONE roster row — the Discord shape: stacked member
+ *  avatars, group name, member count, the newest room line as the preview
+ *  (markdown flattened), relative time of the last activity, and the
+ *  needs-you badge on the row itself. Sorts into the same recency ordering
+ *  as bot rows; clicking opens the room in the main chat window. */
+function GroupRow({ group, members, needsYou, onOpen }) {
+  const rooms = useValue($groupChats)
+  const allMeta = useValue($botMeta)
+  const room = rooms[group] || { log: [] }
+  const log = Array.isArray(room.log) ? room.log : []
+  const last = log.length ? log[log.length - 1] : null
+  const lastAt = groupLastActivity(room)
+  const preview = last
+    ? `${last.from?.kind === 'user' ? 'You' : `@${last.from?.name || 'bot'}`}: ${stripPreviewMarkdown(last.text) || '…'}`
+    : 'No messages yet — say hi to the room'
+  const faces = members.slice(0, 3)
+
+  return jsxs('button', {
+    type: 'button',
+    onClick: () => {
+      haptic('tap')
+      onOpen(group)
+    },
+    className: cn(
+      'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
+      'hover:bg-(--chrome-action-hover)'
+    ),
+    children: [
+      // Composite avatar: up to three member faces fanned like Discord's
+      // group-DM icon; a bare glyph when the room has no seated members.
+      jsx('div', {
+        className: 'flex w-[34px] shrink-0 items-center justify-center',
+        children: faces.length
+          ? jsx('div', {
+              className: 'flex items-center -space-x-2.5',
+              children: faces.map(member => {
+                const meta = member.remoteSource ? null : allMeta[member.name]
+                const { shape, color, image } = botAppearance(member.name, meta)
+
+                return jsx(
+                  'div',
+                  {
+                    className: 'rounded-full ring-2 ring-(--ui-bg-primary,#111)',
+                    children: jsx(BotFace, {
+                      shape,
+                      color,
+                      image: image && !isBackfilledFacePng(image) ? image : null,
+                      size: 20,
+                      name: member.name,
+                      mood: 'idle'
+                    })
+                  },
+                  botRosterKey(member)
+                )
+              })
+            })
+          : jsx(Codicon, { name: 'organization', className: 'text-(--ui-text-tertiary)' })
+      }),
+      jsxs('div', {
+        className: 'min-w-0 flex-1',
+        children: [
+          jsxs('div', {
+            className: 'flex items-baseline justify-between gap-2',
+            children: [
+              jsxs('div', {
+                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
+                children: [
+                  jsx('span', { className: 'truncate text-[0.8125rem] font-medium', children: group }),
+                  jsx('span', {
+                    className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
+                    children: `${members.length} bots`
+                  })
+                ]
+              }),
+              needsYou
+                ? jsx('span', {
+                    className:
+                      'shrink-0 rounded-full bg-(--ui-accent,#4f9cf9) px-1.5 text-[0.6rem] font-semibold text-white',
+                    title: 'A bot in this room needs your input',
+                    children: 'needs you'
+                  })
+                : null,
+              lastAt
+                ? jsx('span', {
+                    className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
+                    children: relativeTime(lastAt)
+                  })
+                : null
+            ]
+          }),
+          jsx('div', {
+            className: 'min-w-0 truncate text-xs text-(--ui-text-tertiary)',
+            children: preview
+          })
+        ]
+      })
+    ]
+  })
+}
+
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
@@ -7427,6 +7624,7 @@ function BotsPane() {
   const sessionsWorkspaceName = useValue($botSessionsWorkspace)
   const groupChatName = useValue($groupChatWorkspace)
   const groupNeedsYou = useValue($groupNeedsYou)
+  const groupRooms = useValue($groupChats)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -7468,6 +7666,32 @@ function BotsPane() {
   })
   const activeSourceRoster = roster.filter(bot => !bot.remoteSource)
   const filteredRoster = filterBots(roster, allMeta, query)
+  // Group chats are first-class roster rows (Discord-style): one standalone
+  // row per room, competing in the SAME recency ordering as bot rows — a
+  // group's activity is its newest room-log line. Pinned bots still lead;
+  // groups and unpinned bots interleave by recency below them.
+  const needle = query.trim().toLowerCase()
+  const groupRows = groupChatNames(allMeta, groupRooms)
+    .filter(name => !needle || name.toLowerCase().includes(needle))
+    .map(name => ({
+      kind: 'group',
+      name,
+      members: groupChatMemberBots(name, roster, allMeta),
+      activity: groupLastActivity(groupRooms[name])
+    }))
+  const rosterRows = [
+    ...filteredRoster.map(bot => ({ kind: 'bot', bot, pinned: isPinned(bot), activity: activityOf(bot) })),
+    ...groupRows
+  ].sort((a, b) => {
+    const pa = a.pinned ? 1 : 0
+    const pb = b.pinned ? 1 : 0
+
+    if (pa !== pb) {
+      return pb - pa
+    }
+
+    return b.activity - a.activity
+  })
 
   if (live) {
     $lastRoster.set(roster)
@@ -7486,32 +7710,7 @@ function BotsPane() {
     return jsx(ProfileSessionsWorkspace, { bot: sessionsWorkspaceBot })
   }
 
-  const groupChatMembers = groupChatName
-    ? (() => {
-        const local = activeSourceRoster.filter(
-          bot => (botRosterMeta(bot, allMeta)?.group || '').trim() === groupChatName
-        )
-        // Remote members live on the room record (they can't ride bot-meta).
-        // Prefer the LIVE roster row for each descriptor when present —
-        // fresher handle/label — else seat the stored descriptor itself.
-        const stored = ($groupChats.get()[groupChatName] || {}).members || []
-        const seated = new Set(local.map(botRosterKey))
-        const remote = []
-
-        for (const descriptor of stored) {
-          const key = botRosterKey(descriptor)
-
-          if (seated.has(key)) {
-            continue
-          }
-
-          seated.add(key)
-          remote.push(roster.find(bot => botRosterKey(bot) === key) || descriptor)
-        }
-
-        return [...local, ...remote]
-      })()
-    : []
+  const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
 
   if (groupChatName && groupChatMembers.length) {
     return jsx(GroupChatWorkspace, { group: groupChatName, members: groupChatMembers })
@@ -7677,7 +7876,7 @@ function BotsPane() {
                 title: 'No agents yet',
                 description: 'Create your first teammate.'
               })
-            : filteredRoster.length === 0
+            : filteredRoster.length === 0 && rosterRows.length === 0
               ? jsx('div', {
                   'aria-live': 'polite',
                   className:
@@ -7689,49 +7888,26 @@ function BotsPane() {
                   className: 'hermes-bots-roster min-h-0 flex-1',
                   children: jsx('div', {
                     className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
-                    children: groupRoster(filteredRoster, allMeta).flatMap(section => [
-                      section.group
-                        ? jsxs('div', {
-                            className: 'mt-2 flex items-center gap-2 px-1 pb-0.5 first:mt-0.5',
-                            children: [
-                              jsx('span', {
-                                className:
-                                  'shrink-0 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
-                                children: section.group
-                              }),
-                              jsx('div', { className: 'h-px min-w-0 flex-1 bg-(--ui-stroke-secondary)' }),
-                              groupNeedsYou[section.group]
-                                ? jsx('span', {
-                                    className:
-                                      'shrink-0 rounded-full bg-(--ui-accent,#4f9cf9) px-1.5 text-[0.6rem] font-semibold text-white',
-                                    title: 'A bot in this room needs your input',
-                                    children: 'needs you'
-                                  })
-                                : null,
-                              section.bots.length > 1 && section.bots.length <= GROUP_CHAT_MAX_MEMBERS
-                                ? jsx('button', {
-                                    type: 'button',
-                                    className:
-                                      'shrink-0 rounded px-1 text-[0.625rem] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-                                    title: `Open the ${section.group} group chat`,
-                                    onClick: () => {
-                                      $groupNeedsYou.set({ ...$groupNeedsYou.get(), [section.group]: false })
-                                      $groupChatWorkspace.set(section.group)
-                                    },
-                                    children: 'Open chat'
-                                  })
-                                : null
-                            ]
-                          }, `group:${section.group}`)
-                        : null,
-                      ...section.bots.map(bot =>
-                        jsx(
-                          BotRow,
-                          { bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping },
-                          botRosterKey(bot)
-                        )
-                      )
-                    ])
+                    // Flat, Discord-style list: bot rows and group rows
+                    // interleaved by recency — no section headers.
+                    children: rosterRows.map(row =>
+                      row.kind === 'group'
+                        ? jsx(
+                            GroupRow,
+                            {
+                              group: row.name,
+                              members: row.members,
+                              needsYou: Boolean(groupNeedsYou[row.name]),
+                              onOpen: openGroupChat
+                            },
+                            `group:${row.name}`
+                          )
+                        : jsx(
+                            BotRow,
+                            { bot: row.bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping },
+                            botRosterKey(row.bot)
+                          )
+                    )
                   })
                 }),
       jsx('div', {
@@ -7757,7 +7933,7 @@ function BotsPane() {
         // registered connections — their turns route to their own machines.
         roster,
         onClose: () => setGroupCreateOpen(false),
-        onCreated: groupName => $groupChatWorkspace.set(groupName)
+        onCreated: groupName => openGroupChat(groupName)
       }),
       jsx(EditProfileDialog, {
         bot: editing,

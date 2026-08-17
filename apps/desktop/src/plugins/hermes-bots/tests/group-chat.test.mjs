@@ -241,9 +241,13 @@ test('log trimming keeps watermarks consistent', () => {
   assert.equal(watermarks.builder, 0)
 })
 
-test('source contract: workspace + header affordance + prompt rules are wired', () => {
+test('source contract: workspace + main-window door + prompt rules are wired', () => {
   assert.match(pluginSource, /function GroupChatWorkspace\(/)
-  assert.match(pluginSource, /Open chat/)
+  // Group rows open through the main-window door, feature-detected with the
+  // in-panel room as the older-desktop fallback.
+  assert.match(pluginSource, /function openGroupChat\(/)
+  assert.match(pluginSource, /typeof host\.openWorkspace === 'function'/)
+  assert.match(pluginSource, /\$groupChatWorkspace\.set\(group\)/)
   assert.match(pluginSource, /reply with exactly "\(pass\)"/i)
   assert.match(pluginSource, /\[Group chat: "\$\{groupName\}"\]/)
 })

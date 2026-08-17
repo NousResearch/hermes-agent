@@ -6,8 +6,10 @@ import {
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
-  shouldFallThroughForScroll
+  shouldFallThroughForScroll,
+  sudoSubmissionParams
 } from '../app/useInputHandlers.js'
+import { RpcMethodUnavailableError } from '../lib/rpc.js'
 
 const baseKey = {
   downArrow: false,
@@ -116,18 +118,69 @@ describe('applyVoiceRecordResponse', () => {
 })
 
 describe('dismissSensitivePrompt', () => {
+  it('marks an explicit empty sudo submission for versioned backends', () => {
+    expect(sudoSubmissionParams('', 'sudo-1')).toEqual({
+      intent: 'submit',
+      password: '',
+      request_id: 'sudo-1'
+    })
+  })
+
   it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
+    resetOverlayState()
+    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+    const rpc = vi.fn().mockResolvedValue({ status: 'expired' })
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, 's1')
+
+    expect(getOverlayState().sudo).toBeNull()
+    expect(sys).toHaveBeenCalledWith('sudo cancelled')
+    expect(rpc).toHaveBeenCalledWith(
+      'sudo.cancel',
+      { request_id: 'sudo-1' },
+      { rethrowMethodUnavailable: true }
+    )
+    await pending
+    expect(rpc).toHaveBeenCalledTimes(1)
+  })
+
+  it('interrupts the owning session when the sudo.cancel probe fails', async () => {
+    resetOverlayState()
+    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+
+    const rpc = vi
+      .fn()
+      .mockRejectedValueOnce(new RpcMethodUnavailableError('unknown method: sudo.cancel'))
+      .mockResolvedValueOnce({ status: 'interrupted' })
+
+    const sys = vi.fn()
+
+    await dismissSensitivePrompt(getOverlayState(), rpc, sys, 's1')
+
+    expect(rpc).toHaveBeenNthCalledWith(
+      1,
+      'sudo.cancel',
+      { request_id: 'sudo-1' },
+      { rethrowMethodUnavailable: true }
+    )
+    expect(rpc).toHaveBeenNthCalledWith(2, 'session.interrupt', { session_id: 's1' })
+  })
+
+  it('does not interrupt the owning session when sudo.cancel fails transiently', async () => {
     resetOverlayState()
     patchOverlayState({ sudo: { requestId: 'sudo-1' } })
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+    await dismissSensitivePrompt(getOverlayState(), rpc, sys, 's1')
 
-    expect(getOverlayState().sudo).toBeNull()
-    expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
-    await pending
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(rpc).toHaveBeenCalledWith(
+      'sudo.cancel',
+      { request_id: 'sudo-1' },
+      { rethrowMethodUnavailable: true }
+    )
   })
 
   it('clears a secret overlay before a stale cancel RPC resolves', async () => {

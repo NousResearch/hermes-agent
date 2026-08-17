@@ -43,8 +43,49 @@ describe('PromptOverlays', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() => expect($sudoRequest.get()).toBeNull())
-    expect(request).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    expect(request).toHaveBeenCalledWith('sudo.cancel', { request_id: 'sudo-1' })
+    expect(request).toHaveBeenCalledTimes(1)
     expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('interrupts the owning session when an older gateway lacks sudo.cancel', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('unknown method: sudo.cancel'))
+      .mockResolvedValueOnce({ status: 'interrupted' })
+
+    $activeSessionId.set('s1')
+    $gateway.set({ request } as never)
+    setSudoRequest({ requestId: 'sudo-1', sessionId: 's1' })
+
+    renderPrompts()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect($sudoRequest.get()).toBeNull())
+    expect(request).toHaveBeenNthCalledWith(1, 'sudo.cancel', { request_id: 'sudo-1' })
+    expect(request).toHaveBeenNthCalledWith(2, 'session.interrupt', { session_id: 's1' })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('preserves an explicitly submitted empty sudo password as the legacy skip value', async () => {
+    const request = vi.fn().mockResolvedValue({ status: 'ok' })
+
+    $activeSessionId.set('s1')
+    $gateway.set({ request } as never)
+    setSudoRequest({ requestId: 'sudo-1', sessionId: 's1' })
+
+    renderPrompts()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('sudo.respond', {
+        intent: 'submit',
+        password: '',
+        request_id: 'sudo-1'
+      })
+    )
   })
 
   it('dismisses a stale secret dialog when the gateway no longer has the value request', async () => {

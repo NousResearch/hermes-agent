@@ -1,3 +1,4 @@
+# ci: cache-bust re-parse
 name: CI
 
 # Orchestrator workflow. Runs ``detect-changes`` once, then conditionally

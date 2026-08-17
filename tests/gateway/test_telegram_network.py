@@ -127,7 +127,6 @@ class TestFallbackTransport:
         resp = await transport.handle_async_request(_telegram_request())
 
         assert resp.status_code == 200
-        assert transport._has_sticky is True
         assert transport._sticky_ip == "149.154.167.220"
         assert [c["url_host"] for c in calls] == ["149.154.167.220"]
         assert calls[0]["host_header"] == "api.telegram.org"
@@ -208,7 +207,6 @@ class TestFallbackTransport:
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
         assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
-        assert transport._has_sticky is True
         assert transport._sticky_ip is None
 
 
@@ -227,7 +225,7 @@ class TestFallbackTransportPassthrough:
 
         assert resp.status_code == 200
         assert calls[0]["url_host"] == "example.com"
-        assert transport._sticky_ip is None
+        assert transport._sticky_ip is tnet._UNSET
 
 
 class TestFallbackTransportInit:

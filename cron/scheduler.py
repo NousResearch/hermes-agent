@@ -855,22 +855,37 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     now = time.time()
     stale: list = []
 
-    # Latest durable execution per in-flight job id, loaded in one indexed
-    # query.  Used for the persisted-state reconciliation below (t_8b5480b3):
-    # an in-memory claim whose OWN run's execution row is terminal
-    # (completed/failed/unknown) cannot represent a live run — the durable
-    # ledger proves that run already ended — so the claim is stale by
-    # construction, regardless of its in-memory age.  A leaked claim is then
-    # recoverable without force-run/resume.  The snapshot for the query is
-    # taken under _running_lock: list(set) over a set concurrently mutated by
-    # try_register/release_running_job can raise RuntimeError mid-iteration.
+    # Latest durable execution per RELEASABLE-LOOKING in-flight job id, loaded
+    # in one indexed query.  Used for the persisted-state reconciliation below
+    # (t_8b5480b3): an in-memory claim whose OWN run's execution row is
+    # terminal cannot represent a live run — the durable ledger proves that
+    # run already ended — so the claim is stale by construction, regardless of
+    # its in-memory age.  A leaked claim is then recoverable without
+    # force-run/resume.  Two-phase so the healthy steady state pays no DB
+    # work: a claim with a live future is never released, so the query only
+    # covers claims whose future is missing/pending/done (the snapshot is
+    # taken under _running_lock; iterating a set concurrently mutated by
+    # try_register/release_running_job can raise RuntimeError).  A claim that
+    # becomes releasable between the snapshot and the sweep loop simply waits
+    # for the next tick's query.
+    from cron.executions import _TERMINAL_STATES as _terminal_states
+
     with _running_lock:
-        _inflight_snapshot = list(_running_job_ids)
-    try:
-        from cron.executions import latest_executions as _latest_execs
-        _latest = _latest_execs(_inflight_snapshot)
-    except Exception:
-        _latest = {}
+        _claim_futures = {
+            job_id: _running_futures.get(job_id) for job_id in _running_job_ids
+        }
+    _ledger_candidates = [
+        job_id
+        for job_id, fut in _claim_futures.items()
+        if fut is None or fut is _FUTURE_PENDING or fut.done()
+    ]
+    _latest: dict = {}
+    if _ledger_candidates:
+        try:
+            from cron.executions import latest_executions as _latest_execs
+            _latest = _latest_execs(_ledger_candidates)
+        except Exception:
+            _latest = {}
 
     def _row_belongs_to_claim(row: dict, claim_started: float) -> bool:
         """True when the ledger row was claimed at/after this in-memory claim.
@@ -888,9 +903,8 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
         if not claimed_at:
             return False
         try:
-            row_ts = datetime.fromisoformat(claimed_at)
-            if row_ts.tzinfo is None:
-                row_ts = row_ts.astimezone()
+            from cron.jobs import _ensure_aware as _ensure_aware_ts
+            row_ts = _ensure_aware_ts(datetime.fromisoformat(claimed_at))
             return row_ts.timestamp() >= claim_started
         except (ValueError, TypeError, OSError):
             return False
@@ -933,27 +947,26 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             # latest terminal row is usually the PREVIOUS run's outcome —
             # a fresh claim in the try_register→create_execution window, or a
             # finished run whose worker finally hasn't released yet, would
-            # otherwise be force-released and double-dispatched.
-            if fut is None or fut is _FUTURE_PENDING or fut.done():
-                latest = _latest.get(job_id)
-                if (
-                    latest is not None
-                    and latest.get("status") in ("completed", "failed", "unknown")
-                    and _row_belongs_to_claim(latest, started)
-                ):
-                    _running_job_ids.discard(job_id)
-                    _running_since.pop(job_id, None)
-                    _running_futures.pop(job_id, None)
-                    _forced_release_count += 1
-                    stale.append((job_id, age, allowance, fut, "ledger-terminal"))
-                    continue
-            if age < allowance:
+            # otherwise be force-released and double-dispatched.  Reaching
+            # here implies the future is missing/pending/done (the live-future
+            # case continued above), so every claim in this branch was a
+            # ledger-query candidate.
+            latest = _latest.get(job_id)
+            if (
+                latest is not None
+                and latest.get("status") in _terminal_states
+                and _row_belongs_to_claim(latest, started)
+            ):
+                reason = "ledger-terminal"
+            elif age >= allowance:
+                reason = "age"
+            else:
                 continue
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
             _running_futures.pop(job_id, None)
             _forced_release_count += 1
-            stale.append((job_id, age, allowance, fut, "age"))
+            stale.append((job_id, age, allowance, fut, reason))
 
     for job_id, age, allowance, fut, _reason in stale:
         job = by_id.get(job_id) or {}

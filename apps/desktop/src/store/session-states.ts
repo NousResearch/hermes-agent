@@ -611,8 +611,14 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
 }
 
 /** Drop live runtime bindings so every tile re-resumes — used on gateway
- *  reconnect, where a respawned backend re-mints (recycles) runtime ids. */
+ *  reconnect, where a respawned backend re-mints (recycles) runtime ids.
+ *  Also invalidates the wiring cache's stored→runtime map: clearing only the
+ *  tile atoms left `resumeTile`'s warm path free to re-bind the same dead
+ *  runtime id from the cache, so post-wake tiles repainted empty and never
+ *  actually re-resumed. */
 export function resetTileRuntimeBindings() {
+  sessionTileDelegate()?.invalidateRuntimeBindings?.()
+
   const tiles = $sessionTiles.get()
 
   if (tiles.some(t => t.runtimeId)) {
@@ -638,6 +644,12 @@ export interface SessionTileDelegate {
   executeSlash(rawCommand: string, sessionId: string): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
+  /** Drop the wiring cache's stored→runtime bindings. Called on gateway
+   *  reconnect: a respawned backend re-mints runtime ids, so every binding
+   *  recorded before the reconnect is suspect — without this, `resumeTile`'s
+   *  warm path re-binds tiles to dead runtime ids (the sleep/wake "empty
+   *  right pane" bug). Bindings re-record from live post-reconnect events. */
+  invalidateRuntimeBindings?(): void
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws. */
   resumeTile(storedSessionId: string): Promise<string>

@@ -363,6 +363,7 @@ def _run_agent(
     # the caller just asked for.
     effective_provider = (provider or "").strip() or None
     explicit_base_url_from_alias: Optional[str] = None
+    explicit_api_key_from_alias: Optional[str] = None
     if effective_provider is None and (model or env_model):
         # Only auto-detect when the model was explicitly requested via arg or
         # env var (not when it came from config — that's the "use my defaults"
@@ -383,6 +384,15 @@ def _run_agent(
                 effective_provider = direct.provider
                 if direct.base_url:
                     explicit_base_url_from_alias = direct.base_url.rstrip("/")
+                    # The alias endpoint's own credential. Without it the
+                    # resolver falls back to host-derived/env keys and a
+                    # custom host with a non-derivable key 401s (#83612).
+                    try:
+                        explicit_api_key_from_alias = (
+                            _ms.direct_alias_api_key(direct) or None
+                        )
+                    except Exception:
+                        explicit_api_key_from_alias = None
             else:
                 cfg_provider = ""
                 if isinstance(model_cfg, dict):
@@ -400,6 +410,7 @@ def _run_agent(
         requested=effective_provider,
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
+        explicit_api_key=explicit_api_key_from_alias,
     )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user

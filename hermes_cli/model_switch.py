@@ -47,7 +47,7 @@ from agent.models_dev import (
     get_model_info,
     list_provider_models,
 )
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 # Providers whose picker model list should NOT be capped by max_models.
 # OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
@@ -364,10 +364,21 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 # ---------------------------------------------------------------------------
 
 class DirectAlias(NamedTuple):
-    """Exact model mapping that bypasses catalog resolution."""
+    """Exact model mapping that bypasses catalog resolution.
+
+    ``api_key`` / ``key_env`` carry the alias endpoint's OWN credential.
+    Without them the switch keeps whatever key the *default* provider
+    resolved, which 401s against the alias host and sends that provider's
+    secret to an unrelated third party (#83612).
+    """
     model: str
     provider: str
     base_url: str
+    # Defaulted so existing positional construction —
+    # ``DirectAlias(model, provider, base_url)`` — keeps working for callers
+    # and for the string-format aliases built below.
+    api_key: str = ""
+    key_env: str = ""
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -391,6 +402,16 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
             model: "minimax-m2.7"
             provider: custom
             base_url: "https://ollama.com/v1"
+          theta:
+            model: "theta-1"
+            provider: custom
+            base_url: "https://theta.example.com/v1"
+            api_key: "sk-..."          # literal, or "${THETA_API_KEY}"
+            key_env: "THETA_API_KEY"   # read from the environment instead
+
+    ``api_key``/``key_env`` are the alias endpoint's own credential. When
+    neither is set the key is resolved from the alias HOST, never from the
+    previously active provider (#83612).
 
     Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``)
     and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
@@ -414,6 +435,8 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                        api_key=str(entry.get("api_key", "") or "").strip(),
+                        key_env=str(entry.get("key_env", "") or "").strip(),
                     )
 
         # --- model.aliases (string-based format, from config set) ---
@@ -454,6 +477,52 @@ def _ensure_direct_aliases() -> None:
     """
     if not DIRECT_ALIASES:
         DIRECT_ALIASES.update(_load_direct_aliases())
+
+
+def direct_alias_api_key(alias: DirectAlias) -> str:
+    """Resolve a direct alias's own credential, or "" when it has none.
+
+    Precedence, highest first — ``api_key`` always wins over ``key_env``, so
+    an entry carrying both is not ambiguous:
+
+    1. ``api_key: "${VAR}"`` — indirection, read from the environment.
+    2. ``api_key: "sk-..."`` — literal.
+    3. ``key_env: VAR`` — read from the environment.
+    4. otherwise "" — the caller resolves from the alias host instead.
+    Environment reads go through the per-profile secret scope for the same
+    reason the user-provider branch does: a raw ``os.environ`` read hands
+    this profile whatever key the process env holds — another profile's,
+    under the multiplexed gateway.
+    """
+    raw = (alias.api_key or "").strip()
+    if raw.startswith("${") and raw.endswith("}"):
+        return _scoped_key_env(raw[2:-1].strip())
+    if raw:
+        return raw
+    return _scoped_key_env((alias.key_env or "").strip())
+
+
+# Hosts where plaintext HTTP is not a downgrade — a local server has no
+# network hop to intercept.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _may_reuse_session_credential(session_base_url: str, alias_base_url: str) -> bool:
+    """Whether the session's key may follow a switch to *alias_base_url*.
+
+    Same hostname is NOT sufficient to authorise handing a bearer secret to a
+    new URL. ``http://h`` and ``https://h:8443`` are different origins and
+    different trust boundaries, so an alias that keeps the hostname but drops
+    the scheme would otherwise put a live session credential on the wire in
+    the clear. Require an identical (scheme, host, port), and refuse plaintext
+    outside loopback.
+    """
+    session = base_url_origin(session_base_url)
+    alias = base_url_origin(alias_base_url)
+    if not session[1] or session != alias:
+        return False
+    scheme, hostname, _ = alias
+    return scheme == "https" or hostname in _LOOPBACK_HOSTS
 
 
 # ---------------------------------------------------------------------------
@@ -1777,10 +1846,69 @@ def switch_model(
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
-            base_url = _da.base_url
+            # Credentials above were resolved against the DEFAULT provider.
+            # Carrying that key onto the alias's endpoint both 401s and ships
+            # the default provider's secret to an unrelated third-party host
+            # (#83612). The alias's own endpoint decides the credential
+            # instead: its declared key when it has one, otherwise a fresh
+            # resolution against the alias base_url, whose env-key fallbacks
+            # are gated on authoritative hosts (#28660) — so OLLAMA_API_KEY
+            # still resolves for an ollama.com alias while OPENROUTER_API_KEY
+            # never reaches an unrelated host.
+            _alias_key = direct_alias_api_key(_da)
+            if _alias_key:
+                # The alias states its own credential: nothing left to
+                # resolve, and re-entering the resolver would only risk a
+                # second local-endpoint model probe.
+                base_url = _da.base_url
+                api_key = _alias_key
+            elif api_key and api_key != "no-key-required" and (
+                _may_reuse_session_credential(base_url, _da.base_url)
+            ):
+                # The alias points at the very origin the resolution above
+                # already produced a key for, so that key is the
+                # host-appropriate one and re-entering the resolver would only
+                # repeat the work — including, for a local endpoint with no
+                # configured model, a second bounded /models probe.
+                base_url = _da.base_url
+            else:
+                try:
+                    # Resolve as bare `custom` REGARDLESS of the alias's
+                    # provider label. A label like `anthropic` would otherwise
+                    # reach that provider's own resolver, which selects
+                    # ANTHROPIC_API_KEY from the environment while keeping the
+                    # alias's unrelated base_url — handing a built-in
+                    # provider's bearer secret to a third-party host. The bare
+                    # `custom` path is host-gated (#28660), so an authoritative
+                    # URL still resolves its vendor key (api.anthropic.com →
+                    # ANTHROPIC_API_KEY via the host-derived fallback) while a
+                    # non-authoritative one resolves none. An alias that needs
+                    # a specific key states it with api_key/key_env above.
+                    _alias_runtime = resolve_runtime_provider(
+                        requested="custom",
+                        explicit_base_url=_da.base_url,
+                        target_model=new_model,
+                    )
+                except Exception:
+                    _alias_runtime = {}
+                # The already-resolved key is reusable only when the alias
+                # points at the SAME ORIGIN it was resolved for (an alias that
+                # just pins a model on the endpoint already in use). Across
+                # origins it is the leak, so it is dropped, not carried.
+                _same_host = _may_reuse_session_credential(base_url, _da.base_url)
+                base_url = _alias_runtime.get("base_url", "") or _da.base_url
+                # The resolver reports "no key found" with the
+                # `no-key-required` placeholder rather than "". Normalise it
+                # so a same-host credential still outranks the placeholder.
+                _resolved_key = _alias_runtime.get("api_key", "")
+                if _resolved_key == "no-key-required":
+                    _resolved_key = ""
+                api_key = (
+                    _resolved_key
+                    or (api_key if _same_host else "")
+                    or "no-key-required"
+                )
             api_mode = ""  # clear so determine_api_mode re-detects from URL
-            if not api_key:
-                api_key = "no-key-required"
 
     # --- Resolve api_mode from the final (provider, base_url) before validation ---
     # Two cases this closes, both surfaced when the switched model's reasoning

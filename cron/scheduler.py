@@ -6564,12 +6564,15 @@ def tick(
             except OSError:
                 pass
         if _is_fd_exhaustion(exc):
+            # Reclamation is owned by the ticker loop's except handler
+            # (scheduler_provider.py) — it classifies the raised error and
+            # runs _reclaim_fds_best_effort exactly once per failed tick.
+            # Calling it here too would double the gc.collect() pause.
             logger.error(
-                "Cron tick could not acquire tick lock: %s — attempting fd "
-                "reclamation; scheduler will retry on the next tick",
+                "Cron tick could not acquire tick lock: %s — scheduler will "
+                "attempt fd reclamation and retry with backoff",
                 exc,
             )
-            _reclaim_fds_best_effort()
         else:
             logger.error("Cron tick could not acquire tick lock: %s", exc)
         raise

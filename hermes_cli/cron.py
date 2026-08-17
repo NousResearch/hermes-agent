@@ -206,7 +206,17 @@ def cron_list(show_all: bool = False):
 def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import tick
-    tick(verbose=True)
+    try:
+        tick(verbose=True)
+    except OSError as exc:
+        # tick() now propagates real lock-acquisition failures (EMFILE,
+        # EACCES on open, ...) instead of swallowing them as contention
+        # (#87644). For the one-shot CLI surface, report cleanly instead of
+        # dumping a traceback; the gateway ticker loop handles its own retry.
+        print(color(f"✗ Cron tick failed: {exc}", Colors.RED))
+        print("  Check `hermes cron status` and the gateway log for details.")
+        return 1
+    return 0
 
 
 def cron_runs(job_id: Optional[str] = None, limit: int = 20):
@@ -617,8 +627,7 @@ def cron_command(args):
         return 0
 
     if subcmd == "tick":
-        cron_tick()
-        return 0
+        return cron_tick()
 
     if subcmd in {"runs", "history"}:
         cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))

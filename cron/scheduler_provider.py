@@ -32,6 +32,20 @@ from typing import Any
 _EMFILE_BACKOFF_MAX_SECONDS = 15 * 60  # 15 minutes
 
 
+def _backoff_wait_seconds(interval: float, consecutive_failures: int) -> float:
+    """Exponential tick backoff shared by both ticker loops (#87644).
+
+    Returns the plain ``interval`` while healthy; doubles per consecutive
+    fd-exhaustion failure, capped at ``_EMFILE_BACKOFF_MAX_SECONDS``.
+    """
+    if consecutive_failures <= 0:
+        return interval
+    return min(
+        interval * (2 ** (consecutive_failures - 1)),
+        _EMFILE_BACKOFF_MAX_SECONDS,
+    )
+
+
 class CronScheduler(ABC):
     """Axis-B trigger provider. Decides WHEN a due cron job fires.
 
@@ -449,13 +463,7 @@ class InProcessCronScheduler(CronScheduler):
             if ok:
                 clear_ticker_error()
                 consecutive_failures = 0
-            wait_seconds = interval
-            if consecutive_failures > 0:
-                wait_seconds = min(
-                    interval * (2 ** (consecutive_failures - 1)),
-                    _EMFILE_BACKOFF_MAX_SECONDS,
-                )
-            stop_event.wait(wait_seconds)
+            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
 
     def _start_multiplex(
         self,
@@ -566,10 +574,4 @@ class InProcessCronScheduler(CronScheduler):
                     reset_hermes_home_override(home_token)
             if ok:
                 consecutive_failures = 0
-            wait_seconds = interval
-            if consecutive_failures > 0:
-                wait_seconds = min(
-                    interval * (2 ** (consecutive_failures - 1)),
-                    _EMFILE_BACKOFF_MAX_SECONDS,
-                )
-            stop_event.wait(wait_seconds)
+            stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

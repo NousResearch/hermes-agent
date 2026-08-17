@@ -9,6 +9,7 @@ import {
   eventsReconnectingMessage,
   eventsRejectedMessage,
   isEventsAuthRejection,
+  isEventsRejection,
   isEventsFeedMessage,
   shouldRetryEventsClose,
   EVENTS_DISCONNECTED_MESSAGE,
@@ -65,6 +66,20 @@ describe("shouldRetryEventsClose", () => {
   it("does not retry auth rejections", () => {
     expect(shouldRetryEventsClose(4401)).toBe(false);
     expect(shouldRetryEventsClose(4403)).toBe(false);
+  });
+
+  it("does not retry the other server rejection codes either", () => {
+    // web_server.py accepts the upgrade and closes with 4400 (bad channel),
+    // 4404 (chat disabled) or 4408 (peer refused); the sidebar's `open`
+    // handler resets the attempt counter, so retrying these would loop
+    // forever at the base delay instead of giving up.
+    for (const code of [4400, 4404, 4408, 4499]) {
+      expect(shouldRetryEventsClose(code)).toBe(false);
+      expect(isEventsRejection(code)).toBe(true);
+    }
+    expect(isEventsRejection(4500)).toBe(false);
+    expect(isEventsRejection(1006)).toBe(false);
+    expect(isEventsRejection(undefined)).toBe(false);
   });
 
   it("retries when the code is missing", () => {

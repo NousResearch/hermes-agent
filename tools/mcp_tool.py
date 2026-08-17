@@ -732,6 +732,34 @@ def _exc_str(exc: BaseException) -> str:
 # lazy so this module never triggers the ~260ms `mcp` import at import time).
 _JSONRPC_METHOD_NOT_FOUND = -32601
 
+# 2026-07-28 stateless servers answering a legacy ``initialize`` reject it
+# with one of these: UnsupportedProtocolVersion (-32022, spec-reserved range)
+# or plain method-not-found when the handshake methods are gone entirely.
+# Structural codes only — checked via _handshake_rejected_as_modern().
+_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
+
+
+def _handshake_rejected_as_modern(exc: BaseException) -> bool:
+    """True when a failed ``initialize`` signals a 2026-07-28-only server.
+
+    Mirrors :func:`_is_method_not_found_error`'s structural-then-substring
+    shape (never ``isinstance`` on SDK exception types — the SDK wraps
+    task-group errors in ``ExceptionGroup`` and symbols drift across
+    generations; see references/sdk-exceptiongroup-wrapping.md).
+    """
+    err = getattr(exc, "error", None)
+    code = getattr(err, "code", None) or getattr(exc, "code", None)
+    if code in (_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION, _JSONRPC_METHOD_NOT_FOUND):
+        return True
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return (
+        "unsupported protocol version" in msg
+        or str(_JSONRPC_UNSUPPORTED_PROTOCOL_VERSION) in msg
+        or _is_method_not_found_error(exc)
+    )
+
 
 def _is_method_not_found_error(exc: BaseException) -> bool:
     """Return True if *exc* is a JSON-RPC ``method not found`` (-32601).
@@ -837,7 +865,8 @@ def _prepend_path(env: dict, directory: str) -> dict:
 _MCP_LIST_MAX_PAGES = 50
 
 
-async def _paginate_full_list(list_method, items_attr: str, server_name: str):
+async def _paginate_full_list(list_method, items_attr: str, server_name: str,
+                              cache_meta_out: Optional[dict] = None):
     """Drain a paginated MCP ``list_*`` call by following ``nextCursor``.
 
     The MCP spec allows servers to paginate ``tools/list``,
@@ -853,6 +882,10 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
         items_attr: Result attribute holding the page's items
             (``"tools"``, ``"resources"``, or ``"prompts"``).
         server_name: For log messages.
+        cache_meta_out: Optional dict that receives the first page's
+            SEP-2549 cache hints (``ttl_ms``, ``cache_scope``) when the
+            server provides them (2026-07-28 servers MUST; earlier ones
+            won't). Callers use ``ttl_ms`` to bound the schema cache.
 
     Returns:
         Combined list of items across all pages. Callers must hold the
@@ -862,7 +895,27 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
     items: list = []
     cursor = None
     for _ in range(_MCP_LIST_MAX_PAGES):
-        result = await (list_method(cursor=cursor) if cursor else list_method())
+        if not cursor:
+            result = await list_method()
+        else:
+            # Cursor continuation differs by SDK generation: mcp 1.x
+            # accepts ``cursor=``, mcp 2.0 takes ``params=`` (a
+            # PaginatedRequestParams). Try modern first, fall back.
+            try:
+                _params_cls = getattr(_mcp_types(), "PaginatedRequestParams", None)
+                if _params_cls is not None:
+                    result = await list_method(params=_params_cls(cursor=cursor))
+                else:
+                    result = await list_method(cursor=cursor)
+            except TypeError:
+                result = await list_method(cursor=cursor)
+        if cache_meta_out is not None and not items:
+            _ttl = mcp_field(result, "ttl_ms", "ttlMs")
+            _scope = mcp_field(result, "cache_scope", "cacheScope")
+            if _ttl is not None:
+                cache_meta_out["ttl_ms"] = _ttl
+            if _scope is not None:
+                cache_meta_out["cache_scope"] = _scope
         items.extend(getattr(result, items_attr, None) or [])
         cursor = mcp_field(result, "next_cursor", "nextCursor")
         # Per the MCP spec the cursor is an opaque string; anything else
@@ -876,6 +929,12 @@ async def _paginate_full_list(list_method, items_attr: str, server_name: str):
             server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items),
         )
     return items
+
+
+def _mcp_types():
+    """Late import of ``mcp.types`` (module keeps the SDK import lazy)."""
+    import mcp.types as _t
+    return _t
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
@@ -1650,6 +1709,14 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
 class SamplingHandler:
     """Handles sampling/createMessage requests for a single MCP server.
 
+    .. deprecated-upstream:: MCP 2026-07-28 deprecates the Sampling feature
+       (SEP-2577, 12-month window; suggested migration is direct LLM-provider
+       integration server-side). This handler stays fully functional for the
+       deprecation window because handshake-era servers in the wild still
+       issue sampling/createMessage — but do NOT grow new capability here;
+       modern servers use MRTR (``resultType: "input_required"``) instead of
+       server-initiated requests, which the SDK's session layer handles.
+
     Each MCPServerTask that has sampling enabled creates one SamplingHandler.
     The handler is callable and passed directly to ``ClientSession`` as
     the ``sampling_callback``.  All state (rate-limit timestamps, metrics,
@@ -2264,7 +2331,7 @@ class MCPServerTask:
         "_pending_call_context",
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
-        "initialize_result", "_ping_unsupported",
+        "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked",
     )
 
@@ -2332,6 +2399,8 @@ class MCPServerTask:
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession``
         # method attribute corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
+        # SEP-2549 cache hints from the last tools/list (ttl_ms, cache_scope).
+        self._list_cache_meta: dict = {}
         # Set True the first time a keepalive ``ping`` returns JSON-RPC
         # -32601 (method not found): the server is tool-capable but doesn't
         # implement the optional ``ping`` utility. Subsequent keepalives fall
@@ -2362,6 +2431,87 @@ class MCPServerTask:
         if caps is None:
             return True
         return getattr(caps, "tools", None) is not None
+
+    async def _negotiate_session(self, session, connect_timeout: float):
+        """Negotiate the protocol era with the server and return its result.
+
+        MCP 2026-07-28 replaced the ``initialize``/``initialized`` handshake
+        with a stateless core: every request is self-describing and clients
+        MAY probe ``server/discover`` up front (SEP-2575). The SDK exposes
+        both paths on ``ClientSession`` (``initialize()`` / ``discover()``)
+        and ``adopt()``s whichever result installs the outbound stamp, so
+        the rest of this file is era-agnostic.
+
+        Per-server ``protocol`` config key:
+
+        - ``auto`` (default): try the legacy handshake FIRST, and fall back
+          to ``server/discover`` when the server signals it is modern-only
+          (``UnsupportedProtocolVersion`` -32022, or ``initialize`` missing
+          -32601). This is the reverse of the SDK's own discover-first auto
+          mode, on purpose: nearly every configured/catalog server today
+          speaks the handshake era, and initialize-first means ZERO extra
+          round-trips and zero behavior change for all of them, while
+          stateless-only servers still connect via the fallback.
+        - ``stateless``: probe ``server/discover`` first (one legacy retry
+          on MCPError, so a handshake-only server still connects).
+        - ``legacy``: handshake only, no fallback (escape hatch for servers
+          that misbehave on unknown methods).
+
+        Both result types expose ``.capabilities``, so downstream gates
+        (``_advertises_tools``, ``_select_utility_schemas``, the config
+        probe) work unchanged on either.
+        """
+        mode = str((self._config or {}).get("protocol", "auto")).lower().strip()
+        if mode in ("stateless", "modern", "2026-07-28"):
+            try:
+                return await asyncio.wait_for(
+                    session.discover(), timeout=connect_timeout
+                )
+            except asyncio.TimeoutError:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.info(
+                    "MCP server '%s': server/discover rejected (%s) despite "
+                    "protocol=%s — falling back to the legacy handshake",
+                    self.name, exc, mode,
+                )
+                return await asyncio.wait_for(
+                    session.initialize(), timeout=connect_timeout
+                )
+        if mode in ("legacy", "handshake"):
+            return await asyncio.wait_for(
+                session.initialize(), timeout=connect_timeout
+            )
+        if mode != "auto":
+            logger.warning(
+                "MCP server '%s': unknown protocol=%r — treating as 'auto' "
+                "(valid: auto, stateless, legacy)", self.name, mode,
+            )
+        try:
+            return await asyncio.wait_for(
+                session.initialize(), timeout=connect_timeout
+            )
+        except asyncio.TimeoutError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not _handshake_rejected_as_modern(exc):
+                raise
+            if not hasattr(session, "discover"):
+                # Legacy SDK generation (mcp 1.x) has no server/discover
+                # client — nothing to fall back to.
+                raise
+            logger.info(
+                "MCP server '%s': legacy handshake rejected (%s) — "
+                "retrying via server/discover (2026-07-28 stateless server)",
+                self.name, exc,
+            )
+            return await asyncio.wait_for(
+                session.discover(), timeout=connect_timeout
+            )
 
     def _is_recycled_stdio(self) -> bool:
         """Return True when a stdio server was intentionally recycled."""
@@ -2963,8 +3113,8 @@ class MCPServerTask:
                     connect_timeout = float(
                         config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
                     )
-                    self.initialize_result = await asyncio.wait_for(
-                        session.initialize(), timeout=connect_timeout
+                    self.initialize_result = await self._negotiate_session(
+                        session, connect_timeout
                     )
                     self.session = session
                     self._mark_lifecycle_started()
@@ -3335,8 +3485,8 @@ class MCPServerTask:
                         # stdio path (#59349): an endpoint that accepts the
                         # connection but never answers ``initialize`` parks this
                         # coroutine forever on the background loop.
-                        self.initialize_result = await asyncio.wait_for(
-                            session.initialize(), timeout=float(connect_timeout)
+                        self.initialize_result = await self._negotiate_session(
+                            session, float(connect_timeout)
                         )
                         self.session = session
                         await self._discover_tools()
@@ -3400,8 +3550,8 @@ class MCPServerTask:
                         read_stream, write_stream = _streams[0], _streams[1]
                         async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
-                            self.initialize_result = await asyncio.wait_for(
-                                session.initialize(), timeout=float(connect_timeout)
+                            self.initialize_result = await self._negotiate_session(
+                                session, float(connect_timeout)
                             )
                             self.session = session
                             await self._discover_tools()
@@ -3447,8 +3597,8 @@ class MCPServerTask:
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                         # Bound the handshake (#59349) — see stdio path.
-                        self.initialize_result = await asyncio.wait_for(
-                            session.initialize(), timeout=float(connect_timeout)
+                        self.initialize_result = await self._negotiate_session(
+                            session, float(connect_timeout)
                         )
                         self.session = session
                         await self._discover_tools()
@@ -3497,8 +3647,10 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
+            self._list_cache_meta = {}
             self._tools = await _paginate_full_list(
-                self.session.list_tools, "tools", self.name
+                self.session.list_tools, "tools", self.name,
+                cache_meta_out=self._list_cache_meta,
             )
         self._register_discovered_tools_if_needed()
 
@@ -6796,6 +6948,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                 config_fingerprint(config),
                 tools=tools_payload,
                 utility_tools=utility_payload,
+                ttl_ms=(getattr(server, "_list_cache_meta", None) or {}).get("ttl_ms"),
+                cache_scope=(getattr(server, "_list_cache_meta", None) or {}).get("cache_scope"),
             )
         except Exception as exc:
             logger.debug("MCP schema cache write failed for '%s': %s", name, exc)

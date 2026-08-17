@@ -56,6 +56,7 @@ mcp_servers:
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
+| `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |

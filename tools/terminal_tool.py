@@ -2967,18 +2967,25 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
-        # Non-bypassable: rewriting the local checkout backing this interpreter
-        # can mix module versions. Remote backends cannot reach that checkout.
+        # Windows-only: NTFS locks loaded module files, so rewriting the local
+        # checkout backing this interpreter can corrupt the running process.
+        # POSIX keeps old inodes alive for open handles, so the guard is off
+        # there. Remote backends cannot reach that checkout.
         if env_type == "local":
-            from tools.self_repo_guard import detect_self_repo_git_mutation
+            from tools.self_repo_guard import (
+                detect_self_repo_git_mutation,
+                guard_active,
+            )
 
             guard_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
             )
-            _self_repo_hit, _self_repo_msg = detect_self_repo_git_mutation(
-                command, guard_cwd
+            _self_repo_hit, _self_repo_msg = (
+                detect_self_repo_git_mutation(command, guard_cwd)
+                if guard_active()
+                else (False, None)
             )
             if _self_repo_hit:
                 logger.warning(

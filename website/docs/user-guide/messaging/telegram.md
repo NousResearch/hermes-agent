@@ -1137,9 +1137,9 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 
 1. If `TELEGRAM_FALLBACK_IPS` is set, those IPs are used directly.
 2. Otherwise, the adapter automatically queries **Google DNS** and **Cloudflare DNS** via DNS-over-HTTPS (DoH) to discover alternative IPs for `api.telegram.org`.
-3. IPs returned by DoH that differ from the system DNS result are used as fallbacks.
-4. If DoH is also blocked, a hardcoded seed IP (`149.154.167.220`) is used as a last resort.
-5. Once a fallback IP succeeds, it becomes "sticky" — subsequent requests use it directly without retrying the primary path first.
+3. Known IPv4 Telegram API IPs are tried **before** the dual-stack `api.telegram.org` hostname. A blackholed IPv6 path can sit in `connect()` without erroring, which used to pin the event loop so the 30s init deadline never fired.
+4. If DoH is also blocked or times out, a hardcoded IPv4 seed list (`149.154.166.110`, `149.154.167.220`) is used instead of falling through to the hostname.
+5. Once a path succeeds, it becomes "sticky" — subsequent requests use it directly. The hostname is kept as a last resort for IPv6-only networks.
 
 ### Configuration
 
@@ -1159,7 +1159,7 @@ platforms:
 ```
 
 :::tip
-You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
+You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network. If IPv6 is broken on the host, you can also set `network.force_ipv4: true` in `config.yaml` to skip AAAA lookups process-wide.
 :::
 
 ## Proxy Support

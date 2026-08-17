@@ -10,9 +10,10 @@ servers still accept the request.  This is the programmatic equivalent of:
 
     curl --resolve api.telegram.org:443:149.154.167.220 https://api.telegram.org/bot<token>/getMe
 
-The TelegramFallbackTransport implements this: try the primary (DNS-resolved)
-path first, and on ConnectTimeout / ConnectError fall through to configured
-fallback IPs in order, then "stick" to whichever IP works.
+The TelegramFallbackTransport implements this: try known IPv4 Telegram API
+IPs first (so a blackholed IPv6 AAAA for the hostname cannot hang
+initialize — #87015), then fall through to the dual-stack hostname last,
+and "stick" to whichever path works.
 """
 
 import httpx
@@ -114,10 +115,10 @@ class TestRewriteRequestForIp:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestFallbackTransport:
-    """Primary path fails → try fallback IPs → stick to whichever works."""
+    """IPv4 literals first → hostname last → stick to whichever works."""
 
     @pytest.mark.asyncio
-    async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):
+    async def test_ipv4_literal_tried_before_hostname_and_becomes_sticky(self, monkeypatch):
         calls = []
         behavior = {"api.telegram.org": "timeout", "149.154.167.220": "ok"}
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
@@ -126,12 +127,11 @@ class TestFallbackTransport:
         resp = await transport.handle_async_request(_telegram_request())
 
         assert resp.status_code == 200
+        assert transport._has_sticky is True
         assert transport._sticky_ip == "149.154.167.220"
-        # First attempt was primary (api.telegram.org), second was fallback
-        assert calls[0]["url_host"] == "api.telegram.org"
-        assert calls[1]["url_host"] == "149.154.167.220"
-        assert calls[1]["host_header"] == "api.telegram.org"
-        assert calls[1]["sni_hostname"] == "api.telegram.org"
+        assert [c["url_host"] for c in calls] == ["149.154.167.220"]
+        assert calls[0]["host_header"] == "api.telegram.org"
+        assert calls[0]["sni_hostname"] == "api.telegram.org"
 
         # Second request goes straight to sticky IP
         calls.clear()
@@ -153,7 +153,7 @@ class TestFallbackTransport:
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
 
-        # First request: primary fails → .220 works → becomes sticky
+        # First request: .220 works immediately (IPv4-first) → becomes sticky
         await transport.handle_async_request(_telegram_request())
         assert transport._sticky_ip == "149.154.167.220"
 
@@ -163,11 +163,53 @@ class TestFallbackTransport:
 
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
-        # After #24511: when sticky fails the transport also resets and
-        # re-tries the primary DNS path before falling through to other IPs.
-        # Path: sticky (.220) → primary (api.telegram.org) → .221
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org", "149.154.167.221"]
+        # Sticky .220 fails → remaining IPv4 .221 works. Hostname is last
+        # and is never needed.
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
+
+    @pytest.mark.asyncio
+    async def test_blackholed_hostname_never_reached_when_ipv4_works(self, monkeypatch):
+        """#87015: a hostname connect that never returns must not run first."""
+        calls = []
+
+        class _HangOnHostname(FakeTransport):
+            async def handle_async_request(self, request):
+                if request.url.host == "api.telegram.org":
+                    raise AssertionError(
+                        "dual-stack hostname was tried before a working IPv4 literal"
+                    )
+                return await super().handle_async_request(request)
+
+        def factory(**kwargs):
+            return _HangOnHostname(calls, {"149.154.167.220": "ok"})
+
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert calls[0]["url_host"] == "149.154.167.220"
+
+    def test_attempt_order_is_ipv4_then_hostname(self):
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.166.110"])
+        assert transport._attempt_order() == [
+            "149.154.167.220",
+            "149.154.166.110",
+            None,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_hostname_tried_last_when_ipv4_fails(self, monkeypatch):
+        """IPv6-only / seed-IP-blocked hosts still reach the hostname last."""
+        calls = []
+        behavior = {"149.154.167.220": "timeout", "api.telegram.org": "ok"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
+        assert transport._has_sticky is True
+        assert transport._sticky_ip is None
 
 
 class TestFallbackTransportPassthrough:

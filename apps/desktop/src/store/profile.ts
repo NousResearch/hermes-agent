@@ -13,12 +13,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import {
-  $gateway,
-  openGatewayForProfile,
-  prepareGatewayForAgent,
-  prepareGatewayForProfile
-} from '@/store/gateway'
+import { $gateway, openGatewayForProfile, prepareGatewayForAgent, prepareGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'

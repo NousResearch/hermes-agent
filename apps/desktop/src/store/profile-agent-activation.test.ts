@@ -33,16 +33,25 @@ import type { HermesConnection } from '@/global'
 const INITIAL_GATEWAY = { id: 'live-socket' }
 const AGENT_GATEWAY = { id: 'agent-socket' }
 const PROFILE_GATEWAY = { id: 'profile-socket' }
+
 const activateAgent = vi.fn(() => {
   $gateway.set(AGENT_GATEWAY)
 
   return true
 })
+
 const activateProfile = vi.fn(() => {
   $gateway.set(PROFILE_GATEWAY)
 })
-const prepareGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => activateAgent)
-const prepareGatewayForProfile = vi.fn(async (_profile: string) => activateProfile)
+
+// Annotated with the SEAM's thunk types, not the spies' own. Inferred, the
+// resolved type is the MockInstance itself, and a test can no longer hand back
+// a plain `() => false` to stand in for a disposed entry.
+const prepareGatewayForAgent = vi.fn(
+  async (_connectionId: null | string, _profile: string): Promise<() => boolean> => activateAgent
+)
+
+const prepareGatewayForProfile = vi.fn(async (_profile: string): Promise<() => void> => activateProfile)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>(INITIAL_GATEWAY)
 const resetStarmapGraph = vi.fn()
@@ -93,7 +102,7 @@ beforeEach(() => {
   prepareGatewayForProfile.mockResolvedValue(activateProfile)
   activateAgent.mockClear()
   activateProfile.mockClear()
-  $gateway.set({ id: 'live-socket' })
+  $gateway.set(INITIAL_GATEWAY)
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   vi.stubGlobal('window', { hermesDesktop: { getConnection, getConnectionFor } })
@@ -133,19 +142,62 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     // Nothing published: all three still describe the previous backend, and the
     // caller can retry the switch.
     expect(activateAgent).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(INITIAL_GATEWAY)
     expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
     expect($connection.get()?.profile).toBe('default')
   })
 
   it('does not republish a registry identity invalidated during activation', async () => {
-    ensureGatewayForAgent.mockResolvedValueOnce(false)
+    // The thunk reports false: the entry was disposed (source edited/removed)
+    // between dial and publish. Nothing may publish, $gateway included.
+    prepareGatewayForAgent.mockResolvedValueOnce(() => false)
 
     await ensureGatewayAgent('removed-source', 'research')
 
     expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
-    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(INITIAL_GATEWAY)
+    // The descriptor lookup DOES run: it is issued concurrently with the dial
+    // so both can be resolved before anything is published, which is the whole
+    // point of the seam. Resolving it lazily (only after the thunk reports a
+    // live entry) would put an await between the identity check and the
+    // publication and reopen the gap. The cost is one redundant read-only
+    // lookup in the rare disposed-entry case; the invariant that matters -
+    // nothing is PUBLISHED - is asserted above.
+    expect(getConnectionFor).toHaveBeenCalledTimes(1)
+  })
+
+  it('never shows a $gateway listener the new backend beside stale companions', async () => {
+    // The assertion the earlier tests could not make. A spy thunk that never
+    // touches $gateway proves only that it was CALLED at the right moment;
+    // it cannot prove that the three public stores become visible together.
+    // Nanostores drains listeners synchronously on every .set(), so without
+    // batch() a $gateway listener runs between the writes and reads the new
+    // gateway next to the previous profile and descriptor.
+    getConnectionFor.mockResolvedValue(agentConn())
+    const seen: { connection?: string; gateway: unknown; profile: string }[] = []
+
+    const stop = $gateway.listen(gateway => {
+      seen.push({
+        connection: $connection.get()?.profile,
+        gateway,
+        profile: $activeGatewayProfile.get()
+      })
+    })
+
+    try {
+      await ensureGatewayAgent('homelab', 'research')
+    } finally {
+      stop()
+    }
+
+    expect(seen).toHaveLength(1)
+    // When the listener sees the agent's gateway, the profile pointer and the
+    // descriptor must ALREADY identify that same backend.
+    expect(seen[0].gateway).toBe(AGENT_GATEWAY)
+    expect(seen[0].profile).toBe('research')
+    expect(seen[0].connection).toBe('research')
   })
 
   it('falls through to the profile path for a null connectionId', async () => {
@@ -187,6 +239,7 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     await Promise.resolve()
 
     expect(activateAgent).not.toHaveBeenCalled()
+    expect($gateway.get()).toBe(INITIAL_GATEWAY)
     expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
 

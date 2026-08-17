@@ -16,6 +16,7 @@
  */
 
 import * as sdk from '@hermes/plugin-sdk'
+import { Streamdown } from 'streamdown'
 import {
   atom,
   Button,
@@ -6491,8 +6492,8 @@ function GroupChatWorkspace({ group, members }) {
                         ]
                       }),
                       jsx('div', {
-                        className: 'whitespace-pre-wrap text-xs text-(--ui-text-secondary)',
-                        children: entry.text
+    className: 'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0',
+    children: jsx(Streamdown, { children: entry.text })
                       })
                     ]
                   }, `${entry.at}:${index}`)

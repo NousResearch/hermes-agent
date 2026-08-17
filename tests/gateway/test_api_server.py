@@ -1319,6 +1319,54 @@ class TestDeriveChatSessionId:
 class TestResponsesEndpoint:
 
 
+    def test_response_history_matches_persisted_first_turn(self, adapter):
+        """Persistence markers must not make a full transcript look like a turn suffix."""
+        messages = [
+            {
+                "role": "user",
+                "content": "hello",
+                "_db_persisted": True,
+                "_row_id": 1,
+            },
+            {
+                "role": "assistant",
+                "content": "hi",
+                "_db_persisted": True,
+                "_row_id": 2,
+            },
+        ]
+        result = {"messages": messages, "final_response": "hi"}
+
+        assert adapter._response_messages_turn_start_index([], "hello", result) == 1
+        assert adapter._build_response_conversation_history([], "hello", result, "hi") == messages
+
+
+    def test_response_history_matches_persisted_chained_turn(self, adapter):
+        """Clean stored history must match the same transcript carrying persistence markers."""
+        prior = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        messages = [
+            {**message, "_db_persisted": True, "_row_id": index}
+            for index, message in enumerate(
+                [
+                    *prior,
+                    {"role": "user", "content": "again"},
+                    {"role": "assistant", "content": "hello again"},
+                ],
+                start=1,
+            )
+        ]
+        result = {"messages": messages, "final_response": "hello again"}
+
+        assert adapter._response_messages_turn_start_index(prior, "again", result) == 3
+        assert (
+            adapter._build_response_conversation_history(prior, "again", result, "hello again")
+            == messages
+        )
+
+
     @pytest.mark.asyncio
     async def test_successful_response_with_string_input(self, adapter):
         """String input is wrapped in a user message."""
@@ -2865,4 +2913,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

@@ -98,8 +98,10 @@ Decision:
 - Receipts are a reversible overlay with typed actions: `settle`, `snooze`,
   and `wake`. They contain `state`, `wake_at`, the task-event cursor observed by
   the action, actor/source, revision, and timestamps. Every accepted action is
-  also appended to `attention_receipt_events`; clients never submit arbitrary
-  receipt blobs.
+  appended once to canonical `task_events` as an `attention_*` event; clients
+  never submit arbitrary receipt blobs. Replay hashes live in a normalized,
+  FK-indexed `attention_idempotency` cache bounded to 64 keys per task and are
+  deleted with the task, so replay protection cannot become a second audit log.
 - The pure projection policy compares a receipt with canonical time and the
   task's latest event id. Snooze expires at `wake_at`. Any consequential task
   event after the observed cursor resurfaces settled/snoozed attention. Receipt

@@ -36,7 +36,6 @@ the port.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import sqlite3
@@ -188,60 +187,14 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
     }
 
 
-_ATTENTION_KIND = "kanban_task"
-_ATTENTION_STATES = frozenset(("active", "settled", "snoozed"))
-
-
-def _latest_consequential_event_id(conn: sqlite3.Connection, task_id: str) -> int:
-    """Latest workflow/activity event, excluding receipt invalidation frames."""
-    row = conn.execute(
-        "SELECT COALESCE(MAX(id), 0) AS m FROM task_events "
-        "WHERE task_id = ? AND kind NOT LIKE 'attention_%'",
-        (task_id,),
-    ).fetchone()
-    return int(row["m"] if row else 0)
-
-
 def _attention_projection(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     now: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Pure fail-visible receipt projection against canonical events/time."""
-    now = int(time.time()) if now is None else int(now)
-    row = conn.execute(
-        "SELECT * FROM attention_receipts WHERE subject_kind = ? AND subject_id = ?",
-        (_ATTENTION_KIND, task_id),
-    ).fetchone()
-    latest = _latest_consequential_event_id(conn, task_id)
-    if row is None:
-        return {"state": "active", "wake_at": None, "revision": 0,
-                "reason": "unacknowledged", "observed_event_id": latest}
-
-    stored_state = row["state"]
-    wake_at = row["wake_at"]
-    reason = "receipt"
-    state = stored_state if stored_state in _ATTENTION_STATES else "active"
-    if stored_state not in _ATTENTION_STATES:
-        reason = "invalid_receipt"
-    elif latest > int(row["observed_event_id"]):
-        state, reason = "active", "activity"
-    elif state == "snoozed" and (wake_at is None or int(wake_at) <= now):
-        state, reason = "active", "expired"
-
-    return {
-        "state": state,
-        "stored_state": stored_state,
-        "wake_at": int(wake_at) if wake_at is not None else None,
-        "revision": int(row["revision"]),
-        "observed_event_id": int(row["observed_event_id"]),
-        "latest_event_id": latest,
-        "updated_at": int(row["updated_at"]),
-        "actor": row["actor"],
-        "source": row["source"],
-        "reason": reason,
-    }
+    """Thin dashboard adapter over the core attention projection."""
+    return kanban_db.project_task_attention(conn, task_id, now=now)
 
 
 def _with_attention(conn: sqlite3.Connection, task: dict[str, Any]) -> dict[str, Any]:
@@ -903,81 +856,26 @@ def update_attention(
     board: Optional[str] = Query(None),
 ):
     """Apply one typed human-receipt action without touching task workflow."""
-    if payload.action not in ("settle", "snooze", "wake"):
-        raise HTTPException(status_code=422, detail="action must be settle, snooze, or wake")
-    now = int(time.time())
-    if payload.action == "snooze" and (payload.wake_at is None or payload.wake_at <= now):
-        raise HTTPException(status_code=422, detail="snooze wake_at must be in the future")
-    if payload.action != "snooze" and payload.wake_at is not None:
-        raise HTTPException(status_code=422, detail="wake_at is only valid for snooze")
-
     board = _resolve_board(board)
     conn = _conn(board=board)
-    request = {
-        "action": payload.action,
-        "wake_at": payload.wake_at,
-        "actor": payload.actor,
-        "source": payload.source,
-        "expected_revision": payload.expected_revision,
-    }
-    request_hash = hashlib.sha256(
-        json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
     try:
         with conn:
-            if kanban_db.get_task(conn, task_id) is None:
-                raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-            duplicate = conn.execute(
-                "SELECT request_hash FROM attention_receipt_events "
-                "WHERE subject_kind = ? AND subject_id = ? AND idempotency_key = ?",
-                (_ATTENTION_KIND, task_id, payload.idempotency_key),
-            ).fetchone()
-            if duplicate is not None:
-                if duplicate["request_hash"] != request_hash:
-                    raise HTTPException(status_code=409, detail="idempotency key reused with different content")
-                return {"attention": _attention_projection(conn, task_id), "idempotent": True}
-
-            current = conn.execute(
-                "SELECT revision FROM attention_receipts "
-                "WHERE subject_kind = ? AND subject_id = ?",
-                (_ATTENTION_KIND, task_id),
-            ).fetchone()
-            revision = int(current["revision"]) if current else 0
-            if payload.expected_revision is not None and payload.expected_revision != revision:
-                raise HTTPException(
-                    status_code=409,
-                    detail={"message": "stale attention revision", "current_revision": revision},
-                )
-
-            observed = _latest_consequential_event_id(conn, task_id)
-            next_revision = revision + 1
-            state = {"settle": "settled", "snooze": "snoozed", "wake": "active"}[payload.action]
-            wake_at = payload.wake_at if state == "snoozed" else None
-            conn.execute(
-                "INSERT INTO attention_receipts "
-                "(subject_kind, subject_id, state, wake_at, observed_event_id, actor, source, revision, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(subject_kind, subject_id) DO UPDATE SET "
-                "state=excluded.state, wake_at=excluded.wake_at, observed_event_id=excluded.observed_event_id, "
-                "actor=excluded.actor, source=excluded.source, revision=excluded.revision, updated_at=excluded.updated_at",
-                (_ATTENTION_KIND, task_id, state, wake_at, observed, payload.actor,
-                 payload.source, next_revision, now, now),
+            attention, idempotent = kanban_db.update_task_attention(
+                conn, task_id, action=payload.action, wake_at=payload.wake_at,
+                actor=payload.actor, source=payload.source,
+                expected_revision=payload.expected_revision,
+                idempotency_key=payload.idempotency_key,
             )
-            conn.execute(
-                "INSERT INTO attention_receipt_events "
-                "(subject_kind, subject_id, action, wake_at, observed_event_id, actor, source, revision, "
-                "idempotency_key, request_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (_ATTENTION_KIND, task_id, payload.action, wake_at, observed, payload.actor,
-                 payload.source, next_revision, payload.idempotency_key, request_hash, now),
-            )
-            # Reuse the existing task-event socket solely as an invalidation
-            # transport. Projection explicitly excludes attention_* kinds.
-            conn.execute(
-                "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
-                (task_id, f"attention_{payload.action}",
-                 json.dumps({"revision": next_revision, "actor": payload.actor}), now),
-            )
-        return {"attention": _attention_projection(conn, task_id), "idempotent": False}
+        return {"attention": attention, "idempotent": idempotent}
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except kanban_db.AttentionConflict as exc:
+        detail: Any = str(exc)
+        if exc.current_revision is not None:
+            detail = {"message": str(exc), "current_revision": exc.current_revision}
+        raise HTTPException(status_code=409, detail=detail)
     finally:
         conn.close()
 

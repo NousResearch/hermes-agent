@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 import time
@@ -58,7 +59,8 @@ def act(client, task_id, action, key, revision=0, wake_at=None):
 def test_schema_is_additive_and_upgrade_safe(kanban_home):
     conn = kb.connect()
     names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"tasks", "attention_receipts", "attention_receipt_events"} <= names
+    assert {"tasks", "attention_receipts", "attention_idempotency"} <= names
+    assert "attention_receipt_events" not in names
     conn.close()
     # Reopening (the supported additive migration/rollback boundary) is idempotent.
     kb.init_db()
@@ -125,8 +127,28 @@ def test_receipt_audit_is_append_only(client, kanban_home):
     status_before = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]["status"]
     assert act(client, task["id"], "settle", "audit").status_code == 200
     conn = kb.connect()
-    audit = conn.execute("SELECT action, actor, source, revision FROM attention_receipt_events WHERE subject_id = ?", (task["id"],)).fetchall()
+    audit = conn.execute("SELECT kind, payload FROM task_events WHERE task_id = ? AND kind LIKE 'attention_%'", (task["id"],)).fetchall()
     status = conn.execute("SELECT status FROM tasks WHERE id = ?", (task["id"],)).fetchone()["status"]
     conn.close()
-    assert [tuple(row) for row in audit] == [("settle", "captain", "test", 1)]
+    assert [row["kind"] for row in audit] == ["attention_settle"]
+    assert json.loads(audit[0]["payload"])["source"] == "test"
     assert status == status_before
+
+
+def test_replay_cache_is_bounded_and_cascades_on_delete(kanban_home):
+    conn = kb.connect()
+    task_id = kb.create_task(conn, title="bounded", assignee="worker")
+    revision = 0
+    for index in range(kb.ATTENTION_IDEMPOTENCY_RETENTION + 5):
+        _, duplicate = kb.update_task_attention(
+            conn, task_id, action="settle" if index % 2 == 0 else "wake",
+            actor="captain", source="test", idempotency_key=f"key-{index}",
+            expected_revision=revision, now=1_800_000_000 + index,
+        )
+        assert duplicate is False
+        revision += 1
+    assert conn.execute("SELECT COUNT(*) FROM attention_idempotency WHERE task_id=?", (task_id,)).fetchone()[0] == kb.ATTENTION_IDEMPOTENCY_RETENTION
+    assert kb.delete_task(conn, task_id)
+    assert conn.execute("SELECT COUNT(*) FROM attention_idempotency WHERE task_id=?", (task_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM attention_receipts WHERE subject_id=?", (task_id,)).fetchone()[0] == 0
+    conn.close()

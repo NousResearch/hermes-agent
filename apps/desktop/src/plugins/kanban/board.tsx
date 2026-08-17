@@ -244,12 +244,17 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
 function AttentionControls({ task }: { task: KanbanTask }) {
   const qc = useQueryClient()
   const [custom, setCustom] = useState('')
+  const [announcement, setAnnouncement] = useState('')
   const receipt = task.attention ?? { state: 'active' as const, revision: 0 }
 
   const action = useMutation({
     mutationFn: ({ kind, wakeAt }: { kind: 'settle' | 'snooze' | 'wake'; wakeAt?: number }) =>
       updateAttention(task.id, kind, receipt.revision, wakeAt),
-    onError: error => host.notify({ kind: 'error', message: errText(error) }),
+    onError: error => {
+      const message = errText(error)
+      setAnnouncement(message)
+      host.notify({ kind: 'error', message })
+    },
     onSuccess: result => {
       host.notify({
         kind: 'success',
@@ -260,6 +265,7 @@ function AttentionControls({ task }: { task: KanbanTask }) {
               ? 'Snoozed'
               : 'Awake'
       })
+      setAnnouncement(result.attention.state === 'settled' ? 'Attention settled' : result.attention.state === 'snoozed' ? 'Task snoozed' : 'Task awake')
       void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
       void qc.invalidateQueries({ queryKey: ['kanban', 'task'] })
     }
@@ -267,6 +273,13 @@ function AttentionControls({ task }: { task: KanbanTask }) {
 
   const stop = (event: SyntheticEvent) => event.stopPropagation()
   const snooze = (seconds: number) => action.mutate({ kind: 'snooze', wakeAt: Math.floor(Date.now() / 1000) + seconds })
+
+  const tomorrowMorning = () => {
+    const wake = new Date()
+    wake.setDate(wake.getDate() + 1)
+    wake.setHours(9, 0, 0, 0)
+    action.mutate({ kind: 'snooze', wakeAt: Math.floor(wake.getTime() / 1000) })
+  }
 
   if (receipt.state === 'settled') {
     return (
@@ -286,6 +299,7 @@ function AttentionControls({ task }: { task: KanbanTask }) {
 
   return (
     <div className="flex flex-wrap items-center gap-1 border-t border-(--ui-stroke-tertiary) pt-1.5" onClick={stop} onKeyDown={stop}>
+      <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">{announcement}</span>
       <button
         className="min-h-7 rounded px-2 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) focus-visible:outline focus-visible:outline-2"
         disabled={action.isPending}
@@ -300,7 +314,7 @@ function AttentionControls({ task }: { task: KanbanTask }) {
         </summary>
         <div className="absolute bottom-full left-0 z-20 mb-1 grid min-w-48 gap-1 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) p-2 shadow-lg">
           <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={() => snooze(3600)} type="button">1 hour</button>
-          <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={() => snooze(24 * 3600)} type="button">Tomorrow</button>
+          <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={tomorrowMorning} type="button">Tomorrow, 9:00 AM local time</button>
           <button className="min-h-8 rounded px-2 text-left text-xs hover:bg-(--chrome-action-hover)" onClick={() => snooze(7 * 24 * 3600)} type="button">One week</button>
           <label className="grid gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
             Custom wake time
@@ -1258,6 +1272,20 @@ export function KanbanBoardPage() {
   }, [requestedLane])
 
   const toggleSelect = (id: string) => {
+    const q = search.trim().toLowerCase()
+
+    const selectable = board?.columns.some(col =>
+      col.tasks.some(task =>
+        task.id === id && (task.attention?.state ?? 'active') === 'active' &&
+        (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
+        (!tenant || task.tenant === tenant) && (!assignee || task.assignee === assignee)
+      )
+    )
+
+    if (!selectable) {
+      return
+    }
+
     setSelected(prev => {
       const next = new Set(prev)
 
@@ -1269,21 +1297,27 @@ export function KanbanBoardPage() {
     })
   }
 
-  // Prune ids that left the board (completed elsewhere, deleted, filtered by
-  // a board switch) so the bar's count never lies about what a bulk op hits.
+  // Selection is exactly the visible workflow-card set. Filtered-out,
+  // settled, and snoozed tasks can never leak into a bulk mutation.
   useEffect(() => {
     if (!board) {
       return
     }
 
-    const alive = new Set(board.columns.flatMap(col => col.tasks.map(task => task.id)))
+    const q = search.trim().toLowerCase()
+
+    const alive = new Set(board.columns.flatMap(col => col.tasks
+      .filter(task => (task.attention?.state ?? 'active') === 'active' &&
+        (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
+        (!tenant || task.tenant === tenant) && (!assignee || task.assignee === assignee))
+      .map(task => task.id)))
 
     setSelected(prev => {
       const kept = [...prev].filter(id => alive.has(id))
 
       return kept.length === prev.size ? prev : new Set(kept)
     })
-  }, [board])
+  }, [assignee, board, search, tenant])
 
   useEffect(() => {
     if (selected.size === 0) {

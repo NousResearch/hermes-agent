@@ -53,7 +53,7 @@ afterEach(() => {
 })
 
 describe('Kanban responsive geometry', () => {
-  for (const width of [320, 375, 390, 430]) {
+  for (const width of [320, 360, 390, 430]) {
     it(`keeps the toolbar, snapping lanes, and drawer contained at ${width}px`, () => {
       const view = render(width)
       const header = view.querySelector<HTMLElement>('header')!

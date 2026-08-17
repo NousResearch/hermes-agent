@@ -1465,20 +1465,15 @@ CREATE TABLE IF NOT EXISTS attention_receipts (
     PRIMARY KEY (subject_kind, subject_id)
 );
 
-CREATE TABLE IF NOT EXISTS attention_receipt_events (
+-- Bounded replay protection only. Canonical audit/provenance lives in
+-- task_events (attention_* kinds); this table must never become a second log.
+CREATE TABLE IF NOT EXISTS attention_idempotency (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    subject_kind          TEXT NOT NULL,
-    subject_id            TEXT NOT NULL,
-    action                TEXT NOT NULL CHECK (action IN ('settle', 'snooze', 'wake')),
-    wake_at               INTEGER,
-    observed_event_id     INTEGER NOT NULL,
-    actor                 TEXT NOT NULL,
-    source                TEXT NOT NULL,
-    revision              INTEGER NOT NULL,
+    task_id               TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     idempotency_key       TEXT NOT NULL,
     request_hash          TEXT NOT NULL,
     created_at            INTEGER NOT NULL,
-    UNIQUE (subject_kind, subject_id, idempotency_key)
+    UNIQUE (task_id, idempotency_key)
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -1553,6 +1548,7 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attention_replay_task ON attention_idempotency(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
@@ -1576,6 +1572,10 @@ DEFAULT_BUSY_TIMEOUT_MS = 120_000
 # accumulated 124 backups. Oldest-by-mtime files beyond the cap are pruned
 # right after each new backup is created.
 _CORRUPT_BACKUP_RETENTION = 10
+
+# Replay keys are operational state, not audit history. Keep enough for UI
+# retries/restarts while bounding adversarial unique-key growth per task.
+ATTENTION_IDEMPOTENCY_RETENTION = 64
 
 # Bounded acquire for the cross-process init lock (#36644). The original bare
 # blocking flock had no timeout, so a wedged holder blocked the dispatcher's
@@ -2741,6 +2741,24 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    # e0253d7 briefly shipped a second, unbounded attention audit table. Move
+    # only its replay keys into the bounded replay cache; task_events already
+    # contains the canonical attention_* audit frames. Dropping the duplicate
+    # is downgrade-safe: older code recreates an empty table and current
+    # receipts/provenance remain intact.
+    old_attention = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='attention_receipt_events'"
+    ).fetchone()
+    if old_attention is not None:
+        conn.execute(
+            "INSERT OR IGNORE INTO attention_idempotency "
+            "(task_id, idempotency_key, request_hash, created_at) "
+            "SELECT subject_id, idempotency_key, request_hash, created_at "
+            "FROM attention_receipt_events WHERE subject_kind = 'kanban_task' "
+            "AND subject_id IN (SELECT id FROM tasks)"
+        )
+        conn.execute("DROP TABLE attention_receipt_events")
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -3664,6 +3682,135 @@ def _inherit_notify_subs(
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row) if row else None
+
+
+class AttentionConflict(RuntimeError):
+    """An attention mutation conflicts with durable revision/replay state."""
+
+    def __init__(self, message: str, *, current_revision: Optional[int] = None):
+        super().__init__(message)
+        self.current_revision = current_revision
+
+
+def _latest_attention_observable_event_id(conn: sqlite3.Connection, task_id: str) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS m FROM task_events "
+        "WHERE task_id = ? AND kind NOT LIKE 'attention_%'",
+        (task_id,),
+    ).fetchone()
+    return int(row["m"] if row else 0)
+
+
+def project_task_attention(
+    conn: sqlite3.Connection, task_id: str, *, now: Optional[int] = None
+) -> dict[str, Any]:
+    """Project the human-attention overlay without changing workflow state."""
+    now = int(time.time()) if now is None else int(now)
+    row = conn.execute(
+        "SELECT * FROM attention_receipts WHERE subject_kind='kanban_task' AND subject_id=?",
+        (task_id,),
+    ).fetchone()
+    latest = _latest_attention_observable_event_id(conn, task_id)
+    if row is None:
+        return {"state": "active", "wake_at": None, "revision": 0,
+                "reason": "unacknowledged", "observed_event_id": latest}
+    stored_state = str(row["state"])
+    state = stored_state
+    wake_at = row["wake_at"]
+    reason = "receipt"
+    if stored_state not in ("active", "settled", "snoozed"):
+        state, reason = "active", "invalid_receipt"
+    elif latest > int(row["observed_event_id"]):
+        state, reason = "active", "activity"
+    elif state == "snoozed" and (wake_at is None or int(wake_at) <= now):
+        state, reason = "active", "expired"
+    return {
+        "state": state,
+        "stored_state": stored_state,
+        "wake_at": int(wake_at) if wake_at is not None else None,
+        "revision": int(row["revision"]),
+        "observed_event_id": int(row["observed_event_id"]),
+        "latest_event_id": latest,
+        "updated_at": int(row["updated_at"]),
+        "actor": row["actor"],
+        "source": row["source"],
+        "reason": reason,
+    }
+
+
+def update_task_attention(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    action: str,
+    actor: str,
+    source: str,
+    idempotency_key: str,
+    wake_at: Optional[int] = None,
+    expected_revision: Optional[int] = None,
+    now: Optional[int] = None,
+) -> tuple[dict[str, Any], bool]:
+    """Atomically settle, snooze, or wake a task's attention receipt.
+
+    The caller owns the transaction. Canonical provenance is one task_events
+    row; replay keys are bounded operational state.
+    """
+    now = int(time.time()) if now is None else int(now)
+    if action not in ("settle", "snooze", "wake"):
+        raise ValueError("action must be settle, snooze, or wake")
+    if action == "snooze" and (wake_at is None or int(wake_at) <= now):
+        raise ValueError("snooze wake_at must be in the future")
+    if action != "snooze" and wake_at is not None:
+        raise ValueError("wake_at is only valid for snooze")
+    if get_task(conn, task_id) is None:
+        raise KeyError(task_id)
+    request = {"action": action, "wake_at": wake_at, "actor": actor,
+               "source": source, "expected_revision": expected_revision}
+    request_hash = hashlib.sha256(
+        json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    duplicate = conn.execute(
+        "SELECT request_hash FROM attention_idempotency WHERE task_id=? AND idempotency_key=?",
+        (task_id, idempotency_key),
+    ).fetchone()
+    if duplicate is not None:
+        if duplicate["request_hash"] != request_hash:
+            raise AttentionConflict("idempotency key reused with different content")
+        return project_task_attention(conn, task_id, now=now), True
+    current = conn.execute(
+        "SELECT revision FROM attention_receipts WHERE subject_kind='kanban_task' AND subject_id=?",
+        (task_id,),
+    ).fetchone()
+    revision = int(current["revision"]) if current else 0
+    if expected_revision is not None and expected_revision != revision:
+        raise AttentionConflict("stale attention revision", current_revision=revision)
+    observed = _latest_attention_observable_event_id(conn, task_id)
+    next_revision = revision + 1
+    state = {"settle": "settled", "snooze": "snoozed", "wake": "active"}[action]
+    stored_wake = int(wake_at) if state == "snoozed" and wake_at is not None else None
+    conn.execute(
+        "INSERT INTO attention_receipts "
+        "(subject_kind,subject_id,state,wake_at,observed_event_id,actor,source,revision,created_at,updated_at) "
+        "VALUES ('kanban_task',?,?,?,?,?,?,?,?,?) ON CONFLICT(subject_kind,subject_id) DO UPDATE SET "
+        "state=excluded.state,wake_at=excluded.wake_at,observed_event_id=excluded.observed_event_id,"
+        "actor=excluded.actor,source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at",
+        (task_id, state, stored_wake, observed, actor, source, next_revision, now, now),
+    )
+    conn.execute(
+        "INSERT INTO task_events(task_id,kind,payload,created_at) VALUES (?,?,?,?)",
+        (task_id, f"attention_{action}", json.dumps({"revision": next_revision,
+         "actor": actor, "source": source, "wake_at": stored_wake}), now),
+    )
+    conn.execute(
+        "INSERT INTO attention_idempotency(task_id,idempotency_key,request_hash,created_at) VALUES (?,?,?,?)",
+        (task_id, idempotency_key, request_hash, now),
+    )
+    conn.execute(
+        "DELETE FROM attention_idempotency WHERE task_id=? AND id NOT IN "
+        "(SELECT id FROM attention_idempotency WHERE task_id=? ORDER BY id DESC LIMIT ?)",
+        (task_id, task_id, ATTENTION_IDEMPOTENCY_RETENTION),
+    )
+    return project_task_attention(conn, task_id, now=now), False
 
 
 # Canonical sort-order mappings for ``hermes kanban list --sort``.
@@ -7617,6 +7764,11 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM attention_receipts WHERE subject_kind='kanban_task' AND subject_id=?",
+            (task_id,),
+        )
+        conn.execute("DELETE FROM attention_idempotency WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
 

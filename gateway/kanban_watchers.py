@@ -551,35 +551,53 @@ class GatewayKanbanWatchersMixin:
                                 r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
                                 wake_handoff = r
-                            msg = (
-                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                            msg = t(
+                                "gateway.kanban_done",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                title=title,
+                                handoff=handoff,
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                            msg = t(
+                                "gateway.kanban_blocked",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                reason=reason,
+                            )
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                            msg = t(
+                                "gateway.kanban_gave_up",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                err=err,
                             )
                         elif kind == "crashed":
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                            msg = t(
+                                "gateway.kanban_crashed",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
                             )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                            msg = t(
+                                "gateway.kanban_timed_out",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                limit=limit,
                             )
                         elif kind == "status":
                             new_status = ""
@@ -592,9 +610,13 @@ class GatewayKanbanWatchersMixin:
                             handoff = ""
                             if ev.payload and ev.payload.get("summary"):
                                 handoff = f"\n{str(ev.payload['summary'])[:200]}"
-                            msg = (
-                                f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
-                                f" — {title}{handoff}"
+                            msg = t(
+                                "gateway.kanban_review_requested",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                title=title,
+                                handoff=handoff,
                             )
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
@@ -668,25 +690,28 @@ class GatewayKanbanWatchersMixin:
                             # outcome there, not by skipping the send here.
                             continue
                         try:
-                            _send_res = await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
-                            # A SendResult(success=False) without an exception
-                            # (returned by push-capable adapters on a genuine
-                            # transient failure) must count as a FAILED
-                            # delivery — otherwise the cursor advances and the
-                            # event is permanently lost. Adapters returning
-                            # None (or anything non-SendResult shaped) keep
-                            # the legacy "no exception == delivered" contract.
-                            if getattr(_send_res, "success", True) is False:
-                                raise RuntimeError(
-                                    "adapter send() reported failure: "
-                                    f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                            # Skip the text notification when category suppression
+                            # (gateway.system_messages.suppress) blanked it to "".
+                            if msg and msg.strip():
+                                _send_res = await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
                                 )
-                            logger.debug(
-                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
-                            )
+                                # A SendResult(success=False) without an exception
+                                # (returned by push-capable adapters on a genuine
+                                # transient failure) must count as a FAILED
+                                # delivery — otherwise the cursor advances and the
+                                # event is permanently lost. Adapters returning
+                                # None (or anything non-SendResult shaped) keep
+                                # the legacy "no exception == delivered" contract.
+                                if getattr(_send_res, "success", True) is False:
+                                    raise RuntimeError(
+                                        "adapter send() reported failure: "
+                                        f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                                    )
+                                logger.debug(
+                                    "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                                    kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                )
                             # After delivering the text notification, surface
                             # any artifact paths the worker referenced in
                             # ``kanban_complete(summary=..., artifacts=[...])``

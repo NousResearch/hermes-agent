@@ -33,7 +33,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -219,18 +219,46 @@ class HeartbeatManager:
     def is_active(self) -> bool:
         return self._state is not None and self._state.status == "active"
 
-    def status_line(self) -> str:
+    def status_line(self, *, translate: Optional[Callable[..., str]] = None) -> str:
         s = self._state
         if s is None:
+            if translate is not None:
+                return translate("gateway.heartbeat_none")
             return "No heartbeat. Set one with /heartbeat every <interval> <prompt>."
         every = format_interval(s.interval_seconds)
-        fired = f", fired {s.fire_count}×" if s.fire_count else ""
+        if s.fire_count and translate is not None:
+            fired = translate("gateway.heartbeat_fired", count=s.fire_count)
+        else:
+            fired = f", fired {s.fire_count}×" if s.fire_count else ""
         if s.status == "active":
             anchor = s.last_fired_at or s.created_at
             next_in = max(0, int(anchor + s.interval_seconds - time.time()))
+            if translate is not None:
+                return translate(
+                    "gateway.heartbeat_status_active",
+                    interval=every,
+                    next_in=next_in,
+                    fired=fired,
+                    prompt=s.prompt,
+                )
             return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}): {s.prompt}"
         if s.status == "paused":
+            if translate is not None:
+                return translate(
+                    "gateway.heartbeat_status_paused",
+                    interval=every,
+                    fired=fired,
+                    prompt=s.prompt,
+                )
             return f"⏸ Heartbeat (paused, every {every}{fired}): {s.prompt}"
+        if translate is not None:
+            return translate(
+                "gateway.heartbeat_status_other",
+                status=s.status,
+                interval=every,
+                fired=fired,
+                prompt=s.prompt,
+            )
         return f"Heartbeat ({s.status}, every {every}{fired}): {s.prompt}"
 
     # --- mutation -----------------------------------------------------

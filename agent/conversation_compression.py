@@ -71,6 +71,7 @@ from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
 )
+from agent.i18n import t
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -109,8 +110,13 @@ def _emit_compaction_done(agent: Any) -> None:
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
+    text = t("gateway.compaction_done")
+    # Category suppression (suppress: progress) blanks this to "". Skip the
+    # callback entirely rather than emitting an empty status line.
+    if not text.strip():
+        return
     try:
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback("compacted", text)
     except Exception:
         logger.debug("status_callback error in compaction completion", exc_info=True)
 
@@ -1659,19 +1665,12 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     _aux_cfg_provider = fb_label.rsplit("(", 1)[1][:-1]
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
-                msg = (
-                    "⚠ Configured auxiliary compression provider "
-                    f"'{_aux_cfg_provider}' is unavailable — context "
-                    "compression will drop middle turns without a summary. "
-                    "Check auxiliary.compression in config.yaml and "
-                    "reauthenticate that provider."
+                msg = t(
+                    "gateway.compression_aux_unavailable",
+                    provider=_aux_cfg_provider,
                 )
             else:
-                msg = (
-                    "⚠ No auxiliary LLM provider configured — context "
-                    "compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
-                )
+                msg = t("gateway.compression_no_provider")
             agent._compression_warning = msg
             agent._emit_status(msg)
             logger.warning(

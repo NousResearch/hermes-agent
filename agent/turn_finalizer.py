@@ -26,6 +26,7 @@ import logging
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.i18n import t
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
@@ -181,8 +182,11 @@ def finalize_turn(
         # user message and makes a single toolless request.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
+            t(
+                "gateway.iteration_budget_exhausted",
+                n=api_call_count,
+                max=agent.max_iterations,
+            )
         )
         if not agent.quiet_mode:
             agent._safe_print(

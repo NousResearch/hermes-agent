@@ -633,13 +633,22 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
     async def _fast_sleep(_seconds):
         await real_sleep(0)
 
-    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+    def _translate(key, **kwargs):
+        if key == "gateway.kanban_review_requested":
+            return f"LOCALIZED-REVIEW{kwargs['handoff']}"
+        from agent.i18n import t
+        return t(key, **kwargs)
+
+    with (
+        patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep),
+        patch("gateway.kanban_watchers.t", side_effect=_translate),
+    ):
         await asyncio.wait_for(
             runner._kanban_notifier_watcher(interval=1),
             timeout=10.0,
         )
 
-    assert any("ready for review" in message for message in delivered)
+    assert any("LOCALIZED-REVIEW" in message for message in delivered)
     assert any("Implementation and tests ready" in message for message in delivered)
     with kb.connect() as conn:
         assert kb.list_notify_subs(conn), "review is non-final; subscription must survive"

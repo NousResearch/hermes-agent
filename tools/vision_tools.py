@@ -32,6 +32,7 @@ import base64
 import contextlib
 import asyncio
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
@@ -1564,11 +1565,145 @@ _VIDEO_MIME_TYPES = {
 _MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
 _VIDEO_SIZE_WARN_BYTES = 20 * 1024 * 1024
 
+# When the primary video LLM is blind / refuses / falls back to a text-only
+# model, we fail loud and re-read via ffmpeg frames + vision_analyze.
+_VIDEO_BLIND_RE = re.compile(
+    r"(?is)("
+    r"no (?:video|image) (?:is )?(?:attached|provided|included)"
+    r"|cannot (?:view|see|process|access|analyze|describe|watch|read) (?:the )?(?:video|clip|recording|image|bytes)"
+    r"|can'?t (?:view|see|process|access|analyze|describe|watch|read) (?:the )?(?:video|clip|recording|image|bytes)"
+    r"|unable to (?:view|see|process|access|analyze|describe|watch) (?:the )?(?:video|clip)"
+    r"|i (?:am|'m) (?:an AI|a language model).{0,80}cannot"
+    r"|as an AI.{0,120}(?:cannot|do not have the ability|not able)"
+    r"|do not have the ability to (?:view|watch|process|see|analyze|look at)"
+    r"|do not (?:have the ability|support) to (?:view|watch|process) video"
+    r"|(?:my )?input is text-based"
+    r"|capabilit(?:y|ies) (?:is|are) limited to (?:processing|text|generating)"
+    r"|cannot fulfill.{0,60}(?:analyz|video|visual)"
+    r"|(?:provide|give me) a (?:detailed )?(?:text|textual)(?:-based)? description of the video"
+    r"|no visual (?:content|input|media)"
+    r"|there (?:is|was) no video"
+    r")"
+)
+_VIDEO_FRAME_COUNT = 8
+_VIDEO_FRAME_FPS = 1.0
+
 
 def _detect_video_mime_type(video_path: Path) -> Optional[str]:
     """Return a video MIME type based on file extension, or None if unsupported."""
     ext = video_path.suffix.lower()
     return _VIDEO_MIME_TYPES.get(ext)
+
+
+def _video_analysis_is_blind(text: Optional[str]) -> bool:
+    """True when the model response did not actually read the video pixels."""
+    if not text or not str(text).strip():
+        return True
+    t = str(text).strip()
+    if len(t) < 24 and t.lower() in {"ok", "n/a", "none", "unknown", "unsure"}:
+        return True
+    return bool(_VIDEO_BLIND_RE.search(t))
+
+
+def _extract_video_frames(video_path: Path, out_dir: Path, *, max_frames: int = _VIDEO_FRAME_COUNT) -> list[Path]:
+    """Extract still frames with ffmpeg. Raises RuntimeError on failure."""
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH — cannot extract video frames")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Wipe prior frames in this dir only (run-scoped cache dirs).
+    for old in out_dir.glob("frame-*.jpg"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    pattern = str(out_dir / "frame-%03d.jpg")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"fps={_VIDEO_FRAME_FPS}",
+        "-frames:v",
+        str(max_frames),
+        "-q:v",
+        "2",
+        pattern,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "")[-400:]
+        raise RuntimeError(f"ffmpeg frame extract failed (rc={proc.returncode}): {err}")
+    frames = sorted(out_dir.glob("frame-*.jpg"))
+    if not frames:
+        raise RuntimeError("ffmpeg produced zero frames")
+    return frames
+
+
+async def _analyze_video_via_frames(
+    video_path: Path,
+    user_prompt: str,
+    model: Optional[str],
+    *,
+    vision_timeout: float,
+    vision_temperature: float,
+) -> tuple[str, list[str]]:
+    """Frame-extract + multi-image vision pass. Returns (analysis, frame_paths)."""
+    cache_root = get_hermes_dir("cache/video", "frame_fallback")
+    out_dir = cache_root / f"frames_{uuid.uuid4().hex[:12]}"
+    frames = await asyncio.to_thread(_extract_video_frames, video_path, out_dir)
+    frame_paths = [str(p) for p in frames]
+
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "These are sequential still frames extracted from a user video "
+                f"(phone screen recording possible). {len(frames)} frames in order.\n"
+                "Describe what is actually visible. Quote ALL readable on-screen text "
+                "verbatim. Do not invent nightlife/club scenes or unrelated settings. "
+                "If a frame is UI chrome only, say so.\n\n"
+                f"User question:\n{user_prompt}"
+            ),
+        }
+    ]
+    for fp in frames:
+        data_url = await _run_encode_on_cpu_executor(
+            _image_to_base64_data_url, fp, mime_type="image/jpeg"
+        )
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
+
+    messages = [{"role": "user", "content": content}]
+    call_kwargs = {
+        "task": "vision",
+        "messages": messages,
+        "temperature": vision_temperature,
+        "max_tokens": 4000,
+        "timeout": max(float(vision_timeout), 180.0),
+    }
+    if model:
+        call_kwargs["model"] = model
+    _load_auxiliary_client()
+    response = await async_call_llm(**call_kwargs)
+    analysis = extract_content_or_reasoning(response)
+    if not analysis or _video_analysis_is_blind(analysis):
+        # Retry once
+        response = await async_call_llm(**call_kwargs)
+        analysis = extract_content_or_reasoning(response)
+    if not analysis or _video_analysis_is_blind(analysis):
+        raise RuntimeError(
+            "Frame+vision fallback also returned a blind/empty analysis"
+        )
+    # Prefix so the parent agent knows the reliable path was used.
+    header = (
+        f"[video_analyze via ffmpeg frames×{len(frames)}; "
+        f"paths: {', '.join(frame_paths)}]\n"
+    )
+    return header + analysis, frame_paths
 
 
 def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None) -> str:
@@ -1725,80 +1860,136 @@ async def video_analyze_tool(
         if video_size_bytes > _VIDEO_SIZE_WARN_BYTES:
             logger.warning("Video is %.1f MB — may be slow or rejected", video_size_mb)
 
-        video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
-        data_size_mb = len(video_data_url) / (1024 * 1024)
-
-        if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
-            raise ValueError(
-                f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
-                f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-                f"Compress or trim the video and retry."
-            )
-
         debug_call_data["video_size_bytes"] = video_size_bytes
-
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": user_prompt,
-                    },
-                    {
-                        "type": "video_url",
-                        "video_url": {
-                            "url": video_data_url,
-                        },
-                    },
-                ],
-            }
-        ]
 
         vision_timeout = 180.0
         vision_temperature = 0.1
         try:
             from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
-            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
-            _vt = _vision_cfg.get("timeout")
+            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={}) or {}
+            _video_cfg = cfg_get(_cfg, "auxiliary", "video", default={}) or {}
+            _vt = _video_cfg.get("timeout") or _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = max(float(_vt), 180.0)
-            _vtemp = _vision_cfg.get("temperature")
+            _vtemp = _video_cfg.get("temperature")
+            if _vtemp is None:
+                _vtemp = _vision_cfg.get("temperature")
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
         except Exception:
             pass
 
-        call_kwargs = {
-            "task": "vision",
-            "messages": messages,
-            "temperature": vision_temperature,
-            "max_tokens": 4000,
-            "timeout": vision_timeout,
-        }
-        if model:
-            call_kwargs["model"] = model
+        # Prefer native video pass first (when payload fits); if the model is
+        # blind / refuses / text-only fallback, hard-fail that path and re-read
+        # via ffmpeg frames + multi-image vision (reliable for WA screen recs).
+        analysis = None
+        method = "video_url"
+        frame_paths: list[str] = []
+        primary_error = None
 
-        _load_auxiliary_client()
-        response = await async_call_llm(**call_kwargs)
-        analysis = extract_content_or_reasoning(response)
+        try:
+            video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
+            data_size_mb = len(video_data_url) / (1024 * 1024)
+            if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
+                raise ValueError(
+                    f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
+                    f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
+                    f"Compress or trim the video and retry."
+                )
 
-        if not analysis:
-            logger.warning("Empty video response, retrying once")
+            # Grounding instruction reduces club/nightlife hallucinations on
+            # phone screen-recordings of IG carousels / stories.
+            grounded_prompt = (
+                "You are looking at an actual video attachment (bytes attached). "
+                "Describe only what is visibly present. Quote on-screen text "
+                "verbatim. Do not invent locations, club/bar scenes, or people "
+                "not shown. If this is a phone UI / social app screen recording, "
+                "say so and transcribe captions/slides.\n\n"
+                f"{user_prompt}"
+            )
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": grounded_prompt},
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": video_data_url},
+                        },
+                    ],
+                }
+            ]
+            call_kwargs = {
+                "task": "vision",
+                "messages": messages,
+                "temperature": vision_temperature,
+                "max_tokens": 4000,
+                "timeout": vision_timeout,
+            }
+            if model:
+                call_kwargs["model"] = model
+
+            _load_auxiliary_client()
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
+            if not analysis:
+                logger.warning("Empty video response, retrying once")
+                response = await async_call_llm(**call_kwargs)
+                analysis = extract_content_or_reasoning(response)
+
+            if _video_analysis_is_blind(analysis):
+                logger.warning(
+                    "Primary video path returned blind/refusal analysis (%s chars); "
+                    "falling back to ffmpeg frames + vision",
+                    len(analysis or ""),
+                )
+                primary_error = "primary_video_blind"
+                analysis = None
+        except Exception as primary_exc:
+            primary_error = str(primary_exc)
+            logger.warning(
+                "Primary video_url path failed (%s); trying frame fallback",
+                str(primary_exc)[:160],
+            )
+            analysis = None
+
+        if analysis is None:
+            method = "ffmpeg_frames+vision"
+            analysis, frame_paths = await _analyze_video_via_frames(
+                temp_video_path,
+                user_prompt,
+                model,
+                vision_timeout=vision_timeout,
+                vision_temperature=vision_temperature,
+            )
+
+        if _video_analysis_is_blind(analysis):
+            raise RuntimeError(
+                "video_analyze could not obtain a grounded reading "
+                f"(method={method}, primary_error={primary_error!r})"
+            )
 
         analysis_length = len(analysis) if analysis else 0
-        logger.info("Video analysis completed (%s characters)", analysis_length)
+        logger.info(
+            "Video analysis completed (%s characters, method=%s)",
+            analysis_length,
+            method,
+        )
 
         result = {
             "success": True,
-            "analysis": analysis or "There was a problem with the request and the video could not be analyzed.",
+            "analysis": analysis,
+            "method": method,
         }
+        if frame_paths:
+            result["frames"] = frame_paths
+        if primary_error and method != "video_url":
+            result["primary_error"] = primary_error
 
         debug_call_data["success"] = True
         debug_call_data["analysis_length"] = analysis_length
+        debug_call_data["method"] = method
         _debug.log_call("video_analyze_tool", debug_call_data)
         _debug.save()
 
@@ -1825,7 +2016,7 @@ async def video_analyze_tool(
             analysis = (
                 f"The model does not support video analysis or the request was "
                 f"rejected. Ensure you're using a video-capable model "
-                f"(e.g. google/gemini-2.5-flash). Error: {e}"
+                f"(e.g. gemini-2.5-flash). Error: {e}"
             )
         elif any(hint in err_str for hint in (
             "too large", "payload", "413", "content_too_large",
@@ -1869,6 +2060,8 @@ VIDEO_ANALYZE_SCHEMA = {
     "description": (
         "Analyze a video from a URL or local file path using a multimodal AI model. "
         "Sends the video to a video-capable model (e.g. Gemini) for understanding. "
+        "If the primary video pass is blind/refuses, automatically extracts ffmpeg "
+        "frames and re-reads via vision (returns method + frame paths). "
         "Use this for video files — for images, use vision_analyze instead. "
         "Supports mp4, webm, mov, avi, mkv, mpeg formats. "
         "Note: large videos (>20 MB) may be slow; max ~50 MB."
@@ -1896,7 +2089,9 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     full_prompt = (
         "Fully describe and explain everything happening in this video, "
         "including visual content, motion, audio cues, text overlays, and scene "
-        f"transitions. Then answer the following question:\n\n{question}"
+        "transitions. Quote readable on-screen text verbatim. Do not invent "
+        "settings or people not shown. Then answer the following question:\n\n"
+        f"{question}"
     )
     # Prefer config.yaml auxiliary.video.model (falling back to vision);
     # env vars are a legacy override.

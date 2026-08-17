@@ -292,6 +292,42 @@ describe('SkillsView toolset management', () => {
     )
   })
 
+  it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
+    // On a non-Skills tab the docs-site iframe must not exist at all — an
+    // eagerly mounted hub is exactly the Capabilities lag bug.
+    await renderSkills() // ?tab=toolsets
+    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+    expect(document.querySelector('iframe')).toBeNull()
+    cleanup()
+
+    // Embedded mode drives tabs through local state (the route hooks are
+    // mocked here), starting on Skills: the picker mounts with the tab.
+    const { SkillsView } = await import('./index')
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills']}>
+            <SkillsView embedded />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    const iframe = document.querySelector('iframe')
+    expect(iframe).toBeTruthy()
+    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+
+    // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
+    // next visit) but its section is fully hidden, so nothing from the hub
+    // can paint over the toolsets UI.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
+    })
+    const kept = document.querySelector('iframe')
+    expect(kept).toBeTruthy()
+    expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+  })
+
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
     // Vision has no TOOL_CATEGORIES provider matrix — its model lives in the
     // auxiliary model config, so the detail pane must point there instead of

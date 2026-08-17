@@ -211,6 +211,17 @@ export function SkillsView({
 
   const [query, setQuery] = useState('')
 
+  // The hub picker hosts a full docs-site iframe — the single most expensive
+  // thing on this page. It mounts lazily (first time the Skills tab is shown)
+  // and then STAYS mounted but hidden across tab switches, so bouncing to
+  // Tools/MCP and back never reloads the site. Derived-state pattern: flips
+  // once, during render, never back.
+  const [hubMounted, setHubMounted] = useState(mode === 'skills')
+
+  if (mode === 'skills' && !hubMounted) {
+    setHubMounted(true)
+  }
+
   // Capabilities profile-scope selector: which profile's Tools/MCP config we're
   // editing. Defaults to the app-wide active profile; overriding it here lets
   // the user configure ANY profile's toolsets/MCP without switching the whole
@@ -670,138 +681,142 @@ export function SkillsView({
           profile. */}
       <div className="flex h-full flex-col">
         {profileScopeSelector}
-        <div className="min-h-0 flex-1">
-          {mode === 'mcp' ? (
-            <McpTab gateway={gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
-          ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
-            <PanelEmpty
-              action={
-                <Button onClick={() => void refreshCapabilities()} size="sm">
-                  {t.skills.refresh}
-                </Button>
-              }
-              description={skillsError instanceof Error ? skillsError.message : undefined}
-              icon="error"
-              title={t.skills.skillsLoadFailed}
-            />
-          ) : !skills || !toolsets ? (
-            <PageLoader label={t.skills.loading} />
-          ) : mode === 'skills' ? (
-            // Installed skills on top, the Skills Hub browser underneath —
-            // discovery sits with management, expanded by default. The picker
-            // renders even when the (filtered) list is empty: a fresh install
-            // with zero skills is exactly when browsing the hub matters most.
-            <div className="flex h-full min-h-0 flex-col">
-              <div className="min-h-0 flex-1">
-                {visibleSkills.length === 0 ? (
-                  capabilityEmpty('skills')
-                ) : (
-                  <MasterDetail pane={skillEditorPane} resizeId="capabilities-split" split="wide">
-                    <ListColumn
-                      header={
-                        <ListStrip
-                          left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
-                          right={
-                            <ListStripMenu
-                              items={[
-                                {
-                                  disabled: bulkBusy,
-                                  label: t.skills.disableUnused,
-                                  onSelect: () => void disableUnused()
-                                }
-                              ]}
-                              label={t.skills.tabSkills}
-                              toggle={bulkSwitch(allSkillsEnabled)}
-                            />
-                          }
-                        />
-                      }
-                    >
-                      {visibleSkills.map(skill => (
-                        <CapRow
-                          active={activeSkill?.name === skill.name}
-                          busy={bulkBusy}
-                          enabled={skill.enabled}
-                          key={skill.name}
-                          meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                          onSelect={() => setSelectedSkill(skill.name)}
-                          onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                          subtitle={skillSubtitle(skill)}
-                          title={skill.name}
-                          toggleLabel={skill.name}
-                        />
-                      ))}
-                    </ListColumn>
-                    <DetailColumn footer={t.skills.changesApplyNewSessions}>
-                      {activeSkill && (
-                        <SkillDetail
-                          onArchive={() => setArchiveTarget(activeSkill.name)}
-                          onEdit={() => void openSkillEditor(activeSkill.name)}
-                          profile={scopeProfile}
-                          skill={activeSkill}
-                        />
-                      )}
-                    </DetailColumn>
-                  </MasterDetail>
-                )}
-              </div>
-              <EmbeddedHubPicker
-                installedNames={installedSkillNames}
-                key={`picker-${scopeKey}`}
-                profile={scopeProfile}
-              />
-            </div>
-          ) : visibleToolsets.length === 0 ? (
-            capabilityEmpty('tools')
-          ) : (
-            <MasterDetail resizeId="capabilities-split" split="wide">
-              <ListColumn
-                header={
-                  <ListStrip
-                    left={sortButton(toolsetsSortDesc, () => $toolsetsSortDesc.set(!$toolsetsSortDesc.get()))}
-                    right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch(allToolsetsEnabled)} />}
-                  />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
+            {mode === 'mcp' ? (
+              <McpTab gateway={gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
+            ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
+              <PanelEmpty
+                action={
+                  <Button onClick={() => void refreshCapabilities()} size="sm">
+                    {t.skills.refresh}
+                  </Button>
                 }
-              >
-                {visibleToolsets.map(toolset => {
-                  const label = toolsetDisplayLabel(toolset)
-                  const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
-
-                  return (
-                    <CapRow
-                      active={activeToolset?.name === toolset.name}
-                      busy={bulkBusy}
-                      enabled={toolset.enabled}
-                      key={toolset.name}
-                      meta={
-                        calls === null ? (
-                          <CountSkeleton />
-                        ) : calls > 0 ? (
-                          `×${compactNumber(calls)}`
-                        ) : (
-                          `${toolNames(toolset).length} tools`
-                        )
-                      }
-                      onSelect={() => setSelectedToolset(toolset.name)}
-                      onToggle={checked => void handleToggleToolset(toolset, checked)}
-                      subtitle={asText(toolset.description)}
-                      title={label}
-                      toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
+                description={skillsError instanceof Error ? skillsError.message : undefined}
+                icon="error"
+                title={t.skills.skillsLoadFailed}
+              />
+            ) : !skills || !toolsets ? (
+              <PageLoader label={t.skills.loading} />
+            ) : mode === 'skills' ? (
+              // Installed skills on top, the Skills Hub browser underneath —
+              // discovery sits with management. The list region keeps a floor
+              // (min-h-40, on the wrapper above) so a tall hub viewport or a
+              // short window shrinks the HUB, never the list: the sort strip
+              // and "changes apply" footer can no longer be starved to 0px
+              // and painted over by the hub header.
+              visibleSkills.length === 0 ? (
+                capabilityEmpty('skills')
+              ) : (
+                <MasterDetail pane={skillEditorPane} resizeId="capabilities-split" split="wide">
+                  <ListColumn
+                    header={
+                      <ListStrip
+                        left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
+                        right={
+                          <ListStripMenu
+                            items={[
+                              {
+                                disabled: bulkBusy,
+                                label: t.skills.disableUnused,
+                                onSelect: () => void disableUnused()
+                              }
+                            ]}
+                            label={t.skills.tabSkills}
+                            toggle={bulkSwitch(allSkillsEnabled)}
+                          />
+                        }
+                      />
+                    }
+                  >
+                    {visibleSkills.map(skill => (
+                      <CapRow
+                        active={activeSkill?.name === skill.name}
+                        busy={bulkBusy}
+                        enabled={skill.enabled}
+                        key={skill.name}
+                        meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
+                        onSelect={() => setSelectedSkill(skill.name)}
+                        onToggle={enabled => void handleToggleSkill(skill, enabled)}
+                        subtitle={skillSubtitle(skill)}
+                        title={skill.name}
+                        toggleLabel={skill.name}
+                      />
+                    ))}
+                  </ListColumn>
+                  <DetailColumn footer={t.skills.changesApplyNewSessions}>
+                    {activeSkill && (
+                      <SkillDetail
+                        onArchive={() => setArchiveTarget(activeSkill.name)}
+                        onEdit={() => void openSkillEditor(activeSkill.name)}
+                        profile={scopeProfile}
+                        skill={activeSkill}
+                      />
+                    )}
+                  </DetailColumn>
+                </MasterDetail>
+              )
+            ) : visibleToolsets.length === 0 ? (
+              capabilityEmpty('tools')
+            ) : (
+              <MasterDetail resizeId="capabilities-split" split="wide">
+                <ListColumn
+                  header={
+                    <ListStrip
+                      left={sortButton(toolsetsSortDesc, () => $toolsetsSortDesc.set(!$toolsetsSortDesc.get()))}
+                      right={<ListStripMenu label={t.skills.tabToolsets} toggle={bulkSwitch(allToolsetsEnabled)} />}
                     />
-                  )
-                })}
-              </ListColumn>
-              <DetailColumn footer={t.skills.changesApplyNewSessions}>
-                {activeToolset && (
-                  <ToolsetDetail
-                    onConfiguredChange={refreshToolsets}
-                    profile={scopeProfile}
-                    toolCalls={toolCalls ?? {}}
-                    toolset={activeToolset}
-                  />
-                )}
-              </DetailColumn>
-            </MasterDetail>
+                  }
+                >
+                  {visibleToolsets.map(toolset => {
+                    const label = toolsetDisplayLabel(toolset)
+                    const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+
+                    return (
+                      <CapRow
+                        active={activeToolset?.name === toolset.name}
+                        busy={bulkBusy}
+                        enabled={toolset.enabled}
+                        key={toolset.name}
+                        meta={
+                          calls === null ? (
+                            <CountSkeleton />
+                          ) : calls > 0 ? (
+                            `×${compactNumber(calls)}`
+                          ) : (
+                            `${toolNames(toolset).length} tools`
+                          )
+                        }
+                        onSelect={() => setSelectedToolset(toolset.name)}
+                        onToggle={checked => void handleToggleToolset(toolset, checked)}
+                        subtitle={asText(toolset.description)}
+                        title={label}
+                        toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
+                      />
+                    )
+                  })}
+                </ListColumn>
+                <DetailColumn footer={t.skills.changesApplyNewSessions}>
+                  {activeToolset && (
+                    <ToolsetDetail
+                      onConfiguredChange={refreshToolsets}
+                      profile={scopeProfile}
+                      toolCalls={toolCalls ?? {}}
+                      toolset={activeToolset}
+                    />
+                  )}
+                </DetailColumn>
+              </MasterDetail>
+            )}
+          </div>
+          {/* Hub picker OUTSIDE the tab ternary: it lazy-mounts the first time
+              Skills is shown, then stays mounted (hidden) across Tools/MCP so
+              the docs-site iframe never reloads on a tab bounce. No scope key
+              on purpose — the picker fetches nothing; scope rides the
+              `profile` prop into each install call, and remounting on scope
+              change would reload the whole site for no data benefit. */}
+          {hubMounted && (
+            <EmbeddedHubPicker hidden={mode !== 'skills'} installedNames={installedSkillNames} profile={scopeProfile} />
           )}
         </div>
       </div>

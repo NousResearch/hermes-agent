@@ -11,6 +11,7 @@ Usage:
         python3 orchestrate.py [--tasks tasks/hard.json] [--models m1,m2] \
                                [--arms base,pr,prns] [--reps 3]
 """
+
 import argparse
 import itertools
 import json
@@ -36,12 +37,12 @@ args = parser.parse_args()
 os.makedirs(os.path.dirname(args.results), exist_ok=True)
 ARMS = args.arms.split(",")
 MODELS = args.models.split(",")
-TASKS = list(json.load(open(args.tasks)).keys())
+TASKS = list(json.load(open(args.tasks, encoding="utf-8")).keys())
 REPS = list(range(1, args.reps + 1))
 
 done = set()
 if os.path.exists(args.results):
-    for line in open(args.results):
+    for line in open(args.results, encoding="utf-8"):
         try:
             r = json.loads(line)
             done.add((r["arm"], r["task"], r["model"], r["rep"]))
@@ -55,7 +56,12 @@ def reset_browser_state():
     code = "cdp('Network.clearBrowserCookies')\nprint('cleared')\n"
     try:
         subprocess.run(
-            ["browser-use"], input=code, text=True, capture_output=True, timeout=120, env=ENV
+            ["browser-use"],
+            input=code,
+            text=True,
+            capture_output=True,
+            timeout=120,
+            env=ENV,
         )
     except Exception:
         pass
@@ -85,22 +91,33 @@ for arm, task, model, rep in cells:
         rec = None
         for line in (proc.stdout or "").splitlines():
             if line.startswith("RESULT_JSON:"):
-                rec = json.loads(line[len("RESULT_JSON:"):])
+                rec = json.loads(line[len("RESULT_JSON:") :])
         if rec is None:
             rec = {
-                "arm": arm, "task": task, "model": model, "rep": rep,
-                "ok": False, "error": "no-result",
+                "arm": arm,
+                "task": task,
+                "model": model,
+                "rep": rep,
+                "ok": False,
+                "error": "no-result",
                 "stderr_tail": (proc.stderr or "")[-800:],
                 "stdout_tail": (proc.stdout or "")[-400:],
             }
     except subprocess.TimeoutExpired:
         rec = {
-            "arm": arm, "task": task, "model": model, "rep": rep,
-            "ok": False, "error": f"orchestrator-timeout-{args.run_timeout}s",
+            "arm": arm,
+            "task": task,
+            "model": model,
+            "rep": rep,
+            "ok": False,
+            "error": f"orchestrator-timeout-{args.run_timeout}s",
         }
     rec["cell_wall_s"] = round(time.time() - t0, 1)
-    with open(args.results, "a") as f:
+    with open(args.results, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    print(f"  -> ok={rec.get('ok')} err={rec.get('error')} wall={rec.get('cell_wall_s')}s", flush=True)
+    print(
+        f"  -> ok={rec.get('ok')} err={rec.get('error')} wall={rec.get('cell_wall_s')}s",
+        flush=True,
+    )
 
 print("BATTERY COMPLETE", flush=True)

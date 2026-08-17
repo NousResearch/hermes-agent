@@ -14,6 +14,7 @@ Usage:
 Per cell: provision a session, export its CDP endpoint via BENCH_CDP_URL /
 BU_CDP_WS, run single_run.py (pr arm), close the session. Resume-safe.
 """
+
 import argparse
 import itertools
 import json
@@ -26,7 +27,9 @@ import urllib.request
 ROOT = os.environ.get("BUBENCH_ROOT", os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 ENV_BASE = {**os.environ}
-ENV_BASE["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + ENV_BASE.get("PATH", "")
+ENV_BASE["PATH"] = (
+    os.path.expanduser("~/.local/bin") + os.pathsep + ENV_BASE.get("PATH", "")
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--backend", required=True, choices=["nous-cloud", "browserbase"])
@@ -40,12 +43,12 @@ args = parser.parse_args()
 RESULTS = args.results or os.path.join(ROOT, "results", f"results_{args.backend}.jsonl")
 os.makedirs(os.path.dirname(RESULTS), exist_ok=True)
 MODELS = args.models.split(",")
-TASKS = list(json.load(open(args.tasks)).keys())
+TASKS = list(json.load(open(args.tasks, encoding="utf-8")).keys())
 REPS = list(range(1, args.reps + 1))
 
 done = set()
 if os.path.exists(RESULTS):
-    for line in open(RESULTS):
+    for line in open(RESULTS, encoding="utf-8"):
         try:
             r = json.loads(line)
             done.add((r["task"], r["model"], r["rep"]))
@@ -66,14 +69,18 @@ class NousCloud:
         return sess, {"BENCH_CDP_URL": sess["cdp_url"]}
 
     def close(self, sess):
-        self._prov.close_session(sess.get("bb_session_id") or sess.get("session_name", ""))
+        self._prov.close_session(
+            sess.get("bb_session_id") or sess.get("session_name", "")
+        )
 
 
 class Browserbase:
     def create(self, name):
         req = urllib.request.Request(
             "https://api.browserbase.com/v1/sessions",
-            data=json.dumps({"projectId": os.environ["BROWSERBASE_PROJECT_ID"]}).encode(),
+            data=json.dumps({
+                "projectId": os.environ["BROWSERBASE_PROJECT_ID"]
+            }).encode(),
             headers={
                 "x-bb-api-key": os.environ["BROWSERBASE_API_KEY"],
                 "Content-Type": "application/json",
@@ -82,14 +89,18 @@ class Browserbase:
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             sess = json.load(resp)
-        return sess, {"BU_CDP_WS": sess["connectUrl"], "BENCH_CDP_URL": sess["connectUrl"]}
+        return sess, {
+            "BU_CDP_WS": sess["connectUrl"],
+            "BENCH_CDP_URL": sess["connectUrl"],
+        }
 
     def close(self, sess):
         req = urllib.request.Request(
             f"https://api.browserbase.com/v1/sessions/{sess['id']}",
-            data=json.dumps(
-                {"projectId": os.environ["BROWSERBASE_PROJECT_ID"], "status": "REQUEST_RELEASE"}
-            ).encode(),
+            data=json.dumps({
+                "projectId": os.environ["BROWSERBASE_PROJECT_ID"],
+                "status": "REQUEST_RELEASE",
+            }).encode(),
             headers={
                 "x-bb-api-key": os.environ["BROWSERBASE_API_KEY"],
                 "Content-Type": "application/json",
@@ -115,10 +126,14 @@ for task, model, rep in cells:
         sess, extra_env = provider.create(f"bubench-{task}-{rep}")
     except Exception as e:  # noqa: BLE001
         rec = {
-            "arm": f"pr-{args.backend}", "task": task, "model": model, "rep": rep,
-            "ok": False, "error": f"session-create: {e}",
+            "arm": f"pr-{args.backend}",
+            "task": task,
+            "model": model,
+            "rep": rep,
+            "ok": False,
+            "error": f"session-create: {e}",
         }
-        with open(RESULTS, "a") as f:
+        with open(RESULTS, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
         continue
     env = {**ENV_BASE, **extra_env, "BUBENCH_TASKS": args.tasks}
@@ -126,20 +141,30 @@ for task, model, rep in cells:
     try:
         proc = subprocess.run(
             [PY, os.path.join(ROOT, "single_run.py"), "pr", task, model, str(rep)],
-            capture_output=True, text=True, timeout=args.run_timeout, env=env,
+            capture_output=True,
+            text=True,
+            timeout=args.run_timeout,
+            env=env,
         )
         rec = None
         for line in (proc.stdout or "").splitlines():
             if line.startswith("RESULT_JSON:"):
-                rec = json.loads(line[len("RESULT_JSON:"):])
+                rec = json.loads(line[len("RESULT_JSON:") :])
         if rec is None:
             rec = {
-                "task": task, "model": model, "rep": rep, "ok": False,
-                "error": "no-result", "stderr_tail": (proc.stderr or "")[-600:],
+                "task": task,
+                "model": model,
+                "rep": rep,
+                "ok": False,
+                "error": "no-result",
+                "stderr_tail": (proc.stderr or "")[-600:],
             }
     except subprocess.TimeoutExpired:
         rec = {
-            "task": task, "model": model, "rep": rep, "ok": False,
+            "task": task,
+            "model": model,
+            "rep": rep,
+            "ok": False,
             "error": f"timeout-{args.run_timeout}s",
         }
     finally:
@@ -149,8 +174,11 @@ for task, model, rep in cells:
             print(f"  close warning: {e}", flush=True)
     rec["arm"] = f"pr-{args.backend}"
     rec["cell_wall_s"] = round(time.time() - t0, 1)
-    with open(RESULTS, "a") as f:
+    with open(RESULTS, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    print(f"  -> ok={rec.get('ok')} err={rec.get('error')} wall={rec.get('cell_wall_s')}s", flush=True)
+    print(
+        f"  -> ok={rec.get('ok')} err={rec.get('error')} wall={rec.get('cell_wall_s')}s",
+        flush=True,
+    )
 
 print("CLOUD BATTERY COMPLETE", flush=True)

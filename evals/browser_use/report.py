@@ -6,6 +6,7 @@ Usage:
 Groups by (model, arm): ok-rate, token mean/median, tool calls, wall clock,
 and token delta vs the ``base`` arm of the same model when present.
 """
+
 import json
 import statistics
 import sys
@@ -15,7 +16,7 @@ from collections import defaultdict
 def main(paths):
     rows = []
     for p in paths:
-        for line in open(p):
+        for line in open(p, encoding="utf-8"):
             try:
                 rows.append(json.loads(line))
             except Exception:
@@ -38,7 +39,7 @@ def main(paths):
     hdr = f"{'model':<34} {'arm':<16} {'ok':>7} {'tok_mean':>9} {'tok_med':>8} {'calls':>6} {'wall_s':>7} {'vs base':>8}"
     print(hdr)
     print("-" * len(hdr))
-    for (model, arm) in sorted(cells):
+    for model, arm in sorted(cells):
         rs = cells[(model, arm)]
         oks = [r for r in rs if r.get("ok")]
         n_ok, n = len(oks), len(rs)
@@ -60,7 +61,9 @@ def main(paths):
     if errs:
         print(f"\nerrors: {len(errs)}")
         for r in errs[:10]:
-            print(f"  {r.get('model')}/{r.get('arm')}/{r.get('task')}/rep{r.get('rep')}: {r['error'][:120]}")
+            print(
+                f"  {r.get('model')}/{r.get('arm')}/{r.get('task')}/rep{r.get('rep')}: {r['error'][:120]}"
+            )
 
 
 if __name__ == "__main__":

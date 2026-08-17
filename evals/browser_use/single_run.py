@@ -23,6 +23,7 @@ the browser (no web_extract shortcuts).
 
 Prints one line: ``RESULT_JSON:{...}`` consumed by orchestrate.py.
 """
+
 import json
 import os
 import re
@@ -38,7 +39,7 @@ PR_TREE = os.environ["BUBENCH_PR_TREE"]
 WT = {"base": BASE_TREE, "pr": PR_TREE, "prns": PR_TREE}[ARM]
 
 TASKS_PATH = os.environ.get("BUBENCH_TASKS", os.path.join(ROOT, "tasks", "hard.json"))
-TASKS = json.load(open(TASKS_PATH))
+TASKS = json.load(open(TASKS_PATH, encoding="utf-8"))
 task = TASKS[TASK_KEY]
 
 home = tempfile.mkdtemp(prefix=f"buhome-{ARM}-")
@@ -57,7 +58,7 @@ cfg = {
 }
 import yaml
 
-with open(os.path.join(hh, "config.yaml"), "w") as f:
+with open(os.path.join(hh, "config.yaml"), "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f)
 os.environ["HERMES_HOME"] = hh
 # Strip web-fetch shortcuts: every arm must drive the browser.
@@ -65,7 +66,9 @@ os.environ.pop("BROWSER_USE_API_KEY", None)
 for k in ("FIRECRAWL_API_KEY", "NOUS_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY"):
     os.environ.pop(k, None)
 os.environ["BU_CDP_URL"] = cdp
-os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
+os.environ["PATH"] = (
+    os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
+)
 
 sys.path.insert(0, WT)
 import logging
@@ -119,7 +122,11 @@ final = ""
 messages = []
 try:
     result = agent.run_conversation(task["prompt"])
-    final = (result.get("final_response") or "") if isinstance(result, dict) else str(result)
+    final = (
+        (result.get("final_response") or "")
+        if isinstance(result, dict)
+        else str(result)
+    )
     messages = result.get("messages", []) if isinstance(result, dict) else []
 except Exception as e:  # noqa: BLE001
     error = f"{type(e).__name__}: {e}"
@@ -130,15 +137,21 @@ tool_calls = []
 for m in messages:
     if isinstance(m, dict) and m.get("role") == "assistant":
         for tc in m.get("tool_calls") or []:
-            fn = (tc.get("function") or {}).get("name") if isinstance(tc, dict) else None
+            fn = (
+                (tc.get("function") or {}).get("name") if isinstance(tc, dict) else None
+            )
             if fn:
                 tool_calls.append(fn)
 
 
 def _ok(text: str) -> bool:
     if task.get("oracle_all"):
-        return all(re.search(re.escape(x), text, re.IGNORECASE) for x in task["oracle_all"])
-    return any(re.search(re.escape(x), text, re.IGNORECASE) for x in task.get("oracle_any", []))
+        return all(
+            re.search(re.escape(x), text, re.IGNORECASE) for x in task["oracle_all"]
+        )
+    return any(
+        re.search(re.escape(x), text, re.IGNORECASE) for x in task.get("oracle_any", [])
+    )
 
 
 out = {
@@ -151,7 +164,9 @@ out = {
     "prompt_tokens": getattr(agent, "session_prompt_tokens", 0),
     "completion_tokens": getattr(agent, "session_completion_tokens", 0),
     "total_tokens": getattr(agent, "session_total_tokens", 0),
-    "api_calls": len([m for m in messages if isinstance(m, dict) and m.get("role") == "assistant"]),
+    "api_calls": len([
+        m for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
+    ]),
     "tool_calls": len(tool_calls),
     "tool_call_names": tool_calls,
     "browser_schema_chars": schema_desc_len,

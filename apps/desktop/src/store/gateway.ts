@@ -677,10 +677,7 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
 // contract callers rely on: a source edit/remove can dispose this entry while
 // its dial is in flight, and a caller must be able to tell "switched" from
 // "the target stopped existing" rather than assume the former.
-export async function prepareGatewayForAgent(
-  connectionId: null | string,
-  profile: string
-): Promise<() => boolean> {
+export async function prepareGatewayForAgent(connectionId: null | string, profile: string): Promise<() => boolean> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {

@@ -116,8 +116,8 @@ machine keep working. If a migrated name collided, it was suffixed
 ## Agents across sources
 
 Every [profile](./profiles.md) on every registered connection is an *agent*.
-The union roster is what multi-source surfaces (and plugins like
-[Bot Mode](https://github.com/NousResearch/Hermes-Bot-Mode)) render:
+The union roster is what multi-source surfaces (and the built-in
+[Bot Mode](./bot-mode.md) roster) render:
 
 - When the same profile name exists on several sources, handles disambiguate
   as **`@name-device`** — `research` on your Homelab renders as

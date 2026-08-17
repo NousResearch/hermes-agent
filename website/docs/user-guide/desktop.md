@@ -185,6 +185,10 @@ sessions stay untouched.
 Don't want it? Flip it off in **Settings → Plugins → Bots** — the roster,
 routines pane, and composer middleware unregister live, no restart needed.
 
+Full guide — creating agents (including the multi-machine **Create on**
+picker), the roster across connections, bot-to-bot mentions, and how group
+chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
+
 ### Keyboard & navigation
 
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.

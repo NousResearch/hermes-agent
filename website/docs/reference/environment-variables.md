@@ -151,7 +151,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl browser session TTL in seconds (default: 300) |
 | `BROWSER_CDP_URL` | Chrome DevTools Protocol URL for local browser (set via `/browser connect`, e.g. `ws://localhost:9222`) |
 | `CAMOFOX_URL` | Camofox local anti-detection browser URL (default: `http://localhost:9377`) |
-| `CAMOFOX_API_KEY` | Optional bearer token sent as Authorization header to a remote/authenticated Camofox server |
+| `CAMOFOX_ACCESS_KEY` | Global access key (Bearer token) for a gated Camofox server. When set, the server requires it on every route except `/health`, cookie import, and `/stop`. Hermes prefers this key for all browser calls. |
+| `CAMOFOX_API_KEY` | Legacy Camofox bearer token, kept as a fallback for older deployments. On the current server this only gates the cookie-import route; use `CAMOFOX_ACCESS_KEY` for full gating. |
 | `CAMOFOX_USER_ID` | Optional externally managed Camofox user ID for shared visible sessions |
 | `CAMOFOX_SESSION_KEY` | Optional Camofox session key used when creating tabs for `CAMOFOX_USER_ID` |
 | `CAMOFOX_ADOPT_EXISTING_TAB` | Set to `true` to reuse an existing Camofox tab before creating a new one |

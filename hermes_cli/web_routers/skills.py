@@ -340,9 +340,37 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             )
 
         q_path = None
+        tier1 = None
         try:
             q_path = quarantine_bundle(bundle)
             result = scan_skill(q_path, source=scan_source)
+            # Advisory SkillEvaluator Tier 1 second opinion (same contract
+            # as the CLI installer: optional binary, never blocks, errors
+            # degrade to no data).
+            try:
+                from tools.skillevaluator_scan import (
+                    run_tier1_scan, tier1_advisory_enabled,
+                )
+                if tier1_advisory_enabled():
+                    t1 = run_tier1_scan(q_path)
+                    if t1.available:
+                        tier1 = {
+                            "passed": t1.passed,
+                            "findings": [
+                                {
+                                    "check": f.check,
+                                    "validator": f.validator,
+                                    "severity": f.severity,
+                                    "message": f.message,
+                                    "file": f.file,
+                                    "line": f.line,
+                                    "secrets_class": f.is_secrets_class,
+                                }
+                                for f in t1.findings
+                            ],
+                        }
+            except Exception:
+                _log.debug("Tier 1 advisory scan skipped", exc_info=True)
         finally:
             if q_path is not None:
                 _shutil.rmtree(q_path, ignore_errors=True)
@@ -383,6 +411,9 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             "policy_reason": reason,
             "findings": findings,
             "severity_counts": counts,
+            # Advisory SkillEvaluator Tier 1 block, or None when the
+            # optional scanner isn't installed/enabled.
+            "tier1": tier1,
         }
 
     try:

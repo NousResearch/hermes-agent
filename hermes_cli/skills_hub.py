@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -92,6 +93,41 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
 
     c.print(f"[bold red]Error:[/] No skill named '{name}' found in any source.\n")
     return ""
+
+
+def _print_tier1_advisory(skill_dir, console) -> None:
+    """Print the advisory SkillEvaluator Tier 1 report, if available.
+
+    Never raises and never blocks the install: scanner missing, disabled
+    via ``skills.tier1_advisory: false``, or erroring all degrade to
+    silence. Secrets-class findings render red, the rest yellow.
+    """
+    try:
+        from tools.skillevaluator_scan import (
+            format_tier1_report, run_tier1_scan, tier1_advisory_enabled,
+        )
+        if not tier1_advisory_enabled():
+            return
+        report = run_tier1_scan(Path(skill_dir))
+        if not report.available:
+            return
+        if not report.findings:
+            console.print("[dim]SkillEvaluator Tier 1: no findings.[/]")
+            return
+        text = format_tier1_report(report)
+        style = "red" if report.secrets_findings else "yellow"
+        console.print(Panel(
+            text,
+            title="SkillEvaluator Tier 1 (advisory)",
+            border_style=style,
+        ))
+        if report.secrets_findings:
+            console.print(
+                "[bold red]Possible credentials detected above.[/] "
+                "Review the flagged lines before using this skill.\n"
+            )
+    except Exception as exc:  # advisory only — never break an install
+        logging.getLogger(__name__).debug("Tier 1 advisory scan skipped: %s", exc)
 
 
 def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
@@ -687,6 +723,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
         return
+
+    # Advisory SkillEvaluator Tier 1 scan (optional second opinion).
+    # Warn-and-continue by design: PII-class findings are informational
+    # (known false-positive classes upstream), and the existing install
+    # confirmation below is where the user decides. Never blocks.
+    _print_tier1_advisory(q_path, c)
 
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)

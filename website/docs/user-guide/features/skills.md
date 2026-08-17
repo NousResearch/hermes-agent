@@ -331,6 +331,41 @@ complete quarantined bundle and records the source URL, exact content hash,
 scanner version, findings, timestamp, and fresh-or-cached status in
 `skills/.hub/lock.json`.
 
+### Advisory SkillEvaluator scan
+
+In addition to the built-in security scanner (which enforces the install
+policy above), Hermes can run [NVIDIA SkillEvaluator](https://github.com/NVIDIA/SkillEvaluator)
+Tier 1 checks on every hub install as a second opinion. Tier 1 is
+deterministic and keyless — PII detection (leaked emails, personal paths,
+connection strings), unicode-smuggling detection, and script lint.
+
+The scan is **advisory only**: findings are printed with file and line
+before the install confirmation, and the install continues. Findings that
+look like real credentials (private keys, cloud access keys, tokens,
+credentialed connection strings) are highlighted in red so you can review
+the flagged lines before deciding. PII-class findings are informational —
+the upstream scanner has known false-positive classes (e.g.
+`git@github.com` SSH syntax, documentation example emails), so they never
+block anything.
+
+To enable it, install the optional scanner binary:
+
+```bash
+uv tool install --python 3.13 \
+  "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"
+```
+
+Without the binary on PATH the scan is silently skipped. To turn it off
+entirely:
+
+```yaml
+skills:
+  tier1_advisory: false
+```
+
+The dashboard's Browse-hub scan button returns the same advisory data in
+its response (`tier1` field) alongside the built-in scanner's verdict.
+
 ## External Skill Directories
 
 If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.

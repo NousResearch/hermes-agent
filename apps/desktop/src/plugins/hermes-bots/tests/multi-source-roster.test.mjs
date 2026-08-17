@@ -26,7 +26,7 @@ function runtime() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__filterBots = filterBots;'
+      '\nglobalThis.__mergeMultiSourceRoster = mergeMultiSourceRoster;\nglobalThis.__botHandle = botHandle;\nglobalThis.__filterBots = filterBots;\nglobalThis.__botRowKey = botRowKey;'
     )
   vm.runInNewContext(code, context)
   return context
@@ -233,4 +233,43 @@ test('merge: primary-local desktop keeps single-source behavior (no phantom rows
   assert.equal(out.profiles.length, 2)
   assert.equal(out.profiles.filter(p => p.remoteSource).length, 0)
   assert.equal(out.profiles[0].handle, 'default-this-device')
+})
+
+// The LIVE-active-id override: after the user activates a non-primary
+// source's agent, profiles.list answers from THAT source — the merge must
+// classify against the live id, not the registry primary, or the active
+// source's agents duplicate all over again.
+test('merge: live active id beats primaryConnectionId for active-source matching', () => {
+  const { __mergeMultiSourceRoster: merge } = runtime()
+  const local = { profiles: [{ name: 'default', last_session: { id: 's1' } }] }
+  const union = {
+    primaryConnectionId: 'local',
+    agents: [
+      { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', profile: 'default', handle: 'default-this-device' },
+      { connectionId: 'vps', connectionKind: 'remote', connectionLabel: 'VPS', profile: 'default', handle: 'default-vps' }
+    ]
+  }
+
+  // Live gateway = vps: its union row annotates the rich row; the primary
+  // (local) row appends as the genuinely-other source.
+  const out = merge(local, union, 'vps')
+  assert.equal(out.profiles.length, 2)
+
+  const rich = out.profiles.find(p => p.last_session)
+  assert.equal(rich.handle, 'default-vps')
+  assert.equal(out.profiles.filter(p => p.remoteSource).length, 1)
+  assert.equal(out.profiles.find(p => p.remoteSource).connectionId, 'local')
+})
+
+test('botRowKey: same name on two sources yields distinct keys; local rows stay stable', () => {
+  const { __botRowKey: botRowKey } = runtime()
+
+  const localRow = botRowKey({ name: 'default' })
+  const remoteRow = botRowKey({ name: 'default', remoteSource: true, connectionId: 'homelab' })
+
+  assert.notEqual(localRow, remoteRow)
+  // Annotated ACTIVE-source rows (connectionId set, no remoteSource) keep the
+  // plain key — annotation must not remount every row on desktops that gain
+  // the union roster mid-session.
+  assert.equal(botRowKey({ name: 'default', connectionId: 'vps' }), localRow)
 })

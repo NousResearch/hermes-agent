@@ -2055,7 +2055,7 @@ function useRoster() {
       if (typeof host.agents === 'function') {
         try {
           const union = await host.agents()
-          return mergeMultiSourceRoster(local, union)
+          return mergeMultiSourceRoster(local, union, liveActiveConnectionId())
         } catch {
           /* older build or roster failure — single-source list stands */
         }
@@ -2072,14 +2072,34 @@ function useRoster() {
   })
 }
 
+/** Registry connection id of the LIVE active gateway (feature-detected;
+ *  null on older desktops or the local/legacy primary path). Live beats the
+ *  roster's primaryConnectionId when the user has activated a non-primary
+ *  source's agent — profiles.list answers from THAT source, so the merge
+ *  must classify against it, not the registry's primary. */
+function liveActiveConnectionId() {
+  if (typeof host.activeConnectionId !== 'function') {
+    return null
+  }
+
+  try {
+    return host.activeConnectionId()
+  } catch {
+    return null
+  }
+}
+
 /** Merge the union agent roster (host.agents) over the active gateway's
- *  profiles.list. Rows from the ACTIVE gateway (union.primaryConnectionId)
- *  are matched by profile name and only ANNOTATED (handle, connectionId) —
- *  their rich fields stay authoritative and they are NOT duplicated. Rows
- *  from other sources become new roster entries tagged with their source
- *  label so BotRow can badge them and route open/warm through
+ *  profiles.list. Rows from the ACTIVE gateway are matched by connection id
+ *  and only ANNOTATED (handle, connectionId) — their rich fields stay
+ *  authoritative and they are NOT duplicated. The active id prefers the LIVE
+ *  host.activeConnectionId() (the gateway may be a non-primary source after
+ *  the user opens another connection's agent), falls back to the roster's
+ *  primaryConnectionId, then to the legacy kind==='local' rule on older
+ *  desktops. Rows from other sources become new roster entries tagged with
+ *  their source label so BotRow can badge them and route open/warm through
  *  ensureAgent/warmAgent. Pure — exercised directly by the tests. */
-function mergeMultiSourceRoster(local, union) {
+function mergeMultiSourceRoster(local, union, liveActiveId = null) {
   // Keep the first rich local row for every profile. profiles.list is normally
   // unique, but a duplicated backend response must not turn one agent into an
   // unbounded list of visually identical Bots rows.
@@ -2098,7 +2118,7 @@ function mergeMultiSourceRoster(local, union) {
   }
 
   const agents = Array.isArray(union?.agents) ? union.agents : []
-  const primaryId = String(union?.primaryConnectionId || '').trim()
+  const primaryId = String(liveActiveId || union?.primaryConnectionId || '').trim()
 
   if (!agents.length) {
     return { ...local, profiles }
@@ -2154,6 +2174,15 @@ function mergeMultiSourceRoster(local, union) {
   }
 
   return { ...local, profiles }
+}
+
+/** React list key for a roster row. Names alone are NOT unique in a
+ *  multi-source roster (two connections can both expose 'default'); duplicate
+ *  keys make React reconciliation repeat whole blocks of the list on every
+ *  poll repaint. Annotated ACTIVE-source rows keep the plain-name key so
+ *  existing rows don't remount when a desktop gains the union roster. */
+function botRowKey(bot) {
+  return `${bot.remoteSource ? bot.connectionId ?? '' : ''}:${bot.name}`
 }
 
 /** The @handle users tag a bot with. Multi-source rosters precompute the
@@ -5980,7 +6009,7 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
               children: label
             })
           ]
-        }, bot.name)
+        }, botRowKey(bot))
       })
     ]
   })
@@ -6152,7 +6181,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                   title: 'Remove from selection',
                   onClick: () => setChecked(prev => ({ ...prev, [bot.name]: false })),
                   children: [displayName(bot, allMeta[bot.name]), jsx(Codicon, { name: 'close', className: 'text-[0.6rem]' })]
-                }, bot.name)
+                }, botRowKey(bot))
               )
             })
           : null,
@@ -6197,7 +6226,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                         onCheckedChange: value => setChecked(prev => ({ ...prev, [bot.name]: Boolean(value) }))
                       })
                     ]
-                  }, bot.name)
+                  }, botRowKey(bot))
                 })
               : jsx('div', {
                   className: 'px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)',
@@ -6624,7 +6653,7 @@ function BotsPane() {
                           }, `group:${section.group}`)
                         : null,
                       ...section.bots.map(bot =>
-                        jsx(BotRow, { bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping }, bot.name)
+                        jsx(BotRow, { bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping }, botRowKey(bot))
                       )
                     ])
                   })

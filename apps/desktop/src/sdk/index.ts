@@ -28,6 +28,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
 import {
   $gateway,
+  activeGatewayConnectionId,
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
@@ -278,6 +279,15 @@ export const host = {
   },
 
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
+
+  /** Registry connection id serving the gateway `host.request` currently hits
+   *  — null for the local/legacy primary path. Roster UIs need this to tell
+   *  "a row from the backend I'm already showing" apart from "a row from
+   *  another source": two connections can both expose a 'default' profile,
+   *  and matching by profile name alone duplicates every agent when the
+   *  active gateway is a registered remote. Re-read per use — it changes on
+   *  profile/agent swaps. */
+  activeConnectionId: (): null | string => activeGatewayConnectionId(),
 
   /** The registered connection list (labels, kinds, primary) — token bytes
    *  never included. Rejects on Desktop builds without the registry. */

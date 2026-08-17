@@ -401,6 +401,60 @@ async def test_session_chat_resolves_stored_model_route_alias(session_db, monkey
     assert kwargs["session_model"] is None
 
 
+@pytest.mark.asyncio
+async def test_session_chat_treats_pre_existing_poisoned_row_as_no_model(session_db):
+    """A session row created before the alias-leak fix may still have the
+    virtual model alias (e.g. "hermes-agent") persisted literally as its
+    model. Reading that back must NOT thread it through as a raw
+    session_model override — it must fall through to the global default,
+    exactly like a row that never had a model at all (#session-model-
+    alias-leak)."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session(
+        "poisoned-session", "api_server", model=adapter._model_name
+    )
+
+    mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(session_db):
+    """Streaming twin of the above: the SSE chat path must apply the same
+    guard against a pre-existing poisoned session row."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session(
+        "poisoned-stream-session", "api_server", model=adapter._model_name
+    )
+
+    async def fake_run(**kwargs):
+        return {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_model"] is None
+
+
 def _register_session_model_route(app, adapter):
     app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
 

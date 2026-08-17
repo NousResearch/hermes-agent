@@ -2645,6 +2645,93 @@ class TestSessionDbOffEventLoop:
         assert captured["thread"] is not None
         assert captured["thread"] != threading.current_thread()
 
+    @pytest.mark.asyncio
+    async def test_create_session_without_model_does_not_persist_virtual_alias(self, auth_adapter):
+        """A session created with no ``model`` field must not persist the
+        virtual model alias (self._model_name, e.g. "hermes-agent") as if it
+        were a real provider model id.
+
+        Regression: _handle_create_session previously did
+        ``model = body.get("model") or self._model_name``, so an omitted
+        model fell back to the virtual alias and that string got stored on
+        the session row. _handle_session_chat later reads it back as a raw
+        session_model override (since it's not a model_routes alias) and
+        sends it to the provider literally — Bedrock/OpenAI then reject
+        "hermes-agent" as an invalid model identifier on every turn.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] != auth_adapter._model_name
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_explicit_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """Sending ``model: "hermes-agent"`` explicitly (the virtual alias
+        itself, e.g. a client that just echoes /v1/models' advertised id)
+        must be treated the same as omitting model entirely."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": auth_adapter._model_name},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_real_model_persists_it(self, auth_adapter):
+        """Regression guard: a genuine model id must still be stored as before."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": "openai/gpt-5"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] == "openai/gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_provider_prefixed_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """A provider-prefixed echo of the virtual alias (e.g. a client that
+        threads /v1/models' advertised id through a provider:: prefix) must
+        also be treated as "no model", not stored as a raw override.
+
+        Regression: _handle_create_session used to re-derive its own `model`
+        straight from the raw request body, bypassing the provider-prefix
+        split that _session_runtime_request_from_body performs — so
+        "openrouter::hermes-agent" never matched self._model_name and leaked
+        through as a literal session override.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": f"openrouter::{auth_adapter._model_name}"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
+
 
 # ---------------------------------------------------------------------------
 # _api_key_passes_startup_guard — fail-closed on an unverifiable key

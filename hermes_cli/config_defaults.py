@@ -2530,8 +2530,11 @@ DEFAULT_CONFIG = {
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
         # Global concurrency cap (#33488): when set to a positive int, the
-        # board never has more than N tasks in 'running' at once, across
-        # both the ready and review dispatch lanes. Unset (None) means
+        # HOST never has more than N tasks in 'running' at once — counted
+        # across every active board and across both the ready and review
+        # dispatch lanes (workers are OS processes sharing one machine's
+        # memory, so the cap bounds the machine, not each board; OOF-30).
+        # Unset (None) means
         # "derive from system memory" (OOF-30/OOF-77): the dispatcher caps
         # concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] —
         # e.g. 2 workers on a 1 GiB VM. On hosts where total memory can't

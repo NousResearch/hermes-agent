@@ -1352,7 +1352,7 @@ export function useSessionActions({
               // draft fallback for genuinely dead ids on secondary profiles.
               Boolean(
                 sessionProfile?.trim() &&
-                  normalizeProfileKey(sessionProfile) !== normalizeProfileKey($activeGatewayProfile.get())
+                normalizeProfileKey(sessionProfile) !== normalizeProfileKey($activeGatewayProfile.get())
               )
           })
 

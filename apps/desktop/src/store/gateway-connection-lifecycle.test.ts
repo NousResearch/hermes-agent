@@ -152,9 +152,8 @@ describe('retireLocalProfileGateways', () => {
   it('retires both local profile scopes without touching the same-named remote agent', async () => {
     const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
 
-    const getConnectionFor = vi.fn(
-      async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
-        descriptorFor(connectionId, profile)
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
     )
 
     installDesktop({ getConnection, getConnectionFor })

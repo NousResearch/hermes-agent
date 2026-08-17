@@ -113,23 +113,30 @@ class TestMaintainPackHealth:
         import cli
 
         made = self._make_packs(repo, 6)
-        assert made >= 6
-        monkeypatch.setattr(cli, "_PACK_SPRAWL_THRESHOLD", 5)
+        # Behavior contract, not a snapshot: different git builds consolidate
+        # differently while packs accumulate (CI produced 3-4 from 6 attempts;
+        # local git produces 6). All the fixture must guarantee is SPRAWL —
+        # strictly more packs than the threshold we set — so the maintenance
+        # pass has something real to consolidate.
+        threshold = 2
+        monkeypatch.setattr(cli, "_PACK_SPRAWL_THRESHOLD", threshold)
+        assert made > threshold, f"fixture failed to produce sprawl (made={made})"
 
         cli._maintain_pack_health(str(repo))
 
         after = self._pack_count(repo)
         assert after <= 2, f"expected consolidation, still {after} packs"
+        assert after < made, "pack count must strictly decrease"
 
     def test_noop_below_threshold(self, repo, monkeypatch):
         import cli
 
-        made = self._make_packs(repo, 3)
+        made = self._make_packs(repo, 2)
         monkeypatch.setattr(cli, "_PACK_SPRAWL_THRESHOLD", 50)
 
         cli._maintain_pack_health(str(repo))
 
-        assert self._pack_count(repo) == made, "below threshold must be a no-op"
+        assert self._pack_count(repo) == made, "below threshold must be a no-op"  # noqa: same-count contract
 
     def test_fail_soft_on_missing_pack_dir(self, tmp_path):
         from cli import _maintain_pack_health

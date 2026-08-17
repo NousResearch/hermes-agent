@@ -421,6 +421,7 @@ test('waitForHermesReady surfaces actionable error for cloud agent 503', async (
 
 test('waitForHermesReady does not cloud-wrap non-cloud 503 errors', async () => {
   const currentTime = { value: 0 }
+
   try {
     await waitForHermesReady('http://127.0.0.1:9000', {
       fetchPublicJson: async () => {
@@ -509,6 +510,7 @@ test('makeNousCloudBackendDownError preserves legacy string-prefix compatibility
     'https://ares-3009.agents.nousresearch.com',
     new Error('503: Service Unavailable')
   )
+
   assert.ok(result)
   assert.equal((result as any).isCloudBackendDown, true)
   assert.equal((result as any).statusCode, 503)

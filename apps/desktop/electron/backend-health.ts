@@ -64,6 +64,7 @@ export function isServerSideHttpError(error: unknown): {
 
     if (Number.isInteger(structured) && (structured === 502 || structured === 503 || structured === 504)) {
       const detail = error.message
+
       return { statusCode: structured, detail }
     }
   }

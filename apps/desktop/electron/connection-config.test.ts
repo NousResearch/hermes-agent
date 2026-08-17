@@ -15,7 +15,6 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { makeNousCloudBackendDownError } from './backend-health'
-
 import {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
@@ -1173,11 +1172,13 @@ test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
 test('gatewayTicketFailure preserves a structured 503 statusCode as a transport failure', () => {
   const source = new Error('upstream unavailable') as any
   source.statusCode = 503
+
   const wrapped = gatewayTicketFailure(
     source,
     'auth message',
     'transport message'
   )
+
   assert.equal(wrapped.message, 'transport message')
   assert.equal((wrapped as any).statusCode, 503)
   assert.equal((wrapped as any).needsOauthLogin, undefined)
@@ -1188,11 +1189,13 @@ test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', ()
   for (const code of [401, 403]) {
     const source = new Error(`HTTP ${code}`) as any
     source.statusCode = code
+
     const wrapped = gatewayTicketFailure(
       source,
       'auth message',
       'transport message'
     )
+
     assert.equal(wrapped.message, 'auth message')
     assert.equal((wrapped as any).needsOauthLogin, true)
     assert.equal((wrapped as any).statusCode, code)
@@ -1205,11 +1208,13 @@ test('gatewayTicketFailure only copies an integer statusCode, not a message pref
   // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
   // boundary. The wrapper must not invent an integer from the message.
   const source = new Error('503: Service Unavailable') as any
+
   const wrapped = gatewayTicketFailure(
     source,
     'auth message',
     'transport message'
   )
+
   assert.equal((wrapped as any).statusCode, undefined)
   assert.equal((wrapped as any).needsOauthLogin, undefined)
 })
@@ -1227,10 +1232,12 @@ test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', (
 
   // The exact production sequence from main.ts.
   const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
+
   if (cloudError !== null) {
     assert.equal((cloudError as any).isCloudBackendDown, true)
     assert.equal((cloudError as any).statusCode, 503)
     assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
+
     return
   }
 
@@ -1239,6 +1246,7 @@ test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', (
     'auth',
     'transport'
   )
+
   assert.fail(`expected Cloud-down classification, got wrapper: ${wrapped.message}`)
 })
 
@@ -1255,6 +1263,7 @@ test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => 
     'auth message',
     'transport message'
   )
+
   assert.equal(wrapped.message, 'auth message')
   assert.equal((wrapped as any).needsOauthLogin, true)
   assert.equal((wrapped as any).statusCode, 401)

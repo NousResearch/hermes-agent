@@ -43,7 +43,7 @@ NOUS_AUTH_KEEPALIVE_MIN_INTERVAL_SECONDS = 60
 # expiry without making the thread chatty.
 NOUS_AUTH_KEEPALIVE_TICKS_PER_LIFETIME = 4
 NOUS_AUTH_KEEPALIVE_INITIAL_DELAY_SECONDS = 60
-NOUS_AUTH_KEEPALIVE_INTERVAL_ENV = "HERMES_NOUS_KEEPALIVE_INTERVAL_SECONDS"
+NOUS_AUTH_KEEPALIVE_INTERVAL_CONFIG_KEY = "keepalive_interval_seconds"
 
 _keepalive_lock = threading.Lock()
 _keepalive_stop = threading.Event()
@@ -59,12 +59,30 @@ def _timeout_seconds(value: Optional[float]) -> float:
         return 15.0
 
 
+def _nous_config() -> dict:
+    """Return the ``nous:`` section of config.yaml, or {} on any failure.
+
+    Imported lazily: this module is loaded by the gateway and the web server
+    during startup, and the config loader pulls in a wider dependency graph
+    than the keepalive itself needs.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        section = load_config().get("nous")
+        return section if isinstance(section, dict) else {}
+    except Exception:
+        return {}
+
+
 def _interval_seconds(value: Optional[int]) -> int:
     """Resolve the keepalive tick interval.
 
-    Explicit argument wins, then the environment override, then the module
-    default. A non-positive result disables the keepalive thread entirely,
-    which is the documented way to turn it off.
+    Explicit argument wins, then ``nous.keepalive_interval_seconds`` in
+    config.yaml, then the module default. This is a behavioural threshold
+    rather than a credential, so it lives in config.yaml and not in .env.
+    A non-positive result disables the keepalive thread entirely, which is
+    the documented way to turn it off.
     """
     if value is not None:
         try:
@@ -72,15 +90,15 @@ def _interval_seconds(value: Optional[int]) -> int:
         except (TypeError, ValueError):
             return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
 
-    raw = os.getenv(NOUS_AUTH_KEEPALIVE_INTERVAL_ENV)
-    if raw is None or not raw.strip():
+    raw = _nous_config().get(NOUS_AUTH_KEEPALIVE_INTERVAL_CONFIG_KEY)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
         return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
     try:
         return int(float(raw))
     except (TypeError, ValueError):
         logger.warning(
-            "Ignoring invalid %s=%r; using %ds",
-            NOUS_AUTH_KEEPALIVE_INTERVAL_ENV,
+            "Ignoring invalid nous.%s=%r; using %ds",
+            NOUS_AUTH_KEEPALIVE_INTERVAL_CONFIG_KEY,
             raw,
             NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS,
         )

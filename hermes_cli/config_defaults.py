@@ -4065,6 +4065,15 @@ DEFAULT_CONFIG = {
     # settings are non-secret routing config and live here. Both are bridged to
     # the VERTEX_PROJECT_ID / VERTEX_REGION env vars the adapter reads, so an
     # explicit env var still wins over config.yaml.
+    "nous": {
+        # Upper bound on the Nous auth keepalive tick, in seconds. The tick
+        # actually used derives from the credential lifetime the server issued
+        # and is capped by this value, so lowering it makes the keepalive more
+        # frequent while raising it has no effect below the derived tick.
+        # 0 disables the keepalive thread entirely.
+        "keepalive_interval_seconds": 900,
+    },
+
     "vertex": {
         # GCP project ID. Empty → use the project_id embedded in the service
         # account JSON (or ADC-resolved project).

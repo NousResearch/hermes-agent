@@ -1509,3 +1509,24 @@ class TestGitTrampolineSelfHeal:
             result = update_cmd._ensure_non_trampoline_git(git_cmd)
         assert result == git_cmd
         run.assert_not_called()
+
+    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
+        # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
+        # PortableGit tree lives under the SHARED root (monerostar review on
+        # #88136). The candidate list must check get_default_hermes_root()
+        # before the profile home.
+        from hermes_cli import update_cmd
+
+        root = tmp_path / "root"
+        profile_home = root / "profiles" / "foo"
+
+        monkeypatch.setattr(update_cmd, "get_default_hermes_root", lambda: root)
+        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: profile_home)
+
+        candidates = update_cmd._portable_git_candidates()
+        assert candidates[0] == (
+            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )
+        assert candidates[1] == (
+            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )

@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
-from hermes_constants import venv_python_path
+from hermes_constants import get_default_hermes_root, venv_python_path
 
 logger = logging.getLogger(__name__)
 
@@ -7381,6 +7381,26 @@ def _git_is_trampoline(git_cmd: list) -> bool:
     return "fork bomb" in output
 
 
+def _portable_git_candidates() -> list:
+    """PortableGit candidate paths: shared root first, then profile home.
+
+    The Hermes-managed PortableGit tree lives under the SHARED root
+    (``<root>/git/...``), not the profile-scoped HERMES_HOME
+    (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must
+    look there (monerostar review, #87876). The profile-home candidate is
+    kept as a fallback for custom layouts that place it there.
+    """
+    candidates = []
+    try:
+        for root in (get_default_hermes_root(), Path(get_hermes_home())):
+            candidates.append(
+                root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+            )
+    except Exception:
+        pass
+    return candidates
+
+
 def _locate_real_git() -> Optional[Path]:
     """Find a real Git-for-Windows binary that is not a broken trampoline.
 
@@ -7396,18 +7416,7 @@ def _locate_real_git() -> Optional[Path]:
     candidates = [
         Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe"),
         Path(r"C:\Program Files (x86)\Git\mingw64\libexec\git-core\git.exe"),
-    ]
-    try:
-        candidates.append(
-            Path(get_hermes_home())
-            / "git"
-            / "mingw64"
-            / "libexec"
-            / "git-core"
-            / "git.exe"
-        )
-    except Exception:
-        pass
+    ] + _portable_git_candidates()
     for candidate in candidates:
         if not candidate.exists():
             continue

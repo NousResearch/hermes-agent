@@ -1845,8 +1845,8 @@ def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
 #
 # * a sidecar attempt ledger (``<db>.repair-attempts.json``) that refuses
 #   further surgery after ``_MAX_PERSISTENT_REPAIR_ATTEMPTS`` failures on
-#   the SAME damaged file (fingerprint = size + mtime; any successful repair
-#   or replacement changes it and resets the count);
+#   the SAME damaged file (fingerprint = size + a bounded content sample; any
+#   successful repair or replacement changes it and resets the count);
 # * backup dedupe + a retention cap in ``_backup_db_file`` — an identical
 #   damaged file is never copied twice, and only the newest
 #   ``_MAX_MALFORMED_BACKUPS`` forensic copies are kept.
@@ -1906,16 +1906,47 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
     size plus the head/tail slices that any real repair, truncation or
     restore necessarily changes. Stable across passes that merely touch
     mtime; still resets the attempt count after genuine recovery.
+
+    The content read runs under ``offline_file_access`` because it takes a raw
+    descriptor, and ``close()`` on ANY descriptor cancels every POSIX advisory
+    lock this process holds on the file — including a peer connection's
+    RESERVED lock (see ``hermes_cli.sqlite_safe_read`` rule 1). This function
+    is reached from ``repair_state_db_schema``'s exhaustion probe BEFORE
+    ``_backup_db_file``'s ``has_live_connection`` guard, and the repair path is
+    entered by one SessionDB while the gateway holds others, so a live peer is
+    the expected case rather than a theoretical one. When one exists we fall
+    back to ``size:mtime_ns``: a live connection means the backup is refused
+    and repair HARD STOPs (#69603), so no surgery runs and nothing moves mtime
+    behind our back — the content key is only load-bearing on the offline
+    repair path, which is exactly where the guard lets it through.
     """
     try:
         st = db_path.stat()
-        with open(db_path, "rb") as fh:
-            head = fh.read(_FINGERPRINT_SAMPLE_BYTES)
-            if st.st_size > _FINGERPRINT_SAMPLE_BYTES:
-                fh.seek(max(0, st.st_size - _FINGERPRINT_SAMPLE_BYTES))
-                tail = fh.read(_FINGERPRINT_SAMPLE_BYTES)
-            else:
-                tail = b""
+        try:
+            from hermes_cli.sqlite_safe_read import (
+                LiveConnectionError,
+                offline_file_access,
+            )
+        except ImportError:
+            # Scaffold/embed installs ship hermes_state without hermes_cli. No
+            # tracked connections exist there, so the raw read is safe.
+            LiveConnectionError = ()  # type: ignore[assignment]
+            offline_file_access = None  # type: ignore[assignment]
+        try:
+            with (
+                contextlib.nullcontext()
+                if offline_file_access is None
+                else offline_file_access(db_path, what="fingerprint")
+            ):
+                with open(db_path, "rb") as fh:
+                    head = fh.read(_FINGERPRINT_SAMPLE_BYTES)
+                    if st.st_size > _FINGERPRINT_SAMPLE_BYTES:
+                        fh.seek(max(0, st.st_size - _FINGERPRINT_SAMPLE_BYTES))
+                        tail = fh.read(_FINGERPRINT_SAMPLE_BYTES)
+                    else:
+                        tail = b""
+        except LiveConnectionError:
+            return f"{st.st_size}:{st.st_mtime_ns}"
         digest = hashlib.sha256(head + tail).hexdigest()[:32]
         return f"{st.st_size}:{digest}"
     except OSError:
@@ -2108,8 +2139,20 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
                 )
                 logger.error("Refusing forensic backup of %s: %s", db_path, reason)
                 return None, reason
-        except OSError:
-            pass
+        except OSError as exc:
+            # Fail CLOSED. This guard exists for the nearly-full volume, which
+            # is exactly where stat()/disk_usage() is most likely to fail — and
+            # proceeding would take the multi-GB copy that finishes off the
+            # disk. A refused backup is a HARD STOP (#69603), so repair simply
+            # does not run until a human frees space, which is the safe side.
+            reason = (
+                f"could not determine free space on {db_path.parent} ({exc}); "
+                "refusing the forensic copy rather than risk filling the "
+                f"volume. Free disk space, then retry (or recover manually "
+                f'with `sqlite3 {db_path} ".recover"`).'
+            )
+            logger.error("Refusing forensic backup of %s: %s", db_path, reason)
+            return None, reason
         # Copy to a staging name that does NOT match the backup prefix, then
         # rename into place only once every copy has succeeded. A copy that
         # fails partway (ENOSPC, kill) would otherwise leave a prefix-matching

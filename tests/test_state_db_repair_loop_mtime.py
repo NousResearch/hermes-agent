@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -243,3 +244,129 @@ def test_repair_aborts_when_backup_refused_for_disk(tmp_path):
         report = hermes_state.repair_state_db_schema(db)
     assert not report.get("repaired")
     assert "free" in (report.get("error") or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Lock safety: the content fingerprint must not cancel POSIX advisory locks
+# ---------------------------------------------------------------------------
+
+
+def test_fingerprint_takes_no_raw_fd_while_a_connection_is_live(tmp_path):
+    """The content read must not ``open()`` a DB that has a live connection.
+
+    ``close()`` on ANY descriptor cancels every POSIX advisory lock this
+    process holds on the file (https://sqlite.org/howtocorrupt.html), so a
+    peer connection's RESERVED lock is silently dropped and another process
+    can write into a file the holder still believes it owns. The exhaustion
+    probe runs BEFORE ``_backup_db_file``'s ``has_live_connection`` guard, so
+    the fingerprint has to guard itself.
+    """
+    import builtins
+
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+
+    live = connect_tracked(db, isolation_level=None, check_same_thread=False)
+    try:
+        opened: list[str] = []
+        real_open = builtins.open
+
+        def spy(target, *a, **kw):
+            if str(target).endswith("state.db"):
+                opened.append(str(target))
+            return real_open(target, *a, **kw)
+
+        with patch.object(builtins, "open", spy):
+            fp = _db_fingerprint(db)
+
+        assert not opened, f"raw fd taken on a live DB: {opened}"
+        # Must still return an identity, or the attempt ledger silently stops
+        # counting (fp None => "not exhausted" => the loop never terminates).
+        assert fp is not None
+    finally:
+        live.close()
+
+
+def test_live_connection_keeps_its_write_lock_across_a_repair_pass(tmp_path):
+    """End-to-end: a peer must not be able to steal the holder's write lock.
+
+    The peer runs in a SUBPROCESS on purpose. POSIX advisory locks are owned
+    per-process, so a same-process peer shares the holder's lock ownership and
+    cannot demonstrate the cancellation — it stays blocked either way, which
+    makes the test vacuous.
+
+    Rollback-journal mode only — WAL coordinates through ``-shm`` rather than
+    POSIX advisory locks, so it is immune. DELETE mode is what Hermes falls
+    back to on NFS/SMB/FUSE/ZFS and on SQLite builds vulnerable to the
+    WAL-reset bug, so it is a real deployment shape, not a corner case.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("CREATE TABLE sessions(id TEXT)")
+    conn.commit()
+    conn.close()
+
+    peer_script = tmp_path / "peer.py"
+    peer_script.write_text(
+        textwrap.dedent(
+            """
+            import sqlite3, sys
+            con = sqlite3.connect(sys.argv[1], timeout=0.3, isolation_level=None)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("INSERT INTO sessions VALUES('peer')")
+                con.execute("COMMIT")
+                print("WROTE")
+            except sqlite3.OperationalError:
+                print("BLOCKED")
+            """
+        )
+    )
+
+    def _peer_can_write() -> bool:
+        out = subprocess.run(
+            [sys.executable, str(peer_script), str(db)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.strip()
+        assert out in {"WROTE", "BLOCKED"}, f"unexpected peer output: {out!r}"
+        return out == "WROTE"
+
+    live = connect_tracked(db, isolation_level=None, check_same_thread=False)
+    try:
+        live.execute("BEGIN IMMEDIATE")
+        live.execute("INSERT INTO sessions VALUES('holder')")
+        assert not _peer_can_write(), "peer wrote before the fingerprint (bad fixture)"
+
+        _db_fingerprint(db)
+
+        assert not _peer_can_write(), (
+            "the fingerprint cancelled the holder's POSIX advisory lock"
+        )
+        live.execute("COMMIT")
+    finally:
+        live.close()
+
+
+def test_backup_refused_when_free_space_cannot_be_determined(tmp_path):
+    """Fail CLOSED: a nearly-full volume is where disk_usage is likeliest to
+    fail, and proceeding is the multi-GB copy that finishes off the disk."""
+    db = _damaged_db(tmp_path)
+    with patch("shutil.disk_usage", side_effect=OSError("statvfs failed")):
+        path, reason = _backup_db_file(db)
+    assert path is None
+    assert reason is not None and "free space" in reason.lower()
+    assert not _existing_malformed_backups(db)

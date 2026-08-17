@@ -105,6 +105,49 @@ def _handle(name: str) -> str:
     return "hermes" if name == "default" else name
 
 
+def _peers(root: Path) -> list[str]:
+    """Registered peer gateway names (``hermes peer``), for the protocol text.
+
+    Reads config.yaml directly (cheap, no config-loader import) — the section
+    is optional and absent on most installs. Never raises.
+    """
+    try:
+        cfg_path = root / "config.yaml"
+        if not cfg_path.is_file():
+            return []
+        raw = cfg_path.read_text(encoding="utf-8", errors="replace")
+        if "bot_peers" not in raw:
+            return []
+        import yaml
+
+        data = yaml.safe_load(raw)
+        peers = data.get("bot_peers") if isinstance(data, dict) else None
+        if not isinstance(peers, dict):
+            return []
+        return sorted(str(name) for name in peers if str(name).strip())
+    except Exception:
+        return []
+
+
+def _peer_paragraph(root: Path) -> str:
+    """Protocol addendum for cross-machine DMs — only when peers exist."""
+    peers = _peers(root)
+    if not peers:
+        return ""
+    listed = ", ".join(f"`{p}`" for p in peers)
+    return (
+        "\n\nTeammates on OTHER machines: this install also has peer gateways "
+        f"registered ({listed}). Message an agent on a peer the same way, via "
+        "`hermes peer dm` (same terminal-tool pattern: background=true, "
+        "notify_on_complete=true; the reply prints on stdout when it completes):\n"
+        "```\n"
+        'hermes peer dm <peer>/<agent-name> "Message from 🤖 <you> (@<you>): your message"\n'
+        "```\n"
+        "Use `<peer>` alone for the peer's main agent. Run `hermes peer list` "
+        "for the live peer list."
+    )
+
+
 def _build_section(home: Path) -> str:
     root = _hermes_root(home)
     me = _profile_name(home)
@@ -138,6 +181,7 @@ def _build_section(home: Path) -> str:
         "handoff: message that agent, wait for the reply, and report back, saying "
         "which agent it came from. Run `hermes profile list` for the LIVE teammate "
         f"list before a handoff. Teammates at session start: {teammates}."
+        + _peer_paragraph(root)
     )
 
 
@@ -230,6 +274,13 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))
     except Exception:
         surface["roster"] = []
+    try:
+        # Peer gateways are part of the messaging surface: registering one
+        # must refresh eternal Bot Chat prompts so the cross-machine DM
+        # paragraph appears on the next message.
+        surface["peers"] = _peers(_hermes_root(resolved))
+    except Exception:
+        surface["peers"] = []
     try:
         blob = json.dumps(surface, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:12]

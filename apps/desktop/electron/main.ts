@@ -290,7 +290,7 @@ import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
   glassActive,
-  normalizePayload as normalizeTranslucencyPayload,
+  normalizeState as normalizeTranslucency,
   windowBackingOptions,
   windowOpacityFor
 } from './translucency'
@@ -324,7 +324,6 @@ import {
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
-import { clampIntensity, windowOpacity } from './window-opacity'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -884,15 +883,14 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // opaque and lets the renderer thin its surfaces over the vibrancy material
 // instead — a matte blur with full-contrast text. Persisted so a cold launch
 // applies it at window creation, before the renderer reports its value.
-// macOS + Windows only; `setOpacity` is a no-op on Linux. See window-opacity
-// for the clear ramp.
+// macOS + Windows only; `setOpacity` is a no-op on Linux.
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
 
 function readPersistedTranslucency() {
   try {
-    return normalizeTranslucencyPayload(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), IS_MAC)
+    return normalizeTranslucency(JSON.parse(fs.readFileSync(TRANSLUCENCY_CONFIG_PATH, 'utf8')), IS_MAC)
   } catch {
-    return { intensity: 0, mode: 'clear' as const }
+    return normalizeTranslucency(null, IS_MAC)
   }
 }
 
@@ -914,7 +912,7 @@ let translucencyState = readPersistedTranslucency()
 const translucencyBackedWindows = new WeakSet()
 
 function windowOpacity() {
-  return windowOpacityFor(translucencyState.intensity, translucencyState.mode)
+  return windowOpacityFor(translucencyState)
 }
 
 // Re-apply translucency to a live window (runtime toggle, no recreation).
@@ -952,13 +950,23 @@ function applyWindowTranslucency(win) {
   }
 }
 
-// Constructor backing for a chat window under the CURRENT translucency state:
-// glass omits backgroundColor so vibrancy shows from the first frame (a
-// non-transparent window silently ignores constructor alpha, and runtime
-// swaps are lost early in a window's life — see applyWindowTranslucency);
-// otherwise the opaque themed anti-flash backing.
-function chatWindowBackingOptions() {
-  return windowBackingOptions(translucencyState, getWindowBackgroundColor())
+// Constructor options every chat window shares for its translucency surface:
+// the vibrancy material, the native opacity, and the webContents backing under
+// the CURRENT state. Glass omits backgroundColor so vibrancy shows from the
+// first frame (a non-transparent window silently ignores constructor alpha,
+// and runtime swaps are lost early in a window's life — see
+// applyWindowTranslucency); otherwise the opaque themed anti-flash backing.
+//
+// Call sites also register the window in translucencyBackedWindows so a live
+// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
+// are `transparent: true` windows that own their backgrounds and are
+// deliberately not chat windows.
+function chatWindowSurfaceOptions() {
+  return {
+    vibrancy: IS_MAC ? ('sidebar' as const) : undefined,
+    opacity: windowOpacity(),
+    ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
+  }
 }
 
 function isHexColor(value) {
@@ -10684,8 +10692,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    ...chatWindowSurfaceOptions(),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
     // `vibrancy` ignores `backgroundColor` and paints a translucent OS
@@ -10694,7 +10701,6 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     // covers it. ready-to-show fires after the boot-time paint in
     // themes/context.tsx, so the window appears already themed.
     show: false,
-    ...chatWindowBackingOptions(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -10788,11 +10794,9 @@ function createInstanceWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    ...chatWindowSurfaceOptions(),
     icon,
     show: false,
-    ...chatWindowBackingOptions(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -11652,14 +11656,12 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    ...chatWindowSurfaceOptions(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
     // `backgroundColor` and follows the OS appearance) can't flash a light
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
-    ...chatWindowBackingOptions(),
     // Shared with the secondary session windows (chatWindowWebPreferences);
     // stream-aware throttling is applied per-window via streamThrottle so a
     // live answer keeps painting while the window is blurred or minimized,
@@ -13790,7 +13792,7 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
 // See-through window translucency. Persist + re-apply opacity to every open
 // window at runtime (no recreation, so caching/sessions are untouched).
 ipcMain.on('hermes:translucency', (_event, payload) => {
-  const next = normalizeTranslucencyPayload(payload, IS_MAC)
+  const next = normalizeTranslucency(payload, IS_MAC)
 
   if (next.intensity === translucencyState.intensity && next.mode === translucencyState.mode) {
     return

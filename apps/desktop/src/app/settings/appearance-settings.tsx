@@ -22,7 +22,6 @@ import { $sessionListDensity, type SessionListDensity, setSessionListDensity } f
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
-  $translucencyMode,
   GLASS_SUPPORTED,
   setTranslucency,
   setTranslucencyMode,
@@ -267,7 +266,6 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
-  const translucencyMode = useStore($translucencyMode)
   const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
@@ -483,7 +481,7 @@ export function AppearanceSettings() {
                       { id: 'clear' as const, label: a.translucencyModeClear },
                       { id: 'glass' as const, label: a.translucencyModeGlass }
                     ]}
-                    value={translucencyMode}
+                    value={translucency.mode}
                   />
                 )}
                 <input
@@ -498,14 +496,14 @@ export function AppearanceSettings() {
                   step={TRANSLUCENCY_STEP}
                   style={{ accentColor: 'var(--dt-primary)' }}
                   type="range"
-                  value={translucency}
+                  value={translucency.intensity}
                 />
                 <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
-                  {translucency}%
+                  {translucency.intensity}%
                 </span>
               </div>
             }
-            description={translucencyMode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
+            description={translucency.mode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
             title={a.translucencyTitle}
           />
 

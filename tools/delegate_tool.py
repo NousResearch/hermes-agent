@@ -238,7 +238,7 @@ def _build_child_agent(
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                 side_agent=True,
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=True, load_soul_identity=_get_load_soul_identity(), skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None

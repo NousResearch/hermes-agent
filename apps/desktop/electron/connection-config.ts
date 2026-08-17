@@ -134,6 +134,18 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
     ;(err as any).needsOauthLogin = true
   }
 
+  // Preserve structured HTTP context when the source error carried an integer
+  // statusCode (the fetch layer attaches err.statusCode). Downstream Cloud
+  // classification (isServerSideHttpError / makeNousCloudBackendDownError) and
+  // the renderer overlay depend on it surviving the ticket-error wrapper. Auth
+  // semantics are unchanged: 401/403 route to reauth, 5xx stays a transport
+  // failure, everything else keeps current behavior.
+  const sourceStatus = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  if (Number.isInteger(sourceStatus)) {
+    ;(err as any).statusCode = sourceStatus
+  }
+
   err.cause = error
 
   return err

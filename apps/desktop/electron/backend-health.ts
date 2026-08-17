@@ -48,8 +48,30 @@ export function isServerSideHttpError(error: unknown): {
   statusCode: number
   detail: string
 } | null {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-  const match = /^(\\d{3}):/.exec(message)
+  // Reject non-Error inputs, as before. The fetch layer attaches statusCode to
+  // an actual Error instance (err.statusCode = statusCode), so requiring an
+  // Error is compatible with structured detection and keeps plain strings /
+  // null / numbers from being misclassified by the legacy prefix.
+  if (!(error instanceof Error)) {
+    return null
+  }
+
+  // Structured-first: the real fetch layer attaches err.statusCode = statusCode
+  // (see fetchJson). That is the strongest transport contract, so inspect it
+  // before falling back to the legacy "503: ..." string prefix.
+  if ('statusCode' in error) {
+    const structured = Number((error as { statusCode?: unknown }).statusCode)
+
+    if (Number.isInteger(structured) && (structured === 502 || structured === 503 || structured === 504)) {
+      const detail = error.message
+      return { statusCode: structured, detail }
+    }
+  }
+
+  // Compatibility fallback: the legacy leading "503: ..." prefix. Only reached
+  // when no structured statusCode matched (or was absent).
+  const message = error.message
+  const match = /^(\d{3}):/.exec(message)
 
   if (!match) {
     return null
@@ -62,6 +84,59 @@ export function isServerSideHttpError(error: unknown): {
   }
 
   return null
+}
+
+/**
+ * The one factory for the actionable Nous Cloud agent-is-down error, shared by
+ * both startup boundaries that can observe a server-side HTTP fault:
+ *
+ *  - OAuth WS-ticket mint (buildRemoteConnection → mintGatewayWsTicket), which
+ *    runs BEFORE the readiness loop; and
+ *  - readiness-probe exhaustion in waitForHermesReady().
+ *
+ * Returns null unless the backend is a *.agents.nousresearch.com host AND the
+ * error classifies as 502/503/504. When it matches, returns an error carrying:
+ * isCloudBackendDown, statusCode, detail, and the original cause. The renderer
+ * overlay keys on isCloudBackendDown/statusCode; main owns the classification.
+ */
+export function makeNousCloudBackendDownError(baseUrl: string, error: unknown): Error | null {
+  if (!isNousCloudAgentUrl(baseUrl)) {
+    return null
+  }
+
+  const serverError = isServerSideHttpError(error)
+
+  if (serverError === null) {
+    return null
+  }
+
+  let hostname = baseUrl
+
+  try {
+    hostname = new URL(baseUrl).hostname
+  } catch {
+    // baseUrl is known to parse (isNousCloudAgentUrl already did); keep the raw
+    // value as a last resort rather than throwing.
+  }
+
+  const detail = error instanceof Error ? error.message : String(error ?? '')
+
+  const err = new Error(
+    `Nous Cloud agent ${hostname} is down ` +
+      `(HTTP ${serverError.statusCode}: server-side fault). ` +
+      'Check https://portal.nousresearch.com for backend status, ' +
+      'or switch to Local mode in Settings → Gateway. ' +
+      'You can also reach out on Discord at discord.gg/NousResearch ' +
+      'for immediate assistance. ' +
+      `Original detail: ${detail}`
+  ) as any
+
+  err.isCloudBackendDown = true
+  err.statusCode = serverError.statusCode
+  err.detail = detail
+  err.cause = error
+
+  return err
 }
 
 /**
@@ -211,25 +286,13 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
   // When a Nous-managed cloud agent returns a server-side HTTP error
   // (502/503/504), the backend server itself is down — the user cannot
   // restart it and the generic "did not become ready" message is opaque.
-  // Surface an actionable error instead (#85335).
-  if (isNousCloudAgentUrl(baseUrl)) {
-    const serverError = isServerSideHttpError(lastError)
+  // Surface an actionable error instead (#85335). This is the SAME factory
+  // buildRemoteConnection uses at the OAuth WS-ticket-mint boundary, so both
+  // startup paths produce the identical Cloud-down shape.
+  const cloudError = makeNousCloudBackendDownError(baseUrl, lastError)
 
-    if (serverError !== null) {
-      const error = new Error(
-        `Nous Cloud agent ${new URL(baseUrl).hostname} is down ` +
-        `(HTTP ${serverError.statusCode}: server-side fault). ` +
-        'Check https://portal.nousresearch.com for backend status, ' +
-        'or switch to Local mode in Settings → Gateway. ' +
-        'You can also reach out on Discord at discord.gg/NousResearch ' +
-        'for immediate assistance. ' +
-        `Original detail: ${detail}`
-      ) as any
-
-      error.isCloudBackendDown = true
-      error.statusCode = serverError.statusCode
-      throw error
-    }
+  if (cloudError !== null) {
+    throw cloudError
   }
 
   throw new Error(`Hermes backend did not become ready: ${detail}`)

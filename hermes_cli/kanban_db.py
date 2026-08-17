@@ -1448,6 +1448,39 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Human attention is a receipt overlay, never workflow state. These tables are
+-- deliberately separate from tasks/task_events so an acknowledgement cannot
+-- participate in dispatch, dependency, review, or completion decisions.
+CREATE TABLE IF NOT EXISTS attention_receipts (
+    subject_kind          TEXT NOT NULL,
+    subject_id            TEXT NOT NULL,
+    state                 TEXT NOT NULL CHECK (state IN ('active', 'settled', 'snoozed')),
+    wake_at               INTEGER,
+    observed_event_id     INTEGER NOT NULL DEFAULT 0,
+    actor                 TEXT NOT NULL,
+    source                TEXT NOT NULL,
+    revision              INTEGER NOT NULL DEFAULT 1,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    PRIMARY KEY (subject_kind, subject_id)
+);
+
+CREATE TABLE IF NOT EXISTS attention_receipt_events (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_kind          TEXT NOT NULL,
+    subject_id            TEXT NOT NULL,
+    action                TEXT NOT NULL CHECK (action IN ('settle', 'snooze', 'wake')),
+    wake_at               INTEGER,
+    observed_event_id     INTEGER NOT NULL,
+    actor                 TEXT NOT NULL,
+    source                TEXT NOT NULL,
+    revision              INTEGER NOT NULL,
+    idempotency_key       TEXT NOT NULL,
+    request_hash          TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    UNIQUE (subject_kind, subject_id, idempotency_key)
+);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple

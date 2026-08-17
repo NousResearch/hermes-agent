@@ -21,6 +21,7 @@ import {
 // Native completion notification.
 import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
+  AttentionReceipt,
   BoardMeta,
   BoardsResponse,
   KanbanBoard,
@@ -208,6 +209,24 @@ function nudged<T>(write: Promise<T>): Promise<T> {
 
 export const patchTask = (id: string, patch: Record<string, unknown>) =>
   nudged(call(withBoard(`/tasks/${id}`), { method: 'PATCH', body: patch }))
+
+export const updateAttention = (
+  id: string,
+  action: 'settle' | 'snooze' | 'wake',
+  revision: number,
+  wakeAt?: number
+) =>
+  call<{ attention: AttentionReceipt; idempotent: boolean }>(withBoard(`/tasks/${id}/attention`), {
+    method: 'POST',
+    body: {
+      action,
+      actor: 'human',
+      source: 'desktop',
+      expected_revision: revision,
+      idempotency_key: `${Date.now()}-${crypto.randomUUID()}`,
+      ...(wakeAt == null ? {} : { wake_at: wakeAt })
+    }
+  })
 
 export const createTask = (body: Record<string, unknown>) =>
   nudged(call<{ task: KanbanTask | null; warning?: string }>(withBoard('/tasks'), { method: 'POST', body }))

@@ -680,6 +680,24 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    // Exactly one timer at the nearest durable snooze boundary. Server time
+    // projection remains authoritative; this is prompt repaint, not polling.
+    useEffect(function () {
+      if (!boardData) return undefined;
+      const now = Math.floor(Date.now() / 1000);
+      let nearest = null;
+      boardData.columns.forEach(function (column) {
+        column.tasks.forEach(function (task) {
+          const receipt = task.attention;
+          if (receipt && receipt.state === "snoozed" && receipt.wake_at > now &&
+              (nearest == null || receipt.wake_at < nearest)) nearest = receipt.wake_at;
+        });
+      });
+      if (nearest == null) return undefined;
+      const timer = setTimeout(loadBoard, Math.min(2147000000, Math.max(0, (nearest - now) * 1000 + 25)));
+      return function () { clearTimeout(timer); };
+    }, [boardData, loadBoard]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -1314,6 +1332,7 @@
         }),
         h(BoardColumns, {
           board: filteredBoard,
+          boardSlug: board,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
@@ -1330,6 +1349,7 @@
           onDeleteSelected: deleteSelected,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
+          onRefresh: loadBoard,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
@@ -2798,6 +2818,7 @@
         return h(Column, {
           key: col.name,
           column: col,
+          boardSlug: props.boardSlug,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
@@ -2810,6 +2831,7 @@
           onMoveSelected: props.onMoveSelected,
           onOpen: props.onOpen,
           onCreate: props.onCreate,
+          onRefresh: props.onRefresh,
           allTasks: props.allTasks,
         });
       }),
@@ -2827,6 +2849,14 @@
     const [dragOver, setDragOver] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const colRef = useRef(null);
+    const activeTasks = props.column.tasks.filter(function (task) {
+      return !task.attention || task.attention.state === "active";
+    });
+    const settledTasks = props.column.tasks.filter(function (task) {
+      return task.attention && task.attention.state === "settled";
+    }).sort(function (a, b) {
+      return ((b.attention && b.attention.updated_at) || 0) - ((a.attention && a.attention.updated_at) || 0);
+    });
 
     // Listen for our synthetic touch-drop events from attachTouchDrag().
     useEffect(function () {
@@ -2867,14 +2897,14 @@
     const lanes = useMemo(function () {
       if (!props.laneByProfile || props.column.name !== "running") return null;
       const byProfile = {};
-      for (const tk of props.column.tasks) {
+      for (const tk of activeTasks) {
         const key = tk.assignee || "(unassigned)";
         (byProfile[key] = byProfile[key] || []).push(tk);
       }
       return Object.keys(byProfile).sort().map(function (k) {
         return { assignee: k, tasks: byProfile[k] };
       });
-    }, [props.column, props.laneByProfile]);
+    }, [activeTasks, props.column.name, props.laneByProfile]);
 
     const colHelp = getColumnHelp(t, props.column.name);
     const colLabel = getColumnLabel(t, props.column.name);
@@ -2896,7 +2926,7 @@
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
-          checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
+          checked: activeTasks.length > 0 && activeTasks.every(function (t) { return props.selectedIds.has(t.id); }),
           onCheckedChange: function () {
             if (props.selectAllInColumn) props.selectAllInColumn(props.column.name);
           },
@@ -2906,8 +2936,8 @@
         h("span", { className: "hermes-kanban-column-label" },
           colLabel || props.column.name),
         h("span", { className: "hermes-kanban-column-count",
-                    title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
-          props.column.tasks.length),
+                    title: `${activeTasks.length} active task${activeTasks.length === 1 ? "" : "s"} in this column` },
+          activeTasks.length),
         h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
@@ -2928,7 +2958,7 @@
         onCancel: function () { setShowCreate(false); },
       }) : null,
       h("div", { className: "hermes-kanban-column-body" },
-        props.column.tasks.length === 0
+        activeTasks.length === 0 && settledTasks.length === 0
           ? h("div", { className: "hermes-kanban-empty" }, tx(t, "noTasks", "— no tasks —"))
           : lanes
             ? lanes.map(function (lane) {
@@ -2947,11 +2977,13 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      boardSlug: props.boardSlug,
+                      onRefresh: props.onRefresh,
                     });
                   }),
                 );
               })
-            : props.column.tasks.map(function (tk) {
+            : activeTasks.map(function (tk) {
                 return h(TaskCard, {
                   key: tk.id, task: tk,
                   selected: props.selectedIds.has(tk.id),
@@ -2961,8 +2993,18 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  boardSlug: props.boardSlug,
+                  onRefresh: props.onRefresh,
                 });
               }),
+        settledTasks.length ? h("details", { className: "hermes-kanban-settled" },
+          h("summary", null, `Settled · ${settledTasks.length}`),
+          settledTasks.map(function (tk) {
+            return h(TaskCard, { key: tk.id, task: tk, selected: props.selectedIds.has(tk.id),
+              failed: false, draggingTaskId: props.draggingTaskId, draggingSource: false,
+              toggleSelected: props.toggleSelected, toggleRange: props.toggleRange,
+              onOpen: props.onOpen, boardSlug: props.boardSlug, onRefresh: props.onRefresh });
+          })) : null,
       ),
     );
   }
@@ -2990,6 +3032,56 @@
     if (age >= tier.red)   return "hermes-kanban-card--stale-red";
     if (age >= tier.amber) return "hermes-kanban-card--stale-amber";
     return "";
+  }
+
+  function AttentionControls(props) {
+    const task = props.task;
+    const receipt = task.attention || { state: "active", revision: 0 };
+    const [custom, setCustom] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const apply = function (action, wakeAt) {
+      setBusy(true);
+      setError("");
+      const body = {
+        action: action,
+        actor: "human",
+        source: "webui",
+        expected_revision: receipt.revision || 0,
+        idempotency_key: Date.now() + "-" + Math.random().toString(36).slice(2),
+      };
+      if (wakeAt != null) body.wake_at = wakeAt;
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/attention`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function () { return props.onRefresh(); })
+        .catch(function (err) { setError(err && err.message ? err.message : String(err)); })
+        .finally(function () { setBusy(false); });
+    };
+    const stop = function (e) { e.stopPropagation(); };
+    if (receipt.state === "settled") {
+      return h("button", { type: "button", className: "hermes-kanban-attention-button", disabled: busy,
+        onClick: function (e) { stop(e); apply("wake"); } }, "Wake");
+    }
+    return h("div", { className: "hermes-kanban-attention", onClick: stop, onKeyDown: stop },
+      h("button", { type: "button", className: "hermes-kanban-attention-button", disabled: busy,
+        onClick: function () { apply("settle"); } }, "Settle"),
+      h("details", null,
+        h("summary", { className: "hermes-kanban-attention-button" }, "Snooze…"),
+        h("div", { className: "hermes-kanban-snooze-menu" },
+          h("button", { type: "button", onClick: function () { apply("snooze", Math.floor(Date.now() / 1000) + 3600); } }, "1 hour"),
+          h("button", { type: "button", onClick: function () { apply("snooze", Math.floor(Date.now() / 1000) + 86400); } }, "Tomorrow"),
+          h("button", { type: "button", onClick: function () { apply("snooze", Math.floor(Date.now() / 1000) + 604800); } }, "One week"),
+          h("label", null, "Custom wake time",
+            h("input", { type: "datetime-local", value: custom,
+              onChange: function (e) { setCustom(e.target.value); } })),
+          h("button", { type: "button", disabled: !custom || Date.parse(custom) <= Date.now(),
+            onClick: function () { apply("snooze", Math.floor(Date.parse(custom) / 1000)); } }, "Snooze until then"),
+        ),
+      ),
+      error ? h("span", { role: "alert", className: "hermes-kanban-attention-error" }, error) : null,
+    );
   }
 
   function TaskCard(props) {
@@ -3147,6 +3239,7 @@
                         title: t.created_at ? `Created ${t.created_at}` : "" },
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
+          h(AttentionControls, { task: t, boardSlug: props.boardSlug, onRefresh: props.onRefresh }),
         ),
       ),
     );

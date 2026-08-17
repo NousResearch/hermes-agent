@@ -75,3 +75,70 @@ Consequences:
 - Regression coverage exercises the real production path
   (`set_hermes_home_override()`) rather than only the env-var path, and
   includes a dedicated relative-import leak test.
+
+## 2026-08-17: Keep human attention receipts separate from Kanban workflow
+
+Status: Accepted
+
+Context:
+Kanban status answers what the workflow is doing (`running`, `blocked`,
+`review`, `done`). It does not answer whether a human has seen an item or wants
+it hidden until later. Encoding acknowledgement as `done`, or snooze as
+`scheduled`, would corrupt dependency gating, dispatch, review, and completion.
+Renderer-local state is also insufficient: Desktop and the dashboard can be
+open on different devices, expiry must survive restart/offline, and new task
+activity must deterministically resurface an acknowledged item.
+
+Decision:
+- Store a versioned `attention_receipts` row in the canonical board database,
+  keyed by `(subject_kind, subject_id)`. The first supported subject kind is
+  `kanban_task`; unknown kinds and unknown task ids fail closed. Standalone
+  sessions are deferred until their gateway exposes an equally stable,
+  backend-owned event sequence.
+- Receipts are a reversible overlay with typed actions: `settle`, `snooze`,
+  and `wake`. They contain `state`, `wake_at`, the task-event cursor observed by
+  the action, actor/source, revision, and timestamps. Every accepted action is
+  also appended to `attention_receipt_events`; clients never submit arbitrary
+  receipt blobs.
+- The pure projection policy compares a receipt with canonical time and the
+  task's latest event id. Snooze expires at `wake_at`. Any consequential task
+  event after the observed cursor resurfaces settled/snoozed attention. Receipt
+  events themselves are stored separately and therefore cannot recursively
+  trigger resurfacing. Invalid/corrupt state projects active (visible), never
+  hidden.
+- Writes use optimistic revision checks and an idempotency key. A repeated key
+  with identical action content is a no-op; conflicting reuse is rejected.
+  Attention endpoints contain no workflow fields and never update `tasks`.
+- Board/task responses carry the projected receipt. The existing task-events
+  WebSocket invalidates both Desktop React Query and dashboard state, avoiding
+  a new polling loop. A bounded client timer only wakes at the nearest
+  `wake_at`; restart/offline recovery comes from projection against server time.
+
+UX acceptance contract:
+- Active cards expose **Settle** and **Snooze** (1 hour, tomorrow morning, one
+  week, or an accessible date/time input). Snoozed cards leave the active view.
+- Settled cards recede into a collapsed **Settled** tail, newest first, with a
+  visible **Wake** control. This is history, not another workflow column.
+- Expiry or consequential activity returns the card to active attention and
+  announces the wake in an accessible status region. Every action is available
+  by keyboard and touch; no gesture is required.
+- Workflow labels and status controls remain unchanged. In particular,
+  `review` remains review and `done` remains completion.
+
+Current call graph:
+`task_events` / `tasks` (`hermes_cli/kanban_db.py`) → projection and typed action
+routes (`plugins/kanban/dashboard/plugin_api.py`) → plugin REST + existing
+`/events` invalidation (`apps/desktop/src/plugins/kanban/api.ts`) → board model
+and cards (`types.ts`, `board.tsx`). The standalone dashboard follows the same
+backend routes from `plugins/kanban/dashboard/dist/index.js`; both clients send
+receipts back through the typed action endpoint and receive device-consistent
+state on the next event invalidation/refetch.
+
+Consequences:
+- Attention can be acknowledged and reversed without ever completing,
+  reopening, cancelling, scheduling, or reviewing a task.
+- Board DB backup/restore rolls workflow and its receipts together. Rollback of
+  this feature is additive: older code ignores the two new tables; dropping
+  them removes only attention history, not task data.
+- Session attention remains unchanged rather than guessing across runtime,
+  stored, and lineage identities.

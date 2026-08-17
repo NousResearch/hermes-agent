@@ -4222,6 +4222,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "capability": {
+                            "type": "string",
+                            "description": "Operator-defined named capability resolved by an enabled plugin.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -4234,6 +4238,10 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "capability": {
+                "type": "string",
+                "description": "Operator-defined named capability resolved by an enabled plugin.",
             },
             "background": {
                 "type": "boolean",
@@ -4306,6 +4314,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        capability=args.get("capability"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

@@ -80,6 +80,16 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+        # Named capability is the model-facing resolver switch. If this
+        # disappears again, Grok/WhatsApp cannot emit it and every QA
+        # lane silently inherits delegation.provider (Sol).
+        self.assertIn("capability", props)
+        self.assertEqual(props["capability"].get("type"), "string")
+        self.assertIn("capability", props["tasks"]["items"]["properties"])
+        self.assertEqual(
+            props["tasks"]["items"]["properties"]["capability"].get("type"),
+            "string",
+        )
 
     def test_top_level_description_compact_and_complete(self):
         """The top-level description must stay compact while keeping every
@@ -1190,6 +1200,55 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+
+    def test_model_capability_is_forwarded(self):
+        """Live dispatch must pass capability through to delegate_task."""
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "review DESIGN.md",
+                    "capability": "grok-qa",
+                    "tasks": [
+                        {
+                            "goal": "claude eye",
+                            "capability": "qa-claude",
+                        },
+                    ],
+                },
+            )
+
+        self.assertEqual(captured["capability"], "grok-qa")
+        self.assertEqual(captured["tasks"][0]["capability"], "qa-claude")
+
+    def test_registry_handler_forwards_capability(self):
+        """Fallback registry path must not drop capability either."""
+        from tools.registry import registry
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=1)
+        handler = registry.get_entry("delegate_task").handler
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            handler(
+                {"goal": "review DESIGN.md", "capability": "kimi-qa"},
+                parent_agent=parent,
+            )
+
+        self.assertEqual(captured["capability"], "kimi-qa")
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

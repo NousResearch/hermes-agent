@@ -4250,6 +4250,19 @@ def evaluate_url_safety(url: str) -> Optional[dict]:
     return None
 
 
+def _serialize_browser_navigation(func):
+    """Keep navigation, target binding, publication, and snapshot atomic."""
+
+    @functools.wraps(func)
+    def _wrapped(url: str, task_id: Optional[str] = None) -> str:
+        bare_task_id = _bare_task_id_for_session_key(task_id or "default")
+        with _task_cleanup_operation_lock(bare_task_id):
+            return func(url, task_id)
+
+    return _wrapped
+
+
+@_serialize_browser_navigation
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -6042,9 +6055,39 @@ def _cleanup_browser_session_keys(
     """Cleanup selected ownership under one bare-task lifecycle transition."""
     reason = _coerce_cleanup_reason(reason)
     bare_task_id = _bare_task_id_for_session_key(task_id or "default")
-    operation_lock = _task_cleanup_operation_lock(bare_task_id)
     include_camofox = session_keys is None and _is_camofox_mode()
 
+    # Conversation turns call the per-turn boundary even when no browser tool
+    # ran.  Do not manufacture a lifecycle generation/state/lock row for that
+    # no-op case; otherwise a long-lived process accumulates one entry per
+    # browser-free task forever.  STARTING/RETIRING are deliberately excluded:
+    # those states represent an in-flight creator or retry that still needs the
+    # generation fence below.
+    with _cleanup_lock:
+        state = _task_state_locked(bare_task_id)
+        if session_keys is None:
+            has_selected_session = any(
+                _bare_task_id_for_session_key(key) == bare_task_id
+                for key in _active_sessions
+            )
+        else:
+            has_selected_session = any(
+                key in _active_sessions for key in dict.fromkeys(session_keys)
+            )
+        has_pending_provider = any(
+            record.task_id == bare_task_id
+            for record in _pending_provider_cleanups.values()
+        )
+        if (
+            not include_camofox
+            and not has_selected_session
+            and not has_pending_provider
+            and bare_task_id not in _browser_task_cleanup_locks
+            and state in {BrowserTaskState.ACTIVE, BrowserTaskState.RETIRED}
+        ):
+            return True
+
+    operation_lock = _task_cleanup_operation_lock(bare_task_id)
     with operation_lock:
         with _cleanup_lock:
             effective_reason = _begin_task_cleanup_locked(bare_task_id, reason)
@@ -6185,11 +6228,28 @@ def cleanup_browser_for_turn(task_id: Optional[str] = None) -> bool:
     """Enforce the per-turn boundary while retaining only local headed state."""
     task_id = task_id or "default"
     preserve_local = _is_headed_mode()
-    # Camofox owns its sessions outside ``_active_sessions``. Preserve the old
-    # headed cross-turn behavior explicitly; hard cleanup still goes through
-    # ``cleanup_browser`` and closes the Camofox task below.
-    if preserve_local and _is_camofox_mode():
-        return True
+    if _is_camofox_mode():
+        # Camofox owns sessions outside ``_active_sessions``. Preserve headed
+        # sessions, and avoid manufacturing lifecycle rows for turns that never
+        # created process-local Camofox ownership. Hard cleanup still goes
+        # through ``cleanup_browser`` and retains its untracked-session sweep.
+        if preserve_local:
+            return True
+        try:
+            from tools.browser_camofox import camofox_has_session
+
+            if not camofox_has_session(task_id):
+                # ``browser_navigate`` publishes its task lock before
+                # Camofox creates process-local session state.  Do not let
+                # the browser-free fast path bypass that in-flight owner;
+                # the ordinary cleanup path will wait for navigation to
+                # finish, then retire the Camofox task.
+                bare_task_id = _bare_task_id_for_session_key(task_id)
+                with _cleanup_lock:
+                    if bare_task_id not in _browser_task_cleanup_locks:
+                        return True
+        except Exception:
+            pass
     return _cleanup_browser_session_keys(
         task_id,
         reason=BrowserCleanupReason.TERMINAL,

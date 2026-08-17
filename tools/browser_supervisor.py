@@ -406,6 +406,7 @@ class CDPSupervisor:
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        self._attached_target_id: Optional[str] = None
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
@@ -782,6 +783,7 @@ class CDPSupervisor:
                 # Reset per-connection session state so stale ids don't hang
                 # around after a reconnect.
                 self._page_session_id = None
+                self._attached_target_id = None
                 self._child_sessions.clear()
                 # We deliberately keep `_pending_dialogs` and `_frames` —
                 # they're reconciled as the supervisor resubscribes and
@@ -860,6 +862,7 @@ class CDPSupervisor:
         else:
             target_id = page_target["targetId"]
 
+        self._attached_target_id = target_id
         attach = await self._cdp(
             "Target.attachToTarget",
             {"targetId": target_id, "flatten": True},
@@ -1429,17 +1432,33 @@ class CDPSupervisor:
         await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any]) -> None:
-        """Handle a child CDP session detaching.
+        """Handle top-level or child CDP session detachment.
 
-        We deliberately DO NOT drop frames from ``_frames`` here — Browserbase
-        fires transient detach events during page transitions even while the
-        iframe is still visible to the user, and dropping the record hides
-        OOPIFs from the agent between the detach and the next
-        ``Target.attachedToTarget``. Instead, we just clear the session
-        binding so stale ``cdp_session_id`` values aren't used for routing.
-        If the iframe truly goes away, ``Page.frameDetached`` will clean up.
+        A detach for the page session is terminal for this supervisor binding:
+        retaining ``_active`` and the old page session would make evaluate and
+        dialog responses report success against a target that no longer exists.
+        Child/OOPIF detaches retain their frame record and only clear the stale
+        child session binding; the next ``Page.frameDetached`` removes it when
+        the iframe is truly gone.
         """
         sid = params.get("sessionId")
+        target_id = params.get("targetId")
+        top_level = bool(
+            (sid and sid == self._page_session_id)
+            or (target_id and target_id == self._attached_target_id)
+        )
+        if top_level:
+            with self._state_lock:
+                self._page_session_id = None
+                self._attached_target_id = None
+                self._active = False
+                self._pending_dialogs.clear()
+                self._frames.clear()
+            for handle in list(self._dialog_watchdogs.values()):
+                handle.cancel()
+            self._dialog_watchdogs.clear()
+            self._child_sessions.clear()
+            return
         if not sid:
             return
         self._child_sessions.pop(sid, None)
@@ -1575,8 +1594,9 @@ class _SupervisorRegistry:
                 if existing.cdp_url == cdp_url and existing.target_id == target_id:
                     thread_ok = existing._thread is not None and existing._thread.is_alive()
                     loop_ok = existing._loop is not None and existing._loop.is_running()
+                    active_ok = bool(getattr(existing, "_active", True))
                     guard_ok = publish_guard is None or publish_guard()
-                    if thread_ok and loop_ok and guard_ok:
+                    if thread_ok and loop_ok and active_ok and guard_ok:
                         return existing
                     # Unhealthy — tear down and recreate.
                 # URL changed or unhealthy — tear down, fall through to re-create.

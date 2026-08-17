@@ -1378,9 +1378,74 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         _single_query_finalize_attempted_session_ids.add(session_id)
 
 
+def _flush_one_shot_session_store(cli) -> None:
+    """Durably flush + finalize the one-shot session row before process exit.
+
+    The quiet/one-shot ``-q`` / ``-Q`` paths (including resume-or-create of a
+    titled session via ``-c <name> --create-if-missing``, the Bot Mode
+    bot-to-bot send) get exactly ONE turn and then exit. The interactive CLI
+    finalizes its session row on quit (``end_session(..., "cli_close")``) and
+    every later turn retries a transiently-failed transcript flush; the
+    one-shot path had neither, so:
+
+    - a turn whose in-loop ``_flush_messages_to_session_db`` failed under
+      write-lock contention (e.g. a busy multiplex gateway sharing state.db)
+      was silently lost — the reply reached stdout and agent.log but the
+      resumed session's stored history never changed (#88583);
+    - the resumed/created titled session row was left dangling open
+      (``ended_at``/``end_reason`` NULL) on every one-shot exit;
+    - queued async token-accounting deltas relied on interpreter-exit hooks,
+      which the kanban SIGTERM path's ``os._exit(0)`` skips entirely.
+
+    Idempotent and best-effort: ``_persist_session`` dedupes via the
+    per-message ``_DB_PERSISTED_MARKER`` stamps (already-written turns are
+    not re-written) and ``end_session`` no-ops on an already-ended row.
+    Sessions handed off to the gateway are owned by the gateway process and
+    are left strictly alone (#88234).
+    """
+    agent = getattr(cli, "agent", None)
+    if agent is None:
+        return
+    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+    if not session_id or session_id in _handed_off_session_ids:
+        return
+    if getattr(agent, "_persist_disabled", False):
+        return
+    # Retry persistence for any rows the in-turn flush failed to write.
+    # ``cli.conversation_history`` holds the resumed history's live dicts, so
+    # passing it keeps restored messages identity-skipped even when the failed
+    # first flush never got to stamp them.
+    try:
+        msgs = getattr(agent, "_session_messages", None)
+        if isinstance(msgs, list) and msgs and hasattr(agent, "_persist_session"):
+            agent._persist_session(
+                msgs, getattr(cli, "conversation_history", None)
+            )
+    except Exception:
+        logger.debug("one-shot final session persist retry failed", exc_info=True)
+    db = getattr(agent, "_session_db", None) or getattr(cli, "_session_db", None)
+    if db is None:
+        return
+    try:
+        db.flush_token_counts()
+    except Exception:
+        logger.debug("one-shot token-count drain failed", exc_info=True)
+    try:
+        db.end_session(session_id, "cli_close")
+    except Exception:
+        logger.debug("one-shot end_session failed", exc_info=True)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
+        # Durable flush FIRST: memory-provider shutdown inside _run_cleanup
+        # can issue aux-LLM calls, and nothing after it may fail in a way
+        # that loses the turn (#88583).
+        try:
+            _flush_one_shot_session_store(cli)
+        except Exception:
+            logger.debug("one-shot session store flush failed", exc_info=True)
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
@@ -20056,7 +20121,15 @@ def main(
                     # Cancel any pre-existing alarm to avoid colliding with
                     # caller-installed timers.
                     _sig_mod.signal(_sig_mod.SIGALRM, lambda *_: os._exit(0))
-                    _sig_mod.alarm(2)
+                    _sig_mod.alarm(5)
+            except Exception:
+                pass
+            # os._exit(0) skips atexit AND SessionDB's token-drain hook, so
+            # flush + finalize the session store here or the worker's turn
+            # (and its usage deltas) never become durable (#88583 / #50881
+            # class). Best-effort under the SIGALRM deadman above.
+            try:
+                _flush_one_shot_session_store(cli)
             except Exception:
                 pass
             try:

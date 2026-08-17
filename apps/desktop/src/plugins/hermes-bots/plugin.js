@@ -2482,7 +2482,12 @@ async function prepareBotSource(bot, pinnedChat) {
 }
 
 function displayName(bot, meta) {
-  if (bot?.sourceScoped && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
+  // Only THIN rows from another source trade the friendly name for their
+  // connection label — the active gateway's own default must keep reading
+  // "Hermes". Annotated active rows carry sourceScoped too, and keying this
+  // off sourceScoped renamed the user's main agent to an IP-derived label
+  // (community report, Aug 17 2026).
+  if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
     return bot.connectionLabel
   }
 

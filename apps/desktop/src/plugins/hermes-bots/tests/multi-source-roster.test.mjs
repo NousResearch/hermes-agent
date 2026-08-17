@@ -240,8 +240,15 @@ test('default rows use source identity without borrowing another source title', 
 
   assert.equal(metaFor(remote, metadata), null)
   assert.equal(name(remote, metaFor(remote, metadata)), 'Personal')
-  assert.equal(name(active, metadata.default), 'Personal')
   assert.equal(key(remote), 'personal::default')
+
+  // The ACTIVE gateway's own default is the user's main agent — annotation
+  // (sourceScoped + connection fields) must NOT rename it to a connection
+  // label. Titled: the title wins. Untitled: it stays "Hermes". Regression:
+  // remote-gateway desktops showed the main agent as an IP-derived label
+  // with no shortname (Aug 17 2026 report).
+  assert.equal(name(active, metadata.default), 'Active workspace')
+  assert.equal(name(active, undefined), 'Hermes')
 })
 
 test('botHandle: precomputed multi-source handle wins; default stays hermes', () => {

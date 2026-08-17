@@ -211,6 +211,28 @@ export function resolveRegistryLocalRoute(
   return { delegate: true, poolKey: profileKey }
 }
 
+/**
+ * Whether the roster enumeration should SKIP the registry's local entry as
+ * connect-on-demand. True when the local source is the forced-local route
+ * (primary resolves remote — enumerating would spawn a local backend the
+ * user never asked for, minting a phantom `default` agent and forcing
+ * -device handles onto the real one) AND no forced-local child is already
+ * pooled. Pure — main.ts feeds it the live route + pool keys.
+ */
+export function shouldDeferLocalEnumeration(
+  route: RegistryLocalRoute,
+  poolKeys: Iterable<string>,
+  connectionId: string = LOCAL_CONNECTION_ID
+): boolean {
+  if (route.delegate) {
+    return false
+  }
+
+  const prefix = backendScopePrefix(connectionId)
+
+  return ![...poolKeys].some(key => String(key).startsWith(prefix))
+}
+
 // ── Union agent roster ──────────────────────────────────────────────────────
 
 export interface ConnectionAgents {

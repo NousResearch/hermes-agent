@@ -103,6 +103,7 @@ import {
   removeConnection,
   resolveRegistryLocalRoute,
   setPrimaryConnection,
+  shouldDeferLocalEnumeration,
   updateEligibility,
   upsertConnection
 } from './connection-registry'
@@ -12488,6 +12489,25 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           ![...sshConnections.keys()].some(scope => String(scope).startsWith(backendScopePrefix(connection.id)))
         ) {
           return { connection, profiles: null, error: 'connect-on-demand' }
+        }
+
+        // Same connect-on-demand courtesy for the forced-local path: when the
+        // primary route is remote, enumerating "This device" would SPAWN a
+        // local backend this user has never asked for — a phantom `default`
+        // agent that also forces -device handle disambiguation onto the real
+        // one (remote-gateway-only desktops showed their main agent twice,
+        // Aug 17 2026). Enumerate the local source only when it is the
+        // delegate route (local-primary desktops, unchanged behavior) or a
+        // forced-local child is ALREADY pooled (the user opened one).
+        if (connection.kind === 'local') {
+          const localRoute = resolveRegistryLocalRoute('default', {
+            globalRemote: globalRemoteActive(),
+            profileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey()))
+          })
+
+          if (shouldDeferLocalEnumeration(localRoute, backendPool.keys(), connection.id)) {
+            return { connection, profiles: null, error: 'connect-on-demand' }
+          }
         }
 
         const descriptor: any = await ensureRegistryBackend(connection.id, null)

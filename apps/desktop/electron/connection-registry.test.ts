@@ -28,6 +28,7 @@ import {
   removeConnection,
   resolveRegistryLocalRoute,
   setPrimaryConnection,
+  shouldDeferLocalEnumeration,
   uniqueLabel,
   updateEligibility,
   upsertConnection
@@ -157,6 +158,28 @@ test('registry local route: a per-profile remote override also forces local', ()
   const route = resolveRegistryLocalRoute('research', { profileRemoteOverride: true })
 
   assert.deepEqual(route, { delegate: false, poolKey: 'conn:local::research' })
+})
+
+// --- shouldDeferLocalEnumeration (roster's connect-on-demand for 'local') ---
+
+test('local enumeration: delegate route (local-primary desktop) always enumerates', () => {
+  const route = resolveRegistryLocalRoute('default', {})
+
+  assert.equal(shouldDeferLocalEnumeration(route, []), false)
+  assert.equal(shouldDeferLocalEnumeration(route, ['conn:local::default']), false)
+})
+
+test('local enumeration: forced-local route defers until a local child exists (remote-primary desktop)', () => {
+  // Remote-gateway-only desktops: enumerating "This device" here would SPAWN
+  // a local backend the user never asked for — a phantom `default` agent
+  // that duplicates their real one and forces -device handles onto it.
+  const route = resolveRegistryLocalRoute('default', { globalRemote: true })
+
+  assert.equal(shouldDeferLocalEnumeration(route, []), true)
+  // The v1 remote descriptor cached at the BARE profile key is not a local child.
+  assert.equal(shouldDeferLocalEnumeration(route, ['default', 'research']), true)
+  // Once the user has genuinely opened a forced-local child, it enumerates.
+  assert.equal(shouldDeferLocalEnumeration(route, ['conn:local::default']), false)
 })
 
 // --- buildAgentRoster (union roster + @name-device rule) ---

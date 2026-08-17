@@ -413,7 +413,6 @@ async function resolveConnectionForActiveAgent(
 //    ONE synchronous frame, via the same prepare/publish seam the profile path
 //    uses, so no subscriber sees the new backend paired with the old
 //    descriptor.
-// A local/null connectionId falls through to the profile path verbatim.
 // Only a null connectionId falls through to the legacy profile path. Explicit
 // `local` is a registry identity and must use the genuinely-local route.
 export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {

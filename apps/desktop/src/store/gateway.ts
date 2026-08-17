@@ -669,9 +669,11 @@ export async function openGatewayForAgent(connectionId: null | string, profile: 
 
 // The agent-scoped analogue of prepareGatewayForProfile, and the same
 // publication seam: dial the agent's socket without publishing anything, and
-// hand back the synchronous activation thunk. A local/null connection falls
+// hand back the synchronous activation thunk. A null connection id falls
 // through to the profile seam, so both doors into an activation share one
-// atomicity contract instead of drifting apart.
+// atomicity contract instead of drifting apart; an explicit `local` id is a
+// registry identity (`registryBackendScopeKey` keeps its own scope for it) and
+// stays on the registry route.
 //
 // The thunk reports whether it actually published, preserving the `activated`
 // contract callers rely on: a source edit/remove can dispose this entry while

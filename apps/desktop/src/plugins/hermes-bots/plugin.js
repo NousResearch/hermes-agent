@@ -2485,12 +2485,108 @@ function resolveRosterMentions(text, roster, active = {}) {
   return mentioned
 }
 
-async function deliverRemoteRosterMentions(bots, userText) {
+const REMOTE_DM_TIMEOUT_MS = 180000
+const REMOTE_DM_POLL_MS = 2000
+
+/** The remote bot's canonical Bot Chat: pinned stored-id from its profile's
+ *  ui_meta first, then resume-by-title, then create. Mirrors
+ *  ensureGroupChatSession so DMs land in the ONE forever-chat instead of
+ *  minting a fresh "Bot Chat" per mention. */
+async function ensureRemoteCanonicalChat(route, profile) {
+  let pinned = null
+
+  try {
+    const listed = await host.requestProfile(route, 'profiles.list', {})
+    const owner = listed?.profiles?.find(p => p.name === profile)
+    pinned = owner?.ui_meta?.['hermes-bots']?.chat || null
+  } catch {
+    /* older remote gateway — title lookup below still works */
+  }
+
+  for (const target of [pinned, 'Bot Chat']) {
+    if (!target) {
+      continue
+    }
+
+    try {
+      const res = await host.requestProfile(route, 'session.resume', {
+        session_id: target,
+        profile,
+        omit_messages: true
+      })
+
+      if (res?.session_id) {
+        return { runtime: res.session_id, stored: res.session_key || pinned }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  const created = await host.requestProfile(route, 'session.create', {
+    profile,
+    title: 'Bot Chat',
+    ...($hideBotChats.get() ? { hidden: true } : {})
+  })
+
+  return { runtime: created?.session_id || null, stored: created?.stored_session_id || null }
+}
+
+/** Bounded reply poll on the recipient's session — same shape as a group
+ *  member turn: wait for a NEW assistant message after `before`, or time out. */
+async function pollRemoteDmReply(route, profile, sessionRef, before) {
+  const deadline = Date.now() + REMOTE_DM_TIMEOUT_MS
+
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, REMOTE_DM_POLL_MS))
+
+    let state = null
+
+    try {
+      state = await host.requestProfile(route, 'session.resume', { session_id: sessionRef, profile })
+    } catch {
+      continue
+    }
+
+    const messages = Array.isArray(state?.messages) ? state.messages : []
+    const done = !state?.inflight && !state?.running
+
+    if (messages.length > before && done) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+
+        if (msg?.role === 'assistant') {
+          const text = typeof msg.content === 'string'
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
+              : msg?.text || ''
+
+          return String(text).trim() || null
+        }
+      }
+
+      return null
+    }
+  }
+
+  return null
+}
+
+/** Deliver a user mention to bots on OTHER connections: into each bot's
+ *  canonical Bot Chat, with the standard sender-attribution prefix (so the
+ *  recipient's messaging protocol recognizes an agent-to-agent message), then
+ *  relay the reply back as a notification. Sequential and fire-and-forget
+ *  from the composer's perspective. */
+async function deliverRemoteRosterMentions(bots, userText, sender) {
   const text = String(userText || '').trim()
 
   if (!text || typeof host.requestProfile !== 'function') {
     return
   }
+
+  const senderName = String(sender?.name || 'the user').trim()
+  const senderHandle = String(sender?.handle || senderName).trim()
 
   for (const bot of bots) {
     const connectionId = String(bot?.connectionId || '').trim()
@@ -2500,30 +2596,55 @@ async function deliverRemoteRosterMentions(bots, userText) {
       continue
     }
 
-    try {
-      const created = await host.requestProfile(
-        { connectionId, profile, mode: 'remote', targetProfile: profile },
-        'session.create',
-        { profile, title: 'Bot Chat', hidden: true }
-      )
-      const sessionId = created?.session_id
+    const route = { connectionId, mode: 'remote', profile, targetProfile: profile }
+    const label = bot.connectionLabel || connectionId
 
-      if (!sessionId) {
+    try {
+      const { runtime, stored } = await ensureRemoteCanonicalChat(route, profile)
+
+      if (!runtime) {
         throw new Error('No remote session')
       }
 
-      await host.requestProfile(
-        { connectionId, profile, mode: 'remote', targetProfile: profile },
-        'prompt.submit',
-        { session_id: sessionId, text }
-      )
+      // Baseline before our submit, so the poll can spot the NEW reply.
+      let before = 0
+
+      try {
+        const pre = await host.requestProfile(route, 'session.resume', { session_id: stored || runtime, profile })
+        before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
+      } catch {
+        /* lazy session — zero messages */
+      }
+
+      // The delivery prefix is the recipient's cue that an agent (not its
+      // human) is talking — same contract as the local CLI handoff.
+      await host.requestProfile(route, 'prompt.submit', {
+        session_id: runtime,
+        text: `Message from \u{1F916} ${senderName} (@${senderHandle}): ${text}`
+      })
       host.notify?.({
         kind: 'info',
         title: displayName(bot),
-        message: `Messaged @${botHandle(profile, bot)} on ${bot.connectionLabel || connectionId} from this chat.`
+        message: `Messaged @${botHandle(profile, bot)} on ${label} — will relay the reply here.`
       })
+
+      const reply = await pollRemoteDmReply(route, profile, stored || runtime, before)
+
+      if (reply) {
+        host.notify?.({
+          kind: 'info',
+          title: `\u{1F916} ${displayName(bot)} (${label})`,
+          message: reply.slice(0, 500)
+        })
+      } else {
+        host.notify?.({
+          kind: 'info',
+          title: displayName(bot),
+          message: `No reply from @${botHandle(profile, bot)} yet — check its Bot Chat on ${label}.`
+        })
+      }
     } catch (error) {
-      host.notifyError?.(error, `Could not reach ${bot.connectionLabel || profile}`)
+      host.notifyError?.(error, `Could not reach ${label}`)
     }
   }
 }
@@ -7862,12 +7983,15 @@ export default {
           const localMentions = mentionedBots.filter(bot => !bot.remoteSource)
           const remoteMentions = mentionedBots.filter(bot => bot.remoteSource)
 
-          if (remoteMentions.length && typeof host.requestProfile === 'function') {
-            void deliverRemoteRosterMentions(remoteMentions, text)
-          }
-
           const activeMeta = $botMeta.get()[live.name]
           const senderName = displayName({ name: live.name, title: activeMeta?.title }, activeMeta)
+
+          if (remoteMentions.length && typeof host.requestProfile === 'function') {
+            void deliverRemoteRosterMentions(remoteMentions, text, {
+              name: senderName,
+              handle: botHandle(live.name)
+            })
+          }
           let note = ''
 
           if (localMentions.length) {

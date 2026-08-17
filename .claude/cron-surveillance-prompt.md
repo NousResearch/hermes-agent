@@ -108,5 +108,5 @@ Il doit toujours y avoir **exactement 1** job de surveillance (pas d'accumulatio
 ### Wrapper à recopier verbatim dans le CronCreate
 
 ```
-Cron surveillance Hermes 12h (opérateur Claude Code po-2026). Lis et exécute la routine dans : c:\dev\hermes-agent\.claude\cron-surveillance-prompt.md (recharge les dashboards, 7 vérifications, post [STATUS 12h] sur workspace-hermes-agent, escalade seulement si container down / reviews >4h / NanoClaw >36h / global >36h). FIN : self-re-arm obligatoire — CronList, CronDelete tous les jobs de surveillance, CronCreate('17 */12 * * *', <CE MÊME WRAPPER verbatim>, recurring:true), note le nouveau job ID dans le post.
+Cron surveillance Hermes 12h (opérateur Claude Code po-2026). Lis et exécute la routine dans : c:\dev\hermes-agent\.claude\cron-surveillance-prompt.md (recharge les dashboards, 8 vérifications dont check 8 lecture des messages des bots, post [STATUS 12h] sur workspace-hermes-agent, escalade seulement si container down / reviews >4h / NanoClaw >36h / global >36h / bus MCP down). FIN : self-re-arm obligatoire — CronList, CronDelete tous les jobs de surveillance, CronCreate('17 */12 * * *', <CE MÊME WRAPPER verbatim>, recurring:true), note le nouveau job ID dans le post.
 ```

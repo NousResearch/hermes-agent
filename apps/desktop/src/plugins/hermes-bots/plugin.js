@@ -1326,6 +1326,11 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
 
   const working = mood === 'work'
   const eyeFill = isDarkColor(color) ? 'rgba(232,220,195,0.95)' : 'rgba(0,0,0,0.85)'
+  // Catchlight contrast follows the pupil, not the body: dark pupils get the
+  // white sparkle, light (cream) pupils on dark bodies get a dark one — a
+  // white dot on a cream pupil is invisible, which read as "no eye dots" on
+  // maroon/ink/oxblood avatars.
+  const hlFill = isDarkColor(color) ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)'
   const ring = sampleFaceRing(shape)
   const rest = facePose(working ? 'work' : 'idle', 0)
   // Shape-aware initial eye line — the cloud body sits lower, so its eyes
@@ -1356,8 +1361,8 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
         children: [
           jsx('ellipse', { 'data-hb-el': '1', cx: 15.4, cy: eyeY0, rx: 2.2, ry: working ? 2.6 : 2.3, fill: eyeFill }),
           jsx('ellipse', { 'data-hb-er': '1', cx: 24.6, cy: eyeY0, rx: 2.2, ry: working ? 2.6 : 2.3, fill: eyeFill }),
-          jsx('circle', { 'data-hb-hl-l': '1', cx: 14.8, cy: eyeY0 - 0.7, r: 0.65, fill: 'rgba(255,255,255,0.85)' }),
-          jsx('circle', { 'data-hb-hl-r': '1', cx: 24, cy: eyeY0 - 0.7, r: 0.65, fill: 'rgba(255,255,255,0.85)' })
+          jsx('circle', { 'data-hb-hl-l': '1', cx: 14.8, cy: eyeY0 - 0.7, r: 0.65, fill: hlFill }),
+          jsx('circle', { 'data-hb-hl-r': '1', cx: 24, cy: eyeY0 - 0.7, r: 0.65, fill: hlFill })
         ]
       }),
       jsx('path', {

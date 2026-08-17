@@ -13,7 +13,6 @@ import atexit
 import concurrent.futures
 import contextlib
 import contextvars
-import glob
 import json
 import logging
 import os
@@ -6202,34 +6201,43 @@ def _strip_inline_verification(text: str) -> str:
     return "\n".join(cleaned).rstrip()
 
 
-def _recover_configured_artifact_delivery(job: dict, response: str) -> Optional[str]:
-    """Build a deterministic delivery for a fresh configured report artifact.
+def _prepare_delivery_artifact(job: dict, execution_id: str) -> tuple[Optional[Path], Optional[str]]:
+    """Reserve a unique report path and tell the current run to write it."""
+    template = str(job.get("delivery_artifact_template") or "").strip()
+    if not template or "{execution_id}" not in template:
+        return None, None
+    try:
+        path = Path(template.format(execution_id=execution_id)).expanduser()
+    except (KeyError, ValueError):
+        logger.warning("Job '%s': invalid delivery_artifact_template", job.get("id"))
+        return None, None
+    if not path.is_absolute() or path.exists():
+        return None, None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    job["_active_delivery_artifact"] = str(path)
+    return path, (
+        "## Run-scoped delivery artifact (mandatory)\n"
+        f"Write this run's final HTML report exactly to: {path}\n"
+        "Do not reuse a date-only path or another run's artifact."
+    )
 
-    Some LLM crons complete their real work and write the HTML report, but
-    return only verification narration.  This recovery is opt-in per job so a
-    stale or unrelated file can never be attached by inference alone.
-    """
+
+def _recover_run_scoped_artifact_delivery(job: dict, response: str) -> Optional[str]:
+    """Deliver only the artifact reserved for this exact scheduler execution."""
     if response.strip():
         return None
-    artifact_glob = str(job.get("delivery_artifact_glob") or "").strip()
-    if not artifact_glob:
+    raw_path = str(job.get("_active_delivery_artifact") or "").strip()
+    artifact = Path(raw_path) if raw_path else None
+    if artifact is None or not artifact.is_file() or artifact.stat().st_size == 0:
         return None
-
-    candidates = [Path(path) for path in glob.glob(artifact_glob)]
-    candidates = [path for path in candidates if path.is_file()]
-    if not candidates:
-        return None
-    artifact = max(candidates, key=lambda path: path.stat().st_mtime)
-    max_age = int(job.get("delivery_artifact_max_age_seconds", 900))
-    if time.time() - artifact.stat().st_mtime > max_age:
-        return None
-
-    today = datetime.now().astimezone().strftime("%d/%m/%Y")
     template = str(job.get("delivery_artifact_summary") or "📄 {name} — {date}\nReport attached.")
     try:
-        summary = template.format(name=job.get("name") or job.get("id", "Cron report"), date=today)
+        summary = template.format(
+            name=job.get("name") or job.get("id", "Cron report"),
+            date=datetime.now().astimezone().strftime("%d/%m/%Y"),
+        )
     except (KeyError, ValueError):
-        logger.warning("Job '%s': invalid delivery_artifact_summary template", job.get("id"))
+        logger.warning("Job '%s': invalid delivery_artifact_summary", job.get("id"))
         return None
     return f"{summary.strip()}\nMEDIA:{artifact}"
 
@@ -6365,6 +6373,12 @@ def _run_one_job_body(
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
+        _, artifact_context = _prepare_delivery_artifact(job, execution_id)
+        if artifact_context:
+            extra_prompt = (
+                f"{extra_prompt}\n\n{artifact_context}"
+                if extra_prompt else artifact_context
+            )
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -6480,10 +6494,10 @@ def _run_one_job_body(
             if success and final_response:
                 stripped = _strip_verification_leak(final_response)
                 if stripped != final_response and not stripped.strip():
-                    recovered = _recover_configured_artifact_delivery(job, stripped)
+                    recovered = _recover_run_scoped_artifact_delivery(job, stripped)
                     if recovered:
                         logger.info(
-                            "Job '%s': recovered configured report artifact after "
+                            "Job '%s': recovered this execution's report artifact after "
                             "verification-only response",
                             job.get("name", job["id"]),
                         )

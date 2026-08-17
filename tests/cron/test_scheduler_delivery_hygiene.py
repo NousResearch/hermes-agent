@@ -50,35 +50,33 @@ def test_raw_html_strip_noop_when_clean():
     assert _simulate_raw_html_strip(resp) == resp
 
 
-def test_recovers_recent_configured_artifact_when_model_returns_only_verification(tmp_path):
-    """A written report must still be delivered when the model drops its MEDIA line."""
-    report = tmp_path / "research-paper-synthesis-20260817.html"
-    report.write_text("<html><body>report</body></html>", encoding="utf-8")
+def test_prepares_run_scoped_artifact_and_recovers_only_that_run(tmp_path):
+    """Delivery must bind to this execution ID, never the newest matching file."""
     job = {
         "name": "research-paper-synthesis-daily",
-        "delivery_artifact_glob": str(tmp_path / "research-paper-synthesis-*.html"),
+        "delivery_artifact_template": str(tmp_path / "{execution_id}" / "report.html"),
         "delivery_artifact_summary": "📄 Research Paper Synthesis — {date}\nReport attached.",
     }
 
-    recovered = S._recover_configured_artifact_delivery(job, "")
+    artifact, prompt = S._prepare_delivery_artifact(job, "run-current")
+    assert artifact == tmp_path / "run-current" / "report.html"
+    assert "run-current" in prompt
+    assert not artifact.exists()
 
+    stale = tmp_path / "run-older" / "report.html"
+    stale.parent.mkdir()
+    stale.write_text("old", encoding="utf-8")
+    artifact.write_text("current", encoding="utf-8")
+
+    recovered = S._recover_run_scoped_artifact_delivery(job, "")
     assert recovered is not None
-    assert "📄 Research Paper Synthesis" in recovered
-    assert "MEDIA:" + str(report) in recovered
+    assert "MEDIA:" + str(artifact) in recovered
+    assert str(stale) not in recovered
 
 
-def test_does_not_recover_stale_configured_artifact(tmp_path):
-    """A stale report must not be attached to a later failed/empty run."""
-    import os
-    import time
-
-    report = tmp_path / "research-paper-synthesis-20260801.html"
-    report.write_text("<html><body>old</body></html>", encoding="utf-8")
-    stale = time.time() - 901
-    os.utime(report, (stale, stale))
-    job = {
-        "delivery_artifact_glob": str(tmp_path / "research-paper-synthesis-*.html"),
-        "delivery_artifact_max_age_seconds": 900,
-    }
-
-    assert S._recover_configured_artifact_delivery(job, "") is None
+def test_rejects_artifact_template_without_execution_id(tmp_path):
+    """A reusable path cannot prove which run produced its report."""
+    job = {"delivery_artifact_template": str(tmp_path / "report.html")}
+    artifact, prompt = S._prepare_delivery_artifact(job, "run-current")
+    assert artifact is None
+    assert prompt is None

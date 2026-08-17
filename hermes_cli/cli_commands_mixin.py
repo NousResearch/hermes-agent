@@ -2148,6 +2148,9 @@ class CLICommandsMixin:
             except Exception:
                 pass
             try:
+                from agent.isolation import resolve_agent_isolation
+
+                skip_context_files, skip_memory = resolve_agent_isolation()
                 bg_agent = AIAgent(
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
@@ -2161,6 +2164,8 @@ class CLICommandsMixin:
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
+                    skip_context_files=skip_context_files,
+                    skip_memory=skip_memory,
                     session_id=task_id,
                     platform="cli",
                     session_db=self._session_db,

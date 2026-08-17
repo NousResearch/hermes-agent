@@ -38,7 +38,11 @@ logger = logging.getLogger(__name__)
 # ── Shared constants ──────────────────────────────────────────────────────────
 _COMMANDCODE_BASE = "https://api.commandcode.ai/provider/v1"
 _COMMANDCODE_MODELS_URL = f"{_COMMANDCODE_BASE}/models"
-_COMMANDCODE_ENV = ("COMMANDCODE_API_KEY",)
+# Both profiles authenticate with the same key; each carries its own base-URL
+# override var so each renders its own card on the desktop Keys tab (rows are
+# keyed by env var, and the shared API key attributes to the first profile).
+_COMMANDCODE_ENV = ("COMMANDCODE_API_KEY", "COMMANDCODE_BASE_URL")
+_COMMANDCODE_ANTHROPIC_ENV = ("COMMANDCODE_API_KEY", "COMMANDCODE_ANTHROPIC_BASE_URL")
 
 
 def _fetch_commandcode_models(
@@ -138,7 +142,7 @@ commandcode_anthropic = CommandCodeAnthropicProfile(
     name="commandcode-anthropic",
     aliases=("commandcode-claude",),
     api_mode="anthropic_messages",
-    env_vars=_COMMANDCODE_ENV,
+    env_vars=_COMMANDCODE_ANTHROPIC_ENV,
     display_name="CommandCode (Anthropic)",
     description="CommandCode — Claude models via Anthropic Messages API",
     signup_url="https://commandcode.ai/",

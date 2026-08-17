@@ -456,6 +456,9 @@ def auth_status_command(args) -> None:
     status = auth_mod.get_auth_status(provider)
     _print_oauth_heal_notices()
     if not status.get("logged_in"):
+        if status.get("needs_refresh"):
+            print(f"{provider}: access token expired (refresh needed)")
+            return
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
         return

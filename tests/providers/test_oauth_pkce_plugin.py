@@ -13,18 +13,20 @@ from unittest.mock import Mock
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import urlopen
 
+import pytest
+
 from providers.base import OAuthPKCEConfig, ProviderProfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _oauth_config() -> OAuthPKCEConfig:
+def _oauth_config(scope: str = "inference:invoke offline_access") -> OAuthPKCEConfig:
     return OAuthPKCEConfig(
         client_id="public-client",
         authorization_url="https://auth.example.test/oauth/authorize",
         token_url="https://auth.example.test/oauth/token",
-        scope="inference:invoke offline_access",
+        scope=scope,
     )
 
 
@@ -101,7 +103,8 @@ def test_refresh_provider_oauth_pkce_preserves_rotating_token(monkeypatch):
     assert result["expires_at_ms"] > int(time.time() * 1000)
 
 
-def test_login_provider_oauth_pkce_completes_loopback_flow(monkeypatch):
+@pytest.mark.parametrize("scope", ["inference:invoke offline_access", ""])
+def test_login_provider_oauth_pkce_completes_loopback_flow(monkeypatch, scope):
     from hermes_cli import auth
 
     response = SimpleNamespace(
@@ -116,7 +119,11 @@ def test_login_provider_oauth_pkce_completes_loopback_flow(monkeypatch):
     monkeypatch.setattr(auth.httpx, "post", post)
 
     def _complete_authorization(authorize_url: str) -> bool:
-        params = parse_qs(urlparse(authorize_url).query)
+        params = parse_qs(urlparse(authorize_url).query, keep_blank_values=True)
+        if scope:
+            assert params["scope"] == [scope]
+        else:
+            assert "scope" not in params
         callback = params["redirect_uri"][0]
         query = urlencode({"code": "auth-code", "state": params["state"][0]})
         with urlopen(f"{callback}?{query}", timeout=2) as callback_response:
@@ -127,7 +134,7 @@ def test_login_provider_oauth_pkce_completes_loopback_flow(monkeypatch):
 
     result = auth.login_provider_oauth_pkce(
         "example-oauth",
-        _oauth_config(),
+        _oauth_config(scope),
         timeout_seconds=5,
     )
 
@@ -233,3 +240,121 @@ def test_generic_pool_refresh_uses_profile_oauth_config(tmp_path, monkeypatch):
         assert refreshed.refresh_token == "new-refresh"
     finally:
         _REGISTRY.pop(profile.name, None)
+
+
+def test_generic_pool_unknown_expiry_refreshes_after_auth_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+    from hermes_cli import auth
+    from providers import _REGISTRY, register_provider
+
+    profile = ProviderProfile(
+        name="example-oauth",
+        auth_type="oauth_pkce",
+        base_url="https://api.example.test/v1",
+        oauth=_oauth_config(),
+    )
+    register_provider(profile)
+    entry = PooledCredential(
+        provider=profile.name,
+        id="oauth1",
+        label="work",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:oauth_pkce",
+        access_token="old-access",
+        refresh_token="old-refresh",
+        expires_at_ms=None,
+    )
+    refresh = Mock(return_value={
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expires_at_ms": None,
+    })
+    monkeypatch.setattr(auth, "refresh_provider_oauth_pkce", refresh)
+    try:
+        pool = CredentialPool(profile.name, [entry])
+        assert pool._entry_needs_refresh(entry) is False
+
+        refreshed = pool.try_refresh_matching(credential_id=entry.id)
+
+        assert refreshed is not None
+        assert refreshed.access_token == "new-access"
+        refresh.assert_called_once()
+    finally:
+        _REGISTRY.pop(profile.name, None)
+
+
+def test_plugin_oauth_profile_lookup_failure_is_not_silenced(monkeypatch):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+    import providers
+
+    entry = PooledCredential(
+        provider="example-oauth",
+        id="oauth1",
+        label="work",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:oauth_pkce",
+        access_token="access",
+        refresh_token="refresh",
+    )
+    pool = CredentialPool(entry.provider, [entry])
+    monkeypatch.setattr(
+        providers,
+        "get_provider_profile",
+        Mock(side_effect=RuntimeError("provider discovery failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="provider discovery failed"):
+        pool._entry_needs_refresh(entry)
+    with pytest.raises(RuntimeError, match="provider discovery failed"):
+        pool._refresh_entry(entry, force=False)
+
+
+def test_generic_oauth_auth_status_rejects_expired_access_token(monkeypatch):
+    from agent import credential_pool
+    from hermes_cli import auth
+
+    provider = "example-oauth-status"
+    entry = SimpleNamespace(
+        access_token="expired-access",
+        refresh_token="refresh-token",
+        expires_at_ms=1,
+    )
+    monkeypatch.setattr(
+        credential_pool,
+        "load_pool",
+        lambda target: SimpleNamespace(peek=lambda: entry),
+    )
+    auth.PROVIDER_REGISTRY[provider] = auth.ProviderConfig(
+        id=provider,
+        name="Example OAuth",
+        auth_type="oauth_pkce",
+    )
+    try:
+        status = auth.get_auth_status(provider)
+
+        assert status["logged_in"] is False
+        assert status["needs_refresh"] is True
+        assert status["expired"] is True
+        assert status["expires_at_ms"] == 1
+    finally:
+        auth.PROVIDER_REGISTRY.pop(provider, None)
+
+
+def test_auth_status_command_reports_expired_oauth_token(monkeypatch, capsys):
+    from hermes_cli import auth
+    from hermes_cli.auth_commands import auth_status_command
+
+    monkeypatch.setattr(
+        auth,
+        "get_auth_status",
+        lambda provider: {"logged_in": False, "needs_refresh": True},
+    )
+
+    auth_status_command(SimpleNamespace(provider="example-oauth"))
+
+    assert capsys.readouterr().out.strip() == (
+        "example-oauth: access token expired (refresh needed)"
+    )

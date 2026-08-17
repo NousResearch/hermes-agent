@@ -235,10 +235,12 @@ def _cua_no_overlay() -> bool:
     """True when Hermes should pass ``--no-overlay`` to cua-driver.
 
     Reads ``computer_use.no_overlay``. Default ``None`` (auto-detect):
-    disable the overlay where idle CPU burn is a known failure mode —
-    macOS (cursor-overlay vImage redraw loop, #28152/#47032), headless
-    Linux / WSL2 / containers — and keep it on Windows / desktop Linux
-    with a display. Explicit ``True`` / ``False`` overrides auto-detection.
+    disable the overlay where idle CPU burn or an X11 desktop wedge is a
+    known failure mode — macOS (cursor-overlay vImage redraw loop,
+    #28152/#47032), headless Linux / WSL2 / containers, and Linux X11
+    (fullscreen always-on-top overlay window that can get stuck over every
+    workspace after an unclean session end) — and keep it on Windows and
+    Linux Wayland. Explicit ``True`` / ``False`` overrides auto-detection.
     """
     val = _computer_use_cfg().get("no_overlay")
     if val is not None:
@@ -258,6 +260,17 @@ def _cua_no_overlay() -> bool:
                 return True
     except Exception:
         pass
+    # Linux/X11: the cursor overlay is a fullscreen, always-on-top,
+    # all-workspaces X11 window (save-unders path). An unclean session end
+    # (agent interrupted mid-capture, stale target window) can leave it stuck
+    # above every app on every workspace, wedging desktop input until the app
+    # restarts — the same failure class as the HUD window on Mutter/X11
+    # (#83473). There is no compositor-owned surface to tear down with the
+    # client connection, so default the overlay off on X11 too; set
+    # computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the
+    # compositor owns the overlay surface lifecycle there.
+    if os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"):
+        return True
     return False
 
 
@@ -818,9 +831,9 @@ def _resolve_mcp_invocation(
     expose ``manifest``, or any indeterminate failure — the wrapper must
     not refuse to start just because the discovery hop failed.
 
-    When ``computer_use.no_overlay`` is enabled (or auto-detected on
-    Linux), ``--no-overlay`` is appended to suppress the cursor overlay
-    rendering loop that can consume CPU indefinitely when idle
+    When ``computer_use.no_overlay`` is enabled (or auto-detected — macOS,
+    headless/WSL2/X11 Linux), ``--no-overlay`` is appended to suppress the
+    cursor overlay rendering loop that can consume CPU indefinitely when idle
     (#28152, #47032).  Older drivers that don't recognise the flag will
     reject it; callers should fall back to the no-overlay invocation on
     spawn failure.

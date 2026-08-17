@@ -7168,6 +7168,22 @@ function GroupChatWorkspace({ group, members }) {
         className: 'min-w-0 flex-1 truncate text-sm font-semibold',
         children: `${group} — group chat`
       }),
+      // Member faces: the room's roster at a glance, matching each bot's
+      // avatar in the sidebar. Falls back to the count for the title tooltip.
+      jsx('div', {
+        className: 'flex shrink-0 items-center -space-x-1.5',
+        title: members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', '),
+        children: members.slice(0, 6).map(b => {
+          const bMeta = botRosterMeta(b, allMeta)
+          const { shape, color, image } = botAppearance(b.name, bMeta)
+          const photo = Boolean(image && !isBackfilledFacePng(image))
+
+          return jsx('div', {
+            className: 'rounded-full ring-2 ring-(--ui-bg-primary,#111)',
+            children: jsx(BotFace, { shape, color, image: photo ? image : null, size: 20, name: b.name })
+          }, botRosterKey(b))
+        })
+      }),
       jsx('span', {
         className: 'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
         children: `${members.length} bots`
@@ -7238,35 +7254,63 @@ function GroupChatWorkspace({ group, members }) {
                     : revealed
                       ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
                       : display
+                  // Speaker avatar: same appearance pipeline as the roster
+                  // (custom image/pet, else deterministic shape+color face).
+                  // Remote speakers have no local meta and get the
+                  // deterministic face for their name — stable per bot.
+                  const { shape, color, image } = isUser
+                    ? { shape: null, color: null, image: null }
+                    : botAppearance(entry.from.name, meta)
+                  const photo = Boolean(image && !isBackfilledFacePng(image))
 
                   return jsxs('div', {
-                    className: isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1',
+                    className: cn(
+                      'flex items-start gap-2',
+                      isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1'
+                    ),
                     children: [
+                      isUser
+                        ? null
+                        : jsx('div', {
+                            className: 'mt-0.5 shrink-0',
+                            children: jsx(BotFace, {
+                              shape,
+                              color,
+                              image: photo ? image : null,
+                              size: 24,
+                              name: entry.from.name
+                            })
+                          }),
                       jsxs('div', {
-                        className: 'flex items-baseline gap-2',
+                        className: 'min-w-0 flex-1',
                         children: [
-                          isUser
-                            ? jsx('span', {
-                                className: 'text-[0.7rem] font-semibold text-foreground',
-                                children: label
+                          jsxs('div', {
+                            className: 'flex items-baseline gap-2',
+                            children: [
+                              isUser
+                                ? jsx('span', {
+                                    className: 'text-[0.7rem] font-semibold text-foreground',
+                                    children: label
+                                  })
+                                : jsx('button', {
+                                    type: 'button',
+                                    className:
+                                      'cursor-pointer border-0 bg-transparent p-0 text-left text-[0.7rem] font-semibold text-(--ui-accent,#4f9cf9)',
+                                    title: revealed ? 'Hide full handle' : 'Show full handle',
+                                    onClick: () => setRevealedSpeaker(revealed ? null : entryKey),
+                                    children: label
+                                  }),
+                              jsx('span', {
+                                className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                                children: relativeTime(entry.at)
                               })
-                            : jsx('button', {
-                                type: 'button',
-                                className:
-                                  'cursor-pointer border-0 bg-transparent p-0 text-left text-[0.7rem] font-semibold text-(--ui-accent,#4f9cf9)',
-                                title: revealed ? 'Hide full handle' : 'Show full handle',
-                                onClick: () => setRevealedSpeaker(revealed ? null : entryKey),
-                                children: label
-                              }),
-                          jsx('span', {
-                            className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-                            children: relativeTime(entry.at)
+                            ]
+                          }),
+                          jsx('div', {
+                            className: 'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0',
+                            children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                           })
                         ]
-                      }),
-                      jsx('div', {
-                        className: 'text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0',
-                        children: Streamdown ? jsx(Streamdown, { children: entry.text }) : entry.text
                       })
                     ]
                   }, entryKey)

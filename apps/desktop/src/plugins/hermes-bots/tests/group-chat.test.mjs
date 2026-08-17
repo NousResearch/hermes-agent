@@ -362,3 +362,19 @@ test('source contract: workspace speaker labels use displayName with a click-to-
   assert.match(pluginSource, /setRevealedSpeaker\(revealed \? null : entryKey\)/)
   assert.match(pluginSource, /\$\{display\}\$\{entry\.from\.source \? `-\$\{entry\.from\.source\}` : ''\} \(@\$\{botHandle\(entry\.from\.name, member \|\| undefined\)\}\)/)
 })
+
+test('source contract: room messages carry the speaker avatar via the roster appearance pipeline', () => {
+  const start = pluginSource.indexOf('function GroupChatWorkspace(')
+  const end = pluginSource.indexOf('function BotsPane(')
+  const workspace = pluginSource.slice(start, end === -1 ? undefined : end)
+
+  // Per-message avatar: appearance resolved the same way as BotRow (custom
+  // image/pet honored, backfilled PNG dropped so the math face animates).
+  assert.match(workspace, /botAppearance\(entry\.from\.name, meta\)/)
+  assert.match(workspace, /image && !isBackfilledFacePng\(image\)/)
+  assert.match(workspace, /jsx\(BotFace, \{\s*shape,\s*color,\s*image: photo \? image : null,\s*size: 24,\s*name: entry\.from\.name/)
+
+  // Header shows the member faces (capped) with a names tooltip.
+  assert.match(workspace, /members\.slice\(0, 6\)\.map\(/)
+  assert.match(workspace, /title: members\.map\(b => displayName\(b, botRosterMeta\(b, allMeta\)\)\)\.join\(', '\)/)
+})

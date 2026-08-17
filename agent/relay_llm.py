@@ -286,6 +286,12 @@ def stream_current(
     own ``hasattr(stream, "choices")`` check handled it (#11732, #55933) —
     without the unwrap the response stays trapped as ``final_response`` on the
     inner ManagedLlmStream and the outer consumer sees an empty stream.
+
+    Determining that return shape requires starting the lazy managed pipeline,
+    and Relay may read ahead internally while satisfying that first pull. A
+    genuine first returned chunk remains buffered, while provider work,
+    latency, and pre-first-yield errors may surface before this function
+    returns.
     """
     turn = relay_runtime.active_turn()
     if turn is None:

@@ -122,7 +122,49 @@ describe('setMainModelAssignment', () => {
     expect($notifications.get()).toEqual([])
   })
 
-  it('rejects non-persisted confirmation outcomes without changing impact state', async () => {
+  it('surfaces a confirm prompt for guard-blocked assignments and retries with acknowledgment when accepted', async () => {
+    setModelAssignment.mockResolvedValueOnce(response(positive()))
+    await setMainModelAssignment({ provider: 'nous', model: 'one' })
+
+    // First attempt trips the guard: backend answers ok:false + confirm_required
+    // + confirm_message and does NOT persist. The desktop must not treat this
+    // as a plain error — it must ask the user and retry with
+    // confirm_expensive_model: true (mirrors the CLI's [y/N] prompt).
+    const guardResponse = {
+      ok: false,
+      scope: 'main',
+      provider: 'openrouter',
+      model: 'openai/gpt-5.5-pro',
+      confirm_required: true,
+      confirm_message: 'Confirm this expensive model.'
+    } satisfies ModelAssignmentResponse
+
+    setModelAssignment.mockResolvedValueOnce(guardResponse)
+    const pending = setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })
+
+    // The confirm prompt is a notification with an action; while it is open
+    // the assignment must still be pending (not resolved/rejected yet).
+    await vi.waitFor(() => {
+      const n = $notifications.get().find(n => n.id.startsWith('model-warning-confirm-'))
+      expect(n?.message).toBe('Confirm this expensive model.')
+    })
+    const confirmNotification = $notifications.get().find(n => n.id.startsWith('model-warning-confirm-'))
+
+    // Accepting re-sends with the acknowledgment flag and persists.
+    setModelAssignment.mockResolvedValueOnce(response(positive()))
+    confirmNotification?.action?.onClick()
+    await pending
+    expect(setModelAssignment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: 'openrouter',
+        model: 'openai/gpt-5.5-pro',
+        scope: 'main',
+        confirm_expensive_model: true
+      })
+    )
+  })
+
+  it('rejects (declines) guard-blocked assignments with a neutral message when the user dismisses', async () => {
     setModelAssignment.mockResolvedValueOnce(response(positive()))
     await setMainModelAssignment({ provider: 'nous', model: 'one' })
 
@@ -135,14 +177,20 @@ describe('setMainModelAssignment', () => {
       confirm_message: 'Confirm this expensive model.'
     } satisfies ModelAssignmentResponse)
 
-    await expect(setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })).rejects.toThrow(
-      'Confirm this expensive model.'
+    const pending = setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })
+    await vi.waitFor(() => {
+      expect($notifications.get().some(n => n.id.startsWith('model-warning-confirm-'))).toBe(true)
+    })
+    const confirmNotification = $notifications.get().find(n => n.id.startsWith('model-warning-confirm-'))
+    confirmNotification?.onDismiss?.()
+
+    await expect(pending).rejects.toThrow()
+    expect(setModelAssignment).not.toHaveBeenCalledWith(
+      expect.objectContaining({ confirm_expensive_model: true })
     )
-    expect($notifications.get()).toHaveLength(1)
-    const action = $notifications.get()[0].action
-    const reviewCount = $cronReviewRequest.get()
-    action?.onClick()
-    expect($cronReviewRequest.get()).toBe(reviewCount + 1)
+    // The cron impact notification from the first call is still there;
+    // no new error notification with the giant warning text should exist.
+    expect($notifications.get().filter(n => n.kind === 'error').length).toBe(0)
   })
 
   it('publishes only the latest same-profile assignment when responses reverse', async () => {

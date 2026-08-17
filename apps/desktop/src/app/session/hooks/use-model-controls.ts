@@ -6,7 +6,7 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -235,18 +235,54 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         const persistsAsDefault = touchesPrimary && !isSessionOnlyPreset
         const scope = persistsAsDefault ? '--global' : '--session'
 
-        const result = await requestGateway<{ deferred?: boolean }>('config.set', {
+        const result = await requestGateway<{
+          confirm_required?: boolean
+          confirm_message?: string
+          deferred?: boolean
+          value?: string
+        }>('config.set', {
           session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} ${scope}`
         })
+
+        // The backend refuses to persist a model that trips a selection guard
+        // (expensive model, or a data-training tier like Meta's
+        // *-contributor) unless the user explicitly acknowledges it. It
+        // answers confirm_required + confirm_message WITHOUT applying the
+        // switch. Without this handling the picker silently closed and the
+        // model never changed (the Settings page had the same bug). Ask the
+        // user, then retry with the acknowledgment flag.
+        let applied = result
+        if (result?.confirm_required && result.confirm_message) {
+          const acknowledged = await confirmModelSwitchWarning(result.confirm_message)
+          if (!acknowledged) {
+            throw new Error(copy.modelSwitchDeclined)
+          }
+          applied = await requestGateway<{
+            confirm_required?: boolean
+            confirm_message?: string
+            deferred?: boolean
+            value?: string
+          }>('config.set', {
+            session_id: liveSessionId,
+            key: 'model',
+            value: `${selection.model} --provider ${selection.provider} ${scope}`,
+            confirm_expensive_model: true
+          })
+          if (applied?.confirm_required) {
+            // Should not happen (we sent the flag), but never leave the user
+            // with a silently-unapplied pick.
+            throw new Error(applied.confirm_message || copy.modelSwitchFailed)
+          }
+        }
 
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
         // model still running and repaint the old name over the user's choice —
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
-        if (!result?.deferred) {
+        if (!applied?.deferred) {
           void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
         }
 
@@ -289,4 +325,38 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }
+}
+
+/**
+ * Present a selection-guard warning (expensive model / data-training tier) as
+ * a confirm notification instead of an error. Resolves true when the user
+ * explicitly accepts; false when they dismiss.
+ */
+function confirmModelSwitchWarning(message: string): Promise<boolean> {
+  const id = `model-switch-confirm-${Date.now()}`
+
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      resolve(value)
+    }
+
+    notify({
+      id,
+      kind: 'warning',
+      title: 'Model Selection Warning',
+      message,
+      durationMs: 0,
+      placement: 'default',
+      action: {
+        label: 'Confirm',
+        onClick: () => finish(true)
+      },
+      onDismiss: () => finish(false)
+    })
+  })
 }

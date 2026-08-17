@@ -318,10 +318,17 @@ async function completeWithModelConfirm(
     // config provider (e.g. anthropic from a prior failed setup) cannot make
     // setup.runtime_check validate the wrong backend after a fresh OAuth login.
     try {
-      const res = await setMainModelAssignment({
-        provider: defaults.providerSlug,
-        model: defaults.defaultModel
-      })
+      const res = await setMainModelAssignment(
+        {
+          provider: defaults.providerSlug,
+          model: defaults.defaultModel
+        },
+        // Onboarding is a headless automated flow — there is no user at the
+        // keyboard to answer a guard confirmation prompt. If the backend
+        // demands one (expensive model / data-training tier), fail with the
+        // message instead of dangling a prompt nobody can click.
+        { skipConfirmPrompt: true }
+      )
 
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {

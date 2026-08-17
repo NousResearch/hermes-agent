@@ -145,13 +145,39 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 }
 
 export async function setMainModelAssignment(
-  request: Omit<ModelAssignmentRequest, 'scope'>
+  request: Omit<ModelAssignmentRequest, 'scope'>,
+  options?: { confirmMessage?: string; skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
   const result = await setModelAssignment({ ...request, scope: 'main' })
 
   if (result.ok !== true) {
+    // The backend demands an explicit acknowledgment before persisting a
+    // model that trips a selection guard (expensive model, or a data-training
+    // tier like Meta's *-contributor). It answers ok:false + confirm_required
+    // + confirm_message and does NOT save. Without handling this, the desktop
+    // app surfaced the guard text as a red error and could never persist the
+    // selection at all (CLI worked because it prompts [y/N]).
+    if (result.confirm_required && result.confirm_message) {
+      const acknowledged =
+        options?.confirmMessage === result.confirm_message ||
+        (options?.skipConfirmPrompt
+          ? false
+          : await confirmModelWarning(result.confirm_message))
+      if (acknowledged) {
+        return setMainModelAssignment({ ...request, confirm_expensive_model: true }, { confirmMessage: result.confirm_message })
+      }
+      // User declined the guard prompt — the assignment was intentionally
+      // not saved. A neutral message beats re-showing the full warning as
+      // an error (they already read it and said no).
+      throw new Error(
+        options?.skipConfirmPrompt
+          ? result.confirm_message || translateNow('cron.modelImpact.declined')
+          : translateNow('cron.modelImpact.declined')
+      )
+    }
+
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
 
@@ -185,3 +211,44 @@ export function invalidateCronModelImpactScope(options: { clearNotification?: bo
 // Scope changes originating outside this module (profile/backend switches)
 // clear any warning that belongs to the old runtime.
 onCronModelImpactScopeInvalidated(() => dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID))
+
+/**
+ * Present a selection-guard warning (expensive model / data-training tier)
+ * as a confirm dialog instead of an error. Resolves true when the user
+ * explicitly accepts the trade-off; false when they decline.
+ *
+ * The desktop app has no generic blocking confirm API, so this uses a
+ * non-dismissible action notification: the only way out is Confirm (true) or
+ * Dismiss (false). The message is single-shot and not re-surfaced after the
+ * user acts.
+ */
+function confirmModelWarning(message: string): Promise<boolean> {
+  const id = `model-warning-confirm-${Date.now()}`
+
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (value: boolean) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      dismissNotification(id)
+      resolve(value)
+    }
+
+    notify({
+      id,
+      kind: 'warning',
+      title: translateNow('cron.modelImpact.confirmTitle') || 'Model Selection Warning',
+      message,
+      detail: translateNow('cron.modelImpact.confirmDetail') || 'Confirm only if you accept this trade-off.',
+      durationMs: 0,
+      placement: 'default',
+      action: {
+        label: translateNow('cron.modelImpact.confirmAction') || 'Confirm',
+        onClick: () => finish(true)
+      },
+      onDismiss: () => finish(false)
+    })
+  })
+}

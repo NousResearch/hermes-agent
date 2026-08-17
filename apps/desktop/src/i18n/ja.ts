@@ -1538,7 +1538,11 @@ export const ja = defineLocale({
       message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
-      saveFailed: 'Hermes はモデルの変更を保存しませんでした。'
+      saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
+      confirmTitle: 'モデル選択の警告',
+      confirmDetail: 'このトレードオフを受け入れる場合のみ確認してください。',
+      confirmAction: '確認',
+      declined: 'モデル変更はキャンセルされました - データ学習ティアの警告を拒否しました。'
     },
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
@@ -2863,6 +2867,9 @@ export const ja = defineLocale({
     cwdStagedMessage:
       'このアクティブなセッションへの cwd の変更を適用するにはデスクトップバックエンドを再起動してください。',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
+    modelSwitchDeclined: 'モデル変更はキャンセルされました - データ学習ティアの警告を拒否しました。',
+    modelSwitchConfirmTitle: 'モデル選択の警告',
+    modelSwitchConfirmAction: '確認',
     sessionExported: 'セッションをエクスポートしました',
     sessionExportFailed: 'セッションをエクスポートできませんでした',
     imageSaved: '画像を保存しました',

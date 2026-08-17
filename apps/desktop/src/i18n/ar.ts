@@ -1404,7 +1404,11 @@ export const ar = defineLocale({
       message: count => `سيتم تخطي ${count} من المهام المجدولة حتى تراجع إعدادات النموذج الخاصة بها.`,
       detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
       review: 'مراجعة المهام المجدولة',
-      saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.'
+      saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.',
+      confirmTitle: 'تحذير اختيار النموذج',
+      confirmDetail: 'أكد فقط إذا كنت تقبل هذا التنازل.',
+      confirmAction: 'تأكيد',
+      declined: 'تم إلغاء تغيير النموذج - رفضت تحذير مستوى التدريب على البيانات.'
     },
     search: 'بحث',
     loading: 'جار التحميل...',
@@ -2623,6 +2627,9 @@ export const ar = defineLocale({
     cwdStagedTitle: 'تم تجهيز مجلد العمل',
     cwdStagedMessage: 'سيطبق مجلد العمل على الرسالة التالية.',
     modelSwitchFailed: 'فشل تبديل النموذج',
+    modelSwitchDeclined: 'تم إلغاء تغيير النموذج - رفضت تحذير مستوى التدريب على البيانات.',
+    modelSwitchConfirmTitle: 'تحذير اختيار النموذج',
+    modelSwitchConfirmAction: 'تأكيد',
     sessionExported: 'تم تصدير الجلسة',
     sessionExportFailed: 'فشل تصدير الجلسة',
     imageSaved: 'تم حفظ الصورة',

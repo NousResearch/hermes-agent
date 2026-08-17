@@ -1297,6 +1297,11 @@ export interface ModelAssignmentRequest {
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string
+  /** Explicitly acknowledge an expensive-model / data-policy warning so the
+   *  backend persists the assignment. The backend returns
+   *  ``{ok:false, confirm_required:true, confirm_message}`` on the first
+   *  attempt; the UI surfaces that message, then retries with this flag. */
+  confirm_expensive_model?: boolean
   model: string
   provider: string
   scope: 'main' | 'auxiliary'

@@ -91,7 +91,14 @@ meta_ai = MetaAIProfile(
     env_vars=("MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY", "META_BASE_URL"),
     base_url=_base_url(),
     auth_type="api_key",
-    api_mode="chat_completions",
+    # Responses API is the wire that engages Muse prompt caching: measured
+    # 0 cached tokens on /v1/chat/completions vs 93-99% cache hits on
+    # /v1/responses with prompt_cache_retention (see host_mandated_api_mode
+    # in hermes_cli/providers.py and the retention hint in
+    # agent/transports/codex.py). The MetaAIProfile chat-completions hook
+    # above still covers custom OpenAI-compatible endpoints configured with
+    # a non-api.meta.ai base URL, which fall through to chat_completions.
+    api_mode="codex_responses",
     # Muse Spark is natively multimodal (image/video/pdf/audio in, text out).
     supports_vision=True,
     # Cheap contributor tier is a good default for auxiliary tasks

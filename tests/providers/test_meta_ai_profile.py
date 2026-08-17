@@ -22,7 +22,9 @@ class TestMetaAIProfile:
         assert p.name == "meta-ai"
         assert p.base_url == "https://api.meta.ai/v1"
         assert p.auth_type == "api_key"
-        assert p.api_mode == "chat_completions"
+        # Responses API engages Muse prompt caching (0% on chat/completions
+        # vs 93-99% on /v1/responses with prompt_cache_retention).
+        assert p.api_mode == "codex_responses"
         assert "MODEL_API_KEY" in p.env_vars
         assert p.supports_vision is True
         assert p.default_aux_model == "muse-spark-1.2-contributor"

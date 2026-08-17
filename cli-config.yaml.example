@@ -135,8 +135,10 @@ model:
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1
-#     api_key: ${META_API_KEY}
+#     api_key: ${MODEL_API_KEY}
 #     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
+#     # (the bundled meta-ai provider covers this — a named custom provider is
+#     # only needed for a non-default Meta-compatible endpoint)
 
 
 # Command-minted credentials (optional): key_cmd

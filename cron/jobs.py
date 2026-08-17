@@ -966,7 +966,13 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
 
     Interval jobs use ``minutes * 60``.  Cron jobs measure the gap between the
     next two fire times with croniter (falling back to None when croniter is
-    missing or the expr is malformed).
+    missing or the expr is malformed).  Cron results are cached per expr —
+    this runs inside ``_jobs_lock`` on every tick for every stale-errored
+    job, and two croniter evaluations per call add up (the same reason
+    ``scheduler.py`` caches ``_cron_interval_minutes``).  The measured gap
+    can vary with the base time for irregular exprs; the cache trades that
+    precision for not re-evaluating croniter under the lock, which is fine
+    for a staleness *threshold*.
     """
     if not isinstance(schedule, dict):
         return None
@@ -983,16 +989,24 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
         expr = schedule.get("expr")
         if not expr:
             return None
+        if expr in _cron_cadence_cache:
+            return _cron_cadence_cache[expr]
         try:
             base = _hermes_now()
             it = croniter(expr, base)
             first = it.get_next(datetime)
             second = it.get_next(datetime)
             gap = (second - first).total_seconds()
-            return gap if gap > 0 else None
+            result = gap if gap > 0 else None
         except Exception:
-            return None
+            result = None
+        _cron_cadence_cache[expr] = result
+        return result
     return None
+
+
+# Per-expr cache for _schedule_cadence_seconds' croniter measurements.
+_cron_cadence_cache: Dict[str, Optional[float]] = {}
 
 
 def _record_persisted_error_recovery(job: Dict[str, Any], previous_next_run: str) -> None:
@@ -3228,30 +3242,54 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (errored once, next_run_at re-armed into the future by
             # mark_job_run, but never re-dispatched — the restart-surviving
             # half of the 2026-08-14 incident, invisible to the in-memory
-            # in-flight sweep). Re-arm next_run_at to now so the next tick
-            # returns it as due and re-dispatches it WITHOUT force-run/resume.
+            # in-flight sweep). Re-arm so the job re-dispatches WITHOUT
+            # force-run/resume:
+            #   * interval jobs re-arm to now — interval schedules have no
+            #     excluded times, so an immediate catch-up retry is always a
+            #     legal fire (the 2026-08-14 incident jobs were intervals);
+            #   * cron jobs re-arm to the next LEGAL occurrence from now —
+            #     re-arming to now would fire at times the expression
+            #     explicitly excludes (e.g. a weekday-only 9am job whose
+            #     Friday run errored must fire Monday 9am, not Saturday).
+            #     This still repairs values parked beyond the next legal
+            #     occurrence; a correctly-parked cron value is left as-is.
             if (
                 kind in ("cron", "interval")
                 and next_run_dt > now
                 and _job_is_stale_error_recurring(job, schedule, now)
             ):
                 jid = job.get("id")
-                logger.warning(
-                    "cron.persisted_error.recovered job='%s' id=%s — recurring "
-                    "job wedged in stale last_status=error without re-firing for "
-                    "a full cadence; re-arming next_run_at to now so it "
-                    "re-dispatches without force-run/resume",
-                    job.get("name", jid),
-                    jid,
-                )
-                _record_persisted_error_recovery(job, next_run)
-                job["next_run_at"] = now.isoformat()
-                next_run_dt = now
-                for rj in raw_jobs:
-                    if rj["id"] == jid:
-                        rj["next_run_at"] = now.isoformat()
-                        needs_save = True
-                        break
+                if kind == "interval":
+                    recovered_next = now.isoformat()
+                    recovered_next_dt = now
+                else:
+                    recovered_next = compute_next_run(schedule, now.isoformat())
+                    try:
+                        recovered_next_dt = (
+                            _ensure_aware(datetime.fromisoformat(recovered_next))
+                            if recovered_next
+                            else None
+                        )
+                    except (ValueError, TypeError):
+                        recovered_next_dt = None
+                if recovered_next and recovered_next_dt is not None and recovered_next_dt < next_run_dt:
+                    logger.warning(
+                        "cron.persisted_error.recovered job='%s' id=%s — recurring "
+                        "job wedged in stale last_status=error without re-firing for "
+                        "a full cadence; re-arming next_run_at to %s so it "
+                        "re-dispatches without force-run/resume",
+                        job.get("name", jid),
+                        jid,
+                        recovered_next,
+                    )
+                    _record_persisted_error_recovery(job, next_run)
+                    job["next_run_at"] = recovered_next
+                    next_run_dt = recovered_next_dt
+                    for rj in raw_jobs:
+                        if rj["id"] == jid:
+                            rj["next_run_at"] = recovered_next
+                            needs_save = True
+                            break
 
             if next_run_dt <= now:
 

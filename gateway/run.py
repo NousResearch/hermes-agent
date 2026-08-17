@@ -29467,7 +29467,7 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
-def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None):
     """Background thread for gateway-only periodic chores (NOT cron).
 
     Split out of the historical ``_start_cron_ticker`` so the cron *trigger*
@@ -29496,6 +29496,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
+    MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
 
     # Every platform media cache prunes on the same hourly cadence — one loop
     # over (name, cleanup_fn), not a copy-pasted try/except per cache.
@@ -29549,6 +29550,27 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                     )
             except Exception as e:
                 logger.debug("Paste sweep error: %s", e)
+
+        # Misfire catch-up (external cron providers only): fire jobs whose
+        # scheduled time passed with no external fire delivered — the
+        # backstop for a dead loopback fire hop (gateway restart window,
+        # api_server not bound, scheduler retries exhausted). The helper
+        # no-ops for the built-in ticker and enforces the
+        # cron.misfire_grace_minutes window; the store CAS claim de-dupes
+        # against a late external retry arriving concurrently.
+        if cron_provider is not None and tick_count % MISFIRE_SWEEP_EVERY == 0:
+            try:
+                from cron.scheduler_provider import fire_overdue_jobs
+
+                caught_up = fire_overdue_jobs(
+                    cron_provider, adapters=adapters, loop=loop
+                )
+                if caught_up:
+                    logger.info(
+                        "Misfire catch-up: fired %d overdue job(s)", caught_up
+                    )
+            except Exception as e:
+                logger.debug("Misfire catch-up sweep error: %s", e)
 
         # Curator — piggy-back on the housekeeping loop so long-running
         # gateways get weekly skill maintenance without needing restarts.
@@ -30324,7 +30346,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     housekeeping_thread = threading.Thread(
         target=_start_gateway_housekeeping,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={
+            "adapters": runner.adapters,
+            "loop": asyncio.get_running_loop(),
+            "cron_provider": cron_provider,
+        },
         daemon=True,
         name="gateway-housekeeping",
     )

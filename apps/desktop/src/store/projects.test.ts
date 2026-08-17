@@ -29,6 +29,7 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
+  startWorkInRepo,
   tombstoneSessions
 } from './projects'
 
@@ -53,7 +54,10 @@ vi.mock('@/store/gateway', () => ({
   ensureActiveGatewayOpen: vi.fn()
 }))
 
-vi.mock('@/lib/desktop-git', () => ({ desktopGit: vi.fn() }))
+vi.mock('@/lib/desktop-git', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  desktopGit: vi.fn()
+}))
 
 vi.mock('@/hermes', () => ({
   getHermesConfig: vi.fn(),
@@ -271,6 +275,33 @@ describe('worktree refresh', () => {
     const before = $worktreeRefreshToken.get()
     refreshWorktrees()
     expect($worktreeRefreshToken.get()).toBe(before + 1)
+  })
+})
+
+describe('startWorkInRepo remote capability gate (#81724)', () => {
+  it('names the stale-backend remedy when a remote gateway lacks the worktree route', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    desktopGit.mockReturnValue({
+      worktreeAdd: vi.fn(async () => {
+        throw new Error('Expected JSON from https://vps/api/git/worktree/add but got HTML (status 404). The endpoint is likely missing on the Hermes backend.')
+      })
+    } as never)
+
+    // The i18n mock echoes keys, so the surfaced error is the catalog key.
+    await expect(startWorkInRepo('/srv/repo', { branch: 'x' })).rejects.toThrow(
+      'sidebar.projects.worktreeStaleBackend'
+    )
+  })
+
+  it('re-throws real git failures untouched (a remote 400 is not a capability verdict)', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    desktopGit.mockReturnValue({
+      worktreeAdd: vi.fn(async () => {
+        throw new Error("400: fatal: 'stale' is not a commit")
+      })
+    } as never)
+
+    await expect(startWorkInRepo('/srv/repo', { branch: 'x' })).rejects.toThrow("not a commit")
   })
 })
 

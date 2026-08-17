@@ -1738,6 +1738,7 @@ export const zhHant = defineLocale({
       baseBranchPlaceholder: '搜尋分支…',
       baseBranchNone: '未找到分支',
       startWorkFailed: '無法建立工作樹',
+      worktreeStaleBackend: '請更新 Hermes 後端以在此遠端連線上建立工作樹 —— 該後端早於 git 工作樹 API。',
       worktreeProjectLabel: '專案',
       worktreeProjectPlaceholder: '搜尋專案…',
       worktreeProjectNone: '沒有包含資料夾的專案',

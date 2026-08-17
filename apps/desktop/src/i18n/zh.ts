@@ -2227,6 +2227,7 @@ export const zh: Translations = {
       baseBranchPlaceholder: '搜索分支…',
       baseBranchNone: '未找到分支',
       startWorkFailed: '无法创建工作树',
+      worktreeStaleBackend: '请更新 Hermes 后端以在此远程连接上创建工作树 —— 该后端早于 git 工作树 API。',
       worktreeProjectLabel: '项目',
       worktreeProjectPlaceholder: '搜索项目…',
       worktreeProjectNone: '没有包含文件夹的项目',

@@ -1799,6 +1799,8 @@ export const ja = defineLocale({
       baseBranchPlaceholder: 'ブランチを検索…',
       baseBranchNone: 'ブランチが見つかりません',
       startWorkFailed: 'ワークツリーを作成できませんでした',
+      worktreeStaleBackend:
+        'このリモート接続でワークツリーを作成するには Hermes バックエンドを更新してください — git ワークツリー API 以前のバージョンです。',
       worktreeProjectLabel: 'プロジェクト',
       worktreeProjectPlaceholder: 'プロジェクトを検索…',
       worktreeProjectNone: 'フォルダのあるプロジェクトがありません',

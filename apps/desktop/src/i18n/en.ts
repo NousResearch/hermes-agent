@@ -2041,6 +2041,8 @@ export const en: Translations = {
       baseBranchPlaceholder: 'Search branches…',
       baseBranchNone: 'No branches found',
       startWorkFailed: 'Could not create worktree',
+      worktreeStaleBackend:
+        'Update the Hermes backend to create worktrees over this remote connection — it predates the git worktree API.',
       worktreeProjectLabel: 'Project',
       worktreeProjectPlaceholder: 'Search projects…',
       worktreeProjectNone: 'No projects with a folder',

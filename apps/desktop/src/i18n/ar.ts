@@ -1634,6 +1634,8 @@ export const ar = defineLocale({
       newWorktreeDesc: 'سمِّ الفرع لشجرة العمل هذه.',
       branchPlaceholder: 'مثال: my-feature',
       startWorkFailed: 'تعذّر إنشاء شجرة العمل',
+      worktreeStaleBackend:
+        'حدِّث خادم Hermes لإنشاء أشجار العمل عبر هذا الاتصال البعيد — فهو أقدم من واجهة git worktree.',
       worktreeProjectLabel: 'المشروع',
       worktreeProjectPlaceholder: 'ابحث في المشاريع…',
       worktreeProjectNone: 'لا توجد مشاريع بمجلد',

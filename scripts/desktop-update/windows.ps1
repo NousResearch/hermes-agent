@@ -83,6 +83,8 @@ $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 $script:Ui = $null
+$script:UiStage = "Preparing update"
+$script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
@@ -93,15 +95,16 @@ function Write-HandoffLog([string]$Message) {
 # ── The shim: repo-owned HTML in a chromeless Edge app window ──────────────
 # The window is a veneer, not a participant: the update runs identically with
 # or without it (Edge missing/failed degrades to the WinForms card below,
-# then log-only). It streams nothing and knows nothing — it polls /progress
-# for one of two events, `done` or `error`, and reacts. The loopback listener
+# then log-only). It never consumes child output; it polls /progress for the
+# current hand-off stage or a terminal event and reacts. The loopback listener
 # is not a web server in any meaningful sense; it exists because file:// pages
 # cannot receive events from a detached process. Salvaged from the web-shell
 # spike (Co-authored-by: teknium1), reshaped to the quiet update-surface
 # contract (#75895/#83634): loader, one title, one line, no dashboard.
 $script:UiState = [hashtable]::Synchronized(@{
-    status  = "running"      # running | done | error
-    message = ""
+    status     = "running"      # running | done | manual | error
+    message    = $script:UiStage
+    clock      = $script:UiStopwatch
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; EdgeProc }
 
@@ -158,9 +161,11 @@ function Start-UiServer([string]$HtmlPath) {
                     # Drain headers so the client doesn't see a reset mid-send.
                     while ($true) { $h = $reader.ReadLine(); if ($null -eq $h -or $h -eq "") { break } }
                     if ($request -match "^GET /progress") {
+                        $elapsed = [Math]::Floor($State.clock.Elapsed.TotalSeconds)
                         $snapshot = @{
-                            status  = $State.status
-                            message = $State.message
+                            status          = $State.status
+                            message         = $State.message
+                            elapsed_seconds = $elapsed
                         } | ConvertTo-Json -Compress
                         Send-Response $stream "200 OK" "application/json; charset=utf-8" ([System.Text.Encoding]::UTF8.GetBytes($snapshot))
                     } elseif ($request -match "^GET / ") {
@@ -210,9 +215,36 @@ function Publish-UiEvent([string]$Status, [string]$Message) {
     if ($script:UiServer) { Start-Sleep -Milliseconds 900 }
 }
 
+function Get-UiElapsedText {
+    $elapsed = [Math]::Floor($script:UiStopwatch.Elapsed.TotalSeconds)
+    if ($elapsed -lt 60) { return "${elapsed}s elapsed" }
+    $minutes = [Math]::Floor($elapsed / 60)
+    $seconds = $elapsed % 60
+    return "${minutes}m ${seconds}s elapsed"
+}
+
+function Get-UiProgressLine {
+    return "$script:UiStage`r`n$(Get-UiElapsedText)"
+}
+
+function Publish-UiProgress([string]$Message) {
+    # Stages come from the orchestrator's own control flow. Child stdout and
+    # stderr remain asynchronously drained in Invoke-HermesStep and are never
+    # read or parsed for UI updates.
+    $script:UiStage = $Message
+    $script:UiState.message = $Message
+    $script:UiState.status = "running"
+    if ($script:Ui) {
+        try {
+            $script:Ui.Sub.Text = Get-UiProgressLine
+            [System.Windows.Forms.Application]::DoEvents()
+        } catch {}
+    }
+}
+
 # ── Fallback card (no Edge / no HTML): same shape in WinForms ──────────────
-# Matches the shim pixel-for-pixel in spirit -- loader, one title, one static
-# line, OS light/dark -- so degrading is invisible to the user.
+# Matches the shim pixel-for-pixel in spirit -- loader, one title, one live
+# stage/elapsed line, OS light/dark -- so degrading is invisible to the user.
 function Get-AppsUseLightTheme {
     try {
         $v = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -ErrorAction Stop
@@ -291,7 +323,7 @@ function Show-ProgressWindow {
         $title.TextAlign = "MiddleCenter"
         $title.SetBounds(16, 156, 248, 28)
         $sub = New-Object System.Windows.Forms.Label
-        $sub.Text = "Hermes will open once done."
+        $sub.Text = Get-UiProgressLine
         $sub.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $sub.ForeColor = $mute
         $sub.TextAlign = "TopCenter"
@@ -309,7 +341,16 @@ function Show-ProgressWindow {
             if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}
         [System.Windows.Forms.Application]::DoEvents()
-        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub }
+        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub; Timer = $null }
+        $timer = New-Object System.Windows.Forms.Timer
+        $timer.Interval = 1000
+        $timer.Add_Tick({
+            if ($script:Ui -and $script:Ui.Sub) {
+                $script:Ui.Sub.Text = Get-UiProgressLine
+            }
+        })
+        $script:Ui.Timer = $timer
+        $timer.Start()
     } catch {
         # Headless session / WinForms unavailable: degrade to log-only.
         $script:Ui = $null
@@ -331,6 +372,7 @@ function Show-ErrorFinale([string]$Message) {
     if (-not $script:Ui) { return }
     try {
         $ui = $script:Ui
+        if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
         $ui.Title.Text = "Failed to update"
         $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
@@ -372,6 +414,7 @@ function Show-ManualFinale([string]$Message) {
     if (-not $script:Ui) { return }
     try {
         $ui = $script:Ui
+        if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
         $ui.Title.Text = "Update complete"
         $ui.Sub.Text = $Message
@@ -404,7 +447,13 @@ function Close-ProgressWindow {
         Stop-UiServer
     }
     if ($script:Ui) {
-        try { $script:Ui.Form.Close() } catch {}
+        try {
+            if ($script:Ui.Timer) {
+                $script:Ui.Timer.Stop()
+                $script:Ui.Timer.Dispose()
+            }
+            $script:Ui.Form.Close()
+        } catch {}
         $script:Ui = $null
     }
 }
@@ -535,8 +584,8 @@ function Start-DesktopRelaunch {
 }
 
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
-    # The window shows nothing live, so no line-pump: both pipes drain
-    # asynchronously (no deadlock however chatty the child) while a small
+    # The window does not stream child output, so no line-pump: both pipes
+    # drain asynchronously (no deadlock however chatty the child) while a small
     # DoEvents loop keeps the marquee animating through long silent
     # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
     # children and froze it. Full output still lands in the hand-off log
@@ -606,7 +655,17 @@ if ($SelfTestUi) {
     Write-HandoffLog "SELF-TEST: shim simulation (no update will run)"
     $hold = 6
     if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
-    Start-Sleep -Seconds $hold
+    Publish-UiProgress "Testing quiet update"
+    if ($env:HERMES_SELFTEST_SILENT_CHILD) {
+        $pythonExe = $env:HERMES_SELFTEST_PYTHON
+        if (-not $pythonExe -or -not (Test-Path -LiteralPath $pythonExe)) {
+            throw "HERMES_SELFTEST_PYTHON must name a Python executable for the silent-child self-test"
+        }
+        $quiet = Invoke-HermesStep $pythonExe @("-c", "import time; time.sleep($hold)") "self-test"
+        Write-HandoffLog "SELF-TEST: silent child exit code: $($quiet.Code)"
+    } else {
+        Start-Sleep -Seconds $hold
+    }
     if ($env:HERMES_SELFTEST_FAIL) {
         Show-ErrorFinale "self-test error state"
     } else {
@@ -633,6 +692,7 @@ try {
     }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
+    Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
@@ -653,6 +713,7 @@ try {
     }
 
     # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
+    Publish-UiProgress "Preparing Hermes files"
     $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
     if (Test-Path -LiteralPath $shim) {
         $unlocked = $false
@@ -725,6 +786,7 @@ try {
     }
     $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
+    Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
@@ -732,6 +794,7 @@ try {
         # One retry for the update-boundary class (fresh code on disk, stale
         # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
         Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
+        Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
     }
@@ -744,6 +807,7 @@ try {
     $desktopBuildFailed = $false
     if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
         Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
+        Publish-UiProgress "Rebuilding Desktop"
         $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
@@ -775,6 +839,7 @@ try {
         Close-ProgressWindow
         [void](Start-DesktopRelaunch)
     } else {
+        Publish-UiProgress "Opening Hermes"
         $cameBack = Start-DesktopRelaunch
         if (-not $cameBack -and $RelaunchExe) {
             # Launch was due and did not verifiably land: truthful result

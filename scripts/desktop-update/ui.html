@@ -3,8 +3,8 @@
   Quiet shim page for the desktop update hand-off (Windows + POSIX).
 
   Served over loopback by the orchestrator (windows.ps1 / posix.sh) into a
-  chromeless browser app window. Pure veneer: polls /progress for `done` or
-  `error` and reacts; owns nothing (relaunch, result file, marker hygiene
+  chromeless browser app window. Pure veneer: polls /progress for the current
+  hand-off stage or a terminal event and reacts; owns nothing (relaunch, result file, marker hygiene
   all live in the orchestrator, which runs identically with no UI at all).
 
   The visual is PR #75895's update hand-off screen, ported verbatim:
@@ -12,8 +12,8 @@
     apps/bootstrap-installer/src/components/loader.tsx (itself lifted from
     apps/desktop/src/components/ui/loader.tsx 'fourier-flow'). Keep the
     constants in sync if the desktop's curve is retuned.
-  - Layout: loader (size-20) + one title + one muted line. No progress bar,
-    no stage list, no log pane, no cancel (see #75895 for the arguments).
+  - Layout: loader (size-20) + one title + one muted stage/elapsed line. No
+    progress bar, stage list, log pane, or cancel (see #75895 for the arguments).
   - Appearance follows the OS. Dark seeds are the installer's neutral
     charcoal (#232323 base, foreground #d6d6d6) — never brand blue.
 -->
@@ -104,7 +104,7 @@
     <div id="loader" role="status" aria-label="Updating"></div>
     <div id="glyph"></div>
     <h2 id="title">Updating Hermes</h2>
-    <p id="line">Hermes will open once done.</p>
+    <p id="line">Preparing update<br>0s elapsed</p>
   </div>
 <script>
   /* ── Fourier Flow loader, ported verbatim from loader.tsx ─────────────── */
@@ -195,10 +195,11 @@
 
   render(performance.now())
 
-  /* ── Event listener: done | error, nothing else ───────────────────────── */
+  /* ── Event listener: running stage or terminal outcome ───────────────── */
   const titleEl = document.getElementById('title')
   const lineEl = document.getElementById('line')
   const glyphEl = document.getElementById('glyph')
+  const clientStartedAt = Date.now()
   let settled = false
 
   function settle(state) {
@@ -209,7 +210,17 @@
 
   function apply(state) {
     if (settled) return
-    if (state.status === 'done') {
+    if (state.status === 'running') {
+      const reported = Number(state.elapsed_seconds)
+      const elapsed = Number.isFinite(reported) && reported >= 0
+        ? Math.floor(reported)
+        : Math.floor((Date.now() - clientStartedAt) / 1000)
+      const elapsedText = elapsed < 60
+        ? `${elapsed}s elapsed`
+        : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`
+      lineEl.textContent = `${state.message || 'Updating Hermes'}\n${elapsedText}`
+      lineEl.style.whiteSpace = 'pre-line'
+    } else if (state.status === 'done') {
       settle('done')
       glyphEl.textContent = '\u2713'
       lineEl.textContent = 'Opening Hermes\u2026'

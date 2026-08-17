@@ -31,16 +31,8 @@
 /* Continuous decorative animations otherwise keep Chromium's renderer awake
    behind another app. main.tsx owns this attribute only for the primary
    window; wake/pet overlays retain their purpose-built visibility behavior. */
-:root[data-renderer-animations-paused] :is(
-    .shimmer,
-    .quest-glow,
-    .pet-egg,
-    .pet-egg__glow,
-    .pet-egg-shadow,
-    .pet-wobble,
-    .progress-slide,
-    .kanban-arc
-  ),
+:root[data-renderer-animations-paused]
+  :is(.shimmer, .quest-glow, .pet-egg, .pet-egg__glow, .pet-egg-shadow, .pet-wobble, .progress-slide, .kanban-arc),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
   [data-slot='aui_assistant-message-content']
@@ -606,32 +598,22 @@
   }
 
   /* Surfaces that MASK sibling content must stay filled under glass — a
-     see-through mask reads as text bleeding through text, not as glass. The
-     diff panel's sticky line-number gutter wears the editor surface
-     (components/chat/diff-lines.tsx), and a dragged sidebar row wears the
-     sidebar surface precisely so the rows it passes over don't show through
-     (see the comment in sidebar/session-row.tsx). Both get an opaque fill
-     back. */
-  :root[data-hermes-glass] [data-slot='file-diff-panel'] {
+     see-through mask reads as text bleeding through text, not as glass.
+     Anything that paints over its own siblings declares `data-glass-opaque`
+     at its call site (the diff gutter, a dragged sidebar row), rather than
+     styles.css reaching in by class name. */
+  :root[data-hermes-glass] [data-glass-opaque] {
+    --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
-  }
-
-  :root[data-hermes-glass] .cursor-grabbing {
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
   }
 
-  /* The inline user-message edit box wears the chat surface as a raised box
-     fill; give it the opaque chrome the token resolves to outside glass. */
-  :root[data-hermes-glass] .composer-human-message-container {
-    --ui-chat-surface-background: var(--ui-bg-chrome);
-  }
-
-  /* Overlay cards (settings, agents, cron, command center — everything on
-     OverlayView) sit ABOVE the field, so they run counter to it: near-opaque
-     over a glass field, never thinner than the field itself (max() covers
-     low slider values where the field keeps more than 94%). The card wears
-     the chat token and its internal nav asides wear the sidebar token, so
-     both come back as almost-solid fills and the two-tone layout survives. */
+  /* Content RAISED above the field (overlay cards, the inline edit box) runs
+     counter to it: near-opaque over a glass field, never thinner than the
+     field itself — max() covers low slider values where the field still keeps
+     more than 94%. The card wears the chat token and its internal nav asides
+     wear the sidebar token, so both come back as almost-solid fills and the
+     two-tone layout survives. */
   :root[data-hermes-glass] [data-glass-raised] {
     --ui-chat-surface-background: color-mix(
       in srgb,
@@ -2511,8 +2493,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
      No fill of its own — the sheet is its own layer ([data-hud-glass]) so it
      can animate independently of the text. */
-  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height))
-    var(--hud-band-inset) !important;
+  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height)) var(--hud-band-inset) !important;
   height: var(--hud-band-height, 0px) !important;
   width: auto !important;
   max-width: none !important;
@@ -2669,8 +2650,7 @@ button[data-slot='aui_msg-reactions'] svg {
    goes fully opaque and the band falls back behind it: dimmer, fractionally
    smaller, slightly out of focus. Scaled from the bar's edge, so it reads as
    depth rather than as the panel shrinking. */
-[data-hud-shell]:has([data-slot='composer-completion-drawer'])
-  :is([data-slot='composer-bounds'], [data-hud-glass]) {
+[data-hud-shell]:has([data-slot='composer-completion-drawer']) :is([data-slot='composer-bounds'], [data-hud-glass]) {
   opacity: 0.25 !important;
   scale: 0.97;
   filter: blur(1.5px);

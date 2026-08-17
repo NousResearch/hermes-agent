@@ -1227,7 +1227,7 @@ def _remove_env_vars(env_path: Path, keys: tuple[str, ...]) -> None:
             stripped = stripped[7:].lstrip()
         return stripped.split("=", 1)[0].strip() if "=" in stripped else ""
 
-    with env_path.open(encoding="utf-8-sig", errors="replace") as env_file:
+    with env_path.open(encoding="utf-8-sig", errors="surrogateescape") as env_file:
         existing_lines = env_file.readlines()
     new_lines = [line for line in existing_lines if line_key(line) not in remove_set]
     if new_lines == existing_lines:
@@ -1240,7 +1240,7 @@ def _remove_env_vars(env_path: Path, keys: tuple[str, ...]) -> None:
         suffix=".tmp",
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as env_file:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as env_file:
             env_file.writelines(new_lines)
             env_file.flush()
             os.fsync(env_file.fileno())

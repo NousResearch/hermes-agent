@@ -753,6 +753,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل مفاتيح API',
       empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.'
     },
+    profileScope: {
+      appliesTo: 'ينطبق على',
+      editsProfile: profile => `تنطبق التغييرات في هذه الصفحة على الملف الشخصي «${profile}».`
+    },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
       failedLoad: 'فشل تحميل إعدادات MCP',

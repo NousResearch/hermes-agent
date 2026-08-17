@@ -827,6 +827,10 @@ export const zhHant = defineLocale({
       failedLoad: 'API 金鑰載入失敗',
       empty: '此類別尚未有任何設定。'
     },
+    profileScope: {
+      appliesTo: '套用至',
+      editsProfile: profile => `此頁面的變更將套用至「${profile}」設定檔。`
+    },
     mcp: {
       loading: '正在載入 MCP 伺服器...',
       failedLoad: 'MCP 設定載入失敗',

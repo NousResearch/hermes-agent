@@ -864,6 +864,10 @@ export const en: Translations = {
       failedLoad: 'API keys failed to load',
       empty: 'Nothing configured in this category yet.'
     },
+    profileScope: {
+      appliesTo: 'Applies to',
+      editsProfile: profile => `Changes on this page apply to the “${profile}” profile.`
+    },
     mcp: {
       loading: 'Loading MCP servers...',
       failedLoad: 'MCP config failed to load',

@@ -853,6 +853,10 @@ export const ja = defineLocale({
       failedLoad: 'API キーの読み込みに失敗しました',
       empty: 'このカテゴリーにはまだ設定がありません。'
     },
+    profileScope: {
+      appliesTo: '適用対象',
+      editsProfile: profile => `このページの変更は「${profile}」プロファイルに適用されます。`
+    },
     mcp: {
       loading: 'MCP サーバーを読み込み中...',
       failedLoad: 'MCP 設定の読み込みに失敗しました',

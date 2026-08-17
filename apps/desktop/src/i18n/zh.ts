@@ -1061,6 +1061,10 @@ export const zh: Translations = {
       failedLoad: 'API 密钥加载失败',
       empty: '此类别暂时没有配置项。'
     },
+    profileScope: {
+      appliesTo: '应用于',
+      editsProfile: profile => `此页面的更改将应用于“${profile}”配置文件。`
+    },
     mcp: {
       loading: '正在加载 MCP 服务器...',
       failedLoad: 'MCP 配置加载失败',

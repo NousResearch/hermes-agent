@@ -734,6 +734,10 @@ export interface Translations {
       failedLoad: string
       empty: string
     }
+    profileScope: {
+      appliesTo: string
+      editsProfile: (profile: string) => string
+    }
     mcp: {
       loading: string
       failedLoad: string
